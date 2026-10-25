@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class _Base(BaseModel):
@@ -364,6 +364,29 @@ class Request(_Base):
 
     def to_line(self) -> str:
         return self.model_dump_json(exclude_none=True)
+
+
+class SkillInvokeParams(_Base):
+    """Client intent only; executable skill authority is resolved server-side."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    skill_id: str = Field(min_length=1)
+    request: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    diff: str | None = None
+    model: str | None = None
+    max_iterations: int | None = Field(default=None, ge=1, le=100)
+    budget_tokens: int | None = Field(default=None, gt=0)
+    expected_workspace: str | None = None
+    label: Literal["overview", "security", "performance", "style"] | None = None
+    admission_only: bool = False
+
+    @field_validator("skill_id", "request", "session_id", "idempotency_key")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("A non-blank string is required")
+        return value
 
 
 class InboundNotification(_Base):

@@ -39,7 +39,7 @@ unknown 或未核对历史使责任未解决且用量不完整；reconciled（�
 
 预算结算落盘失败时，共享该数据库实例的所有家族暂停付费预留和发送，包括已经预留但尚未发送的子任务。持久 sent 责任保留，不伪造成功事件；需重启并成功完成启动恢复，随后逐项核定 unknown。启动恢复失败时应用可供诊断，但 recovery snapshot 的 available 为 false，付费治理持续关闭；移除临时存储故障本身不会绕过暂停。已发送的并发请求仍负责排空并保存自己的结果。
 
-尚未统一接单的公开 team/skill/直接子 Agent 付费根入口拒绝无账本发送，并返回失败；应从 Native 运行中调用。离线/mock 路径仍可使用。
+尚未统一接单的公开 team/直接子 Agent 付费根入口拒绝无账本发送，并返回失败；应从 Native 运行中调用。`skill.invoke` 已接入持久 Native 执行器，真实与离线/mock 调用都要求显式 Native session、非空字符串 request 和稳定 idempotency_key；旧无作用域调用不再兼容。技能配置、子任务归属及恢复边界见 [skill-execution.md](skill-execution.md)。
 
 ## 迁移、备份与回退
 

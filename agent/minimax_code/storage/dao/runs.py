@@ -531,6 +531,9 @@ class AgentRunsDAO:
                 receipt = loads_json((await _fetchone(conn, "SELECT result FROM agent_runs WHERE id=?", (run_id,)))["result"])
                 evidence = verification_evidence(status="interrupted", base=md.get("verification"))
                 md["verification"] = evidence
+                if "skill_execution" in md:
+                    from ...skill_execution import interrupted_receipt
+                    receipt = interrupted_receipt(md["skill_execution"], interrupted, receipt)
                 if receipt is not None:
                     receipt.update(verification=evidence, run_status="interrupted", cancelled=False, budget_paused=False)
                 await conn.execute("UPDATE agent_runs SET metadata=?,result=? WHERE id=?",

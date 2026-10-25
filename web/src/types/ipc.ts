@@ -355,6 +355,17 @@ export interface SkillInfo {
  * canonical channel the UI reads. `comments`/`stats` ride along only
  * on the code-review diff route.
  */
+export interface SkillInvokeArgs {
+  request: string;
+  session_id: string;
+  idempotency_key: string;
+  diff?: string;
+  model?: string;
+  max_iterations?: number;
+  budget_tokens?: number;
+  expected_workspace?: string;
+  label?: "overview" | "security" | "performance" | "style";
+}
 export interface SkillInvokeResult {
   session_id: string;
   message_id: string;
@@ -366,6 +377,12 @@ export interface SkillInvokeResult {
   cancelled: boolean;
   truncated: boolean;
   budget_exhausted?: boolean;
+  run_id: string;
+  status: AgentRunStatus;
+  run_status: "completed" | "failed" | "cancelled" | "budget_paused" | "interrupted";
+  partial: boolean;
+  error?: { message: string };
+  verification?: VerificationEvidence;
   /** Code-review diff route only — severity is free-form; narrow at the call site. */
   comments?: Array<{
     file: string;
@@ -1248,6 +1265,8 @@ export interface GitStatusResult {
 
 /** Return shape of `git.diff`. */
 export interface GitDiffResult {
+  session_id?: string;
+  workspace?: string;
   scope: string;
   ref?: string;
   diff: string;

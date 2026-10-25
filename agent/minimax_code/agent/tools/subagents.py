@@ -267,11 +267,13 @@ def _clone_registry_with_report(
     the injection scoped to this one sub-agent. v1.5.2 adds the sibling
     ``report_progress`` tool (interim ledger), bound to the same run.
     """
+    from ...run_ownership import owned_runtime
     from .artifacts import ReportCompletionTool, ReportProgressTool
     from .base import ToolRegistry, get_default_registry
 
     cloned = ToolRegistry()
-    for tool in get_default_registry().list():
+    base = (owned_runtime.get() or {}).get("registry") or get_default_registry()
+    for tool in base.list():
         cloned.register(tool)
     cloned.register(ReportCompletionTool(run_id, agent_name=agent_name))
     cloned.register(
@@ -291,7 +293,7 @@ async def _agent_dao() -> Any:
     return AgentDAO(db)
 
 
-async def _ensure_session_row(session_id: str, title: str) -> None:
+async def _ensure_session_row(session_id: str, title: str, *, required: bool = False) -> None:
     """Create a placeholder session row when ``session_id`` is synthetic.
 
     ``agent_runs.session_id`` has a NOT-NULL FK to ``sessions``; the
@@ -307,11 +309,17 @@ async def _ensure_session_row(session_id: str, title: str) -> None:
         await init_runtime()
         dao = get_sessions_dao()
         if dao is None:
+            if required:
+                raise RuntimeError("Sub-agent session storage is unavailable")
             return
         if await dao.get(session_id) is not None:
             return
         await dao.create(id=session_id, title=title, system_prompt="", model=None)
+        if required and await dao.get(session_id) is None:
+            raise RuntimeError("Sub-agent session admission was not confirmed")
     except Exception:  # pragma: no cover — defensive
+        if required:
+            raise
         logger.debug("ensure_session_row(%s) failed; continuing", session_id)
 
 
@@ -586,12 +594,19 @@ async def _drive_run(
     }
     if run_dao is not None:
         try:
-            await run_dao.update_run_status(
+            saved_run = await run_dao.update_run_status(
                 run_id,
                 status=terminal_status,
                 metadata=completion_metadata,
             )
-        except Exception:  # pragma: no cover — defensive
+            from ...run_ownership import owned_runtime
+            if owned_runtime.get() is not None and saved_run is None:
+                raise RuntimeError("Sub-agent terminal record is missing")
+        except Exception as exc:  # pragma: no cover — defensive
+            from ...run_ownership import owned_runtime
+            if owned_runtime.get() is not None:
+                from ...run_errors import RunPersistenceError
+                raise RunPersistenceError("Sub-agent completion could not be persisted; review its effects") from exc
             logger.debug("subagent run completion not persisted", exc_info=True)
 
     await _emit_safe(
@@ -924,16 +939,30 @@ class SpawnSubagentTool(Tool):
             "sandbox": bool(sandbox),
         }
         run_dao: Any = None
+        from ...run_ownership import owned_runtime
+        durable_child = owned_runtime.get() is not None
         try:
             from ...app import get_db
             from ...storage.dao.runs import AgentRunsDAO
 
+            if durable_child:
+                from ...budget_ledger import current_handle
+                inherited_budget = current_handle()
+                if inherited_budget is None:
+                    raise RuntimeError("Sub-agent budget owner is unavailable")
+                # Keep the family in the admitted record and all later copied
+                # lifecycle metadata, including terminal updates.
+                run_metadata["budget_family_id"] = inherited_budget.family_id
+
             db = get_db()
+            if db is None and durable_child:
+                raise RuntimeError("Sub-agent run storage is unavailable")
             if db is not None:
                 run_dao = AgentRunsDAO(db)
-                await _ensure_session_row(
-                    sub_session, title=f"[subagent] {row['name']}"
-                )
+                if durable_child:
+                    await _ensure_session_row(sub_session, title=f"[subagent] {row['name']}", required=True)
+                else:
+                    await _ensure_session_row(sub_session, title=f"[subagent] {row['name']}")
                 await run_dao.create_run(
                     id=run_id,
                     session_id=sub_session,
@@ -942,7 +971,14 @@ class SpawnSubagentTool(Tool):
                     title=f"[subagent] {row['name']}",
                     metadata=run_metadata,
                 )
+                if durable_child:
+                    accepted = await run_dao.get_run(run_id)
+                    if accepted is None or accepted["session_id"] != sub_session:
+                        raise RuntimeError("Sub-agent run admission was not confirmed")
         except Exception:
+            if durable_child:
+                logger.warning("owned subagent admission refused", exc_info=True)
+                return ToolResult.fail("Sub-agent could not be durably admitted; no child execution started")
             run_dao = None
             logger.warning("subagent run row not persisted", exc_info=True)
 

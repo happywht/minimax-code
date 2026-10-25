@@ -151,7 +151,22 @@ async def _scoped_cwd(params: dict[str, Any] | None) -> str | None:
     root, and a missing ``cwd`` anchors at the project root instead of
     the process CWD. Shared with the ``patch.*`` handlers.
     """
-    root = await project_root_from_params(params)
+    if isinstance(params, dict) and "session_id" in params:
+        from ..app import get_db, init_runtime
+        from ..workspace_ctx import resolve_root_for_session
+        sid = params["session_id"]
+        if not isinstance(sid, str) or not sid.strip():
+            raise HandlerError(INVALID_PARAMS, "session_id must be an explicit Native session")
+        await init_runtime()
+        db = get_db()
+        session = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (sid,)) if db else None
+        if session is None or session["engine"] != "native":
+            raise HandlerError(INVALID_PARAMS, "Scoped review requires an existing Native session")
+        root = await resolve_root_for_session(sid)
+        if params.get("project_id") is not None or params.get("cwd") is not None:
+            raise HandlerError(INVALID_PARAMS, "Use only session_id for a bound review workspace")
+    else:
+        root = await project_root_from_params(params)
     cwd = _resolve_cwd(params)
     if root is None:
         return cwd
@@ -346,6 +361,7 @@ def register_git_handlers(server: Any) -> None:
                 {
                     "diff": diff_text,
                     "scope": ref if ref is not None else scope,
+                    **({"session_id": p["session_id"], "workspace": cwd} if "session_id" in p else {}),
                 }
             )
         except HandlerError as exc:

@@ -6,7 +6,7 @@
  * Each dimension invokes its own tool. "Run All" triggers all checks.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   FileCode,
@@ -18,11 +18,13 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCodeReviewStore } from "../../stores/codeReviewStore";
+import { useSessionStore } from "../../stores/sessionStore";
 import { Badge, Button, IconButton, type BadgeTone } from "../../ui";
 import { strings } from "../../ui/strings";
 
 export interface CodeReviewPanelProps {
   testId?: string;
+  onOpenRun?: () => void;
 }
 
 const SEVERITY_DISPLAY: Record<string, { icon: JSX.Element; tone: BadgeTone }> = {
@@ -42,6 +44,7 @@ const TABS: { key: DimensionTab; label: string; icon: JSX.Element }[] = [
 
 export function CodeReviewPanel({
   testId = "code-review-panel",
+  onOpenRun,
 }: CodeReviewPanelProps): JSX.Element {
   const [activeTab, setActiveTab] = useState<DimensionTab>("overview");
 
@@ -54,6 +57,25 @@ export function CodeReviewPanel({
   const runReview = useCodeReviewStore((s) => s.runReview);
   const runAllChecks = useCodeReviewStore((s) => s.runAllChecks);
   const clear = useCodeReviewStore((s) => s.clear);
+  const bindSession = useCodeReviewStore((s) => s.bindSession);
+  const refresh = useCodeReviewStore((s) => s.refresh);
+  const retryPending = useCodeReviewStore((s) => s.retryPending);
+  const cancel = useCodeReviewStore((s) => s.cancel);
+  const openRun = useCodeReviewStore((s) => s.openRun);
+  const invocations = useCodeReviewStore((s) => s.invocations);
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
+  const session = useSessionStore((s) => s.sessions.find((item) => item.id === s.currentSessionId));
+  const project = useSessionStore((s) => s.projects.find((item) => item.id === session?.project_id));
+  const native = Boolean(session && session.engine !== "codex");
+  useEffect(() => { void bindSession(native ? currentSessionId : null); }, [bindSession, native, currentSessionId]);
+  useEffect(() => {
+    if (!loading) return;
+    const timer = window.setInterval(() => void refresh(), 1000);
+    return () => window.clearInterval(timer);
+  }, [loading, refresh]);
+  const invocation = invocations[activeTab];
+  const dimension = dimensions[activeTab];
+  const runActive = invocation && ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(invocation.status);
 
   // Select comments for active dimension
   const displayComments =
@@ -74,6 +96,9 @@ export function CodeReviewPanel({
 
   return (
     <div data-testid={testId} className="px-3 pb-3">
+      <div data-testid="code-review-binding" className="mb-2 break-all text-[11px] text-ink-2">
+        {native ? `${session?.title} · ${session?.workspace_path ?? project?.root_path ?? "会话绑定工作区"}` : "请选择 Native 会话后审查"}
+      </div>
       {/* Action bar */}
       <div className="flex items-center gap-1.5">
         <Button
@@ -82,6 +107,7 @@ export function CodeReviewPanel({
           data-testid="code-review-run-btn"
           onClick={() => void runReview()}
           loading={loading}
+          disabled={!native || loading}
           icon={<Play />}
           className="h-6 px-2 text-[11px]"
         >
@@ -92,7 +118,7 @@ export function CodeReviewPanel({
           size="sm"
           data-testid="code-review-run-all-btn"
           onClick={() => void runAllChecks()}
-          disabled={loading}
+          disabled={!native || loading}
           icon={<Play />}
           title={strings.panels.codeReview.runAllTitle}
           className="h-6 px-2 text-[11px]"
@@ -109,6 +135,18 @@ export function CodeReviewPanel({
           </IconButton>
         )}
       </div>
+
+      {(invocation || dimension?.status) && (
+        <div data-testid="code-review-run-status" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-ink-1">
+          <span>{invocation?.status ?? dimension?.status}{dimension?.partial ? " · 结果不完整，需核查" : ""}</span>
+          {invocation?.status === "budget_paused" && <span>预算暂停，请在任务时间线核定责任或提高累计额度</span>}
+          {invocation?.runId && <Button size="sm" variant="ghost" data-testid="code-review-open-run" onClick={() => void openRun(activeTab).then((opened) => { if (opened) onOpenRun?.(); })}>查看任务</Button>}
+          {runActive && <Button size="sm" variant="danger" data-testid="code-review-cancel" onClick={() => void cancel(activeTab)}>取消</Button>}
+          {invocation?.status === "admission_unknown" && <Button size="sm" variant="secondary" data-testid="code-review-retry" onClick={() => void retryPending(activeTab)}>使用原请求重试</Button>}
+          <Button size="sm" variant="ghost" onClick={() => void refresh()}>刷新结果</Button>
+          {dimension?.error && <span role="alert">{dimension.error}</span>}
+        </div>
+      )}
 
       {/* Dimension tabs */}
       <div className="mt-2 flex gap-0.5 border-b border-line">
@@ -201,7 +239,7 @@ export function CodeReviewPanel({
           data-testid="code-review-raw"
           className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line bg-surface-2/40 p-2 text-[11px] text-ink-1"
         >
-          {rawText}
+          {displayRawText}
         </pre>
       )}
 

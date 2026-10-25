@@ -5,29 +5,25 @@ Wire-up
 
 The application bootstrap (:mod:`minimax_code.app`) calls
 :func:`register_skill_handlers` with a runtime reference.
-The handlers each call :func:`_ensure_runtime` on entry so the
-runtime is built lazily on the first ``skill.*`` request.
+Runtime resolution is lazy. Invocation first checks persisted intent so retries
+can replay an accepted result without consulting changed live configuration.
 
 Streamed output (``skill.invoke``) is forwarded to the
 frontend as ``agent.message_chunk`` /
 ``agent.tool_call`` / ``agent.tool_result`` / ``agent.status``
 events — the same envelope the regular agent loop uses. The
-*response* to the request itself is a small summary envelope
-(success, skill_id, final text, iterations); the actual text
-arrives via the streaming events.
+response is the durable skill receipt, or an admission envelope when requested.
 """
 
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
 from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
-    NOT_IMPLEMENTED,
 )
 from .server import Context
 
@@ -163,267 +159,50 @@ def register_skill_handlers(
             await ctx.reply_error(INTERNAL_ERROR, "skill.uninstall failed")
 
     async def handle_skill_invoke(params: Any, ctx: Context) -> None:
+        from pydantic import ValidationError
+
+        from ..app import get_db, init_runtime
+        from ..runs import get_run_service
+        from ..skill_execution import SkillExecutionSpec, canonical_request
+        from ..storage.dao.runs import AgentRunsDAO
+        from ..workspace_ctx import resolve_root_for_session
+        from .builtins import _reply_for_run, handle_agent_send_message
+        from .protocol import SkillInvokeParams
+
         try:
+            parsed = SkillInvokeParams.model_validate(params)
+            values = parsed.model_dump()
+            request = canonical_request(values)
+            db = get_db()
+            if db is None:
+                await init_runtime()
+                db = get_db()
+            if db is None:
+                raise RuntimeError("Skill admission requires durable storage")
+            dao, service = AgentRunsDAO(db), get_run_service(ctx.server)
+            # Replay needs only persisted intent and receipt. Live skill/model
+            # settings may be disabled, removed or changed after acceptance.
+            existing = await dao.find_request(parsed.session_id, parsed.idempotency_key, request)
+            if existing is not None:
+                await _reply_for_run(ctx, dao, service, existing,
+                    await service.job_for_run(existing["id"]), created=False, wait=not parsed.admission_only)
+                return
+            session = await db.fetchone("SELECT * FROM sessions WHERE id=?", (parsed.session_id,))
+            if session is None or session["engine"] != "native":
+                raise ValueError("skill.invoke requires an existing explicit Native session")
+            workspace = str(await resolve_root_for_session(parsed.session_id))
             runtime_obj = await runtime_factory()
-            check_params(params, expected_keys={"skill_id", "request"})
-            skill_id = str(params["skill_id"])
-            request = str(params["request"])
-            session_id = str(params.get("session_id") or f"skill_{uuid.uuid4().hex[:8]}")
-            model = params.get("model")
-            max_iterations = params.get("max_iterations")
-
-            # v0.4.0 — Code Review with real LLM support.
-            # When the caller passes a ``diff`` in params, the
-            # CodeReviewPanel is asking for a diff review. If a real
-            # LLM is available (non-mock), we route through the full
-            # skill runtime so the model can use run_linter /
-            # find_complex_functions and produce a high-quality
-            # review. In mock mode we fall back to the deterministic
-            # diff walker for zero-dependency operation.
-            diff_param = params.get("diff")
-            if (
-                isinstance(diff_param, str)
-                and diff_param
-                and skill_id == "code-review:code-review"
-            ):
-                from ..agent.skills._builtin.code_review import _diff_stats, _review_diff
-
-                # Always compute stats for UI compatibility.
-                stats = _diff_stats(diff_param)
-
-                # Decide path: real LLM vs mock fallback.
-                llm = getattr(runtime_obj, "llm", None)
-                use_real_llm = llm is not None and not getattr(llm, "mock", True)
-
-                if use_real_llm:
-                    # Real LLM path: craft a review request and
-                    # invoke the skill through the runtime.
-                    review_request = (
-                        "Review the following unified diff. Identify bugs, "
-                        "style issues, and complexity hot-spots. Use "
-                        "`run_linter` and `find_complex_functions` on the "
-                        "changed files when applicable.\n\n"
-                        f"```diff\n{diff_param}\n```"
-                    )
-                    message_id = f"msg_{uuid.uuid4().hex[:8]}"
-
-                    async def _on_chunk(
-                        delta: str, done: bool, metadata: dict | None = None
-                    ) -> None:
-                        await ctx.emit(
-                            "agent.message_chunk",
-                            {
-                                "session_id": session_id,
-                                "message_id": message_id,
-                                "delta": delta,
-                                "done": done,
-                                "skill_id": skill_id,
-                            },
-                            metadata=metadata,
-                        )
-
-                    async def _on_tool_call(call: dict[str, Any]) -> None:
-                        await ctx.emit(
-                            "agent.tool_call",
-                            {
-                                "session_id": session_id,
-                                "tool_call_id": call.get("id", ""),
-                                "name": call.get("name", ""),
-                                "args": call.get("args", {}),
-                                "skill_id": skill_id,
-                            },
-                        )
-
-                    async def _on_tool_result(
-                        call: dict[str, Any], result: Any
-                    ) -> None:
-                        result_payload = (
-                            result.to_dict()
-                            if hasattr(result, "to_dict")
-                            else result
-                        )
-                        await ctx.emit(
-                            "agent.tool_result",
-                            {
-                                "session_id": session_id,
-                                "tool_call_id": call.get("id", ""),
-                                "name": call.get("name", ""),
-                                "result": result_payload,
-                                "skill_id": skill_id,
-                            },
-                        )
-
-                    async def _on_status(
-                        status: str, detail: dict[str, Any]
-                    ) -> None:
-                        await ctx.emit(
-                            "agent.status",
-                            {
-                                "session_id": session_id,
-                                "status": status,
-                                "detail": {**detail, "skill_id": skill_id},
-                            },
-                        )
-
-                    result = await runtime_obj.invoke(
-                        skill_id,
-                        request=review_request,
-                        session_id=session_id,
-                        on_chunk=_on_chunk,
-                        on_tool_call=_on_tool_call,
-                        on_tool_result=_on_tool_result,
-                        on_status=_on_status,
-                        model=model,
-                        max_iterations=max_iterations,
-                    )
-                    await ctx.reply(
-                        {
-                            "session_id": session_id,
-                            "message_id": message_id,
-                            "skill_id": skill_id,
-                            "text": result.final_text,
-                            # Canonical output channel for the frontend —
-                            # mirrors ``text`` so callers read one key.
-                            "output": result.final_text,
-                            "iterations": result.iterations,
-                            "tool_calls": result.tool_calls,
-                            "cancelled": result.cancelled,
-                            "truncated": result.truncated,
-                            "budget_exhausted": bool(getattr(result, "budget_exhausted", False)),
-                            "comments": [],
-                            "stats": stats,
-                        }
-                    )
-                    return
-                else:
-                    # Mock fallback: deterministic diff walker.
-                    review = _review_diff(diff_param)
-                    message_id = f"msg_{uuid.uuid4().hex[:8]}"
-                    await ctx.emit(
-                        "agent.message_chunk",
-                        {
-                            "session_id": session_id,
-                            "message_id": message_id,
-                            "delta": review["text"],
-                            "done": True,
-                            "skill_id": skill_id,
-                        },
-                    )
-                    await ctx.reply(
-                        {
-                            "session_id": session_id,
-                            "message_id": message_id,
-                            "skill_id": skill_id,
-                            "text": review["text"],
-                            "output": review["text"],
-                            "iterations": review.get("iterations", 0),
-                            "tool_calls": review.get("tool_calls", 0),
-                            "cancelled": False,
-                            "truncated": False,
-                            "comments": review.get("comments", []),
-                            "stats": stats,
-                        }
-                    )
-                    return
-
-            # Skill-specific message id so the UI can correlate chunks.
-            message_id = f"msg_{uuid.uuid4().hex[:8]}"
-
-            async def _on_chunk(
-                delta: str, done: bool, metadata: dict | None = None
-            ) -> None:
-                # Skill invocations don't surface a per-turn
-                # thinking count (the skill runtime is itself the
-                # "think"), so the metadata channel is unused
-                # here. We still accept the kwarg so the callback
-                # matches the v0.3.0 :data:`ChunkCallback` shape
-                # and could be plumbed through in the future.
-                await ctx.emit(
-                    "agent.message_chunk",
-                    {
-                        "session_id": session_id,
-                        "message_id": message_id,
-                        "delta": delta,
-                        "done": done,
-                        "skill_id": skill_id,
-                    },
-                    metadata=metadata,
-                )
-
-            async def _on_tool_call(call: dict[str, Any]) -> None:
-                await ctx.emit(
-                    "agent.tool_call",
-                    {
-                        "session_id": session_id,
-                        "tool_call_id": call.get("id", ""),
-                        "name": call.get("name", ""),
-                        "args": call.get("args", {}),
-                        "skill_id": skill_id,
-                    },
-                )
-
-            async def _on_tool_result(call: dict[str, Any], result: Any) -> None:
-                result_payload = (
-                    result.to_dict() if hasattr(result, "to_dict") else result
-                )
-                await ctx.emit(
-                    "agent.tool_result",
-                    {
-                        "session_id": session_id,
-                        "tool_call_id": call.get("id", ""),
-                        "name": call.get("name", ""),
-                        "result": result_payload,
-                        "skill_id": skill_id,
-                    },
-                )
-
-            async def _on_status(status: str, detail: dict[str, Any]) -> None:
-                await ctx.emit(
-                    "agent.status",
-                    {
-                        "session_id": session_id,
-                        "status": status,
-                        "detail": {**detail, "skill_id": skill_id},
-                    },
-                )
-
-            result = await runtime_obj.invoke(
-                skill_id,
-                request=request,
-                session_id=session_id,
-                on_chunk=_on_chunk,
-                on_tool_call=_on_tool_call,
-                on_tool_result=_on_tool_result,
-                on_status=_on_status,
-                model=model,
-                max_iterations=max_iterations,
-            )
-            await _persist_invoke_turn(session_id, skill_id, request, result)
-            await ctx.reply(
-                {
-                    "session_id": session_id,
-                    "message_id": message_id,
-                    "skill_id": skill_id,
-                    "text": result.final_text,
-                    # Canonical output channel — the generic path used to
-                    # reply without it while the frontend read ``output``,
-                    # so every skill result rendered as ``undefined``.
-                    "output": result.final_text,
-                    "iterations": result.iterations,
-                    "tool_calls": result.tool_calls,
-                    "cancelled": result.cancelled,
-                    "truncated": result.truncated,
-                    "budget_exhausted": result.budget_exhausted,
-                }
-            )
-        except HandlerError as exc:
-            await ctx.reply_error(exc.code, exc.message, exc.data)
-        except KeyError as exc:
-            await ctx.reply_error(INVALID_PARAMS, f"unknown skill_id: {exc.args[0]!r}")
+            spec, model = await SkillExecutionSpec.capture(runtime_obj, db, ctx.server, values,
+                                                          workspace, session["project_id"])
+            await handle_agent_send_message(
+                {**request, "idempotency_key": parsed.idempotency_key,
+                 "budget_tokens": parsed.budget_tokens}, ctx, wait=not parsed.admission_only,
+                internal_skill=spec, skill_model=model, skill_runtime=runtime_obj)
+        except (ValidationError, ValueError, KeyError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:
             logger.exception("skill.invoke failed")
-            code = NOT_IMPLEMENTED if "not implemented" in str(exc).lower() else INTERNAL_ERROR
-            await ctx.reply_error(code, str(exc))
+            await ctx.reply_error(INTERNAL_ERROR, str(exc))
 
     server.register("skill.list", handle_skill_list)
     server.register("skill.get", handle_skill_get)
@@ -434,52 +213,6 @@ def register_skill_handlers(
     server.register("skill.invoke", handle_skill_invoke)
 
 
-async def _persist_invoke_turn(
-    session_id: str, skill_id: str, request: str, result: Any
-) -> None:
-    """Best-effort persistence of a ``skill.invoke`` turn (v1.2.0).
-
-    Skill output used to live only in the event stream — reload the app
-    and whatever a skill produced (a code review, a digest) was gone.
-    Now the turn is written to the messages ledger when — and only
-    when — the caller supplied a ``session_id`` that actually exists.
-    The fallback ``skill_*`` id names no session row and would violate
-    the messages→sessions FK, so it is skipped.
-
-    Persistence is an enhancement, never a failure mode: any error here
-    is logged and swallowed because the IPC reply already carries the
-    full result.
-    """
-    if not session_id or session_id.startswith("skill_"):
-        return
-    try:
-        from ..app import get_db
-        from ..storage.dao.messages import MessagesDAO
-        from ..storage.dao.sessions import SessionsDAO
-
-        db = get_db()
-        if db is None:
-            return
-        if await SessionsDAO(db).get(session_id) is None:
-            return
-        dao = MessagesDAO(db)
-        meta: dict[str, Any] = {"source": "skill_invoke", "skill_id": skill_id}
-        await dao.create(
-            id=f"msg_{uuid.uuid4().hex[:12]}",
-            session_id=session_id,
-            role="user",
-            content=request,
-            metadata=meta,
-        )
-        await dao.create(
-            id=f"msg_{uuid.uuid4().hex[:12]}",
-            session_id=session_id,
-            role="assistant",
-            content=result.final_text,
-            metadata={**meta, "iterations": result.iterations},
-        )
-    except Exception:
-        logger.warning("skill.invoke persist skipped", exc_info=True)
 
 def _make_runtime_factory(runtime: Any | None) -> Any:
     """Return an async factory that yields a runtime, building it lazily if needed.

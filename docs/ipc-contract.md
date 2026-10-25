@@ -315,7 +315,45 @@ only prunes legacy overlays. A process restart does not silently reclassify a
 See [child-workspaces.md](child-workspaces.md) for limits and operational details.
 No RPC is added or removed, and no SQLite migration is required.
 
-### Durable run history (M2 foundation)
+### Durable Native skill execution (B1)
+
+`skill.invoke` requires `{skill_id, session_id, idempotency_key, request}`. The
+session must already exist and use Native; `request` is a non-empty string.
+Optional fields are `diff` (non-empty unified diff, code-review only),
+`max_iterations` (1–100), `model` (must match the selected model),
+`budget_tokens` (positive cumulative family ceiling), `expected_workspace`
+(must match the resolved session directory), `label`, and `admission_only`.
+Unknown fields, executable instructions, tool lists and family IDs are rejected.
+
+`admission_only:true` returns `{run, created}` after SQLite admission. Otherwise
+the handler waits for the retained worker and returns the saved skill receipt.
+Disconnecting a waiter does not cancel execution. Same session/key + same intent
+joins or replays the original run **before** consulting current skill/model
+settings. A different skill, input, diff or option under that key returns
+`-32602`. Admission-only mode does not change request identity.
+
+The receipt is stored before terminal completion and is also the `result` from `run.get`:
+normal Native fields plus `skill_id`, `output` (alias of `text`), `status`
+(alias of `run_status`), `tool_calls`, `partial`, `budget_exhausted`, and for diff
+reviews `stats:{files, additions, deletions}` and `comments:[]`. Real review text
+does not imply parsed structured findings. Offline deterministic diff reviews
+return findings from the actual local diff walker. Failed receipts preserve the
+normal RPC error projection; inspect `run.get` for the full saved receipt.
+
+`run.cancel`, `run.resume`, `agent.continue_run`, timeline/events and `budget.get`
+apply to these runs. Resume/continue retain the saved skill profile and budget
+family; they cannot turn into generic chat. Disabled/missing skills, changed
+version/tool-provider identity or incompatible model-provider configuration
+require a new task. Restart recovery preserves text/usage, projects status to
+`interrupted`/`partial:true`, and never automatically replays writes.
+
+`git.diff` additionally accepts `session_id` for an existing Native session and
+returns `session_id` and resolved `workspace`. This binding cannot be mixed
+with `cwd`/`project_id`. The review UI uses that same session/workspace for diff
+and admission, retains uncertain request keys, and reloads durable results.
+See [skill-execution.md](skill-execution.md) for ownership and permission limits.
+
+### Durable run journal
 
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older

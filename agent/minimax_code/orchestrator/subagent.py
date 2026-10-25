@@ -184,8 +184,9 @@ def _on_background_run_done(run_id: str, task: asyncio.Task) -> None:
 def register_background_run(run_id: str, task: asyncio.Task) -> None:
     """Hold a strong reference to a background sub-agent run task."""
     _BACKGROUND_RUNS[run_id] = task
+    from ..run_ownership import owned_runtime
     from ..schedule_context import scheduled_runtime
-    schedule = scheduled_runtime.get()
+    schedule = owned_runtime.get() or scheduled_runtime.get()
     if schedule and schedule.get("children"):
         schedule["children"].register(run_id,task)
     task.add_done_callback(lambda _t, rid=run_id: _on_background_run_done(rid, _t))
@@ -408,8 +409,9 @@ class SubAgentRuntime:
         # to ``None`` (no override — the model's own default effort),
         # preserving the pre-R62 behaviour when no override is stored or
         # when the runtime was built before any preference was loaded.
+        from ..run_ownership import owned_runtime
         from ..schedule_context import scheduled_runtime
-        scheduled = scheduled_runtime.get()
+        scheduled = owned_runtime.get() or scheduled_runtime.get()
         saved = scheduled["context"] if scheduled else {}
         core_config = AgentConfig(
             model=saved.get("model", spec.model),
@@ -508,7 +510,9 @@ class SubAgentRuntime:
                 f"sub-agent {handle.config.name!r} has no AgentCore; "
                 "did you forget to call SubAgentRuntime.build?"
             )
+        from ..budget_ledger import budget_scope, current_handle
         from ..execution import require_write_access
+        from ..run_ownership import owned_runtime
         from ..workspace.child import active_child, prepare_child
         from ..workspace_ctx import (
             current_root,
@@ -521,6 +525,12 @@ class SubAgentRuntime:
         # The legacy explicit file overlay remains file-only; otherwise a
         # child always receives an owned working copy, even sandbox=false.
         require_write_access()
+        owned = owned_runtime.get() is not None
+        durable_owner = current_run_id() if owned else None
+        inherited = current_handle()
+        if owned and (not durable_owner or inherited is None):
+            from ..run_errors import RunPersistenceError
+            raise RunPersistenceError("Owned sub-agent has no durable run/budget owner")
         child = None
         if current_sandbox() is None:
             run_id = (current_run_id() if not active_child() else None) or f"run_{uuid.uuid4().hex[:12]}"
@@ -528,10 +538,23 @@ class SubAgentRuntime:
         try:
             from contextlib import nullcontext
 
-            from ..budget_ledger import budget_scope, current_handle
-            inherited = current_handle()
-            with budget_scope(inherited.descendant(child.run_id if child is not None else current_run_id() or inherited.run_id) if inherited else None), child.scope() if child is not None else nullcontext():
-                    run_result = await core.run(session_id=session_id, user_message=request)
+            if owned:
+                from ..app import get_db
+                from ..run_errors import RunPersistenceError
+                from ..storage.dao.runs import AgentRunsDAO
+                db = get_db()
+                owner = await AgentRunsDAO(db).get_run(durable_owner) if db is not None else None
+                metadata = (owner or {}).get("metadata") or {}
+                family = metadata.get("budget_family_id") or (metadata.get("budget") or {}).get("family_id")
+                if (owner is None or owner["session_id"] != session_id
+                        or (family is not None and family != inherited.family_id)):
+                    raise RunPersistenceError("Owned sub-agent durable run/session/budget binding is unavailable")
+            else:
+                inherited = current_handle()
+            budget_owner = durable_owner or (child.run_id if child is not None else current_run_id())
+            descendant = inherited.descendant(budget_owner or inherited.run_id) if inherited else None
+            with budget_scope(descendant), child.scope() if child is not None else nullcontext():
+                run_result = await core.run(session_id=session_id, user_message=request)
         except BaseException as exc:
             if child is not None:
                 child.finish("cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")

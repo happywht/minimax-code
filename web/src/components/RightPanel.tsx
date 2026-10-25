@@ -75,6 +75,7 @@ export function RightPanel({
           agentsError={agentsError}
           fetchAgents={fetchAgents}
           testId={testId}
+          onOpenReviewRun={() => selectTab("timeline")}
         />
       </div>
     </aside>

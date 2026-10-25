@@ -192,8 +192,8 @@ class FrozenPermissions:
         return self.lookup(tool)["action"] == "deny"
 
 
-class ScheduledChildren:
-    """One mutable owner inherited recursively by every scheduled descendant."""
+class RetainedChildren:
+    """One mutable owner inherited recursively by an opted-in run's descendants."""
 
     def __init__(self):
         self.tasks = {}
@@ -235,6 +235,7 @@ class ScheduledChildren:
         if cancelled is not None:
             raise cancelled
         return evidence
+
 
     async def _drain(self):
         while pending := [task for task in self.tasks if not task.done()]:
@@ -290,3 +291,7 @@ class ScheduledChildren:
                 }
             )
         return evidence
+
+
+# Compatibility for saved schedule integrations; skills opt in independently.
+ScheduledChildren = RetainedChildren

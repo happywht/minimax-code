@@ -327,7 +327,7 @@ async def test_paid_skill_endpoint_refuses_unscoped_send_without_false_success(t
         await server._handlers["skill.invoke"]({"skill_id": "budget-skill:budget-skill", "request": "work", "session_id": "s"}, ctx)
         ctx.reply.assert_not_awaited()
         ctx.reply_error.assert_awaited_once()
-        assert "unified run budget" in str(ctx.reply_error.await_args)
+        assert "idempotency_key" in str(ctx.reply_error.await_args)
         assert not calls
     finally:
         await llm.close()

@@ -224,6 +224,12 @@ def register_run_handlers(server: Any) -> None:
             else:
                 content += note
             saved_schedule = metadata.get("schedule")
+            saved_skill = None
+            if "skill_execution" in metadata or "skill_intent" in previous:
+                from ..skill_execution import SkillExecutionSpec
+                if "skill_intent" not in previous:
+                    raise HandlerError(INVALID_PARAMS, "Saved skill intent is missing; start a new task")
+                saved_skill = SkillExecutionSpec(metadata.get("skill_execution"))
             if saved_schedule and budget_override is not None:
                 saved_schedule = {**saved_schedule, "context": {**saved_schedule["context"], "budget_tokens": budget_override}}
             await handle_agent_send_message(
@@ -231,7 +237,7 @@ def register_run_handlers(server: Any) -> None:
                  "budget_tokens": budget_override},
                 ctx, wait=False, resumed_from_id=run["id"],
                 required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"],
-                internal_schedule=saved_schedule)
+                internal_schedule=saved_schedule, internal_skill=saved_skill)
         except (ValidationError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except HandlerError as exc:

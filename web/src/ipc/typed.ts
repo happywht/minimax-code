@@ -10,6 +10,7 @@ import type { BudgetStateResult, BudgetReconcileParams, ScheduleDefinition, Sche
 
 import type {
   AgentInfo,
+  SkillInvokeArgs,
   AgentRun,
   RunStartParams,
   RunAdmissionResult,
@@ -287,7 +288,8 @@ export interface TypedIPC {
   uninstallSkill(skillId: string): Promise<{ ok: true; skill_id: string }>;
   enableSkill(skillId: string): Promise<{ ok: true }>;
   disableSkill(skillId: string): Promise<{ ok: true }>;
-  invokeSkill(skillId: string, args: unknown): Promise<SkillInvokeResult>;
+  invokeSkill(skillId: string, args: SkillInvokeArgs): Promise<SkillInvokeResult>;
+  admitSkill(skillId: string, args: SkillInvokeArgs): Promise<RunAdmissionResult>;
 
   // scheduler — wire = ``schedule.*`` (per handlers_scheduled.py).
   // The JS API is friendlier (cron / prompt) than the wire (cron_expr / payload)
@@ -365,7 +367,7 @@ export interface TypedIPC {
   // polls it on a short interval); ``gitDiff`` and ``gitLog`` are
   // on-demand.
   gitStatus(opts?: { project_id?: string }): Promise<GitStatusResult>;
-  gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string; project_id?: string }): Promise<GitDiffResult>;
+  gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string; project_id?: string; session_id?: string }): Promise<GitDiffResult>;
   gitLog(opts?: { n?: number; project_id?: string }): Promise<GitLogResult>;
   // crash recovery (R231) — read persisted crash-report files written at boot.
   crashPreviousReport(): Promise<CrashPreviousReportResult>;
@@ -769,22 +771,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<{ ok: true }>("skill.enable", { skill_id: sid }),
     disableSkill: (sid) =>
       client.request<{ ok: true }>("skill.disable", { skill_id: sid }),
-    invokeSkill: (sid, args) => {
-      // Backend contract (handlers_skills.py): ``skill_id`` + ``request``
-      // are required keys, and the code-review diff route reads ``diff``
-      // from the *top level* of params. Flatten the args object onto the
-      // wire so special routes see their keys while ``request`` keeps the
-      // canonical value for the generic skill path.
-      const flat: Record<string, unknown> =
-        args && typeof args === "object" && !Array.isArray(args)
-          ? (args as Record<string, unknown>)
-          : {};
-      return client.request<SkillInvokeResult>("skill.invoke", {
-        skill_id: sid,
-        request: args,
-        ...flat,
-      });
-    },
+    invokeSkill: (sid, args) => client.request<SkillInvokeResult>("skill.invoke", { skill_id: sid, ...args }),
+    admitSkill: (sid, args) => client.request<RunAdmissionResult>("skill.invoke", { skill_id: sid, ...args, admission_only: true }),
 
     listJobs: async () => {
       const result = await client.request<{ jobs: WireScheduledJob[] }>("schedule.list", {});

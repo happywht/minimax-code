@@ -155,6 +155,7 @@ const mockPermissionRules: BackendPermissionRule[] = [];
 let mockDataEnvelope: DataExportEnvelope | null = null;
 const mockRunReceipts = new Map<string, import("../types/ipc").SendMessageResult>();
 const mockRunRequests = new Map<string, import("../types/ipc").SendMessageParams>();
+const mockSkillKeys = new Map<string, { signature: string; runId: string }>();
 const mockRequestKeys = new Map<string, { signature: string; runId: string }>();
 const mockRunEvents = new Map<string, import("../types/ipc").RunEvent[]>();
 const mockMessages = new Map<string, ProtocolMessage[]>();
@@ -942,44 +943,37 @@ function mockHandle(
     }
 
     case "skill.invoke": {
-      // Mirror the real backend reply shape (handlers_skills.py):
-      // ``text``/``output`` carry the final reply, ``comments``/``stats``
-      // ride along only on the code-review diff route.
-      const p = params as { skill_id?: string; request?: unknown; diff?: string };
-      const skillId = p.skill_id ?? "unknown";
-      const message_id = `msg_mock_${Math.random().toString(36).slice(2, 10)}`;
-      if (typeof p.diff === "string" && p.diff.length > 0 && skillId === "code-review:code-review") {
-        const text = "Mock review: diff received, no blocking issues found.";
-        return {
-          session_id: "skill_mock",
-          message_id,
-          skill_id: skillId,
-          text,
-          output: text,
-          iterations: 1,
-          tool_calls: 0,
-          cancelled: false,
-          truncated: false,
-          comments: [],
-          stats: { files: 1, additions: 3, deletions: 1 },
-        };
+      const p = params as import("../types/ipc").SkillInvokeArgs & { skill_id: string; admission_only?: boolean };
+      if (!p.session_id || !p.idempotency_key?.trim() || typeof p.request !== "string" || !p.request.trim())
+        throw new Error("skill.invoke requires an explicit Native session, request and stable key");
+      const session = mockSessions.get(p.session_id);
+      if (!session || session.engine === "codex") throw new Error("skill.invoke requires an existing Native session");
+      const key = p.session_id + "\0" + p.idempotency_key;
+      const signature = JSON.stringify({ ...p, admission_only: undefined });
+      const previous = mockSkillKeys.get(key);
+      if (previous) {
+        if (previous.signature !== signature) throw new Error("idempotency_key already belongs to different input");
+        const entry = mockRuns.get(previous.runId)!;
+        return structuredClone(p.admission_only ? { run: entry.run, created: false } : mockRunReceipts.get(previous.runId));
       }
-      const requestText =
-        typeof p.request === "string" && p.request.length > 0
-          ? p.request
-          : JSON.stringify(p.request ?? {});
-      const text = `[mock] Skill ${skillId} processed request: ${requestText}`;
-      return {
-        session_id: "skill_mock",
-        message_id,
-        skill_id: skillId,
-        text,
-        output: text,
-        iterations: 1,
-        tool_calls: 0,
-        cancelled: false,
-        truncated: false,
-      };
+      const skill = mockSkills.find((item) => item.id === p.skill_id || `${item.id}:${item.id}` === p.skill_id);
+      if (!skill?.enabled) throw new Error("Skill is missing or disabled");
+      const runId = `run_skill_${crypto.randomUUID()}`;
+      const mid = `msg_${crypto.randomUUID()}`, now = new Date().toISOString();
+      const text = `[mock] Skill ${p.skill_id} processed request: ${p.request}`;
+      const run: import("../types/ipc").AgentRun = { id:runId, session_id:p.session_id, mode:"execute", status:"completed",
+        title:p.request.slice(0,32), assistant_message_id:mid, request_key:p.idempotency_key, created_at:now,
+        started_at:now, completed_at:now, metadata:{skill_execution:{skill_id:p.skill_id,label:p.label}} };
+      const receipt: import("../types/ipc").SkillInvokeResult = { session_id:p.session_id, message_id:mid,
+        run_id:runId, skill_id:p.skill_id, status:"completed",run_status:"completed", text,output:text,
+        iterations:1,tool_calls:0,cancelled:false,truncated:false,partial:false,
+        ...(p.diff ? {comments:[],stats:{files:1,additions:3,deletions:1}} : {}) };
+      mockRuns.set(runId,{run,steps:[]});
+      mockRunReceipts.set(runId,receipt);
+      mockSkillKeys.set(key,{signature,runId});
+      recordRunEvent(runId,"created",{run});
+      recordRunEvent(runId,"status",{run});
+      return structuredClone(p.admission_only ? {run,created:true} : receipt);
     }
 
     case "schedule.list":
@@ -1180,7 +1174,7 @@ function mockHandle(
     }
 
     case "git.diff": {
-      const p = params as { scope?: string; ref?: string } | undefined;
+      const p = params as { scope?: string; ref?: string; session_id?: string } | undefined;
       // A non-empty sample diff keeps the review pipeline exercisable in
       // mock mode — a constant "" here masked the whole code-review flow
       // behind the "no changes" early return.
@@ -1197,7 +1191,7 @@ function mockHandle(
         "+  return `hello ${name}`;",
         " }",
       ].join("\n");
-      return { diff: sampleDiff, scope: p?.ref ?? p?.scope ?? "working" } satisfies GitDiffResult;
+      return { diff: sampleDiff, scope: p?.ref ?? p?.scope ?? "working", ...(p?.session_id ? {session_id:p.session_id,workspace:mockSessions.get(p.session_id)?.workspace_path ?? "/mock/workspace"} : {}) } satisfies GitDiffResult;
     }
 
     case "data.export": {
@@ -1271,7 +1265,7 @@ function mockHandle(
     }
 
     case "patch.preview": {
-      const p = params as { scope?: string; ref?: string } | undefined;
+      const p = params as { scope?: string; ref?: string; session_id?: string } | undefined;
       return {
         diff: "",
         scope: p?.ref ?? p?.scope ?? "working",

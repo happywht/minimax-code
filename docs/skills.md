@@ -220,6 +220,13 @@ the body alone is enough to bias the agent's behaviour. After a
 restart, the skill appears in the registry and can be invoked
 through the `skill.invoke` IPC method.
 
+Public invocation now requires an explicit Native session, non-empty string
+`request` and stable `idempotency_key`. It uses the durable admitted Native
+executor, saved private profile and normal permissions/budget gates. See
+[skill-execution.md](skill-execution.md) and the `skill.invoke` contract for
+replay, cancellation and recovery semantics. `SkillRuntime.invoke` remains a
+standalone/offline facility, not the public paid execution boundary.
+
 ## Built-in skills
 
 | Skill              | Tools                                              | Purpose |
@@ -237,7 +244,8 @@ All three are documented in their own `SKILL.md` files under
 |------------------------|-------------------------------------------|
 | Frontmatter parser     | `minimax_code/agent/skills/loader.py`     |
 | In-memory + DB state   | `minimax_code/agent/skills/registry.py`   |
-| Invoke + tool install  | `minimax_code/agent/skills/runtime.py`    |
+| Registry + standalone runtime | `minimax_code/agent/skills/runtime.py` |
+| Durable execution profile | `minimax_code/skill_execution.py` |
 | Public entry point     | `minimax_code/agent/skills/__init__.py`   |
 | Built-in tools         | `minimax_code/agent/skills/_builtin/`     |
 | IPC handlers           | `minimax_code/ipc/handlers_skills.py`     |

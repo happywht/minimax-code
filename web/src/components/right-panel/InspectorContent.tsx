@@ -45,6 +45,7 @@ export interface InspectorContentProps {
   agentsError: string | null;
   fetchAgents: () => Promise<void>;
   testId: string;
+  onOpenReviewRun?: () => void;
 }
 
 export function InspectorContent({
@@ -54,6 +55,7 @@ export function InspectorContent({
   agentsError,
   fetchAgents,
   testId,
+  onOpenReviewRun,
 }: InspectorContentProps): JSX.Element {
   switch (activeTab) {
     case "timeline":
@@ -108,7 +110,7 @@ export function InspectorContent({
       return (
         <section id={`${testId}-review-panel`} role="tabpanel" data-testid={`${testId}-review-body`}>
           <Suspense fallback={<PanelFallback />}>
-            <CodeReviewPanel testId={`${testId}-review-panel`} />
+            <CodeReviewPanel testId={`${testId}-review-panel`} onOpenRun={onOpenReviewRun} />
           </Suspense>
         </section>
       );

@@ -567,6 +567,7 @@ async def handle_agent_send_message(
     params: Any, ctx: Context, *, wait: bool = True, resumed_from_id: str | None = None,
     required_model: dict[str, Any] | None = None, required_workspace: str | None = None,
     continuation: bool = False, internal_schedule: dict[str, Any] | None = None,
+    internal_skill: Any = None, skill_model: ModelSnapshot | None = None, skill_runtime: Any = None,
 ) -> None:
     from ..execution import ExecutionPolicy, execution_scope
     from ..storage.dao.runs import AgentRunsDAO, RequestConflictError
@@ -589,6 +590,8 @@ async def handle_agent_send_message(
         return
     session_id = str(params.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
     request = {"session_id": session_id, "mode": mode, "content": copy.deepcopy(content)}
+    if internal_skill is not None:
+        request["skill_intent"] = copy.deepcopy(params["skill_intent"])
     service = get_run_service(ctx.server)
     try:
         from ..app import get_db, get_sessions_dao, init_runtime
@@ -641,6 +644,9 @@ async def handle_agent_send_message(
         if required_workspace is not None and root != required_workspace:
             raise RuntimeError("Session workspace changed; restore its binding or start a new task")
         project_id = session.get("project_id")
+        if internal_skill is not None:
+            if project_id != internal_skill.data["project_id"] or root != internal_skill.data["workspace"]:
+                raise ValueError("Skill session binding changed; start a new task")
         if internal_schedule is not None:
             saved = internal_schedule["context"]
             if project_id != saved["project_id"] or root != saved["workspace"]:
@@ -673,18 +679,27 @@ async def handle_agent_send_message(
     daily_baseline = 0
 
     try:
-        if internal_schedule is not None:
+        if internal_skill is not None:
+            from ..skill_execution import _private_model
+            if skill_model is None:
+                skill_runtime = await init_runtime()
+                internal_skill, skill_model = await internal_skill.restore(internal_skill.data, skill_runtime, db)
+            # The original selected client is borrowed only long enough to
+            # copy configuration. The admitted run owns its private client.
+            model_snapshot = _private_model(skill_model)
+            internal_skill.configure_offline_review(model_snapshot.client)
+        elif internal_schedule is not None:
             from ..schedule_context import resolve_model
             model_snapshot = await resolve_model(db, internal_schedule["context"])
         else:
             model_snapshot = ModelSnapshot.capture()
-        if internal_schedule is None and required_model is not None and model_snapshot.metadata() != required_model:
+        if internal_schedule is None and internal_skill is None and required_model is not None and model_snapshot.metadata() != required_model:
             raise RuntimeError("Select the original provider, model and reasoning effort before resuming")
     except Exception as exc:
         await ctx.reply_error(LLM_ERROR, f"Cannot start task: {exc}")
         return
     async def close_owned_model():
-        if internal_schedule is not None:
+        if internal_schedule is not None or internal_skill is not None:
             try:
                 await model_snapshot.client.close()
             except Exception:
@@ -692,32 +707,50 @@ async def handle_agent_send_message(
 
     async def execute(job: RunJob) -> None:
         from ..budget_ledger import BudgetHandle, budget_scope
-        from ..schedule_context import ScheduledChildren, scheduled_runtime
+        from ..run_ownership import owned_runtime
+        from ..schedule_context import RetainedChildren, scheduled_runtime
         job.budget_handle = await BudgetHandle.for_run(db, job.run_id, daily_limit=daily_limit)
-        children = ScheduledChildren() if internal_schedule is not None else None
+        children = RetainedChildren() if internal_schedule is not None or internal_skill is not None else None
         schedule_token = scheduled_runtime.set({"context":internal_schedule["context"],"children":children}) if internal_schedule is not None else None
+        owner_token = owned_runtime.set({"context": internal_skill.data["model_snapshot"], "children": children}) if internal_skill is not None else None
         try:
+            if internal_skill is not None:
+                # Validate revocations and dependency identity when the queued
+                # worker actually obtains the session lease.
+                await internal_skill.validate(skill_runtime, db)
             from ..orchestrator.subagent import SubAgentRuntime, subagent_runtime_scope
 
             runtime = SubAgentRuntime(llm=model_snapshot.client,
                                       reasoning_effort=model_snapshot.reasoning_effort)
             with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
-                                                 model_snapshot=model_snapshot, internal_schedule=internal_schedule)
+                                                 model_snapshot=model_snapshot, internal_schedule=internal_schedule,
+                                                 internal_skill=internal_skill)
         finally:
-            if children is not None:
-                await children.drain(cancel=True)
-            if schedule_token is not None:
-                scheduled_runtime.reset(schedule_token)
-            from ..orchestrator.subagent import pop_subagent_emit
-            from ..perm_consent import unregister_gater
+            try:
+                if children is not None:
+                    await children.drain(cancel=True)
+            finally:
+                if schedule_token is not None:
+                    scheduled_runtime.reset(schedule_token)
+                if owner_token is not None:
+                    owned_runtime.reset(owner_token)
+                from ..orchestrator.subagent import pop_subagent_emit
+                from ..perm_consent import unregister_gater
 
-            _ACTIVE_RUNS.pop(session_id, None)
-            pop_subagent_emit(session_id)
-            unregister_gater(ctx.server, session_id)
+                _ACTIVE_RUNS.pop(session_id, None)
+                pop_subagent_emit(session_id)
+                unregister_gater(ctx.server, session_id)
 
     async def finalize(job: RunJob, error: BaseException | None) -> None:
-        await close_owned_model()
+        if internal_skill is not None:
+            from ..budget_ledger import owned_cleanup
+            try:
+                await owned_cleanup(close_owned_model())
+            except asyncio.CancelledError as exc:
+                error = error or exc
+        else:
+            await close_owned_model()
         # Each governed request retains its own cleanup. Ordinary async
         # descendants may still be running: only startup may recover a family.
         current = await dao.get_run(job.run_id)
@@ -742,14 +775,37 @@ async def handle_agent_send_message(
             receipt["budget"] = await job.budget_handle.snapshot()
         receipt["verification"] = verification_evidence(status=receipt["run_status"],
             base=(job.result or {}).get("verification"), configured=bool(job.validate_command))
+        if internal_skill is not None:
+            receipt = internal_skill.receipt(receipt)
         run = await dao.terminate_run(job.run_id, status="cancelled" if cancelled else "failed",
                                       error=reason, result=receipt)
         await _notify_run(ctx, "run.completed", {"run": run})
 
+    async def admit_owned(coro):
+        if internal_skill is None:
+            return await coro
+        admission = asyncio.create_task(coro)
+        cancelled = None
+        while not admission.done():
+            try:
+                await asyncio.shield(admission)
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+        accepted = admission.result()
+        if cancelled is not None:
+            # A created job now owns this client. A duplicate owns no worker,
+            # so the detached waiter must close its unused private client.
+            if not accepted[2]:
+                from ..budget_ledger import owned_cleanup
+                await owned_cleanup(close_owned_model())
+            raise cancelled
+        return accepted
+
     try:
-        run, job, created = await service.admit(
+        run, job, created = await admit_owned(service.admit(
             dao=dao, session_id=session_id, request=request, request_key=key, title=title,
             metadata={**({"schedule": internal_schedule} if internal_schedule is not None else {}),
+                      **({"skill_execution": internal_skill.snapshot()} if internal_skill is not None else {}),
                       "model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
                       "project_id": project_id,
                       "validate_command": validate_command,
@@ -759,7 +815,7 @@ async def handle_agent_send_message(
             operation=execute, finalize=finalize, resumed_from_id=resumed_from_id,
             budget_tokens=run_budget, daily_baseline=daily_baseline,
             daily_budget_limit=daily_limit, validate_command=validate_command,
-            continuation=continuation)
+            continuation=continuation))
     except (RequestConflictError, ValueError) as exc:
         await close_owned_model()
         await ctx.reply_error(-32602, str(exc))
@@ -779,6 +835,7 @@ async def handle_agent_send_message(
 async def _handle_agent_send_message(
     params: Any, ctx: Context, *, job: RunJob, model_snapshot: ModelSnapshot,
     internal_schedule: dict[str, Any] | None = None,
+    internal_skill: Any = None,
 ) -> None:
     """End-to-end chat handler for ``agent.send_message``.
 
@@ -1006,25 +1063,29 @@ async def _handle_agent_send_message(
 
         perm_store = await _ensure_permission_store(ctx.server)
     except Exception:
-        if internal_schedule is not None:
-            raise RuntimeError("Scheduled permission policy is unavailable") from None
+        if internal_schedule is not None or internal_skill is not None:
+            raise RuntimeError("Saved execution permission policy is unavailable") from None
         logger.debug("permission store unavailable; running without gating")
 
     from ..perm_consent import PermissionGater, register_gater
 
     async def approval_emit(event, data):
-        if internal_schedule is not None and event == "permission.request":
+        if (internal_schedule is not None or internal_skill is not None) and event == "permission.request":
             data = {**data, "approval_policy": "explicit_once"}
         await ctx.emit(event, data)
-    if internal_schedule is not None:
+    if internal_schedule is not None or internal_skill is not None:
         from ..schedule_context import FrozenPermissions
         if perm_store is None:
-            raise RuntimeError("Scheduled permission policy is unavailable")
-        perm_store = FrozenPermissions(internal_schedule["context"]["permission_rules"], perm_store)
+            raise RuntimeError("Saved execution permission policy is unavailable")
+        saved_permissions = internal_skill.data["permission_rules"] if internal_skill is not None else internal_schedule["context"]["permission_rules"]
+        perm_store = FrozenPermissions(saved_permissions, perm_store)
     gater = PermissionGater(emit=approval_emit)
     if internal_schedule is not None:
         from ..schedule_context import scheduled_runtime
         scheduled_runtime.set({**(scheduled_runtime.get() or {}),"context":internal_schedule["context"],"permissions":perm_store,"gater":gater})
+    if internal_skill is not None:
+        from ..run_ownership import owned_runtime
+        owned_runtime.set({**(owned_runtime.get() or {}), "permissions":perm_store, "gater":gater})
     # Stash the gater on the server so the ``permission.resolve``
     # handler (registered earlier in the same server) can find it.
     # v1.2.2: registry-keyed by session — the legacy single
@@ -1050,7 +1111,7 @@ async def _handle_agent_send_message(
     try:
         from ..app import ensure_hook_manager
 
-        hook_manager = ensure_hook_manager() if internal_schedule is None else None
+        hook_manager = ensure_hook_manager() if internal_schedule is None and internal_skill is None else None
     except Exception:
         logger.debug("hook manager unavailable; running without hooks")
 
@@ -1095,22 +1156,28 @@ async def _handle_agent_send_message(
         except Exception:
             logger.exception("failed to register search_codebase tool")
 
+    if internal_skill is not None:
+        internal_skill.install(registry)
+        from ..run_ownership import owned_runtime
+        owned_runtime.set({**(owned_runtime.get() or {}), "registry":registry})
     core = AgentCore(
         llm=llm,
         registry=registry,
         config=AgentConfig(
-            system_prompt_extra=await _build_system_prompt_extra(
+            system_prompt_extra=internal_skill.data["system_prompt_extra"] if internal_skill is not None else await _build_system_prompt_extra(
                 session_id=session_id,
                 project_id=project_id,
                 **({"validate_command_override": job.validate_command} if internal_schedule is not None else {}),
             ),
+            **({"skill_instructions":internal_skill.data["instructions"],
+                "max_iterations":internal_skill.data["max_iterations"]} if internal_skill is not None else {}),
             stall_timeout=stall_timeout,
             reasoning_effort=model_snapshot.reasoning_effort,
             context_window=model_snapshot.context_window,
             model=model_snapshot.model,
             # v1.1.0: auto-continue (goal/loop minimal form) — the loop
             # itself lives in _run_with_auto_continue below.
-            auto_continue=auto_continue,
+            auto_continue=auto_continue if internal_skill is None else False,
             auto_continue_max_blocks=auto_continue_max_blocks,
             # M2 — run + daily token budgets resolved at admission.
             run_budget_tokens=job.budget_tokens,
@@ -1388,6 +1455,9 @@ async def _handle_agent_send_message(
             logger.debug("telemetry session_start emit failed", exc_info=True)
     descendants = []
     children = None
+    if internal_skill is not None:
+        from ..run_ownership import owned_runtime
+        children = (owned_runtime.get() or {}).get("children")
     if internal_schedule is not None:
         from ..schedule_context import scheduled_runtime
         children = (scheduled_runtime.get() or {}).get("children")
@@ -1408,6 +1478,8 @@ async def _handle_agent_send_message(
                 "run_id":job.run_id,"text":result.final_text,"run_status":"running",
                 "tokens_in":result.usage.get("prompt_tokens",0),"tokens_out":result.usage.get("completion_tokens",0),
                 "verification":pending_proof}
+            if internal_skill is not None:
+                job.result = internal_skill.receipt(job.result, tool_calls=getattr(result, "tool_calls", None) or [])
             current_run = await runs_dao.get_run(job.run_id)
             await runs_dao.update_run_status(job.run_id,status=current_run["status"],result=job.result,
                 metadata={**(current_run.get("metadata") or {}),"verification":pending_proof})
@@ -1538,6 +1610,8 @@ async def _handle_agent_send_message(
         "tokens_in": result.usage.get("prompt_tokens", 0),
         "tokens_out": result.usage.get("completion_tokens", 0),
     }
+    if internal_skill is not None:
+        job.result = internal_skill.receipt(job.result, tool_calls=tool_calls_log)
     # Save the output before waiting for validation. Cancellation/restart must
     # preserve the answer while leaving configured-but-unfinished proof unknown.
     current_run = await runs_dao.get_run(job.run_id)
@@ -1546,6 +1620,8 @@ async def _handle_agent_send_message(
     verification = await verify_native_result(status=execution_status, mode=params.get("mode", "chat"),
         command=job.validate_command, workspace=job.workspace, truncated=bool(result.truncated), base=verification_base)
     job.result["verification"] = verification
+    if internal_skill is not None:
+        job.result = internal_skill.receipt(job.result, tool_calls=tool_calls_log)
     await recorder.complete(result, blocks=blocks, receipt=job.result, verification=verification)
     await ctx.reply(job.result)
 
@@ -1721,12 +1797,27 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
     import hashlib
 
     key = "continue:" + hashlib.sha256(run["id"].encode()).hexdigest()
+    skill_spec = None
+    skill_intent = {}
+    previous = await dao.request_payload(run["id"])
+    if "skill_execution" in metadata or (previous and "skill_intent" in previous):
+        from ..skill_execution import SkillExecutionSpec
+        try:
+            skill_spec = SkillExecutionSpec(metadata.get("skill_execution"))
+        except ValueError as exc:
+            await ctx.reply_error(-32602, str(exc))
+            return
+        if previous is None or "skill_intent" not in previous:
+            await ctx.reply_error(-32602, "Saved skill intent is missing; start a new task")
+            return
+        skill_intent = {"skill_intent": previous["skill_intent"]}
     await handle_agent_send_message(
         {"session_id": session_id, "content": _CONTINUE_PROMPT + f"\n[Continuation of run {run['id']}]",
          "mode": run.get("mode", "chat"), "idempotency_key": key,
-         "budget_tokens": (metadata.get("budget") or {}).get("limit_tokens")}, ctx,
+         "budget_tokens": (metadata.get("budget") or {}).get("limit_tokens"), **skill_intent}, ctx,
         resumed_from_id=run["id"], continuation=True,
         required_model=metadata.get("model_snapshot"), required_workspace=metadata.get("workspace_snapshot"),
+        internal_skill=skill_spec,
     )
 
 

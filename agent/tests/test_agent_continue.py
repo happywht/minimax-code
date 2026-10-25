@@ -43,6 +43,9 @@ class _FakeRunsDAO:
     async def get_run(self, run_id):
         return next((run for run in self._runs if run["id"] == run_id), None)
 
+    async def request_payload(self, run_id):
+        return None  # These legacy generic runs deliberately have no saved request.
+
     async def update_run_status(
         self,
         run_id: str,

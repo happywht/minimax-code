@@ -819,6 +819,10 @@ async def test_root_cancel_during_child_process_cleanup_retains_recursive_owners
             late_done.set()
 
     async def controlled_terminate(proc):
+        # The managed baseline Git probe also crosses terminate_tree now.
+        # Gate only the actual process started by this test's child.
+        if proc not in processes:
+            return await real_terminate(proc)
         cleanup_calls.append(proc.pid)
         # Register after cancellation began, while the drain's first snapshot
         # is already waiting. Its cleanup must remain owned by the next pass.
@@ -867,6 +871,7 @@ async def test_root_cancel_during_child_process_cleanup_retains_recursive_owners
     ack = await state.scheduler.run_now(job["id"], idempotency_key="cleanup-race", expected_revision=1)
     try:
         await asyncio.wait_for(cleanup_entered.wait(), 5)
+        assert processes and cleanup_calls == [processes[0].pid]
         occurrence = await state.scheduler._occurrences.get(ack["occurrence_id"])
         service = get_run_service(state.server)
         owned_job = await service.job_for_run(occurrence["run_id"])
