@@ -83,8 +83,8 @@ function ensureListeners(): void {
       const data = env.data;
       if (!data) return;
       const state = usePermissionStore.getState();
-      // "always allow" bypass — auto-allow without showing UI.
-      if (state.alwaysAllow) {
+      // Native convenience settings cannot grant external-engine approvals.
+      if (state.alwaysAllow && !data.tool.startsWith("codex:")) {
         state._enqueueRequest(data);
         void state.resolve(data.request_id, "allow").catch(() => undefined);
         return;

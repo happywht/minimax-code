@@ -542,23 +542,44 @@ A caller may supply `idempotency_key` (1–128 non-blank characters) with an exp
 with identical input joins the existing task or returns its stored result. Reusing
 that key for different input is invalid; changing global settings does not cause
 re-execution. Keys are scoped to a session and retained with the run. Model engine
-selection on `run.start` accepts `native` and an installed, supported `codex` engine.
-Codex currently supports one admitted turn; external-session continuation and the
-shared recovery route are not yet integrated, so its capability card disables
-resume and steering. The original reply endpoint
+selection on `session.create` accepts `native` (default) or `codex` and is immutable.
+The `engine` parameter of `run.start` is optional and must match the session's pinned engine when supplied.
+`agent.send_message` rejects Codex sessions. Empty-session reuse requires the same engine.
+Session responses include `engine`, nullable `engine_thread_id`, and versioned `engine_state`;
+generic `session.update` cannot write these fields. Codex supports text input, persistent
+same-thread turns and reviewed recovery; steering remains disabled. Native model/permission
+controls do not configure Codex, whose actual returned model/provider/effort are saved and
+pinned on resume. The original reply endpoint
 still waits for completion; transport loss never cancels an admitted request.
 
 Codex receipts may include `run_status: "failed" | "interrupted"` and an `error`
 object. Only a confirmed successful Codex terminal status is stored as completed;
 unknown terminal states fail closed. `tokens_in` and `tokens_out` are nullable:
 missing usage is unknown, not zero. Cumulative Codex usage notifications are charged
-by their increase. Its budget interruption is reactive to engine notifications,
+by their increase against durable input/output/total watermarks in the same transaction
+as the assistant message and run snapshot. `usage_certainty` is `observed`, `unknown`,
+`recovery_interval` or `uncertain`; post-crash or unobserved intervals cannot be attributed
+precisely to a current turn. Decreasing counters preserve the previous watermark and
+stop bounded execution as uncertain. History and token summaries retain unknown as null.
+Its budget interruption is reactive to engine notifications,
 not a guaranteed pre-inference hard cap; unknown usage with an enabled budget
 pauses the run. This does not yet provide the shared daily budget ledger.
 The admitted mode is preserved: plan requests read-only execution with no approval
 escalation, while chat/execute request workspace-write and human approvals.
 Workspace resolution errors reject admission; queued execution rechecks the directory.
 These protocol policies do not by themselves certify OS sandbox enforcement on a host.
+
+Admission atomically writes one linked user message, including queued cancellations.
+Request-key replay precedes engine availability, workspace and budget checks; its fingerprint
+includes engine, content, mode, explicit budget and recovery source. Each queued operation
+re-reads the binding under the existing session lease. The first turn starts a thread;
+subsequent turns resume that exact thread, validate workspace/settings/inactivity, and save
+the binding before `turn/start`. Missing/mismatched bindings never create a replacement thread.
+Ordered notifications persist assistant deltas before display. Cancellation, EOF and protocol
+failure drain already received events, retaining partial text, usage and IDs with a nonsuccess
+state. Local message edits/deletes are rejected for Codex because they would desynchronize
+external context; create a new session with a handoff instead. Ambiguous legacy Codex histories
+also require explicit handoff rather than selecting a recent thread.
 
 `host.fetch` stages data in the destination directory, validates its checksum, and
 publishes with atomic replacement only if the destination still matches its initial
@@ -611,14 +632,19 @@ structured unsuccessful transfer result. Mock mode covers all host methods but
 returns explicit SSH-unavailable failures for probes, execution and transfers.
 
 Run states additionally include `queued`, `waiting_input`, `budget_paused` and
-`interrupted`. The first and last are integrated here; input/budget pause owners
-are future work. Startup marks unfinished requests interrupted; a queued request
+`interrupted`. Startup marks unfinished requests interrupted; a queued request
 has not started, while a previously running request needs review. No request or
 tool is automatically replayed. `run.resume` accepts `{run_id, idempotency_key,
-reviewed?: boolean}`; started requests require explicit `reviewed: true`. It creates
+reviewed?: boolean, budget_tokens?: positive integer}`; started requests require explicit
+`reviewed: true` (including Codex budget pauses, whose external side effects need review).
+Native clean budget boundaries retain their existing exemption. It creates
 a new request with a recovery handoff and `resumed_from_id`; the original record
 stays intact. The original provider/model/effort and workspace binding must still
-match. Legacy runs without a saved request/context need a new task with a handoff.
+match. Codex uses its saved thread/workspace/protocol rather than a Native model snapshot;
+its recovery prompt asks to inspect prior side effects before continuing. An unresolved started
+Codex run blocks ordinary new sends. Source recovery marking, source event and child admission
+commit atomically; reviewed failed recovery children can themselves be recovered on the same
+thread. Legacy runs without a saved request/context need a new task with a handoff.
 
 The request, terminal result and journal survive restart. Private request bodies
 and full results are excluded from timeline events and list records; `run.get`

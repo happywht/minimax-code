@@ -579,6 +579,10 @@ async def handle_agent_send_message(
         if db is None:
             raise RuntimeError("storage unavailable: database not initialized")
         dao = AgentRunsDAO(db)
+        pinned = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (session_id,))
+        if pinned and pinned["engine"] != "native":
+            await ctx.reply_error(-32602, "This session uses Codex; send through run.start or create a Native session")
+            return
     except Exception as exc:
         await ctx.reply_error(-32004, f"Cannot start task: {exc}")
         return

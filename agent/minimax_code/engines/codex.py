@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Bump only together with the protocol replay fixtures.
 SUPPORTED_PROTOCOL_PIN = "codex-cli-0.163.0"
-_CAPABILITIES = {"streaming": True, "resume": False, "cancel": True,
+_CAPABILITIES = {"streaming": True, "resume": True, "cancel": True,
                  "approvals": True, "usage": True, "steer": False}
 
 
@@ -127,24 +127,26 @@ class AppServerConnection:
 
     async def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
-        while True:
-            raw = await self._proc.stdout.readline()
-            if not raw:
-                # The server died mid-conversation: fail every pending
-                # request and tell the driver, or a waiting turn would
-                # hang forever.
-                for fut in self._pending.values():
-                    if not fut.done():
-                        fut.set_exception(RuntimeError("codex app-server process exited"))
-                exited = getattr(self, "on_exited", None)
-                if exited is not None:
-                    exited()
-                break
-            try:
+        reason = "codex app-server process exited"
+        try:
+            while True:
+                raw = await self._proc.stdout.readline()
+                if not raw:
+                    break
                 obj = json.loads(raw.decode("utf-8").strip())
-            except json.JSONDecodeError:
-                continue
-            self._dispatch(obj)
+                if not isinstance(obj, dict):
+                    raise ValueError("Codex JSON-RPC message must be an object")
+                self._dispatch(obj)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            reason = f"Codex protocol failure: {exc}"
+        finally:
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(RuntimeError(reason))
+            if not self.closed and self.on_exited is not None:
+                self.on_exited()
 
     def _dispatch(self, obj: dict[str, Any]) -> None:
         if "id" in obj and ("method" not in obj):

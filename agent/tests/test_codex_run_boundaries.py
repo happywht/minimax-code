@@ -82,7 +82,7 @@ async def test_unknown_terminal_status_fails_closed(replay, status):
 
 async def test_cumulative_usage_counts_only_increases(replay):
     replay.job.budget_tokens = 200
-    replay.events.extend([usage_event(100), usage_event(100), usage_event(80), usage_event(120)])
+    replay.events.extend([usage_event(100), usage_event(100), usage_event(120)])
     receipt = await replay.drive()
     assert receipt["budget"]["used_tokens"] == 120
     assert receipt["tokens_in"] == 110 and receipt["tokens_out"] == 10
@@ -159,6 +159,15 @@ def test_probe_requires_supported_successful_version(monkeypatch, returncode, ve
         returncode=returncode, stdout=version.encode()))
     info = codex._probe_codex()
     assert info.available is available
-    assert not info.capabilities["resume"] and not info.capabilities["steer"]
+    assert info.capabilities["resume"] and not info.capabilities["steer"]
     if not available:
         assert info.unavailable_reason
+
+
+async def test_decreasing_current_counter_marks_uncertainty_and_stops_bounded_run(replay):
+    replay.job.budget_tokens = 200
+    replay.events.extend([usage_event(100), usage_event(80), usage_event(120)])
+    receipt = await replay.drive()
+    assert receipt["usage_certainty"] == "uncertain"
+    assert receipt["budget_paused"]
+    assert receipt["budget"]["used_tokens"] == 100  # Never rebase a reset to zero.

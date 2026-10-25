@@ -90,6 +90,11 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                     INVALID_PARAMS, "title must be a string if provided"
                 )
             title = title.strip()
+            engine = p.get("engine", "native")
+            if engine not in {"native", "codex"}:
+                raise HandlerError(INVALID_PARAMS, "engine must be native or codex")
+            if {"engine_thread_id", "engine_state"} & p.keys():
+                raise HandlerError(INVALID_PARAMS, "Engine thread binding is runtime-owned")
 
             # Reuse the currently selected local session when it is still
             # empty. This keeps repeated "New task" clicks idempotent and
@@ -99,6 +104,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 existing = await sess_dao.get(reuse_id)
                 if (
                     existing is not None
+                    and existing.get("engine", "native") == engine
                     and not existing.get("archived")
                     and existing.get("workspace_mode", "local") == "local"
                     and not await sess_dao.get_messages(reuse_id, limit=1)
@@ -128,6 +134,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 )
             row = await sess_dao.create(
                 id=new_id,
+                engine=engine,
                 title=title,
                 workspace_mode=workspace_mode,
                 workspace_path=_optional_string(p, "workspace_path"),
@@ -301,6 +308,8 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             sess_dao = await dao_factory()
             check_params(params, expected_keys={"session_id"})
             session_id = str(params["session_id"])
+            if {"engine", "engine_thread_id", "engine_state"} & params.keys():
+                raise HandlerError(INVALID_PARAMS, "Session engine and thread binding are immutable")
             updates: dict[str, Any] = {}
             if "title" in params and params["title"] is not None:
                 updates["title"] = str(params["title"])
@@ -550,6 +559,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 await ctx.reply_error(INTERNAL_ERROR, "message.update: database not available")
                 return
             msg_dao = MessagesDAO(db)
+            await msg_dao.require_editable(message_id)
             row = await msg_dao.update(
                 message_id,
                 content=content,
@@ -585,6 +595,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 await ctx.reply_error(INTERNAL_ERROR, "message.delete: database not available")
                 return
             msg_dao = MessagesDAO(db)
+            await msg_dao.require_editable(message_id)
             ok = await msg_dao.delete(message_id)
             if not ok:
                 raise HandlerError(
@@ -659,6 +670,9 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                             msg["tool_args"] = tool_info.get("args")
                 if r.get("metadata"):
                     msg["metadata"] = r["metadata"]
+                    if r["metadata"].get("engine") == "codex":
+                        status = r["metadata"].get("status", "completed")
+                        msg["status"] = status if status in {"completed", "failed", "cancelled"} else "failed"
                 if r.get("tool_calls"):
                     msg["tool_calls"] = r["tool_calls"]
                 messages.append(msg)

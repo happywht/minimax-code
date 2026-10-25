@@ -96,6 +96,36 @@ class AgentRunsDAO:
                                    (dumps_json(source["metadata"]), resumed_from_id))
                 await _append_event(conn, resumed_from_id, "status", {"run": source})
             run_id, ts = f"run_{uuid.uuid4().hex}", now_iso()
+            codex = request.get("engine") == "codex"
+            if codex:
+                session = await _fetchone(conn, "SELECT * FROM sessions WHERE id=?", (session_id,))
+                if session is None or session["engine"] != "codex":
+                    raise ValueError("Codex admission requires a pinned Codex session")
+                state = loads_json(session["engine_state"]) or {}
+                if state.get("handoff_required"):
+                    raise ValueError("Legacy engine history is ambiguous; create a new session with a handoff")
+                unresolved = await _fetchall(conn,
+                    "SELECT * FROM agent_runs WHERE session_id=? AND started_at IS NOT NULL "
+                    "AND status IN ('failed','interrupted','cancelled','budget_paused')", (session_id,))
+                for prior in unresolved:
+                    md = loads_json(prior["metadata"]) or {}
+                    if md.get("engine") == "codex" and not md.get("recovery_child_id"):
+                        if prior["id"] != resumed_from_id or not metadata.get("reviewed"):
+                            raise ValueError("Review the unresolved Codex run and use run.resume before sending new work")
+                if resumed_from_id:
+                    source = await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (resumed_from_id,))
+                    source_md = loads_json(source["metadata"]) if source else {}
+                    if (not source or source["session_id"] != session_id
+                            or source_md.get("engine") != "codex"
+                            or source_md.get("recovery_child_id")
+                            or source["status"] not in {"failed", "cancelled", "interrupted", "budget_paused"}):
+                        raise ValueError("Invalid or already resumed Codex recovery source")
+                    source_md = {**source_md, "recovery_child_id": run_id}
+                    await conn.execute("UPDATE agent_runs SET metadata=? WHERE id=?",
+                        (dumps_json(source_md), resumed_from_id))
+                    source_run = _hydrate_run(source)
+                    source_run["metadata"] = source_md
+                    await _append_event(conn, resumed_from_id, "status", {"run": source_run})
             await conn.execute(
                 "INSERT INTO agent_runs (id, session_id, mode, status, title, created_at, "
                 "assistant_message_id, metadata, request_key, request_hash, request, resumed_from_id) "
@@ -103,6 +133,14 @@ class AgentRunsDAO:
                 (run_id, session_id, mode, title, ts, f"msg_{uuid.uuid4().hex}",
                  dumps_json(metadata), request_key, fingerprint, canonical, resumed_from_id))
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+            if codex:
+                user_id = f"msg_{uuid.uuid4().hex}"
+                await conn.execute(
+                    "INSERT INTO messages(id,session_id,role,content,created_at,metadata) VALUES(?,?,'user',?,?,?)",
+                    (user_id, session_id, request["content"], ts,
+                     dumps_json({"run_id": run_id, "engine": "codex", "request_key": request_key})))
+                await link_run_message(conn, run_id, session_id, user_id, "user")
+                run["user_message_id"] = user_id
             await _append_event(conn, run_id, "created", {"run": run})
             return run, True
 
@@ -520,6 +558,11 @@ async def link_run_message(conn: Any, run_id: str, session_id: str, message_id: 
 async def _fetchone(conn: Any, sql: str, params: tuple = ()) -> Any:
     async with conn.execute(sql, params) as cursor:
         return await cursor.fetchone()
+
+
+async def _fetchall(conn: Any, sql: str, params: tuple = ()) -> Any:
+    async with conn.execute(sql, params) as cursor:
+        return await cursor.fetchall()
 
 
 async def _append_event(conn: Any, run_id: str, kind: str, data: dict[str, Any]) -> None:

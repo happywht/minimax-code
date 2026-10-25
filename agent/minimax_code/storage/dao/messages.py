@@ -136,7 +136,7 @@ class MessagesDAO:
         )
         return int(row["n"]) if row else 0
 
-    async def token_totals_for_session(self, session_id: str) -> dict[str, int]:
+    async def token_totals_for_session(self, session_id: str) -> dict[str, Any]:
         """Return ``{tokens_in, tokens_out}`` summed across the session.
 
         Computed in SQL so we don't have to drag every row back to
@@ -148,10 +148,21 @@ class MessagesDAO:
             "FROM messages WHERE session_id = ?",
             (session_id,),
         )
-        return {
-            "tokens_in": int(row["tin"]) if row else 0,
-            "tokens_out": int(row["tout"]) if row else 0,
-        }
+        messages = await self.list_for_session(session_id)
+        unknown = any((m.get("metadata") or {}).get("engine") == "codex" and m["role"] == "assistant"
+                      and (m.get("metadata") or {}).get("usage_certainty") in {None, "unknown", "uncertain", "recovery_interval"}
+                      for m in messages)
+        return {"tokens_in": None if unknown else int(row["tin"] or 0),
+                "tokens_out": None if unknown else int(row["tout"] or 0),
+                **({"usage_complete": False} if unknown else {})}
+
+    async def require_editable(self, message_id: str) -> None:
+        from ...ipc.handler_utils import HandlerError
+        row = await self._db.fetchone(
+            "SELECT s.engine FROM messages m JOIN sessions s ON s.id=m.session_id WHERE m.id=?",
+            (message_id,))
+        if row and row["engine"] == "codex":
+            raise HandlerError(-32602, "Codex history cannot be edited or deleted locally; create a new session with a handoff")
 
     async def update(
         self,
@@ -211,6 +222,9 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
         return None
     d["tool_calls"] = loads_json(d.get("tool_calls"))
     d["metadata"] = loads_json(d.get("metadata"))
+    if (d.get("metadata") or {}).get("engine") == "codex":
+        d["tokens_in"] = d["metadata"].get("tokens_in")
+        d["tokens_out"] = d["metadata"].get("tokens_out")
     return d
 
 

@@ -485,6 +485,8 @@ export const useChat = create<ChatState>((set, get) => ({
         }
       }
 
+      const pinned = useSessionStore.getState().sessions.find((session) => session.id === sessionId)?.engine ?? "native";
+      if (pinned === "codex" && parts) throw new Error("Codex 当前仅支持纯文本，请移除附件后重试。");
       const requestKey = crypto.randomUUID();
       const userMessage: Message = {
         id: `user-${Date.now()}`,
@@ -513,6 +515,24 @@ export const useChat = create<ChatState>((set, get) => ({
       resetStallWatchdogForCurrentActivity();
       // Send string for pure text, list for multimodal
       const wireContent = parts ?? text;
+      if (pinned === "codex") {
+        const admission = await trackRequest(sessionId, typedIPC.startRun({
+          session_id: sessionId, engine: "codex", content: wireContent,
+          idempotency_key: requestKey, mode: get().executionMode,
+        }));
+        if (useSessionStore.getState().currentSessionId !== sessionId) return;
+        const run = admission.run;
+        pendingAssistantId = run.assistant_message_id ?? null;
+        set((state) => ({ status: "streaming", messages: state.messages.map((message) =>
+          message.id === userMessage.id ? { ...message, id: run.user_message_id ?? message.id,
+            render_key: message.render_key ?? message.id, metadata: { ...message.metadata, run_id: run.id, engine: "codex" } }
+          : message.id === assistantPlaceholderId ? { ...message, id: run.assistant_message_id ?? message.id,
+            render_key: message.render_key ?? message.id, metadata: { ...message.metadata, run_id: run.id, engine: "codex" } }
+          : message) }));
+        const { useRunTimelineStore } = await import("./runStore");
+        await useRunTimelineStore.getState().loadForSession(sessionId);
+        return;
+      }
       const result = await trackRequest(sessionId, typedIPC.sendMessage({
         session_id: sessionId,
         content: wireContent,
@@ -758,6 +778,15 @@ export const useChat = create<ChatState>((set, get) => ({
       ),
     }));
     try {
+      const pinned = useSessionStore.getState().sessions.find((session) => session.id === sid)?.engine;
+      if (pinned === "codex") {
+        const { runs } = await typedIPC.listRuns({ session_id: sid });
+        const active = runs.filter((run) => ["queued", "running", "planning", "awaiting_approval", "waiting_input"].includes(run.status));
+        await Promise.all(active.map((run) => typedIPC.cancelRun(run.id)));
+        const { useRunTimelineStore } = await import("./runStore");
+        await useRunTimelineStore.getState().loadForSession(sid);
+        return;
+      }
       await typedIPC.cancelAgent(sid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -857,7 +886,7 @@ export const useChat = create<ChatState>((set, get) => ({
 
   reconcileRuns: async (runs, stillCurrent) => {
     const latest = runs[0];
-    const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
+    const terminal = new Set(["completed", "failed", "cancelled", "interrupted", "budget_paused"]);
     if (!latest || runs.some((run) => !terminal.has(run.status) || run.session_id !== latest.session_id)) return;
     const sid = latest.session_id;
     const seq = ++_reconcileSeq;

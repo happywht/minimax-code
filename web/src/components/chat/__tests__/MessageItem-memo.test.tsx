@@ -26,6 +26,7 @@ vi.mock("../../../stores", () => {
       currentSessionId: "test-session",
     }),
     useThemeStore: ms({ theme: "dark" }),
+    useSessionStore: ms({ sessions: [], currentSessionId: "test-session" }),
   };
 });
 

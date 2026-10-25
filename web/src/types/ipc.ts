@@ -198,6 +198,9 @@ export interface ProviderInfo {
 
 /** A session record returned by `session.list` / `session.create`. */
 export interface Session {
+  engine?: "native" | "codex";
+  engine_thread_id?: string | null;
+  engine_state?: { version: number; workspace?: string; protocol?: string; handoff_required?: boolean; [key: string]: unknown } | null;
   id: string;
   title: string;
   archived: boolean;
@@ -263,13 +266,18 @@ export interface SourceAnnotation {
 
 /** Per-turn metadata snapshot for the v0.3.0 thinking_count channel. */
 export interface MessageMetadata {
+  engine?: "native" | "codex";
+  external_turn_id?: string | null;
+  partial?: boolean;
+  status?: string;
+  usage_certainty?: "unknown" | "observed" | "uncertain" | "recovery_interval";
   /** Browser-only association until a submitted user message is persisted. */
   request_key?: string;
   /** Originating durable run, absent on legacy/imported messages. */
   run_id?: string;
   thinking_count?: number;
-  tokens_in?: number;
-  tokens_out?: number;
+  tokens_in?: number | null;
+  tokens_out?: number | null;
   /** v0.11.0: sources harvested from codebase tools used in this turn. */
   sources?: SourceAnnotation[];
   /** v0.11.0: number of long-term memories auto-extracted from this reply. */
@@ -808,7 +816,7 @@ export interface SendMessageParams {
 export interface RunStartParams extends SendMessageParams {
   session_id: string;
   idempotency_key: string;
-  engine?: "native";
+  engine?: "native" | "codex";
 }
 
 export interface RunAdmissionResult { run: AgentRun; created: boolean }
@@ -825,7 +833,10 @@ export interface SendMessageResult {
   /** Codex terminal evidence. Missing usage is unknown, not zero. */
   tokens_in?: number | null;
   tokens_out?: number | null;
-  run_status?: "failed" | "interrupted";
+  run_status?: "completed" | "failed" | "interrupted" | "cancelled" | "budget_paused";
+  external_turn_id?: string | null;
+  usage_certainty?: "unknown" | "observed" | "uncertain" | "recovery_interval";
+  tokens_total?: number | null;
   error?: { message: string; [key: string]: unknown };
   /** Cancellation is confirmed after the service-owned task has unwound. */
   cancelled?: boolean;

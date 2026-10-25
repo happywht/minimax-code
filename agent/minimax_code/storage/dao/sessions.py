@@ -73,18 +73,21 @@ class SessionsDAO:
         worktree_branch: str | None = None,
         base_branch: str | None = None,
         project_id: str | None = None,
+        engine: str = "native",
     ) -> dict[str, Any]:
         """Insert a new session row; returns the persisted dict.
 
         ``created_at`` / ``updated_at`` default to "now" if not
         supplied — the agent rarely wants to back-date them.
         """
+        if engine not in {"native", "codex"}:
+            raise ValueError("engine must be native or codex")
         now = now_iso()
         sql = (
             "INSERT INTO sessions "
             "(id, title, created_at, updated_at, archived, model, system_prompt, "
-            "workspace_mode, workspace_path, worktree_branch, base_branch, project_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "workspace_mode, workspace_path, worktree_branch, base_branch, project_id, engine) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         params = (
             id,
@@ -99,6 +102,7 @@ class SessionsDAO:
             worktree_branch,
             base_branch,
             project_id or "inbox",
+            engine,
         )
         async with self._db.transaction() as conn:
             await conn.execute(sql, params)
@@ -236,14 +240,8 @@ class SessionsDAO:
             "LIMIT ?"
         )
         rows = await self._db.fetchall(sql, (session_id, effective_limit))
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            d = row_to_dict(r)
-            if d is None:
-                continue
-            d["tool_calls"] = loads_json(d.get("tool_calls"))
-            out.append(d)
-        return out
+        from .messages import _hydrate as hydrate_message
+        return [hydrate_message(row) for row in rows]
 
     async def touch(self, session_id: str) -> dict[str, Any] | None:
         """Bump ``updated_at`` (called on every new message)."""
@@ -397,6 +395,7 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
         return None
     d["archived"] = bool(d.get("archived", 0))
     d["workspace_mode"] = d.get("workspace_mode") or "local"
+    d["engine_state"] = loads_json(d.get("engine_state"))
     return d
 
 

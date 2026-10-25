@@ -243,6 +243,21 @@ describe("PermissionRequestModal", () => {
     expect(screen.getByTestId("permission-request-modal-tool")).toHaveTextContent("echo");
   });
 
+  it("Native alwaysAllow keeps Codex approvals manual", async () => {
+    const resolveSpy = vi.spyOn(typedIPC, "resolvePermission");
+    usePermissionStore.setState({ alwaysAllow: true });
+    render(<PermissionRequestModal />);
+    await act(async () => {
+      ipc._emit(StreamEvent.PermissionRequest, {
+        request_id: "codex_manual", tool: "codex:item/commandExecution/requestApproval", args: {},
+      });
+    });
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(usePermissionStore.getState().pending.codex_manual).toBeDefined();
+    expect(screen.getByTestId("permission-request-modal")).toBeInTheDocument();
+    resolveSpy.mockRestore();
+  });
+
   it("alwaysAllow=true auto-resolves the request without showing the modal", async () => {
     const resolveSpy = vi.spyOn(typedIPC, "resolvePermission").mockResolvedValue({
       ok: true,

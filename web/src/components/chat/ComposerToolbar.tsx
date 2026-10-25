@@ -7,6 +7,7 @@ import { Download, Shield, ShieldCheck } from "lucide-react";
 import { Button, IconButton } from "../../ui";
 import { usePermissionStore, useSessionStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
+import { useRunTimelineStore } from "../../stores/runStore";
 import { ContextIndicator } from "./ContextIndicator";
 import { ModelSelector } from "./ModelSelector";
 import { MAX_INPUT_CHARS } from "./constants";
@@ -33,6 +34,10 @@ export function ComposerToolbar({
   const alwaysAllow = usePermissionStore((s) => s.alwaysAllow);
   const setAlwaysAllow = usePermissionStore((s) => s.setAlwaysAllow);
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
+  const savedSettings = useRunTimelineStore((s) => Object.values(s.runs).find((run) => run.session_id === currentSessionId && run.metadata?.codex_settings)?.metadata?.codex_settings) as Record<string, unknown> | undefined;
+  const codexState = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId)?.engine_state);
+  const codexConfig = { ...savedSettings, ...codexState };
+  const codex = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId)?.engine === "codex");
 
   const tokenToneClass = overLimit
     ? "text-status-error font-semibold"
@@ -74,6 +79,7 @@ export function ComposerToolbar({
         variant="ghost"
         size="sm"
         role="switch"
+        disabled={codex}
         aria-checked={alwaysAllow}
         data-testid="chat-input-always-allow"
         onClick={handleToggleAlwaysAllow}
@@ -111,7 +117,7 @@ export function ComposerToolbar({
             {strings.chat.input.stopping}
           </span>
         )}
-        <ContextIndicator />
+        {!codex && <ContextIndicator />}
         <div className="flex min-w-[72px] flex-col items-end gap-1 sm:min-w-[92px]">
           <span
             data-testid="message-input-token-count"
@@ -142,7 +148,12 @@ export function ComposerToolbar({
             {overLimit ? "已超限" : critical ? "即将超限" : "接近上限"}
           </span>
         )}
-        <ModelSelector variant="inline" />
+        {!codex && <ModelSelector variant="inline" />}
+        {codex && <span className="text-xs text-ink-2" data-testid="codex-model-config">
+          Codex CLI 配置：{typeof codexConfig?.model === "string" ? codexConfig.model : "尚未确认"}
+          {typeof codexConfig?.modelProvider === "string" ? ` · ${codexConfig.modelProvider}` : ""}
+          {typeof codexConfig?.reasoningEffort === "string" ? ` · ${codexConfig.reasoningEffort}` : ""}
+        </span>}
       </div>
     </div>
   );

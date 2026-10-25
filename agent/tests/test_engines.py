@@ -108,7 +108,7 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
     monkeypatch.setattr(app, "init_runtime", AsyncMock())
     monkeypatch.setattr(app, "get_db", lambda: db)
     monkeypatch.setattr(app, "get_sessions_dao", lambda: sessions)
-    await sessions.create(id="ses_codex", title="Codex test", workspace_path=str(tmp_path))
+    await sessions.create(id="ses_codex", title="Codex test", workspace_path=str(tmp_path), engine="codex")
 
     fake = tmp_path / "fake_codex.py"
     fake.write_text(FAKE_CODEX.replace('"status": "completed"',
@@ -140,7 +140,7 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
         assert row["error"] and receipt["error"]
 
     # An invalid binding is rejected before admission, not changed to CWD.
-    await sessions.create(id="ses_missing", title="Missing workspace",
+    await sessions.create(id="ses_missing", title="Missing workspace", engine="codex",
                           workspace_path=str(tmp_path / "removed"))
     missing = Ctx(server)
     await server._handlers["run.start"]({
@@ -153,9 +153,10 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
     # A dead codex command names the failure in the run row.
     monkeypatch.setenv("MINIMAX_CODE_CODEX_CMD",
                        json.dumps([sys.executable, "-c", "import sys; sys.exit(3)"]))
+    await sessions.create(id="ses_dead", title="Dead CLI", engine="codex", workspace_path=str(tmp_path))
     ctx2 = Ctx(server)
     await server._handlers["run.start"]({
-        "session_id": "ses_codex", "content": "again",
+        "session_id": "ses_dead", "content": "again",
         "idempotency_key": "k2", "engine": "codex",
     }, ctx2)
     run_id2 = ctx2.reply.await_args.args[0]["run"]["id"]
@@ -193,7 +194,7 @@ async def ctx_reply_run(server, run_id):
 # ---------------------------------------------------------------------------
 
 FAKE_CODEX = '''\
-import json, sys
+import json, sys, os
 for raw in sys.stdin:
     req = json.loads(raw)
     method = req.get("method", "")
@@ -206,7 +207,7 @@ for raw in sys.stdin:
         print(json.dumps({"jsonrpc": "2.0", "method": "thread/started",
                           "params": {"thread_id": "th_1"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "id": rid,
-                          "result": {"thread_id": "th_1"}}), flush=True)
+                          "result": {"thread_id": "th_1", "thread": {"id": "th_1", "turns": [], "status": {"type": "idle"}}, "cwd": os.getcwd()}}), flush=True)
         continue
     if method == "turn/start":
         print(json.dumps({"jsonrpc": "2.0", "id": rid,
@@ -217,7 +218,7 @@ for raw in sys.stdin:
                           "params": {"conversationId": "th_1",
                                      "callId": "c1", "command": ["pytest"]}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "item/agentMessage/delta",
-                          "params": {"delta": "running tests"}}), flush=True)
+                          "params": {"threadId": "th_1", "turnId": "turn_1", "itemId": "i1", "delta": "running tests"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "turn/completed",
                           "params": {"threadId": "th_1", "turn": {"id": "turn_1", "status": "completed", "error": None}}}), flush=True)
         continue

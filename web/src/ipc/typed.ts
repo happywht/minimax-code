@@ -141,6 +141,7 @@ export interface TypedIPC {
   // session
   listSessions(opts?: { archived?: boolean; limit?: number; offset?: number; search?: string }): Promise<ListSessionsResult>;
   createSession(opts?: {
+    engine?: "native" | "codex";
     title?: string;
     reuse_empty_session_id?: string;
     model_id?: string;
@@ -224,7 +225,7 @@ export interface TypedIPC {
   startRun(params: RunStartParams): Promise<RunAdmissionResult>;
   getRun(runId: string): Promise<RunGetResult>;
   cancelRun(runId: string): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
-  resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean): Promise<RunAdmissionResult>;
+  resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number): Promise<RunAdmissionResult>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
   getRunEvents(runId: string, opts?: { after_seq?: number; limit?: number }): Promise<RunEventsResult>;
 

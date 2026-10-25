@@ -407,7 +407,24 @@ message pointer or latest assistant pointer and appends the corresponding run ev
 An event failure rolls back both the message and pointer. This uses existing columns
 and JSON metadata; there is no additional migration or invented linkage for old rows.
 
-## 9. See also
+## 9. Schema 034: pinned engine continuity
+
+Sessions add `engine TEXT NOT NULL DEFAULT 'native'` constrained to `native|codex`,
+nullable `engine_thread_id`, and JSON `engine_state` (version 1). The state saves workspace,
+protocol, effective Codex settings, external turn IDs, input/output/total usage watermarks and
+uncertainty. Ordinary old sessions stay Native. Legacy Codex history is migrated only when
+one thread and verifiable context cover the entire history; mixed, multiple or incomplete
+contexts carry `handoff_required` and cannot silently continue.
+
+Codex binding/run snapshot commits before an external turn starts. Serial event processing
+updates watermark, assistant token columns, metadata and run event in one transaction.
+Messages carry engine/run/turn/status/partial/usage-certainty metadata. Existing NOT NULL token
+columns use an internal zero sentinel for missing Codex usage; both message and session history
+hydration expose null, and aggregate totals report incomplete usage. Zero is never presented
+as known consumption. Unknown intervals survive completion until later attribution; counter
+resets retain the old watermark and mark uncertainty. This is not a complete shared daily ledger.
+
+## 10. See also
 
 * `agent/minimax_code/storage/db.py` — connection wrappers
 * `agent/minimax_code/storage/migrations/001_initial.py` — the initial schema

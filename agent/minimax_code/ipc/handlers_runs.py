@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -12,7 +11,6 @@ from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
-    LLM_ERROR,
     RunEventsParams,
     RunIdParams,
     RunResumeParams,
@@ -114,29 +112,22 @@ def register_run_handlers(server: Any) -> None:
         except ValidationError:
             await ctx.reply_error(INVALID_PARAMS, "run.start requires a session, input and idempotency key; only native is currently supported")
             return
-        # M4 — engines are pinned at admission and never silently fall
-        # back. "codex" runs on the Codex App Server adapter; an
-        # unavailable engine names its reason instead of degrading.
-        if request.engine != "native":
-            from ..engines import get_engine
-
-            engine = get_engine(request.engine)
-            if engine is None:
-                await ctx.reply_error(INVALID_PARAMS, f"unknown engine: {request.engine!r}")
-                return
-            info = engine.info()
-            if asyncio.iscoroutine(info):
-                info = await info
-            if not info.available:
-                await ctx.reply_error(
-                    INVALID_PARAMS,
-                    f"engine {request.engine!r} is unavailable: {info.unavailable_reason}",
-                    {"engine": info.to_dict()},
-                )
-                return
-            await _start_codex_run(request, ctx, engine_info=info.to_dict())
-            return
-        await handle_agent_send_message(request.model_dump(exclude={"engine"}), ctx, wait=False)
+        try:
+            from ..app import get_db, init_runtime
+            await init_runtime()
+            db = get_db()
+            session = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (request.session_id,)) if db else None
+            pinned = session["engine"] if session else (request.engine or "native")
+            if request.engine is not None and request.engine != pinned:
+                raise HandlerError(INVALID_PARAMS, "Requested engine differs from the session's pinned engine")
+            if pinned == "codex":
+                await _start_codex_run(request, ctx)
+            else:
+                await handle_agent_send_message(request.model_dump(exclude={"engine"}), ctx, wait=False)
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except (ValueError, RuntimeError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
 
     async def handle_run_get(params: Any, ctx: Context) -> None:
         try:
@@ -178,6 +169,27 @@ def register_run_handlers(server: Any) -> None:
                 raise HandlerError(INVALID_PARAMS, "Only interrupted, failed, cancelled or budget-paused runs can be resumed")
             previous = await dao.request_payload(request.run_id)
             metadata = run.get("metadata") or {}
+            if metadata.get("engine") == "codex":
+                from ..engines.codex import SUPPORTED_PROTOCOL_PIN
+                if previous is None or not metadata.get("codex_thread_id") or not metadata.get("workspace_snapshot"):
+                    raise HandlerError(INVALID_PARAMS, "Codex recovery has no saved thread/context; create a new session with a handoff")
+                if metadata.get("codex_protocol") != SUPPORTED_PROTOCOL_PIN:
+                    raise HandlerError(INVALID_PARAMS, "Codex recovery protocol is incompatible")
+                if run.get("started_at") and not request.reviewed:
+                    raise HandlerError(INVALID_PARAMS, "Review Codex's prior actions and workspace before recovery, including budget interruption")
+                saved = (metadata.get("budget") or {}).get("limit_tokens")
+                if run["status"] == "budget_paused" and request.budget_tokens is None:
+                    raise HandlerError(INVALID_PARAMS, "Pass budget_tokens to authorize a raised recovery cap")
+                prompt = (f"[Recovery of Codex run {run['id']} ending as {run['status']}. "
+                          "Inspect the existing workspace and conversation. Determine which side effects already occurred "
+                          "and verify them before taking further action. Continue only the unfinished work; "
+                          "do not blindly replay the original instruction or repeat unconfirmed writes.]")
+                recovery = RunStartParams(session_id=run["session_id"], engine="codex", mode=run["mode"],
+                    content=prompt, idempotency_key=request.idempotency_key,
+                    budget_tokens=request.budget_tokens if request.budget_tokens is not None else saved)
+                await _start_codex_run(recovery, ctx, resumed_from_id=run["id"],
+                                       reviewed=request.reviewed, expected_snapshot=metadata)
+                return
             if previous is None or not metadata.get("model_snapshot") or not metadata.get("workspace_snapshot"):
                 raise HandlerError(INVALID_PARAMS, "This legacy run has no saved request/context; start a new task with a handoff")
             # A budget pause is a clean stop at a call boundary — no
@@ -216,7 +228,7 @@ def register_run_handlers(server: Any) -> None:
                  "budget_tokens": budget_override},
                 ctx, wait=False, resumed_from_id=run["id"],
                 required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"])
-        except ValidationError as exc:
+        except (ValidationError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
@@ -230,161 +242,9 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.resume", handle_run_resume)
 
 
-async def _start_codex_run(request: RunStartParams, ctx: Context, *,
-                           engine_info: dict[str, Any],
-                           resume_thread_id: str | None = None) -> None:
-    """Durably admit and drive one Codex-engine run (M4-B).
-
-    Mirrors the native admission path: idempotency keys, budget
-    resolution and the RunService lease all behave identically — only
-    the turn driver differs (Codex App Server instead of AgentCore).
-    """
-    from ..budget import daily_budget_limit, resolve_run_budget
-    from ..engines.codex_run import CodexApprovalGate, drive_codex_run
-    from ..perm_consent import register_gater, unregister_gater
-    from ..runs import get_run_service
-    from .builtins import _notify_run
-
-    if not isinstance(request.content, str) or not request.content.strip():
-        await ctx.reply_error(INVALID_PARAMS, "codex runs require string content")
-        return
-    session_id = request.session_id
-    title = request.content.strip()[:32]
-    try:
-        from ..app import get_db, get_sessions_dao, init_runtime
-        from ..storage.dao.runs import AgentRunsDAO
-
-        await init_runtime()
-        db = get_db()
-        if db is None:
-            raise RuntimeError("database not initialized")
-        dao = AgentRunsDAO(db)
-        # agent_runs carries an FK on sessions — mirror the native path
-        # and auto-create the session row on first use.
-        sessions = get_sessions_dao()
-        if sessions is not None and await sessions.get(session_id) is None:
-            try:
-                await sessions.create(id=session_id, title=f"codex:{title}",
-                                      system_prompt="", model=None)
-            except Exception:
-                if await sessions.get(session_id) is None:
-                    raise
-    except Exception as exc:
-        await ctx.reply_error(-32004, f"Cannot start task: {exc}")
-        return
-
-    session_id = request.session_id
-    service = get_run_service(ctx.server)
-    run_budget = resolve_run_budget(request.budget_tokens)
-    daily_limit = daily_budget_limit()
-    daily_baseline = 0
-    if daily_limit is not None:
-        try:
-            row = await db.fetchone(
-                "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) AS n FROM messages "
-                "WHERE date(created_at) = date('now', 'localtime')")
-            daily_baseline = int(row["n"] or 0) if row else 0
-        except Exception:
-            daily_baseline = 0
-        if daily_baseline >= daily_limit:
-            await ctx.reply_error(
-                LLM_ERROR,
-                f"Daily token budget exhausted ({daily_baseline} spent of {daily_limit})",
-                {"daily_budget": {"limit": daily_limit, "spent": daily_baseline}},
-            )
-            return
-
-    request_payload = {"session_id": session_id, "mode": request.mode,
-                       "content": request.content, "engine": "codex"}
-    title = request.content.strip()[:32]
-
-    async def operation(job: Any) -> None:
-        emit = _codex_emit_factory(ctx, job)
-        # M4 — approvals resolve through the SAME permission.resolve RPC
-        # the native gater uses; without this registration the human's
-        # answer never reaches Codex and every request times out denied.
-        approval_gate = CodexApprovalGate()
-        register_gater(ctx.server, session_id, approval_gate)
-
-        async def _run() -> None:
-            await dao.update_run_status(job.run_id, status="running")
-            result = await drive_codex_run(
-                job, emit=emit, prompt=request.content,
-                resume_thread_id=resume_thread_id,
-                approval_gate=approval_gate, mode=request.mode)
-            job.result = result
-            status = ("cancelled" if result.get("cancelled")
-                      else "budget_paused" if result.get("budget_paused")
-                      else result.get("run_status", "completed"))
-            stored = await dao.get_run(job.run_id)
-            metadata = dict((stored or {}).get("metadata") or {})
-            metadata.update(codex_thread_id=result.get("codex_thread_id"), engine="codex")
-            if result.get("budget") is not None:
-                metadata["budget"] = result["budget"]
-            await dao.update_run_status(
-                job.run_id, status=status, result=result,
-                error=str(result["error"]) if result.get("error") else None,
-                metadata=metadata,
-            )
-            await _notify_run(ctx, "run.completed",
-                              {"run": await dao.get_run(job.run_id)})
-
-        task = asyncio.create_task(_run(), name=f"codex-run:{job.run_id}")
-        try:
-            await task
-        except BaseException as exc:
-            job.error = {"code": -32603, "message": str(exc) or type(exc).__name__}
-            raise
-        finally:
-            unregister_gater(ctx.server, session_id)
-
-    async def finalize(job: Any, error: BaseException | None) -> None:
-        current = await dao.get_run(job.run_id)
-        if current and current["status"] in {"completed", "failed", "cancelled",
-                                             "interrupted", "budget_paused"}:
-            return
-        cancelled = isinstance(error, asyncio.CancelledError) or job.cancel_requested
-        reason = "Cancelled by user or service shutdown" if cancelled \
-            else str(error or "Codex run ended without a confirmed result")
-        receipt = ({"session_id": session_id, "run_id": job.run_id,
-                    "text": "", "cancelled": True} if cancelled
-                   else {"error": {"code": -32603, "message": reason}})
-        run = await dao.terminate_run(job.run_id,
-                                      status="cancelled" if cancelled else "failed",
-                                      error=reason, result=receipt)
-        await _notify_run(ctx, "run.completed", {"run": run})
-
-    # Keep the same fail-closed directory resolution as Native.
-    from ..workspace_ctx import resolve_root_for_session
-
-    try:
-        codex_workspace = str(await resolve_root_for_session(session_id))
-    except Exception as exc:
-        await ctx.reply_error(-32004, f"Cannot resolve Codex workspace: {exc}")
-        return
-    run, job, created = await service.admit(
-        dao=dao, session_id=session_id, request=request_payload,
-        request_key=request.idempotency_key, title=title,
-        metadata={"engine": "codex",
-                  "budget": {"limit_tokens": run_budget, "daily_limit": daily_limit,
-                             "daily_baseline": daily_baseline}},
-        workspace=codex_workspace, project_id=None,
-        operation=operation, finalize=finalize,
-        resumed_from_id=None, budget_tokens=run_budget,
-        daily_baseline=daily_baseline, daily_budget_limit=daily_limit)
-    if created:
-        await _notify_run(ctx, "run.created", {"run": run})
-    await ctx.reply({"run": run, "created": created})
-
-
-def _codex_emit_factory(ctx: Context, job: Any):
-    """Wrap ctx.emit so notification failures never kill a Codex run."""
-    from .builtins import _notify_run
-
-    async def emit(event: str, data: dict[str, Any]) -> None:
-        await _notify_run(ctx, event, {**data, "session_id": job.session_id,
-                                       "run_id": job.run_id})
-    return emit
+async def _start_codex_run(request: RunStartParams, ctx: Context, **options: Any) -> None:
+    from ..engines.codex_service import start_codex_run
+    await start_codex_run(request, ctx, **options)
 
 
 __all__ = ["register_run_handlers"]

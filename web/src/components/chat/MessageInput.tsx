@@ -39,6 +39,7 @@ export function MessageInput({
   const setExecutionMode = useChat((s) => s.setExecutionMode);
   const sessionId = useSessionStore((s) => s.currentSessionId);
 
+  const codex = useSessionStore((s) => s.sessions.find((session) => session.id === sessionId)?.engine === "codex");
   const draft = useComposerDraft(sessionId);
   const attachments = useAttachments(draft.ref, draft.setValue);
   const voice = useVoiceInput(draft.setValue);
@@ -72,6 +73,16 @@ export function MessageInput({
     const hasImages = attachments.attachedImages.length > 0;
     if (!hasText && !hasImages) return;
 
+    if (codex) {
+      if (hasImages || attachments.attachedFiles.length || /(^|\s)(@|#file)/.test(rawText)) {
+        useChat.setState({ error: "Codex 当前仅支持纯文本，不支持附件或 Native 的 @agent/@repo/#file 功能。" });
+        return;
+      }
+      draft.clear();
+      mention.closePicker();
+      await send(rawText);
+      return;
+    }
     // Resolve @repo / #file mentions into codebase context.
     const resolved = await context.buildContext(rawText);
     if (!resolved) return;
@@ -144,6 +155,7 @@ export function MessageInput({
           <IconButton
             aria-label={strings.chat.input.attachFile}
             data-testid="message-attach-btn"
+            disabled={codex}
             onClick={() => attachments.fileInputRef.current?.click()}
             title={strings.chat.input.attachTextFile}
             className="h-8 w-8"
@@ -153,6 +165,7 @@ export function MessageInput({
           <IconButton
             aria-label={strings.chat.input.attachImage}
             data-testid="message-image-btn"
+            disabled={codex}
             onClick={() => attachments.imageInputRef.current?.click()}
             title={strings.chat.input.attachAnImage}
             className="h-8 w-8"
@@ -166,6 +179,7 @@ export function MessageInput({
             multiple
             className="hidden"
             data-testid="message-image-input"
+            disabled={codex}
             onChange={attachments.handleImageSelect}
           />
           <input
@@ -175,6 +189,7 @@ export function MessageInput({
             accept={ACCEPTED_EXTS}
             className="hidden"
             data-testid="message-file-input"
+            disabled={codex}
             onChange={attachments.handleFileSelect}
           />
           <textarea

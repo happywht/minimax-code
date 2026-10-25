@@ -30,6 +30,10 @@ import { toast } from "../layout/ErrorBoundary";
 import { strings } from "../../ui/strings";
 import { DEFAULT_SESSION_TITLE } from "../../lib/defaultTitles";
 import { exportSessionMarkdown } from "../../lib/exportSession";
+import { typedIPC } from "../../ipc";
+import type { EngineInfo } from "../../types/ipc";
+import { useRunTimelineStore } from "../../stores/runStore";
+import { RunRecoveryActions } from "../right-panel/RunRecoveryActions";
 
 export interface ChatPanelProps {
   testId?: string;
@@ -52,6 +56,10 @@ export function ChatPanel({
   const removeSession = useSessionStore((s) => s.remove);
   const status = useChat((s) => s.status);
   const error = useChat((s) => s.error);
+  const [newEngine, setNewEngine] = useState<"native" | "codex">("native");
+  const [engines, setEngines] = useState<EngineInfo[]>([]);
+  const runs = useRunTimelineStore((s) => s.runs);
+  useEffect(() => { void typedIPC.listEngines().then((result) => setEngines(result.engines)).catch(() => {}); }, []);
 
   // Inline title editing state
   const [editing, setEditing] = useState(false);
@@ -74,6 +82,9 @@ export function ChatPanel({
     () => sessions.find((s) => s.id === currentId) ?? null,
     [sessions, currentId],
   );
+  const recovery = Object.values(runs).find((run) => run.session_id === currentId
+    && run.metadata?.engine === "codex" && !run.metadata.recovery_child_id
+    && ["failed", "interrupted", "cancelled", "budget_paused"].includes(run.status));
 
   // Focus the input when entering edit mode
   useEffect(() => {
@@ -247,10 +258,21 @@ export function ChatPanel({
           )}
         </div>
         <div className="flex items-center gap-1">
+          <span className="text-xs text-ink-2" data-testid="session-engine">{current?.engine === "codex" ? "Codex" : "Native"}</span>
+          <select aria-label="新会话引擎" value={newEngine}
+            onChange={(event) => setNewEngine(event.target.value as "native" | "codex")}
+            className="rounded border border-line bg-surface-1 text-xs text-ink-1">
+            <option value="native">Native</option>
+            {engines.filter((engine) => engine.id === "codex").map((engine) => (
+              <option key={engine.id} value="codex" disabled={!engine.available}>
+                {engine.available ? "Codex" : `Codex：${engine.unavailable_reason ?? "不可用"}`}
+              </option>
+            ))}
+          </select>
           <button
             type="button"
             data-testid="chat-header-new"
-            onClick={() => void createSession(DEFAULT_SESSION_TITLE)}
+            onClick={() => void createSession(DEFAULT_SESSION_TITLE, undefined, newEngine)}
             disabled={creatingSession}
             className="rounded-md px-2 py-1 text-xs text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg disabled:cursor-wait disabled:opacity-50"
             title={strings.chat.header.newTask}
@@ -336,12 +358,15 @@ export function ChatPanel({
 
       {/* Message list */}
       <MessageList searchQuery={searchOpen ? searchQuery : undefined} />
+      {recovery && <div className="px-4 py-2"><RunRecoveryActions key={recovery.id} run={recovery}
+        refresh={() => useRunTimelineStore.getState().loadForSession(currentId)} /></div>}
+      {current?.engine === "codex" && <p className="px-4 text-xs text-ink-2">Codex 会话使用独立模型配置，仅支持文本。历史与外部线程绑定；如需修改历史，请新建会话并交接上下文。</p>}
       {/* Inline questionnaire while the agent is suspended in ask_user */}
       <AskUserCard />
-      <ProviderReadinessBanner
+      {current?.engine !== "codex" && <ProviderReadinessBanner
         onOpenProviders={onOpenProviderSettings}
         onOpenModels={onOpenModelSettings}
-      />
+      />}
     </div>
   );
 }

@@ -514,3 +514,29 @@ Windows 联合上传、主机、下载回归及契约检查 **60 通过、2 跳�
 `recovery-integration-ruff.log`、`recovery-integration-diff-check.log` 和
 `recovery-integration-e2e.log`。无数据库迁移，源工作区保持不变。本批是局部集成验证，
 没有真实付费模型调用、Linux 新版本部署或三轮全基线验收。
+
+### 2026-10-25：Codex 会话、历史与恢复闭环
+
+Schema 034 为会话固定 Native/Codex 引擎、外部 thread ID 与版本化状态。
+Codex 首轮创建 thread，后续轮次及重启后继续同一 thread；排队执行重新读取绑定，
+保存绑定后才启动外部 turn。请求键重放先于可用性和预算检查，接单与唯一用户消息、
+恢复来源标记及来源事件原子提交。混合或缺失上下文的旧历史要求新会话交接。
+
+串行处理通知，先持久化文本/usage 再显示；取消、EOF、协议错误和关闭时保留已接收的
+部分输出及已知计量。累计 usage 使用持久水位差值，未知保持 null，跨恢复区间标明
+归属不确定，计数回退不归零。Codex 已开始任务的恢复（含预算中断）要求确认审查；
+未解决的运行阻止普通新发送绕过审查。恢复子任务在外部 resume 失败后仍保留同一
+thread 上的恢复入口。外部审批使用运行范围内的 ID，Native 始终授权不放行 Codex。
+
+UI 可在新会话选择引擎，Codex 使用 run.start 与公共历史补齐；展示实际已保存的
+Codex 设置，隐藏 Native 模型/上下文控制，禁用不支持的附件及本地历史编辑。
+resume 能力在离线端到端恢复验证后开启，steer 仍关闭。
+
+脚本 App Server 子进程配合真实 SQLite 关闭/重开验证 **24 项通过**，覆盖两轮同 thread、
+并发去重/排队、绑定写失败零 turn、部分输出、审查与上下文漂移、计量区间和审批隔离。
+联合后端接单/服务/预算/历史/迁移/契约回归 **186 项通过**，全部前端 **804 项通过**；
+真实浏览器 Native smoke-chat/run-recovery **5 项通过**，保留 render_key 和续跑回归。
+TypeScript、ESLint、Python ruff 与 diff 检查通过。证据在
+`.verification/codex-continuity-{integration,backend,web-full,e2e,types,lint,ruff,diff}.log`。
+这些测试未调用付费模型，尚不证明真实 Codex 推理、Linux 部署或全基线三轮验收；
+跨运行共享每日预算账本仍待完成，外部计量中断不构成推理前硬预算保证。

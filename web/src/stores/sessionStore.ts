@@ -111,7 +111,7 @@ export interface SessionState {
 
   refresh: (options?: { loadCurrent?: boolean }) => Promise<void>;
   loadProjects: () => Promise<void>;
-  create: (title?: string, projectId?: string) => Promise<string>;
+  create: (title?: string, projectId?: string, engine?: "native" | "codex") => Promise<string>;
   createWorktree: (title?: string, baseRef?: string) => Promise<string>;
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
@@ -197,7 +197,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  create: async (title?: string, projectId?: string) => {
+  create: async (title?: string, projectId?: string, engine: "native" | "codex" = "native") => {
     if (createSessionInFlight) return createSessionInFlight;
 
     const operation = (async () => {
@@ -209,6 +209,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           title,
           reuse_empty_session_id: reuseId,
           project_id: targetProject,
+          engine,
         });
         ++refreshSeq;
         const nextSession = r.session ?? {
@@ -220,6 +221,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           updated_at: Date.now(),
           model_id: null,
           workspace_mode: "local" as const,
+          engine,
         };
         set((s) => ({
           sessions: s.sessions.some((session) => session.id === r.session_id)

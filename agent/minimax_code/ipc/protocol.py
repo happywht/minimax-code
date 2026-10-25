@@ -48,7 +48,7 @@ class RunStartParams(SendMessageParams):
     # M4 — engine pinned at admission. "codex" routes to the Codex
     # App Server adapter; unknown/unavailable values are named in the
     # error instead of silently falling back to native.
-    engine: Literal["native", "codex"] = "native"
+    engine: Literal["native", "codex"] | None = None
 
 
 class RunIdParams(BaseModel):
@@ -81,13 +81,21 @@ class SendMessageResult(_Base):
     # Missing engine usage is unknown, never inferred to be zero.
     tokens_in: int | None = None
     tokens_out: int | None = None
-    run_status: Literal["failed", "interrupted"] | None = None
+    run_status: Literal["completed", "failed", "interrupted", "cancelled", "budget_paused"] | None = None
+    external_turn_id: str | None = None
+    usage_certainty: Literal["unknown", "observed", "uncertain", "recovery_interval"] | None = None
+    tokens_total: int | None = None
 
 
 class MessageMetadata(_Base):
     """Persisted and streamed metadata; old messages may omit run linkage."""
 
     run_id: str | None = None
+    engine: Literal["native", "codex"] | None = None
+    external_turn_id: str | None = None
+    status: str | None = None
+    partial: bool = False
+    usage_certainty: str | None = None
     thinking_count: int | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None

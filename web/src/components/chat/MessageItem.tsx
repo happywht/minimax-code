@@ -23,7 +23,7 @@
  */
 import React, { useMemo, useState, type ChangeEvent } from "react";
 import type { Message, MessageStatus } from "../../types/ipc";
-import { useChat, useThemeStore } from "../../stores";
+import { useChat, useThemeStore, useSessionStore } from "../../stores";
 import { extractFileReferences } from "./fileReferences";
 import { normalizeMarkdownForRender } from "./markdown";
 import { summarizeTurn, type TurnSummary } from "./turnSummary";
@@ -71,6 +71,8 @@ export const MessageItem = React.memo(function MessageItem({
   const updateMessage = useChat((s) => s.updateMessage);
   const deleteMessage = useChat((s) => s.deleteMessage);
   const continueRun = useChat((s) => s.continueRun);
+  const sessionEngine = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId)?.engine);
+  const codex = message.metadata?.engine === "codex" || sessionEngine === "codex";
   const chatBusy = useChat(
     (s) => s.status === "sending" || s.status === "streaming" || s.status === "cancelling",
   );
@@ -106,8 +108,8 @@ export const MessageItem = React.memo(function MessageItem({
             : isCancelled
               ? "border-line bg-surface-1 text-ink-1"
               : "border-line bg-surface-2 text-ink-0");
-  const canEdit = isUser && !message.streaming;
-  const canDelete = !isSystem && !message.streaming;
+  const canEdit = !codex && isUser && !message.streaming;
+  const canDelete = !codex && !isSystem && !message.streaming;
 
   return (
     <div
@@ -148,7 +150,7 @@ export const MessageItem = React.memo(function MessageItem({
             />
           </div>
         )}
-        {showSummary && summary && (
+        {showSummary && summary && !codex && (
           <TurnSummaryRow messageId={message.id} summary={summary} />
         )}
         {message.metadata?.sources && message.metadata.sources.length > 0 && (
@@ -222,7 +224,7 @@ export const MessageItem = React.memo(function MessageItem({
             <div className="h-3 w-52 animate-pulse rounded bg-surface-3" />
             <div className="h-3 w-40 animate-pulse rounded bg-surface-3/70" />
           </div>
-        ) : !isFailed ? (
+        ) : !isFailed || codex ? (
           <div
             className={`prose prose-sm max-w-none break-words leading-relaxed [&_.katex-display]:my-3 [&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-1 [&_.katex]:text-[1.02em]${theme === "dark" ? " prose-invert" : ""}`}
           >
@@ -234,7 +236,9 @@ export const MessageItem = React.memo(function MessageItem({
             )}
           </div>
         ) : null}
-        {isFailed && <FailedMessageFooter message={message} />}
+        {isFailed && !codex && <FailedMessageFooter message={message} />}
+        {codex && message.metadata?.partial && <p className="text-xs text-status-warning">未完成输出；请核对工作区后使用运行恢复入口。</p>}
+        {codex && isAssistant && message.metadata?.usage_certainty !== "observed" && <p className="text-xs text-ink-2">用量{message.metadata?.usage_certainty === "recovery_interval" ? "包含恢复期间的观测区间，不能精确归属本轮" : "未知或不确定"}</p>}
         {status === "streaming" && !isUser && (
           <span
             aria-hidden

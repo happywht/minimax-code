@@ -85,7 +85,18 @@ describe("conversation reconciliation from durable runs", () => {
     expect(store.getState().status).toBe(status === "cancelled" ? "idle" : "error");
   });
 
-  it.each(["running", "queued", "waiting_input", "budget_paused"] as const)("does not replace an active %s conversation", async (status) => {
+  it("restores a settled budget pause, preserves partial metadata, and releases the composer", async () => {
+    store.setState({ status: "streaming" });
+    api.listMessages.mockResolvedValueOnce({ messages: [{ ...messages[1], status: "failed",
+      metadata: { engine: "codex", partial: true, usage_certainty: "unknown", tokens_in: null } }] });
+    await recover([{ ...run, status: "budget_paused" }]);
+    expect(api.listMessages).toHaveBeenCalledWith("s", { limit: 500 });
+    expect(store.getState().status).toBe("idle");
+    expect(store.getState().messages[0].metadata?.tokens_in).toBeNull();
+    expect(store.getState().messages[0].metadata?.partial).toBe(true);
+  });
+
+  it.each(["running", "queued", "waiting_input"] as const)("does not replace an active %s conversation", async (status) => {
     await recover([{ ...run, status }]);
     expect(api.listMessages).not.toHaveBeenCalled();
   });

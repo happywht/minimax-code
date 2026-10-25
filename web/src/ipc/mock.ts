@@ -202,6 +202,14 @@ function mockHandle(
   client: IPCClient,
   id: JsonRpcId | null,
 ): unknown {
+  const input = params as Record<string, unknown> | undefined;
+  if (method === "session.update" && input && ["engine", "engine_thread_id", "engine_state"].some((key) => key in input)) {
+    throw new Error("Session engine and thread binding are immutable");
+  }
+  if ((method === "message.update" || method === "message.delete") && input) {
+    const owner = [...mockMessages.entries()].find(([, messages]) => messages.some((message) => message.id === input.message_id));
+    if (owner && mockSessions.get(owner[0])?.engine === "codex") throw new Error("Codex history is immutable; create a new session with a handoff");
+  }
   switch (method) {
     case "host.create": {
       const p = params as import("../types/ipc").HostConfig;
@@ -278,6 +286,7 @@ function mockHandle(
 
     case "session.create": {
       const p = params as {
+        engine?: "native" | "codex";
         title?: string;
         reuse_empty_session_id?: string;
         project_id?: string;
@@ -291,6 +300,7 @@ function mockHandle(
         : undefined;
       if (
         reusable
+        && (reusable.engine ?? "native") === (p?.engine ?? "native")
         && !reusable.archived
         && reusable.workspace_mode === "local"
         && !mockSessionsWithMessages.has(reusable.id)
@@ -304,6 +314,7 @@ function mockHandle(
       const now = Date.now();
       const session: Session = {
         id: sid,
+        engine: p?.engine ?? "native",
         title: p?.title ?? DEFAULT_SESSION_TITLE,
         archived: false,
         created_at: now,
@@ -531,7 +542,7 @@ function mockHandle(
             name: "Codex (OpenAI Codex CLI)",
             available: codexAvailable,
             unavailable_reason: codexAvailable ? null : "codex CLI not found on PATH (mock)",
-            capabilities: { streaming: true, resume: false, cancel: true,
+            capabilities: { streaming: true, resume: true, cancel: true,
                             approvals: true, usage: true, steer: false },
             version: codexAvailable ? "mock" : null,
           },
@@ -633,6 +644,9 @@ function mockHandle(
 
     case "run.start": {
       const p = params as import("../types/ipc").RunStartParams;
+      const pinned = mockSessions.get(p.session_id)?.engine ?? "native";
+      if (p.engine && p.engine !== pinned) throw new Error("Requested engine differs from pinned session engine");
+      if (pinned === "codex") throw new Error("Codex CLI unavailable in mock mode; external inference is never simulated");
       if (!p.session_id || !p.idempotency_key || (p.engine && p.engine !== "native")) {
         throw new Error("run.start requires a session and idempotency key, with native engine");
       }
@@ -688,6 +702,7 @@ function mockHandle(
         throw new Error("mode must be chat, plan, or execute");
       }
       const sid = p.session_id ?? `ses_${Math.random().toString(36).slice(2, 10)}`;
+      if (mockSessions.get(sid)?.engine === "codex") throw new Error("Codex sessions must send through run.start");
       const requestKey = p.idempotency_key ? sid + "\0" + p.idempotency_key : null;
       const signature = JSON.stringify({ content: p.content, mode: p.mode ?? "chat" });
       const previous = requestKey ? mockRequestKeys.get(requestKey) : null;
