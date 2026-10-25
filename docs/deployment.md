@@ -17,7 +17,7 @@ pnpm start            # = pnpm build && pnpm dev:agent
 
 ```bash
 curl http://127.0.0.1:8765/health
-# {"ok":true,"db":true,"version":"0.11.0","uptime_s":3,"web":true,"data_dir":"MiniMaxCode"}
+# {"ok":true,"db":true,"version":"1.6.0","uptime_s":3,"web":true,"data_dir":"MiniMaxCode"}
 ```
 
 - `web: true` —— 构建产物 `web/dist` 已被本进程服务（生产模式生效）
@@ -81,9 +81,10 @@ pnpm dev:web   # http://localhost:5173，跨源访问 8765（默认白名单已�
 
 ## 数据与备份
 
-- 所有业务数据在单个 SQLite 文件：`<数据目录>/data.db`（WAL 模式，同目录可能有 `-wal`/`-shm`）。
-- 冷备份：停 agent 后复制整个数据目录；或等 v0.15.0 的 `data.backup` IPC。
-- 数据目录迁移：复制目录后设 `MINIMAX_CODE_DATA_DIR` 指向新位置。
+- 会话、运行和业务元数据位于 SQLite 文件：`<数据目录>/data.db`（WAL 模式，同目录可能有 `-wal`/`-shm`）。工作区文件、检查点副本和其他外部文件不包含在该数据库中。
+- 在线数据库备份已提供：通过受认证 RPC 调用 `data.backup`，参数为 `{}` 或 `{"target_dir":"绝对目录"}`，返回备份的 `path` 与 `bytes`。实现使用 SQLite backup API，包含当时的已提交 WAL 数据、表结构及数据库索引；不要用运行中直接复制 `data.db` 代替它。
+- 冷备份：先停止 agent 并等待任务及子进程清理完成，再复制整个数据目录。项目工作区及存放在其他位置的文件需要另行备份；操作系统凭据库和环境变量需要独立恢复，勿将凭据写入仓库。
+- 数据目录迁移：停止 agent 后复制目录，再设 `MINIMAX_CODE_DATA_DIR` 指向新位置。升级回退使用旧应用及对应的升级前数据库备份；单独的数据库备份不等同完整产物备份，完整安装与恢复演练仍是 M7 验收内容。
 
 ## 故障排查
 
