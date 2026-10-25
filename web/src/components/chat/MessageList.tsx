@@ -49,7 +49,7 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
   const scrollContentKey = useMemo(
     () =>
       [
-        ...messages.map((m) => `${m.id}:${m.text.length}:${m.streaming ? 1 : 0}`),
+        ...messages.map((m) => `${m.render_key ?? m.id}:${m.text.length}:${m.streaming ? 1 : 0}`),
         ...Object.values(runs).map((r) => `${r.run_id}:${r.status}:${r.updated_at}`),
       ].join("|"),
     [messages, runs],
@@ -118,7 +118,7 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
           continue;
         }
       }
-      next.push({ type: "message", key: `message-${message.id}`, message });
+      next.push({ type: "message", key: `message-${message.render_key ?? message.id}`, message });
       i += 1;
     }
     if (!hasQuery && finishedRuns.length > 0) {

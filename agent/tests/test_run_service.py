@@ -101,6 +101,103 @@ async def test_disconnected_waiter_does_not_cancel_native_run(native):
     assert len(rows) == 1 and rows[0]["status"] == "completed"
 
 
+async def test_continuation_retries_join_one_worker_and_replay_after_restart(native, monkeypatch):
+    from minimax_code.model_snapshot import ModelSnapshot
+
+    source = await native.dao.create_run(session_id="one", mode="plan", status="completed",
+        metadata={"truncated": True, "model_snapshot": ModelSnapshot.capture().metadata(),
+                  "workspace_snapshot": str(native.root)})
+    params = {"session_id": "one", "run_id": source["id"]}
+    first, retry = Context(native.server), Context(native.server)
+    a = asyncio.create_task(builtins.handle_agent_continue_run(params, first))
+    await asyncio.wait_for(native.started.get(), 2)
+    b = asyncio.create_task(builtins.handle_agent_continue_run(params, retry))
+    await asyncio.sleep(0)
+    a.cancel()  # lost client connection must not duplicate or stop the continuation
+    with pytest.raises(asyncio.CancelledError):
+        await a
+    native.release.set()
+    await asyncio.wait_for(b, 3)
+    retry.reply_error.assert_not_awaited()
+    receipt = retry.reply.call_args.args[0]
+    rows = await native.dao.list_runs(session_id="one")
+    assert len(rows) == 2 and len(native.cores) == 1
+    child = await native.dao.get_run(receipt["run_id"])
+    assert child["resumed_from_id"] == source["id"] and child["mode"] == "plan"
+    assert child["metadata"]["model_snapshot"] == source["metadata"]["model_snapshot"]
+    assert (await native.dao.get_run(source["id"]))["metadata"]["continued"] is True
+    # A fresh service has no in-memory worker; the stored receipt is sufficient.
+    monkeypatch.setattr(ModelSnapshot, "capture", lambda: (_ for _ in ()).throw(RuntimeError("provider offline")))
+    restarted = Context(IPCServer(Config(), stdin=io.StringIO(), stdout=io.StringIO()))
+    await builtins.handle_agent_continue_run(params, restarted)
+    restarted.reply_error.assert_not_awaited()
+    assert restarted.reply.call_args.args[0] == receipt
+    assert len(native.cores) == 1
+
+
+@pytest.mark.parametrize("changed", ["model", "workspace"])
+async def test_continuation_rejects_changed_context_before_marking_source(native, changed):
+    from minimax_code.model_snapshot import ModelSnapshot
+
+    metadata = {"truncated": True, "model_snapshot": ModelSnapshot.capture().metadata(),
+                "workspace_snapshot": str(native.root)}
+    if changed == "model":
+        metadata["model_snapshot"]["model"] = "original-model"
+    else:
+        metadata["workspace_snapshot"] = str(native.root / "original-workspace")
+    source = await native.dao.create_run(session_id="one", status="completed", metadata=metadata)
+    ctx = Context(native.server)
+    await builtins.handle_agent_continue_run({"session_id": "one", "run_id": source["id"]}, ctx)
+    ctx.reply.assert_not_awaited()
+    ctx.reply_error.assert_awaited_once()
+    assert len(await native.dao.list_runs()) == 1 and native.cores == []
+    assert "continued" not in (await native.dao.get_run(source["id"]))["metadata"]
+
+
+async def test_continuation_budget_admission_and_receipt_replay(native, monkeypatch):
+    from minimax_code.model_snapshot import ModelSnapshot
+    from minimax_code.storage.dao.messages import MessagesDAO
+
+    source = await native.dao.create_run(session_id="one", status="completed",
+        metadata={"truncated": True, "model_snapshot": ModelSnapshot.capture().metadata(),
+                  "workspace_snapshot": str(native.root)})
+    await MessagesDAO(native.db).create(id="spent", session_id="one", role="assistant",
+                                       content="prior work", tokens_in=40, tokens_out=60)
+    params = {"session_id": "one", "run_id": source["id"]}
+    monkeypatch.setenv("MINIMAX_CODE_RUN_BUDGET_TOKENS", "500")
+    monkeypatch.setenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", "100")
+    denied = Context(native.server)
+    await builtins.handle_agent_continue_run(params, denied)
+    assert "Daily token budget exhausted" in denied.reply_error.call_args.args[1]
+    assert len(await native.dao.list_runs()) == 1 and native.cores == []
+    assert "continued" not in (await native.dao.get_run(source["id"]))["metadata"]
+
+    monkeypatch.setenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", "1000")
+    accepted = Context(native.server)
+    task = asyncio.create_task(builtins.handle_agent_continue_run(params, accepted))
+    await asyncio.wait_for(native.started.get(), 2)
+    core = native.cores[0]
+    assert core.config.run_budget_tokens == 500
+    assert core.config.daily_budget_tokens == 1000
+    assert core.config.daily_budget_baseline == 100
+    native.release.set()
+    await asyncio.wait_for(task, 3)
+    accepted.reply_error.assert_not_awaited()
+    receipt = accepted.reply.call_args.args[0]
+    child = await native.dao.get_run(receipt["run_id"])
+    assert child["metadata"]["budget"] == {
+        "limit_tokens": 500, "daily_limit": 1000, "daily_baseline": 100}
+
+    # Reading the existing receipt must not recheck today's cap or provider.
+    monkeypatch.setenv("MINIMAX_CODE_DAILY_BUDGET_TOKENS", "1")
+    monkeypatch.setattr(ModelSnapshot, "capture", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+    retry = Context(IPCServer(Config(), stdin=io.StringIO(), stdout=io.StringIO()))
+    await builtins.handle_agent_continue_run(params, retry)
+    retry.reply_error.assert_not_awaited()
+    assert retry.reply.call_args.args[0] == receipt
+    assert len(await native.dao.list_runs()) == 2 and len(native.cores) == 1
+
+
 async def test_cancelled_http_request_leaves_accepted_native_job_running(native, monkeypatch):
     import httpx
 

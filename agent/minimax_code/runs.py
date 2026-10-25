@@ -104,6 +104,7 @@ class RunService:
         project_id: str | None, operation: Callable[[RunJob], Awaitable[Any]],
         finalize: Callable[[RunJob, BaseException | None], Awaitable[None]],
         resumed_from_id: str | None = None,
+        continuation: bool = False,
         budget_tokens: int | None = None, daily_baseline: int = 0,
         daily_budget_limit: int | None = None,
         validate_command: str = "",
@@ -114,7 +115,8 @@ class RunService:
                     raise RuntimeError("Run service is shutting down")
                 run, created = await dao.admit_run(
                     session_id=session_id, request=request, title=title, metadata=metadata,
-                    request_key=request_key, resumed_from_id=resumed_from_id)
+                    request_key=request_key, resumed_from_id=resumed_from_id,
+                    **({"continuation": True} if continuation else {}))
                 if not created:
                     return run, self._by_run.get(run["id"]), False
                 job = RunJob(session_id, run_id=run["id"], dao=dao,

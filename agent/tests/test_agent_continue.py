@@ -40,6 +40,9 @@ class _FakeRunsDAO:
         matched = [r for r in self._runs if r.get("session_id") == session_id]
         return matched[: limit] if limit else matched
 
+    async def get_run(self, run_id):
+        return next((run for run in self._runs if run["id"] == run_id), None)
+
     async def update_run_status(
         self,
         run_id: str,
@@ -83,8 +86,8 @@ def stub_send(monkeypatch: pytest.MonkeyPatch):
     """Replace send_message; records forwarded params."""
     forwarded: list[dict] = []
 
-    async def _fake_send(params, ctx):  # type: ignore[no-untyped-def]
-        forwarded.append(params)
+    async def _fake_send(params, ctx, **options):  # type: ignore[no-untyped-def]
+        forwarded.append({**params, "options": options})
         await ctx.reply({"session_id": params.get("session_id"), "text": "continued"})
 
     monkeypatch.setattr(builtins_mod, "handle_agent_send_message", _fake_send)
@@ -156,24 +159,22 @@ async def test_latest_run_not_truncated_replies_ok_false(wire_dao, stub_send):
 
 
 @pytest.mark.asyncio
-async def test_truncated_run_marks_continued_and_forwards(wire_dao, stub_send):
+async def test_truncated_run_forwards_atomic_continuation_intent(wire_dao, stub_send):
     dao = _FakeRunsDAO([_truncated_run()])
     wire_dao["dao"] = dao
     ctx = _make_ctx()
     await handle_agent_continue_run({"session_id": "ses_x"}, ctx)
 
-    # The old block is marked continued with the original status kept.
-    assert len(dao.updates) == 1
-    run_id, status, metadata = dao.updates[0]
-    assert run_id == "run_trunc"
-    assert status == "completed"
-    assert metadata["continued"] is True
-    assert metadata["truncated"] is True  # preserved
+    # The handler must not mark success before durable admission commits.
+    assert dao.updates == []
 
     # And the call forwarded to send_message with the fixed prompt.
     assert len(stub_send) == 1
     assert stub_send[0]["session_id"] == "ses_x"
     assert stub_send[0]["content"].startswith("[continue]")
+    assert stub_send[0]["idempotency_key"].startswith("continue:")
+    assert stub_send[0]["options"]["resumed_from_id"] == "run_trunc"
+    assert stub_send[0]["options"]["continuation"] is True
 
     # The reply is whatever send_message produced (standard envelope).
     result = ctx.reply.call_args[0][0]
@@ -181,19 +182,26 @@ async def test_truncated_run_marks_continued_and_forwards(wire_dao, stub_send):
 
 
 @pytest.mark.asyncio
-async def test_mark_continued_failure_still_forwards(
-    wire_dao, stub_send, monkeypatch: pytest.MonkeyPatch
-):
-    """The continued-marking is best-effort — a DAO failure must not
-    block the actual resume."""
-    dao = _FakeRunsDAO([_truncated_run()])
-
-    async def _boom(*_a, **_kw):  # type: ignore[no-untyped-def]
-        raise RuntimeError("dao down")
-
-    dao.update_run_status = _boom  # type: ignore[method-assign]
+async def test_explicit_run_pins_retry_and_cannot_cross_sessions(wire_dao, stub_send):
+    original = {**_truncated_run(), "mode": "plan"}
+    original["metadata"].update(model_snapshot={"model": "original"}, workspace_snapshot="/work")
+    dao = _FakeRunsDAO([{**_truncated_run(), "id": "new-latest"}, original])
     wire_dao["dao"] = dao
     ctx = _make_ctx()
-    await handle_agent_continue_run({"session_id": "ses_x"}, ctx)
+    await handle_agent_continue_run({"session_id": "ses_x", "run_id": "run_trunc"}, ctx)
     assert len(stub_send) == 1
-    assert ctx.reply.call_args[0][0]["text"] == "continued"
+    assert stub_send[0]["mode"] == "plan"
+    assert stub_send[0]["options"]["required_model"] == {"model": "original"}
+    assert stub_send[0]["options"]["required_workspace"] == "/work"
+    await handle_agent_continue_run({"session_id": "ses_x", "run_id": "run_trunc"}, ctx)
+    assert stub_send[0] == stub_send[1]
+    await handle_agent_continue_run({"session_id": "other", "run_id": "run_trunc"}, ctx)
+    assert len(stub_send) == 2 and ctx.reply.call_args.args[0]["ok"] is False
+
+
+@pytest.mark.parametrize("params", [{"session_id": 12}, {"session_id": "s", "run_id": " "},
+                                   {"session_id": "s", "run_id": []}])
+async def test_invalid_continuation_identity_is_rejected(params):
+    ctx = _make_ctx()
+    await handle_agent_continue_run(params, ctx)
+    assert ctx.reply_error.call_args.args[0] == -32602

@@ -7,6 +7,8 @@
     "tests/test_run_service.py",
     "tests/test_run_admission.py",
     "tests/test_run_admission_restart.py",
+    "tests/test_agent_continue.py",
+    "tests/test_auto_continue.py",
     "tests/test_conversation_recovery.py",
     "tests/test_crash_recovery.py",
     "tests/test_ipc.py",

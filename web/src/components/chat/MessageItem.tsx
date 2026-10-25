@@ -177,7 +177,7 @@ export const MessageItem = React.memo(function MessageItem({
               size="sm"
               variant="ghost"
               disabled={chatBusy}
-              onClick={() => void continueRun()}
+              onClick={() => void continueRun(message.metadata?.run_id)}
               data-testid={`message-continue-${message.id}`}
             >
               <FastForward size={12} />

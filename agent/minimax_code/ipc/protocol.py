@@ -56,6 +56,13 @@ class RunIdParams(BaseModel):
     run_id: str = Field(min_length=1)
 
 
+class ContinueRunParams(_Base):
+    """Pin retries to the same truncated block; omission keeps legacy latest selection."""
+
+    session_id: str = Field(min_length=1)
+    run_id: str | None = Field(default=None, min_length=1)
+
+
 class RunResumeParams(RunIdParams):
     idempotency_key: str = Field(min_length=1, max_length=128)
     reviewed: bool = False

@@ -547,6 +547,7 @@ async def _reply_for_run(ctx, dao, service, run, job, *, created, wait):
 async def handle_agent_send_message(
     params: Any, ctx: Context, *, wait: bool = True, resumed_from_id: str | None = None,
     required_model: dict[str, Any] | None = None, required_workspace: str | None = None,
+    continuation: bool = False,
 ) -> None:
     from ..execution import ExecutionPolicy, execution_scope
     from ..storage.dao.runs import AgentRunsDAO, RequestConflictError
@@ -711,7 +712,8 @@ async def handle_agent_send_message(
             workspace=root, project_id=project_id,
             operation=execute, finalize=finalize, resumed_from_id=resumed_from_id,
             budget_tokens=run_budget, daily_baseline=daily_baseline,
-            daily_budget_limit=daily_limit, validate_command=validate_command)
+            daily_budget_limit=daily_limit, validate_command=validate_command,
+            continuation=continuation)
     except (RequestConflictError, ValueError) as exc:
         await ctx.reply_error(-32602, str(exc))
         return
@@ -1584,10 +1586,9 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
     """``agent.continue_run`` — resume a budget-truncated turn (v1.1.0).
 
     Block-budget semantics: ``max_iterations`` caps a single *block* of
-    work, not the whole task. This handler validates that the session's
-    most recent run actually ended truncated (budget exhausted without a
-    final answer), marks it as continued, then delegates to
-    :func:`handle_agent_send_message` with a fixed continuation prompt —
+    work, not the whole task. This handler validates a pinned source (or
+    the latest run for legacy clients) ended truncated, then delegates to
+    :func:`handle_agent_send_message` with a source-specific idempotency key —
     so the new block gets the full pipeline (history replay, tool
     dispatch, streaming chunks, run timeline, memory extraction) and the
     reply envelope is the standard send-message shape the UI already
@@ -1604,9 +1605,15 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
     if not session_id:
         await ctx.reply_error(-32602, "session_id is required")
         return
-    session_id = str(session_id)
+    if not isinstance(session_id, str):
+        await ctx.reply_error(-32602, "session_id must be a string")
+        return
+    source_id = params.get("run_id")
+    if source_id is not None and (not isinstance(source_id, str) or not source_id.strip()):
+        await ctx.reply_error(-32602, "run_id must be a non-empty string")
+        return
 
-    # The session's most recent run must have ended truncated. Degraded
+    # The selected source must have ended truncated. Degraded
     # storage (no db) → nothing recorded → nothing to continue.
     try:
         from ..app import get_db
@@ -1617,36 +1624,37 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
             await ctx.reply({"ok": False, "error": "storage unavailable"})
             return
         dao = AgentRunsDAO(db)
-        runs = await dao.list_runs(session_id=session_id, limit=1)
+        if source_id is not None:
+            run = await dao.get_run(source_id)
+        else:
+            runs = await dao.list_runs(session_id=session_id, limit=1)
+            run = runs[0] if runs else None
     except Exception as exc:
         await ctx.reply({"ok": False, "error": f"run lookup failed: {exc}"})
         return
 
-    run = runs[0] if runs else None
     metadata = (run or {}).get("metadata") or {}
     if (
         not run
+        or run.get("session_id") != session_id
         or run.get("status") not in ("completed", "cancelled")
         or not metadata.get("truncated")
     ):
         await ctx.reply({"ok": False, "error": "no truncated run to continue"})
         return
 
-    # Mark the old block as continued (telemetry/UI can spot chain
-    # length). update_run_status uses COALESCE on completed_at, so the
-    # original finish time survives; failures never block the resume.
-    try:
-        await dao.update_run_status(
-            run["id"],
-            status=run.get("status") or "completed",
-            metadata={**metadata, "continued": True},
-        )
-    except Exception:
-        logger.exception("marking run continued failed; continuing anyway")
+    # One continuation per source block. The database commits its admission,
+    # source linkage and continued marker together before any model/tool work.
+    # Pin the source in the prompt fingerprint so unrelated idempotent requests
+    # can never silently join a continuation of a different block.
+    import hashlib
 
+    key = "continue:" + hashlib.sha256(run["id"].encode()).hexdigest()
     await handle_agent_send_message(
-        {"session_id": session_id, "content": _CONTINUE_PROMPT,
-         "mode": run.get("mode", "chat")}, ctx
+        {"session_id": session_id, "content": _CONTINUE_PROMPT + f"\n[Continuation of run {run['id']}]",
+         "mode": run.get("mode", "chat"), "idempotency_key": key}, ctx,
+        resumed_from_id=run["id"], continuation=True,
+        required_model=metadata.get("model_snapshot"), required_workspace=metadata.get("workspace_snapshot"),
     )
 
 

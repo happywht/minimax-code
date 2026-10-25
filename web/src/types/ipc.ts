@@ -225,6 +225,8 @@ export type MessageStatus =
 
 export interface Message {
   id: string;
+  /** Browser-only row identity while a provisional ID is replaced by a saved ID. */
+  render_key?: string;
   role: MessageRole;
   text: string;
   /** True while a stream is still in progress. */
@@ -548,6 +550,12 @@ export interface ListWebhooksResult {
 
 /** Durable run identity lets clients discard late notifications after recovery. */
 export interface RunStreamContext {
+  session_id: string;
+  run_id?: string;
+}
+
+/** Pin continuation/retry to a particular truncated block. */
+export interface ContinueRunParams {
   session_id: string;
   run_id?: string;
 }

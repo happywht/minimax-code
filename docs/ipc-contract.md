@@ -204,7 +204,7 @@ on the next `readline() == ""`.
 |----------------------------|-----------|----------------------------------------------------|
 | `agent.send_message`       | req/res   | Streams events; the HTTP client keeps no fixed run deadline. v1.1.0 reply adds `truncated`, `blocks`, `compactions` (block accounting — when `MINIMAX_AUTO_CONTINUE=1` the turn auto-continues up to `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS` blocks, default 5, summing iterations/compactions across blocks). |
 | `agent.cancel`             | req/res   | Request cancellation of active and queued native work for a session; acknowledgement does not imply cleanup has finished. |
-| `agent.continue_run`       | req/res   | v1.1.0 Resume the latest budget-truncated run: marks it `continued` in metadata, then re-enters `agent.send_message` with a fixed continuation prompt (params: `session_id`; errors `-32602` on bad params, `{"ok":false}` when storage is unavailable or the latest run is not truncated). |
+| `agent.continue_run`       | req/res   | Continue a truncated block (params: `session_id`, optional `run_id`). A pinned source has one durable continuation; retries join its worker or replay its receipt. Admission atomically marks the source `continued` and links the child. Omitting `run_id` selects the latest run for legacy clients. Invalid params use `-32602`; unavailable storage/non-truncated source returns `{"ok":false}`. |
 | `agent.answer_user`        | req/res   | v1.1.1 Answer a pending `ask_user` request (params: `request_id`, `answers` — a non-empty array position-aligned with the questions; each entry is a label string or a list of label strings). Resolves the future the suspended tool call awaits; `{"ok":false}` on unknown/expired ids. |
 | `run.list`                 | req/res   | List persisted agent runs for a session. v1.4.0 accepts an optional `mode` filter (`chat` / `plan` / `execute` / `team` / `subagent`) — `mode: "subagent"` returns runs spawned via the `spawn_subagent` tool path. |
 | `run.steps`                | req/res   | Load one run, ordered steps and a consistent durable `cursor`. |
@@ -656,6 +656,16 @@ the model-history projection provides an explicitly **unknown outcome** placehol
 for protocol pairing. It does not execute the tool or save an invented result.
 Malformed or unmatched tool evidence stops continuation for review. The original
 conversation and timeline remain unchanged.
+
+Continuation of a truncated block is different from reviewed recovery: clients
+pass the source `run_id` on every retry. The server derives a stable per-source
+idempotency key, includes the source in the request fingerprint, and links the new
+run through `resumed_from_id`. Source marking, source event and child admission
+commit in one transaction. Saved model/workspace snapshots must still match before
+a **new** continuation starts; replaying an existing receipt does not require the
+provider to be available. A failed/cancelled/interrupted continuation is not started
+again by retrying its source; inspect its result and use reviewed recovery as needed.
+Legacy runs without context snapshots retain their prior context-selection behavior.
 
 Request:
 ```json

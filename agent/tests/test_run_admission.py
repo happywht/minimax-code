@@ -89,6 +89,34 @@ async def test_concurrent_duplicate_admission_commits_one_request_and_event(dao)
     assert (await dao.events(run["id"]))["next_seq"] == 1
 
 
+async def test_continuation_marker_link_and_event_commit_atomically(dao):
+    source = await dao.create_run(session_id="s", status="completed", metadata={"truncated": True})
+    before = await dao.events(source["id"])
+    await dao._db.execute("""CREATE TRIGGER fail_child BEFORE INSERT ON run_events
+        WHEN NEW.type = 'created' BEGIN SELECT RAISE(FAIL, 'child journal failed'); END""")
+    with pytest.raises(sqlite3.IntegrityError):
+        await admit(dao, resumed_from_id=source["id"], continuation=True)
+    assert len(await dao.list_runs()) == 1
+    assert (await dao.get_run(source["id"]))["metadata"] == {"truncated": True}
+    assert await dao.events(source["id"]) == before
+    await dao._db.execute("DROP TRIGGER fail_child")
+    first, created = await admit(dao, resumed_from_id=source["id"], continuation=True)
+    assert created and first["resumed_from_id"] == source["id"]
+    assert (await dao.get_run(source["id"]))["metadata"]["continued"] is True
+    after = await dao.events(source["id"])
+    assert after["next_seq"] == before["next_seq"] + 1
+    retry, created = await admit(dao, resumed_from_id=source["id"], continuation=True)
+    assert not created and retry["id"] == first["id"]
+    assert await dao.events(source["id"]) == after
+
+
+async def test_continuation_rechecks_parent_state_during_admission(dao):
+    source = await dao.create_run(session_id="s", status="completed", metadata={"truncated": False})
+    with pytest.raises(ValueError, match="truncated"):
+        await admit(dao, resumed_from_id=source["id"], continuation=True)
+    assert len(await dao.list_runs()) == 1
+
+
 async def test_admission_and_claim_roll_back_if_event_cannot_be_written(dao):
     await dao._db.execute("""CREATE TRIGGER fail_journal BEFORE INSERT ON run_events
         BEGIN SELECT RAISE(FAIL, 'journal unavailable'); END""")

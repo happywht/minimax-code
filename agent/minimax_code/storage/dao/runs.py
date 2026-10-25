@@ -55,6 +55,7 @@ class AgentRunsDAO:
         self, *, session_id: str, request: dict[str, Any], title: str,
         metadata: dict[str, Any], request_key: str | None = None,
         resumed_from_id: str | None = None,
+        continuation: bool = False,
     ) -> tuple[dict[str, Any], bool]:
         """Commit a queued request and its first event before any execution.
 
@@ -84,6 +85,16 @@ class AgentRunsDAO:
                 (session_id,))
             if pending["n"] >= 32:
                 raise ValueError("Session queue is full (32 pending tasks)")
+            if continuation:
+                source = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (resumed_from_id,)))
+                if (source is None or source["session_id"] != session_id
+                        or source["status"] not in {"completed", "cancelled"}
+                        or not (source.get("metadata") or {}).get("truncated")):
+                    raise ValueError("Continuation requires a truncated run in the same session")
+                source["metadata"] = {**source["metadata"], "continued": True}
+                await conn.execute("UPDATE agent_runs SET metadata = ? WHERE id = ?",
+                                   (dumps_json(source["metadata"]), resumed_from_id))
+                await _append_event(conn, resumed_from_id, "status", {"run": source})
             run_id, ts = f"run_{uuid.uuid4().hex}", now_iso()
             await conn.execute(
                 "INSERT INTO agent_runs (id, session_id, mode, status, title, created_at, "

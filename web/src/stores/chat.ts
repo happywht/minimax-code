@@ -53,7 +53,7 @@ export interface ChatState {
    * prompt server-side and streams the new assistant turn via the
    * regular message_chunk channel.
    */
-  continueRun: () => Promise<void>;
+  continueRun: (runId?: string) => Promise<void>;
   /** Add a user message to the chat log without triggering a backend call. */
   addLocalMessage: (content: string) => void;
   /** Load persisted messages for a session from the backend. */
@@ -689,14 +689,14 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  continueRun: async () => {
+  continueRun: async (runId) => {
     const sessionId = useSessionStore.getState().currentSessionId;
     if (!sessionId) return;
     if (get().status === "sending" || get().status === "streaming" || get().status === "cancelling") return;
     ++_viewRevision;
     set({ status: "sending", error: null });
     try {
-      const result = await trackRequest(sessionId, typedIPC.continueRun(sessionId));
+      const result = await trackRequest(sessionId, typedIPC.continueRun(sessionId, runId));
       if (useSessionStore.getState().currentSessionId !== sessionId) return;
       if (!("message_id" in result)) {
         // Guards: storage unavailable, or the latest run did not end
@@ -727,7 +727,7 @@ export const useChat = create<ChatState>((set, get) => ({
             streaming: false,
             status: result.cancelled ? "cancelled" : "completed",
             created_at: Date.now(),
-            metadata: result.truncated ? { thinking_count: 0, tokens_in: 0, tokens_out: 0, truncated: true } : undefined,
+            metadata: { run_id: result.run_id, ...(result.truncated ? { truncated: true } : {}) },
           }), MAX_MESSAGES),
           status: "idle",
         };
@@ -878,9 +878,22 @@ export const useChat = create<ChatState>((set, get) => ({
       }
       const result = await typedIPC.listMessages(sid, { limit: 500 });
       if (!isCurrent() || revision !== _viewRevision || inFlightRequests.has(sid)) return;
-      const saved: Message[] = (result.messages ?? []).map((m) => ({
-        ...m, text: m.text ?? m.content ?? "", streaming: false, status: m.status ?? "completed",
-      }));
+      const prior = new Map(get().messages.map((message) => [message.id, message]));
+      for (const run of runs) {
+        if (!run.user_message_id || !run.request_key) continue;
+        const local = get().messages.find((message) => message.role === "user"
+          && message.metadata?.request_key === run.request_key);
+        if (local) prior.set(run.user_message_id, local);
+      }
+      const saved: Message[] = (result.messages ?? []).map((m) => {
+        const local = prior.get(m.id);
+        return {
+          ...m, text: m.text ?? m.content ?? "", streaming: false, status: m.status ?? "completed",
+          // Keep the measured virtual row and component state when a provisional
+          // user ID is replaced; remounting a tall row briefly collapses the scroll.
+          ...(local ? { render_key: local.render_key ?? local.id } : {}),
+        };
+      });
       const savedIds = new Set(saved.map((m) => m.id));
       const byRun = new Map(runs.map((run) => [run.id, run]));
       const retained = get().messages.filter((message) => {

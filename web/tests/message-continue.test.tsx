@@ -22,6 +22,7 @@ const truncatedMessage = (overrides: Partial<Message> = {}): Message => ({
     tokens_in: 1000,
     tokens_out: 200,
     truncated: true,
+    run_id: "source-run",
     compactions: 2,
   },
   ...overrides,
@@ -73,6 +74,7 @@ describe("MessageItem truncated continue affordance", () => {
     render(<MessageItem message={truncatedMessage()} />);
     fireEvent.click(screen.getByTestId("message-continue-m-trunc"));
     expect(continueRunSpy).toHaveBeenCalledTimes(1);
+    expect(continueRunSpy).toHaveBeenCalledWith("source-run");
   });
 
   it("disables the button while a run is active", () => {

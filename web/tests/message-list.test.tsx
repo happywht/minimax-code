@@ -47,6 +47,18 @@ describe("MessageList", () => {
     expect(screen.getByText(/今天想让我做什么/)).toBeInTheDocument();
   });
 
+  it("keeps the measured DOM row when history replaces a provisional message ID", async () => {
+    const local = { id: "local-user", role: "user" as const, text: "long input", streaming: false, created_at: 1 };
+    useChat.setState({ messages: [local] });
+    render(<MessageList />);
+    const row = screen.getByTestId("message-window-row-message-local-user");
+    await act(async () => {
+      useChat.setState({ messages: [{ ...local, id: "saved-user", render_key: local.id }] });
+    });
+    expect(screen.getByTestId("message-window-row-message-local-user")).toBe(row);
+    expect(screen.getByTestId("message-list")).toHaveTextContent("long input");
+  });
+
   it("shows the history skeleton while messages load instead of the empty state", () => {
     useChat.setState({ loadingMessages: true });
     render(<MessageList />);

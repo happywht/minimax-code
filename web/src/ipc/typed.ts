@@ -232,7 +232,7 @@ export interface TypedIPC {
   sendMessage(opts: import("../types/ipc").SendMessageParams & { attachments?: unknown }): Promise<SendMessageResult>;
   cancelAgent(sessionId: string): Promise<{ ok: true }>;
   /** v1.1.0: resume the latest budget-truncated run for a session. */
-  continueRun(sessionId: string): Promise<SendMessageResult | { ok: false; error: string }>;
+  continueRun(sessionId: string, runId?: string): Promise<SendMessageResult | { ok: false; error: string }>;
   /** Answer a pending ask_user suspension. One entry per question, positionally aligned. */
   answerUser(
     requestId: string,
@@ -707,10 +707,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<SendMessageResult>("agent.send_message", opts),
     cancelAgent: (sid) =>
       client.request<{ ok: true }>("agent.cancel", { session_id: sid }),
-    continueRun: (sid) =>
+    continueRun: (sid, runId) =>
       client.request<SendMessageResult | { ok: false; error: string }>(
         "agent.continue_run",
-        { session_id: sid },
+        { session_id: sid, ...(runId ? { run_id: runId } : {}) } satisfies import("../types/ipc").ContinueRunParams,
       ),
     answerUser: (requestId, answers) =>
       client.request<AnswerUserResult>("agent.answer_user", {

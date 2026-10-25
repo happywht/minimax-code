@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { IPCClient } from "../client";
 import { mockRequest } from "../mock";
 import { bindTypedIPC } from "../typed";
+import { mockRuns } from "../mockData";
 import type { RunAdmissionResult, RunGetResult, ListMessagesResult } from "../../types/ipc";
 
 describe("durable run contract", () => {
@@ -14,11 +15,13 @@ describe("durable run contract", () => {
     await api.getRun("r");
     await api.cancelRun("r");
     await api.resumeRun("r", "resume-k", true);
+    await api.continueRun("s", "original-run");
     expect(request.mock.calls).toEqual([
       ["run.start", { session_id: "s", content: "work", idempotency_key: "k" }],
       ["run.get", { run_id: "r" }],
       ["run.cancel", { run_id: "r" }],
       ["run.resume", { run_id: "r", idempotency_key: "resume-k", reviewed: true }],
+      ["agent.continue_run", { session_id: "s", run_id: "original-run" }],
     ]);
   });
 
@@ -62,5 +65,24 @@ describe("durable run contract", () => {
     await mockRequest("message.delete", { message_id: run.assistant_message_id }, client);
     const edited = await mockRequest<ListMessagesResult>("message.list", { session_id: params.session_id }, client);
     expect(edited.messages.map((message) => message.text)).toEqual(["edited"]);
+  });
+
+  it("mock continuation pins its source and retries the same run", async () => {
+    vi.useFakeTimers();
+    const client = new IPCClient();
+    const source = { id: "mock-truncated-source", session_id: "mock-continuation", mode: "plan" as const,
+      status: "completed" as const, title: "truncated", created_at: "2026-10-23T00:00:00Z",
+      metadata: { truncated: true } };
+    mockRuns.set(source.id, { run: source, steps: [] });
+    const params = { session_id: source.session_id, run_id: source.id };
+    const first = await mockRequest<import("../../types/ipc").SendMessageResult>("agent.continue_run", params, client);
+    const retry = await mockRequest<import("../../types/ipc").SendMessageResult>("agent.continue_run", params, client);
+    expect(retry.run_id).toBe(first.run_id);
+    await vi.runAllTimersAsync();
+    const final = await mockRequest<RunGetResult>("run.get", { run_id: first.run_id }, client);
+    expect(final.run).toMatchObject({ mode: "plan", resumed_from_id: source.id, status: "completed" });
+    expect(await mockRequest("agent.continue_run", params, client)).toEqual(final.result);
+    expect(await mockRequest("agent.continue_run", { ...params, session_id: "other" }, client))
+      .toMatchObject({ ok: false });
   });
 });

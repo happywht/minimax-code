@@ -494,3 +494,23 @@ Windows 联合上传、主机、下载回归及契约检查 **60 通过、2 跳�
 文件/目录 fsync（29/36 次）。临时目录已清理，证据为 `.verification/upload-linux-evidence.json`。
 这是辅助程序的实际 Linux 验证，未走完整产品 SSH/SFTP 上传工作流。
 这些是本批局部验证，不代表 M5、真实模型联调、Linux 当前部署或三轮全基线验收通过。
+
+### 2026-10-25：续跑去重与聊天行身份修复集成
+
+将独立工作区的续跑修复与聊天行身份修复合入当前生产化分支：继续按钮传递来源运行 ID，
+后端按来源生成稳定幂等键，原任务 continued 标记、事件、子任务登记及来源关联在同一
+事务提交。模型或工作区检查、每日预算拒绝不会提前标记源任务；重试等待原 worker，
+或直接返回已保存回执，不依赖当前模型可用性及新的预算检查。省略 run ID 的旧客户端
+仍选择最新运行。新续跑保留当前预算与项目验收参数链路；不改变预算暂停的恢复入口。
+历史补齐将本地 render_key 保留到规范消息 ID，避免长消息行重挂载导致展开状态丢失
+及虚拟滚动高度短暂塌缩。同步 Python/TypeScript 契约、typed IPC、mock 和验证清单。
+
+本批后端续跑、接单、服务、预算、历史及契约回归 **112 项通过**；前端恢复、续跑、
+消息列表与 typed IPC **43 项通过**；TypeScript、ESLint、修改文件 ruff 和 diff 空白
+检查通过。隔离 mock agent 的真实浏览器 smoke-chat 与 run-recovery **5 项通过**，
+包括断网完成后重连、刷新恢复及滚动行为。证据为
+`.verification/recovery-integration-backend.log`、`recovery-integration-web.log`、
+`recovery-integration-types.log`、`recovery-integration-lint.log`、
+`recovery-integration-ruff.log`、`recovery-integration-diff-check.log` 和
+`recovery-integration-e2e.log`。无数据库迁移，源工作区保持不变。本批是局部集成验证，
+没有真实付费模型调用、Linux 新版本部署或三轮全基线验收。

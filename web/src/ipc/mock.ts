@@ -817,16 +817,26 @@ function mockHandle(
     }
 
     case "agent.continue_run": {
-      // v1.1.0 — resume a budget-truncated turn. The real backend
-      // validates the latest run then re-enters send_message with a
-      // fixed prompt; the mock just replays the send path.
-      const p = params as { session_id: string };
-      return mockHandle(
+      const p = params as import("../types/ipc").ContinueRunParams;
+      const source = p.run_id ? mockRuns.get(p.run_id)?.run :
+        [...mockRuns.values()].reverse().find((entry) => entry.run.session_id === p.session_id)?.run;
+      if (!source || source.session_id !== p.session_id || !source.metadata?.truncated ||
+          !["completed", "cancelled"].includes(source.status)) {
+        return { ok: false, error: "no truncated run to continue" };
+      }
+      const reply = mockHandle(
         "agent.send_message",
-        { session_id: p.session_id, content: "[continue] (mock) resuming the truncated turn…" },
+        { session_id: p.session_id, content: `[continue] (mock) resuming run ${source.id}`,
+          idempotency_key: `continue:${source.id}`, mode: source.mode },
         client,
         id,
-      );
+      ) as import("../types/ipc").SendMessageResult;
+      if (!source.metadata.continued) {
+        source.metadata = { ...source.metadata, continued: true };
+        recordRunEvent(source.id, "status", { run: source });
+      }
+      mockRuns.get(reply.run_id!)!.run.resumed_from_id = source.id;
+      return reply;
     }
 
     case "skill.enable":

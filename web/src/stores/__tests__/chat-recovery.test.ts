@@ -70,7 +70,10 @@ describe("conversation reconciliation from durable runs", () => {
     ] });
     await recover();
     expect(store.getState().messages.map((m) => m.id)).toEqual(["user", "answer", "unsent"]);
+    expect(store.getState().messages[0].render_key).toBe("local-user");
     expect(store.getState().error).toBe("offline");
+    await recover();
+    expect(store.getState().messages[0].render_key).toBe("local-user");
   });
 
   it.each(["failed", "cancelled", "interrupted"] as const)("retains unpersisted partial output as %s", async (status) => {
