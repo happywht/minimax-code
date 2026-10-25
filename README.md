@@ -16,8 +16,9 @@
 # 首次：安装依赖
 pnpm install
 cd agent && uv sync && cd ..
+pnpm build
 
-# 之后：一个命令构建并启动完整产品
+# 之后：启动已准备好的版本（不重新构建或安装依赖）
 pnpm start
 ```
 
@@ -50,7 +51,7 @@ AGENT_SKIP=1 pnpm dev
 |------|------|
 | `pnpm install` | 安装 JS 依赖 |
 | `cd agent && uv sync` | 安装 Python 依赖 |
-| `pnpm start` | 构建前端 + 单进程启动完整产品（生产模式） |
+| `pnpm start` | 检查已安装环境和前端产物，启动完整产品（生产模式） |
 | `pnpm build` | 只构建前端生产版本（`web/dist/`） |
 | `pnpm dev` | 开发模式：同时起 agent + Vite |
 | `pnpm dev:web` | 只起 Vite 前端 |
@@ -89,7 +90,7 @@ A: 会话与配置等元数据在系统数据目录中的 SQLite；项目文件�
 A: 旧机器 Settings → Data 导出 JSON → 新机器安装启动后在同一入口导入。导入是替换式整体事务（all-or-nothing），失败自动回滚。
 
 **Q: 启动 agent 提示 dist 缺失？**
-A: `pnpm start` 自带构建（等价于 `pnpm build` 后启动）。如果你直接跑 `pnpm dev:agent` 而构建产物不存在，agent 会友好报错并指引——先执行 `pnpm build`，或直接改用 `pnpm start`。
+A: 先执行一次 `pnpm build`，再运行 `pnpm start`。生产启动不会重新构建或安装依赖；缺少前端产物时会给出准备命令。开发模式的 `pnpm dev:agent` 仍允许只启动 API。
 
 **Q: 8765 端口被占用？**
 A: `MINIMAX_CODE_HTTP_PORT=8899 pnpm dev:agent` 换端口启动 agent，前端开发模式下用 `VITE_AGENT_URL=http://127.0.0.1:8899 pnpm dev:web` 指向它。

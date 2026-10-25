@@ -93,6 +93,7 @@ async function pythonSuite(name, files) {
 
 try {
   if (suite === "baseline") {
+    await run("launcher-unit", process.execPath, ["--test", "scripts/tests/start-production.test.mjs"]);
     await run("lint", "pnpm", ["lint"]);
     await run("python-lint", "uv", ["run", "--frozen", "--extra", "dev", "ruff", "check", "minimax_code", "tests"], join(root, "agent"));
     await run("build", "pnpm", ["build"]);

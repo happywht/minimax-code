@@ -1,8 +1,9 @@
 # 部署指南（生产单进程模式）
 
-> MiniMax Code v0.12.0 起，`pnpm start` 一条命令即可把整个产品跑在一个进程里：
+> MiniMax Code v0.12.0 起，`pnpm start` 使用同一 HTTP 服务提供前端与 API：
 > agent（FastAPI，默认 `127.0.0.1:8765`）同时服务 API 与构建后的前端 SPA。
-> 本文档描述该模式的全部可配置项与运维要点。
+> 正常启动只使用预构建前端和已安装的 Python 环境；安装及构建是显式准备步骤。
+> 本文档描述该模式的配置项与运维要点。
 
 ## 快速开始
 
@@ -10,7 +11,8 @@
 pnpm install          # JS 依赖
 cd agent && uv sync   # Python 依赖
 cd ..
-pnpm start            # = pnpm build && pnpm dev:agent
+pnpm build           # 首次准备 / 升级版本时构建
+pnpm start           # 只启动已准备好的版本
 ```
 
 启动后浏览器打开 **http://127.0.0.1:8765**。检查就绪：
@@ -23,6 +25,23 @@ curl http://127.0.0.1:8765/health
 - `web: true` —— 构建产物 `web/dist` 已被本进程服务（生产模式生效）
 - `db: true` —— SQLite 可写
 - `data_dir` —— 数据目录名（basename，不含用户路径）
+
+生产启动入口为 `scripts/start-production.mjs`，不运行构建、安装或 `uv sync`。
+默认使用 `agent/.venv` 中的平台 Python；设置 `UV_PROJECT_ENVIRONMENT` 时使用该环境
+（相对路径以 `agent/` 为基准），也可用绝对路径 `MINIMAX_CODE_PYTHON` 指定已安装的解释器。
+启动前检查前端 `index.html`、解释器和 Agent 模块依赖，缺失时停止并显示准备命令。
+成功创建进程不代表就绪，应以上述 `/health` 的实际响应为准。
+
+默认工作区为仓库根目录；显式 `MINIMAX_CODE_WORKSPACE` 保持生效，其相对路径以启动
+命令的当前目录为基准。目录不存在时拒绝启动，不回退到其他目录。
+显式 `MINIMAX_CODE_WEB_DIST` 的相对路径以 `agent/` 为基准；生产启动会拒绝无效产物，
+而直接启动开发 Agent 仍可只服务 API。
+
+Windows 生产启动复用现有 Job 进程所有权，控制启动器、Agent 及其后代生命周期；
+关闭启动器可能强制中断运行，重新启动后按持久恢复流程核对，不能将其视为已完成。
+POSIX 监护启动器父进程并转发信号到 Agent 进程组，超时后停止该组。服务创建的独立
+工具进程组不在此监护范围内，不能据此保证整个工具树已停止；Linux 完整后代保障需
+systemd/cgroup 或受限 runner 实测。无人值守受限执行与完整安装/升级/恢复仍须单独验收。
 
 ## 工作原理
 
@@ -61,6 +80,8 @@ agent 在构建 FastAPI app 时探测 `web/dist`（见 `http_server.py` 的 `_we
 | `MINIMAX_CODE_HTTP_HOST` | `127.0.0.1` | 绑定地址。**只监听本机**，切勿改 `0.0.0.0` 暴露到局域网 |
 | `MINIMAX_CODE_DATA_DIR` | `%APPDATA%\MiniMaxCode`（Windows） | SQLite 数据库存放目录 |
 | `MINIMAX_CODE_WEB_DIST` | `<repo>/web/dist` | SPA 构建产物目录（绝对路径；须含 index.html） |
+| `MINIMAX_CODE_PYTHON` | 项目环境 Python | 生产启动专用：已安装 Python 的绝对路径，不自动下载或安装依赖 |
+| `UV_PROJECT_ENVIRONMENT` | `agent/.venv` | 生产启动使用的已安装环境；相对路径以 `agent/` 为基准 |
 | `MINIMAX_CODE_LOG_LEVEL` | `INFO` | 日志级别（stderr + 文件） |
 | `MINIMAX_CODE_LOG_FILE` | 空（仅 stderr） | 日志文件。绝对路径原样使用；相对路径解析到数据目录下。5 MB × 3 份轮转 |
 | `MINIMAX_CODE_CORS_ORIGINS` | 空 | 追加受信跨源（逗号分隔，如反代场景）。默认白名单只有 Vite dev 端口 |
@@ -99,3 +120,20 @@ pnpm dev:web   # http://localhost:5173，跨源访问 8765（默认白名单已�
 
 - `e2e/production-mode.spec.ts` —— SPA 服务 + `/health` + `/rpc` + WS + UI 聊天全链路（Playwright）
 - `agent/tests/test_http_server.py` —— web dist 覆盖/缺失、同源 CORS 契约、health 字段
+- `node --test scripts/tests/start-production.test.mjs` —— 无网络、无需 Python 的生产启动单元检查；已加入 baseline 验证入口。
+- `node --test scripts/tests/start-production.integration.mjs` —— 已安装 Python 的真实进程检查。
+  `MINIMAX_START_TEST_PYTHON` 可指定测试解释器；设置 `MINIMAX_START_TEST_SOURCE` 为含 Agent
+  源码与预构建 `web/dist` 的隔离目录后，还会执行真实健康、SPA、认证及 CLI 检查。
+  测试使用临时数据/工作区、强制 mock 和空 keyring，不读取个人模型凭据或调用付费模型。
+
+2026-10-26 Windows 启动追加验证：14 项检查通过（18.49 秒），其中包括缺少产物/
+解释器、身份检查失败、非零退出、依赖导入失败、导入阻塞期间父进程突退与超时、
+实际后代心跳停止、stdout/stderr 各 1 MiB 的末尾诊断排空，以及上一已验收提交
+`2dfe7bd` 的隔离源码真实健康/SPA/认证与 CLI。日志为
+`.verification/production-start-frozen-final.log`，隔离源与前端校验值为
+`production-start-snapshot.json`。两次健康样本为 3594.8 / 3665.8 毫秒，缓存已热，
+不作为固定验收机冷启动或 M7 性能门槛通过的证明。Linux 平台尚未执行本批实机检查。
+
+本批不改数据库结构。回退启动入口时先停止原进程并保留运行恢复证据，再恢复匹配的
+脚本和 `package.json`；原启动命令会重新执行构建。用户数据、附件和数据库完整恢复
+仍按各自备份流程处理，这些启动检查不能替代安装、升级、回退和恢复演练。
