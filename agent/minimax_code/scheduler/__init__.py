@@ -40,6 +40,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -313,7 +314,7 @@ class JobScheduler:
         try:
             self._aps.add_job(
                 _tick,
-                CronTrigger.from_crontab(row["cron_expr"]),
+                CronTrigger.from_crontab(row["cron_expr"], timezone=_scheduler_timezone()),
                 id=aps_id,
                 replace_existing=True,
                 max_instances=1,
@@ -342,6 +343,77 @@ class JobScheduler:
                 logger.warning("skipping job %s on reload: %s", row["id"], exc)
         logger.info("scheduler reloaded %d enabled job(s)", len(rows))
 
+    async def _run_prompt_via_runservice(
+        self, payload: dict[str, Any], *, prompt: str, session_id: str
+    ) -> dict[str, Any]:
+        """Run one scheduled prompt through the FULL native agent loop.
+
+        M5 — this is the RunService path the planning doc demanded:
+        tools, permissions, budget and durable run rows all behave
+        exactly like a chat turn. Unattended consents time out denied —
+        an unattended job never widens its own permissions. The result
+        dict matches the payload-runner contract so the task row
+        bookkeeping below is unchanged.
+        """
+        import uuid
+
+        from ..ipc.builtins import handle_agent_send_message
+        from ..ipc.server import Context
+
+        server = _IPC_SERVER
+        if server is None:
+            return {"ok": False, "error": "scheduler has no IPC server bound; "
+                    "set it via set_scheduler_ipc_server()"}
+
+        class _SchedulerCtx(Context):
+            """Synthetic per-fire context: replies captured, emits fanned
+            out to the live listeners (a UI open at the time sees the
+            stream) but never block the fire."""
+
+            def __init__(self) -> None:
+                self.server = server
+                self.last_result: dict[str, Any] = {}
+                self.last_error: dict[str, Any] | None = None
+
+            async def reply(self, result: Any) -> None:
+                self.last_result = result if isinstance(result, dict) else {"text": str(result)}
+
+            async def reply_error(self, code: Any, message: str, data: Any = None) -> None:
+                self.last_error = {"code": code, "message": message}
+
+            async def emit(self, event: str, data: Any = None, **kwargs: Any) -> None:
+                await server.broadcast(event, data) if hasattr(server, "broadcast") else None
+
+        ctx = _SchedulerCtx()
+        params: dict[str, Any] = {
+            "session_id": session_id,
+            "content": prompt,
+            "idempotency_key": f"sched-{payload.get('job_id') or uuid.uuid4().hex[:8]}-"
+                               f"{int(time.time() // 60)}",  # per-minute window replay guard
+        }
+        if payload.get("project_id"):
+            params["project_id"] = str(payload["project_id"])
+        budget = payload.get("budget_tokens")
+        if isinstance(budget, int) and budget > 0:
+            params["budget_tokens"] = budget
+        try:
+            await handle_agent_send_message(params, ctx, wait=True)
+        except Exception as exc:  # noqa: BLE001 — scheduler must survive
+            logger.exception("runservice prompt fire failed")
+            return {"ok": False, "error": f"runservice fire failed: {exc}"}
+        if ctx.last_error is not None:
+            return {"ok": False, "error": ctx.last_error.get("message", "run failed"),
+                    "detail": ctx.last_error}
+        result = dict(ctx.last_result)
+        result["ok"] = True
+        result["output"] = result.get("text", "")
+        result["run_id"] = result.get("run_id")
+        # The durable run row is the real evidence; the task row keeps a
+        # pointer rather than duplicating the whole transcript.
+        result["evidence"] = {"kind": "run", "run_id": result.get("run_id")}
+        return result
+
+
     async def _fire(self, row: dict[str, Any], *, source: str) -> None:
         """Execute a job's payload, persist a ``tasks`` row, update ``last_run_at``."""
         job_id = row["id"]
@@ -364,36 +436,44 @@ class JobScheduler:
             logger.exception("failed to insert running task row for %s", job_id)
             return
 
-        # Run the user payload off the event loop so a slow or
-        # CPU-bound callback doesn't stall IPC.
-        loop = asyncio.get_running_loop()
-        try:
-            # v1.2.2: pass the main loop down so the payload coroutine
-            # runs on IT (via run_coroutine_threadsafe), not on a
-            # private loop that breaks main-loop-bound resources
-            # (aiosqlite connections, asyncio.Lock, …).
-            result = await loop.run_in_executor(
-                None, _run_payload_sync, self._payload_runner, payload, loop
-            )
-        except BaseException as exc:  # sync runner raised
-            logger.exception("payload for job %s raised", job_id)
+        # M5 — scheduled prompts run through the RunService: the FULL
+        # agent loop (tools, permissions, budget, durable run rows) not
+        # the single-shot LLM call the payload runner offered. Same
+        # admission semantics as chat: idempotency key per fire, budget
+        # honoured, unattended consents time out denied (never widened).
+        prompt_text = payload.get("prompt") if isinstance(payload, dict) else None
+        if isinstance(prompt_text, str) and prompt_text.strip() \
+                and payload.get("use_runservice", True):
+            result = await self._run_prompt_via_runservice(
+                payload, prompt=prompt_text, session_id=session_id)
+        else:
+            # Run the user payload off the event loop so a slow or
+            # CPU-bound callback doesn't stall IPC.
+            loop = asyncio.get_running_loop()
             try:
-                await self._tasks.update_status(
-                    task_id,
-                    status="failed",
-                    progress=100,
-                    error=f"{type(exc).__name__}: {exc}",
+                # v1.2.2: pass the main loop down so the payload coroutine
+                # runs on IT (via run_coroutine_threadsafe), not on a
+                # private loop that breaks main-loop-bound resources
+                # (aiosqlite connections, asyncio.Lock, …).
+                result = await loop.run_in_executor(
+                    None, _run_payload_sync, self._payload_runner, payload, loop
                 )
-            except Exception:  # pragma: no cover — defensive
-                logger.exception("failed to mark task %s failed", task_id)
-            # Still record the run so the UI can show "last run failed".
-            try:
-                await self._dao.update_last_run(job_id, now_iso())
-            except Exception:  # pragma: no cover — defensive
-                logger.exception("failed to update last_run for job %s", job_id)
-            return
-
-        # Build the "result" string the task row stores. We accept
+            except BaseException as exc:  # sync runner raised
+                logger.exception("payload for job %s raised", job_id)
+                try:
+                    await self._tasks.update_status(
+                        task_id,
+                        status="failed",
+                        progress=100,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                except Exception:  # pragma: no cover — defensive
+                    logger.exception("failed to mark task %s failed", task_id)
+                try:
+                    await self._dao.update_last_run(job_id, now_iso())
+                except Exception:  # pragma: no cover — defensive
+                    logger.exception("failed to update last_run for job %s", job_id)
+                return
         # either a string or any JSON-serialisable structure.
         result_text = _stringify_payload_result(result)
 
@@ -425,7 +505,7 @@ class JobScheduler:
         # Compute the next run *now* so the UI list is current even if
         # APScheduler is slow to publish next_fire_time.
         try:
-            cron = CronTrigger.from_crontab(row["cron_expr"])
+            cron = CronTrigger.from_crontab(row["cron_expr"], timezone=_scheduler_timezone())
             nxt = cron.get_next_fire_time(None, now_iso_dt())
             next_run_at = _isoformat(nxt) if nxt else None
         except Exception:  # pragma: no cover — defensive
@@ -488,7 +568,7 @@ def _parse_cron(cron_expr: str) -> str:
     Raises :class:`InvalidCronError` on bad input.
     """
     try:
-        trigger = CronTrigger.from_crontab(cron_expr)
+        trigger = CronTrigger.from_crontab(cron_expr, timezone=_scheduler_timezone())
     except Exception as exc:
         raise InvalidCronError(f"invalid cron expression {cron_expr!r}: {exc}") from exc
     try:
@@ -517,6 +597,23 @@ def now_iso_dt() -> Any:
     from datetime import UTC, datetime
 
     return datetime.now(UTC)
+
+
+_IPC_SERVER: Any = None
+
+
+def set_scheduler_ipc_server(server: Any) -> None:
+    """Bind the process IPC server so prompt fires can run through the
+    RunService (M5). Called once at app startup."""
+    global _IPC_SERVER
+    _IPC_SERVER = server
+
+
+def _scheduler_timezone() -> str:
+    """M5 — cron timezone. Defaults to Asia/Shanghai per the planning doc."""
+    import os as _os
+
+    return _os.environ.get("MINIMAX_CODE_SCHEDULER_TIMEZONE", "Asia/Shanghai")
 
 
 async def _noop_runner(payload: dict[str, Any]) -> dict[str, Any]:

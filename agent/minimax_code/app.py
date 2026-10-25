@@ -808,6 +808,12 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_hosts import register_host_handlers
 
     register_host_handlers(server)
+
+    # M5 — prompt fires run through the RunService: give the scheduler
+    # the server handle for its synthetic contexts.
+    from .scheduler import set_scheduler_ipc_server
+
+    set_scheduler_ipc_server(server)
     # Runtime diagnostics — exposes the boot-time crash-recovery
     # snapshot (R12) so the Settings page can surface "recovered N
     # orphan runs after an unexpected shutdown". Read-only handler.

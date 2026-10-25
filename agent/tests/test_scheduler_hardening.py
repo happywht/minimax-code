@@ -210,3 +210,96 @@ async def test_payload_timeout_cancels_hung_runner(
         await loop.run_in_executor(None, _run_payload_sync, hung, {}, loop)
 
     await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+
+# ---------------------------------------------------------------------------
+# M5-C — scheduled prompts through the RunService
+# ---------------------------------------------------------------------------
+
+
+def test_scheduler_timezone_defaults_to_shanghai(monkeypatch) -> None:
+    import zoneinfo
+
+    from minimax_code.scheduler import _scheduler_timezone
+
+    monkeypatch.delenv("MINIMAX_CODE_SCHEDULER_TIMEZONE", raising=False)
+    tz = _scheduler_timezone()
+    assert tz == "Asia/Shanghai"
+    # The zone must be real — a typo would break every CronTrigger.
+    assert zoneinfo.ZoneInfo(tz) is not None
+    monkeypatch.setenv("MINIMAX_CODE_SCHEDULER_TIMEZONE", "UTC")
+    assert _scheduler_timezone() == "UTC"
+
+
+async def test_prompt_fire_runs_through_runservice(monkeypatch, tmp_path) -> None:
+    """A scheduled prompt fires the FULL native loop via send_message —
+    tools, permissions, budget and durable run rows — not the old
+    single-shot LLM call. Verified by intercepting the entry point and
+    asserting the receipt flows into the task bookkeeping."""
+
+    import minimax_code.ipc.builtins as builtins_mod
+    import minimax_code.scheduler as sched_mod
+
+    captured: dict[str, Any] = {}
+
+    class _FakeServer:
+        pass
+
+    async def fake_send(params: dict, ctx, *, wait: bool = True, **kwargs):
+        captured["params"] = params
+        captured["wait"] = wait
+        await ctx.reply({"session_id": params["session_id"],
+                         "message_id": "m1", "run_id": "run_1",
+                         "text": "scheduled work done", "stub": True})
+        return None
+
+    monkeypatch.setattr(builtins_mod, "handle_agent_send_message", fake_send)
+    monkeypatch.setattr(sched_mod, "_IPC_SERVER", _FakeServer(), raising=False)
+
+    from minimax_code.scheduler import JobScheduler
+
+    scheduler = JobScheduler.__new__(JobScheduler)  # skip __init__ wiring
+    result = await scheduler._run_prompt_via_runservice(
+        {"prompt": "refresh the dashboard", "job_id": "job-9",
+         "budget_tokens": 5000},
+        prompt="refresh the dashboard", session_id="ses-sched")
+
+    assert result["ok"] is True
+    assert result["output"] == "scheduled work done"
+    assert result["run_id"] == "run_1"
+    assert result["evidence"] == {"kind": "run", "run_id": "run_1"}
+    # The full native-loop contract: explicit session + budget + per-fire
+    # idempotency key (minute-window replay guard).
+    assert captured["params"]["session_id"] == "ses-sched"
+    assert captured["params"]["budget_tokens"] == 5000
+    assert captured["params"]["idempotency_key"].startswith("sched-job-9-")
+    assert captured["wait"] is True  # the fire completes with its run
+
+    # A failing turn lands as a structured error for the tasks row.
+    async def failing_send(params, ctx, *, wait=True, **kwargs):
+        await ctx.reply_error(-32603, "model exploded")
+        return None
+
+    monkeypatch.setattr(builtins_mod, "handle_agent_send_message", failing_send)
+    result = await scheduler._run_prompt_via_runservice(
+        {"prompt": "oops", "job_id": "job-9"},
+        prompt="oops", session_id="ses-sched")
+    assert result["ok"] is False
+    assert "model exploded" in result["error"]
+
+
+def test_prompt_fire_without_ipc_server_reports_error(monkeypatch) -> None:
+    """No IPC server bound (unit context) -> a structured error, not a
+    crash — the fire degrades to a failed task row."""
+    import asyncio
+
+    import minimax_code.scheduler as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_IPC_SERVER", None, raising=False)
+    from minimax_code.scheduler import JobScheduler
+
+    scheduler = JobScheduler.__new__(JobScheduler)
+    result = asyncio.run(scheduler._run_prompt_via_runservice(
+        {"prompt": "x", "job_id": "j"}, prompt="x", session_id="s"))
+    assert result["ok"] is False
+    assert "no IPC server bound" in result["error"]
