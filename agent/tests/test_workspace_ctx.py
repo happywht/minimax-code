@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -328,12 +329,13 @@ async def test_exec_default_cwd_is_session_root(tmp_path: Path) -> None:
     proj = tmp_path / "projA"
     proj.mkdir()
     # A cross-platform cwd probe: `pwd` doesn't exist on Windows, but a
-    # tiny python script printing os.getcwd() works everywhere.
+    # Use this test's interpreter: Ubuntu may provide python3 without a
+    # system-wide python alias, and the tool intentionally sanitizes PATH.
     (proj / "probe.py").write_text("import os; print(os.getcwd())", encoding="utf-8")
 
     token = set_current_root(proj)
     try:
-        result = await ExecCommandTool().run(cmd=["python", "probe.py"])
+        result = await ExecCommandTool().run(cmd=[sys.executable, "probe.py"])
         assert result.success, str(result.error)
         stdout = str(result.output["stdout"]).strip()
         assert Path(stdout).resolve() == proj.resolve()

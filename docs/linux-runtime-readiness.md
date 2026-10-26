@@ -51,6 +51,14 @@ RPC 认证验证。上传脚本为 CRLF 副本，和提交归一换行后相同�
 manifest 及日志 SHA 均匹配。暖到健康样本 2010.7 / 1959.0 毫秒，不作为冷启动验收；
 未执行浏览器渲染、容器或长驻部署，证据同见部署说明。
 
+对同一 `a775619` 基线另跑执行策略、终端与工作区六模块：首轮 101 通过、2 项 Windows
+专用跳过、1 失败，原因是 CWD 测试硬编码 `python`，Ubuntu 没有该系统别名。夹具改用
+`sys.executable`，保留安全 PATH 和工作目录断言；Windows 对应模块 16 项通过，Linux
+六模块 **102 项通过、2 项平台跳过**（4.80 秒）。远端先核对 1028 个原始源码文件，
+仅覆盖该测试文件运行，结束恢复原基线；覆盖文件 SHA 与日志 SHA 保存在
+`.verification/linux-execution-baseline-fixed.json`，首轮失败日志同样保留。
+这些验证现有 Native 进程/工作区行为，不是新 Podman 适配器验收。
+
 M5 仍须将受限执行适配器接入真实 RunService，校验明确的挂载、网络和资源配置，容器不可用时暂停无人值守任务。还需完成版本化安装、systemd 用户服务、受认证 SSH 隧道、Windows 断开后任务继续、重连恢复及文件交付。当前单次容器实测不能替代这些验收。
 
 参考：[Podman 安装](https://podman.io/docs/installation)、[Ubuntu 24.04 Podman run 手册](https://manpages.ubuntu.com/manpages/noble/man1/podman-run.1.html)。实现与部署应使用实际安装版本支持的参数。
