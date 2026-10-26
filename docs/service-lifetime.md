@@ -73,6 +73,17 @@ Python 3.12.3 上 **7 项通过**，覆盖争用、释放/死亡后接管、fork
 `.verification/service-lease-linux.{json,log,exit}`。这仅验证 lease 模块，未跑完整
 Linux 产品 CLI、容器或远程长驻任务，不用它填补那些验收门槛。
 
+随后对已提交 `a775619` 追加真实 Linux 完整依赖环境的六模块后端生命周期回归：
+**106 项通过、无跳过**（19.28 秒），包含实际 stdio CLI、fork、RunService、崩溃恢复
+和 HTTP/ASGI lifespan。归档仅含该提交的 agent，SHA-256 为
+`86998b1950c8bf95880e3220ba2c887d16c700d7644c8eaefcb587ba24de964a`，上传/执行前核对一致。
+在独立 `/tmp/minimax-product-l1-*` 内用 uv 0.10.8 和 `uv sync --frozen --extra dev`
+准备环境，强制 mock、空 keyring、隔离工作区/数据；未修改系统服务或启用付费模型。
+证据为 `.verification/linux-product-validation-{environment.json,backend-lifetime.log}`，
+同步及实际依赖版本另有原始日志。所跟踪阶段进程均已退出，临时环境明确保留供 L1
+联调；不据此声明所有系统进程无残留。这不是全量后端、独立 HTTP 进程/SPA 健康、
+容器、systemd、冷启动或完整安装恢复验收。
+
 回退前停止当前服务并确认实际退出，保留数据库和恢复证据，再恢复配套程序文件；
 本批无逆向迁移。锁文件可原地保留，不能通过删除文件来解除活跃服务所有权。
 本批不是完整备份恢复、Linux 容器适配、systemd 长驻或个人生产版本验收。
