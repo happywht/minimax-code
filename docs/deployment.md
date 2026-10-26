@@ -6,8 +6,9 @@ CLI 对每个受信本地数据目录持有一个排他服务锁；重复启动�
 
 `a775619` 已在真实 Linux 的隔离完整依赖环境通过六模块生命周期回归：106 项通过、
 无跳过，含实际 stdio CLI 和 HTTP/ASGI lifespan；固定归档/uv/lock 与日志 SHA 均有记录。
-该环境保留供 L1 联调，未安装长驻产品服务。它不替代独立 HTTP/SPA 健康、容器、
-冷启动或完整安装/恢复验证，具体范围与证据见同一生命周期说明。
+该环境保留供 L1 联调，未安装长驻产品服务。随后启动器追加 12 项通过、2 项
+Windows 专用跳过，含真实 HTTP/SPA HTML/认证；未替代容器、冷启动或完整安装/
+恢复验证，具体范围与证据见下文和同一生命周期说明。
 
 > MiniMax Code v0.12.0 起，`pnpm start` 使用同一 HTTP 服务提供前端与 API：
 > agent（FastAPI，默认 `127.0.0.1:8765`）同时服务 API 与构建后的前端 SPA。
@@ -151,6 +152,16 @@ Linux 追加检查使用提交 `c7c0029` 的四个脚本文件归档，在隔离
 `.verification/production-start-linux.log` 与 `production-start-linux.json`。
 本次没有安装依赖、修改服务配置或调用模型，不能据此证明 Linux 完整工具树清理、
 真实产品服务、容器执行适配、冷启动或 Windows 断线后任务继续。
+
+准备上述 `a775619` 完整后端后，使用其启动脚本内容（Windows checkout 的 CRLF
+副本，与 Git blob 归一换行后一致）及已验收的预构建 `web/dist` 追加实机检查：
+**12 项通过、2 项 Windows 专用跳过、0 失败**（8.69 秒）。413 个上传文件均按原字节
+manifest 核验。两项真实 Agent 测试分别运行 supervisor 与 CLI，验证 health、SPA HTML、
+未经认证 RPC 返回 401、认证 ping；暖启动到健康样本为 2010.7 / 1959.0 毫秒。
+证据为 `.verification/linux-product-launcher-full.{log,json,exit}`，资产归档 SHA-256：
+`1d2a377e4b107b2ad4d63cdc87ab9eaa61d3738845055d867737211b459584e2`。
+复用前端产物不等于本次构建或浏览器渲染；暖样本不等于冷启动门槛。临时环境保留，
+测试等待自身进程退出，但未据此宣称全系统无残留、容器、systemd 或完整 M7 已完成。
 
 本批不改数据库结构。回退启动入口时先停止原进程并保留运行恢复证据，再恢复匹配的
 脚本和 `package.json`；原启动命令会重新执行构建。用户数据、附件和数据库完整恢复
