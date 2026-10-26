@@ -60,6 +60,32 @@ restart=no、固定 seccomp path 和原有资源限制，保存相关原始 insp
 `Seccomp=2` 本身不证明文件内容，需资产 SHA、实际参数、inspect 与 syscall 探测共同
 支持；若 runtime 提供 OCI config 路径，再核对展开规则，不猜路径或读 payload 控制文件。
 
+当前真实平台的 schema 支持固定为 Podman 4.9.3：保存 info 中版本、kernel、arch、
+cgroup/runtime 和 rootless 映射证据，未知版本不能套用本节的省略或显示规则。
+Entrypoint 只接受精确字符串或精确单元素字符串数组，完整 Path/Args/Cmd 继续逐项
+核对，不进行 shell split 或类型强转。
+
+该版本的 `HostConfig.Init` 是官方 bool/omitempty，只允许键缺失或严格 false，
+显式 null、数字、字符串和 true 均拒绝；还须核对无 init=true annotation、private PID、
+完整固定 guard，并由其 fork 前 PID1 自检及私有 preflight 的父 PID=1 失败关闭。
+官方定义见 [4.9.3 inspect schema](https://raw.githubusercontent.com/containers/podman/v4.9.3/libpod/define/container_inspect.go)。
+
+`UsernsMode` 的真实 inspect 值为 private，不能凭该字符串推断 keep-id。将
+`HostConfig.IDMappings` 的 container→rootless 中间映射与 info 的中间→host 映射复合，
+核实目标 UID/GID、container root 不映射 host root。区间须严格解析、无重叠/溢出，
+覆盖需要核验的 ID；缺失或不兼容即拒绝。固定 preflight 输出自身内核 uid_map/gid_map、
+实际 UID/GID，与 inspect/info 及 owned 工作区可访问性交叉核验并固定映射 fingerprint。
+读取宿主 `/proc/<PID>` 时另需核对精确活跃 PID/starttime，不能读取复用 PID 补造证据。
+
+该版本 `LogConfig.Size` 来自 `HumanSize`，是四位有效数字 SI 显示，不能解析为精确
+配置字节。允许把实际请求 cap 降为 `min(5000000,max(1,floor(profile_limit*0.95)))`，
+不扩大 profile 上限。仅在已验证不超过 1 GiB 的正整数字节域和 B/kB/MB/GB 格式内，
+以保守显示上界核验：非字节单位可取 `ceil(display_bytes*1.001)+1`；小于 1000 B 的
+整数显示为精确字节。默认 5 MiB profile 请求 5000000 B，显示 5 MB 的上界 5005001 B
+仍在限额内。未知格式/版本/范围或上界超限均拒绝。保存原显示、算法版本、请求 cap
+和推导上界；CreateCommand 仅作审计，不能证明实际限额。格式实现见
+[固定版本依赖源码](https://raw.githubusercontent.com/containers/podman/v4.9.3/vendor/github.com/docker/go-units/size.go)。
+
 ## 真 PID1 算法
 
 1. fork 前校验有界输入、getpid()==1、boot_id、支持的时钟；设置并读回 dumpable=0。
