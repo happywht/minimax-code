@@ -9,7 +9,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { IPCClient, bindTypedIPC } from "../src/ipc";
 import { useSubAgentStore, runsForSession } from "../src/stores/subAgent";
-import { StreamEvent, type SubAgentProgress } from "../src/types/ipc";
+import { type SubAgentProgress } from "../src/types/ipc";
 
 function progressEvent(overrides: Partial<SubAgentProgress>): SubAgentProgress {
   return {
@@ -161,7 +161,7 @@ describe("Sub-agent progress event wiring (mock backend)", () => {
     await typed.spawnSubagent({
       agent_id: "agent_internal_123",
       agent_name: "general",
-      prompt: "summarise",
+      prompt: "summarise", session_id:"ses_x",idempotency_key:"mapping-test",
     });
 
     expect(request).toHaveBeenCalledWith(
@@ -174,41 +174,16 @@ describe("Sub-agent progress event wiring (mock backend)", () => {
     );
   });
 
-  it("spawnSubagent returns a run_id and the mock backend emits a stream of progress events", async () => {
-    const client = new IPCClient({ mockMode: true });
+  it("mock roots retain durable receipt and replay the original run", async () => {
+    const client = new IPCClient({ mockMode:true });
     const typed = bindTypedIPC(client);
-    const seen: SubAgentProgress[] = [];
-    client.on<SubAgentProgress>(StreamEvent.SubAgentProgress, (env) => {
-      if (env.data) seen.push(env.data);
-    });
-
-    const reply = await typed.spawnSubagent({
-      agent_id: "general",
-      prompt: "summarise",
-      parent_session_id: "ses_x",
-      context_message_id: "msg_x",
-      display_name: "Helper",
-    });
-    expect(reply.agent_run_id).toMatch(/^run_/);
-    expect(reply.agent_id).toBe("general");
-
-    // Wait for the mock backend's 5 staggered events (80ms each).
-    await new Promise((res) => setTimeout(res, 700));
-
-    expect(seen.length).toBeGreaterThanOrEqual(3);
-    // All events share the same run_id and carry parent_session_id.
-    for (const ev of seen) {
-      expect(ev.run_id).toBe(reply.agent_run_id);
-      expect(ev.parent_session_id).toBe("ses_x");
-      expect(ev.context_message_id).toBe("msg_x");
-      expect(ev.received_at).toBeGreaterThan(0);
-    }
-    // First event is "started", last is "completed" with progress 1.0.
-    expect(seen[0].status).toBe("started");
-    const last = seen[seen.length - 1];
-    expect(last.status).toBe("completed");
-    expect(last.progress).toBe(1);
-    expect(typeof last.text).toBe("string");
-    expect(last.text).toContain("summarise");
+    const session = await typed.createSession({title:"agent source"});
+    const args = {agent_id:"general",prompt:"summarise",session_id:session.session!.id,idempotency_key:crypto.randomUUID()};
+    const reply = await typed.spawnSubagent(args);
+    expect(reply.run_id).toBe(reply.agent_run_id);
+    expect(reply.session_id).not.toBe(args.session_id);
+    const saved = (await typed.getRun(reply.run_id)).result;
+    expect(saved && "text" in saved ? saved.text : "").toContain("summarise");
+    expect(await typed.spawnSubagent(args)).toEqual(reply);
   });
 });

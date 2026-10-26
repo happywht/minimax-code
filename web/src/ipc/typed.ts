@@ -306,6 +306,8 @@ export interface TypedIPC {
   // agent (multi-agent)
   listAgents(): Promise<ListAgentsResult>;
   spawnSubagent(opts: SpawnSubagentParams): Promise<SpawnSubagentResult>;
+  admitSubagent(opts: SpawnSubagentParams): Promise<RunAdmissionResult>;
+  invokeAgent(opts: SpawnSubagentParams): Promise<SpawnSubagentResult>;
   cancelSubagent(runId: string): Promise<{ ok: boolean; cancelled: boolean }>;
 
   // mobile
@@ -806,19 +808,9 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<ScheduleTriggerResult>("schedule.run_now", { job_id: jid, idempotency_key: idempotencyKey, expected_revision: expectedRevision }),
 
     listAgents: () => client.request<ListAgentsResult>("agent.list", {}),
-    // Map frontend keys → backend keys. New callers send agent_name
-    // because the backend registry is keyed by agents.name. agent_id
-    // remains as a legacy fallback for older UI/store paths.
-    spawnSubagent: (opts) =>
-      client.request<SpawnSubagentResult>("agent.spawn_subagent", {
-        name: opts.agent_name ?? opts.agent_id,
-        agent_id: opts.agent_id,
-        request: opts.prompt,
-        parent_session_id: opts.parent_session_id,
-        context_message_id: opts.context_message_id,
-        display_name: opts.display_name,
-        run_id: opts.run_id,
-      }),
+    spawnSubagent: (opts) => client.request<SpawnSubagentResult>("agent.spawn_subagent", agentIntent(opts)),
+    admitSubagent: (opts) => client.request<RunAdmissionResult>("agent.spawn_subagent", { ...agentIntent(opts), admission_only: true }),
+    invokeAgent: (opts) => client.request<SpawnSubagentResult>("agent.invoke", agentIntent(opts)),
     cancelSubagent: (runId) =>
       client.request<{ ok: boolean; cancelled: boolean }>("agent.cancel_subagent", { run_id: runId }),
 
@@ -1003,4 +995,11 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     extractMemoryFacts: (text) =>
       client.request<MemoryExtractResult>("memory.extract", { text }),
   };
+}
+
+function agentIntent(opts: SpawnSubagentParams) {
+  return { name: opts.agent_name ?? opts.agent_id, agent_id: opts.agent_id, request: opts.prompt,
+    session_id: opts.session_id, idempotency_key: opts.idempotency_key, parent_session_id: opts.parent_session_id,
+    context_message_id: opts.context_message_id, display_name: opts.display_name, run_id: opts.run_id,
+    model: opts.model, budget_tokens: opts.budget_tokens };
 }

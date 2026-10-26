@@ -102,7 +102,7 @@ export function InspectorContent({
       return (
         <section id={`${testId}-subagents-panel`} role="tabpanel" data-testid={`${testId}-sub-body`}>
           <Suspense fallback={<PanelFallback />}>
-            <SubAgentPanel testId={`${testId}-sub-panel`} />
+            <SubAgentPanel testId={`${testId}-sub-panel`} onOpenRun={onOpenReviewRun} />
           </Suspense>
         </section>
       );

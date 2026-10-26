@@ -413,14 +413,19 @@ class SubAgentRuntime:
         from ..schedule_context import scheduled_runtime
         scheduled = owned_runtime.get() or scheduled_runtime.get()
         saved = scheduled["context"] if scheduled else {}
+        child_model = saved.get("model", spec.model)
+        if scheduled and scheduled.get("profile_kind") == "agent" and config.model:
+            if config.model not in scheduled["verified_models"]:
+                raise SubAgentConfigError("Child model is not verified on the saved agent provider")
+            child_model = config.model
         core_config = AgentConfig(
-            model=saved.get("model", spec.model),
+            model=child_model,
             system_prompt_extra=config.system_prompt or None,
             max_iterations=config.max_iterations,
             reasoning_effort=self._reasoning_effort,
             # v1.1.0: real context window so the compaction gate opens for
             # sub-agents too (long tool loops blow the window fastest).
-            context_window=saved.get("context_window", context_window_for(spec.model)),
+            context_window=context_window_for(child_model) if child_model != saved.get("model") else saved.get("context_window", context_window_for(spec.model)),
         )
         core = AgentCore(
             llm=self._llm, registry=effective_registry, config=core_config,

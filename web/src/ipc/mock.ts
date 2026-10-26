@@ -66,7 +66,6 @@ import type {
   DeleteMessageResult,
   SetProviderApiKeyResult,
   SkillInfo,
-  SubAgentProgress,
   TelemetryMetrics,
   TelemetryRecentResult,
   TerminalListResult,
@@ -155,6 +154,7 @@ const mockPermissionRules: BackendPermissionRule[] = [];
 let mockDataEnvelope: DataExportEnvelope | null = null;
 const mockRunReceipts = new Map<string, import("../types/ipc").SendMessageResult>();
 const mockRunRequests = new Map<string, import("../types/ipc").SendMessageParams>();
+const mockAgentKeys = new Map<string, { signature: string; runId: string }>();
 const mockSkillKeys = new Map<string, { signature: string; runId: string }>();
 const mockRequestKeys = new Map<string, { signature: string; runId: string }>();
 const mockRunEvents = new Map<string, import("../types/ipc").RunEvent[]>();
@@ -1007,51 +1007,45 @@ function mockHandle(
     case "agent.list":
       return { agents: mockAgents };
 
+    case "agent.invoke":
     case "agent.spawn_subagent": {
-      // The mock backend fabricates a stream of ``agent.subagent_progress``
-      // events that mirror the real backend's v0.3.0 shape (see
-      // ``docs/v0.3.0-design.md`` §2). This lets the UI exercise the
-      // full progress / completion lifecycle in offline mode.
-      //
-      // NOTE: ``bindTypedIPC.spawnSubagent`` maps the frontend-facing
-      // ``SpawnSubagentParams`` fields (``agent_id``, ``prompt``) to the
-      // backend wire format (``name``, ``request``). The mock handler
-      // sees the mapped payload, so we read from ``name``/``request``.
       const p = params as Record<string, unknown>;
-      const agentName = (p.name as string) || "general";
-      const requestText = (p.request as string) || "";
-      // Prefer client-supplied run_id; fall back to server-generated.
-      const runId = (p.run_id as string) || `run_${Math.random().toString(36).slice(2, 10)}`;
-      const basePayload = {
-        run_id: runId,
-        agent_id: agentName,
-        parent_session_id: p.parent_session_id as string | undefined,
-        context_message_id: p.context_message_id as string | undefined,
-        received_at: Date.now(),
-      };
-      const stages: Array<{ status: SubAgentProgress["status"]; progress: number; summary: string; text?: string }> = [
-        { status: "started", progress: 0.05, summary: `starting ${agentName}` },
-        { status: "thinking", progress: 0.25, summary: `thinking about: ${requestText.slice(0, 40)}` },
-        { status: "tool_call", progress: 0.55, summary: "calling read_file" },
-        { status: "tool_result", progress: 0.7, summary: "got 2 lines" },
-        { status: "completed", progress: 1.0, summary: "done", text: `(mock sub-agent reply) ${requestText}` },
-      ];
-      stages.forEach((stage, i) => {
-        setTimeout(() => {
-          client._emit(StreamEvent.SubAgentProgress, {
-            ...basePayload,
-            ...stage,
-            received_at: Date.now(),
-          } satisfies SubAgentProgress);
-        }, 80 * (i + 1));
-      });
-      // Stub execution has no filesystem side effects and therefore no
-      // workspace field. Real runs return ChildWorkspaceSummary separately.
-      return { agent_run_id: runId, agent_id: agentName };
+      const sid = String(p.session_id ?? p.parent_session_id ?? "");
+      if (!sid || !String(p.idempotency_key ?? "").trim() || typeof p.request !== "string" || !p.request.trim())
+        throw new Error("Agent invocation requires explicit Native source session, request and stable key");
+      if (!mockSessions.has(sid) || mockSessions.get(sid)?.engine === "codex") throw new Error("Select an existing Native session");
+      if (["family_id", "parent_run_id", "instructions", "internal_agent"].some((key) => key in p)) throw new Error("Executable authority is server-owned");
+      const key = sid + "\0" + p.idempotency_key;
+      const signature = JSON.stringify({ ...p, run_id: undefined, admission_only: undefined, method });
+      const old = mockAgentKeys.get(key);
+      if (old) {
+        if (old.signature !== signature) throw new Error("idempotency_key already belongs to different agent input");
+        return structuredClone(p.admission_only ? {run: mockRuns.get(old.runId)!.run, created:false} : mockRunReceipts.get(old.runId));
+      }
+      const agent = mockAgents.find((item) => item.id === p.agent_id || item.name === p.name);
+      if (!agent?.enabled) throw new Error("Agent is missing or disabled");
+      if (agent.skills?.length) throw new Error("Agents with skills dependencies are not supported yet");
+      const execution = `ses_agent_${crypto.randomUUID()}`, rid = `run_agent_${crypto.randomUUID()}`;
+      const now = new Date().toISOString(), mid = `msg_${crypto.randomUUID()}`;
+      mockSessions.set(execution, {...mockSessions.get(sid)!, id:execution, title:`agent:${agent.name}`});
+      const run: import("../types/ipc").AgentRun = {id:rid,session_id:execution,mode:"execute",status:"completed",title:p.request.slice(0,32),
+        created_at:now,started_at:now,completed_at:now,assistant_message_id:mid,request_key:String(p.idempotency_key),
+        metadata:{agent_execution:{agent_id:agent.id,agent:agent.name,source_session_id:sid}}};
+      const receipt: import("../types/ipc").SpawnSubagentResult = {run_id:rid,agent_run_id:rid,agent_id:agent.id,agent:agent.name,
+        session_id:execution,run_status:"completed",status:"completed",text:`[mock] ${agent.name}: ${p.request}`,partial:false};
+      mockRuns.set(rid,{run,steps:[]});
+      mockRunReceipts.set(rid,{...receipt,run_status:"completed",message_id:mid,cancelled:false});
+      mockAgentKeys.set(key,{signature,runId:rid});
+      recordRunEvent(rid,"created",{run});
+      recordRunEvent(rid,"status",{run});
+      return structuredClone(p.admission_only ? {run,created:true} : mockRunReceipts.get(rid));
     }
-
-    case "agent.cancel_subagent":
-      return { ok: true, cancelled: false };
+    case "agent.cancel_subagent": {
+      const rid = String((params as {run_id?:string}).run_id ?? "");
+      const entry = mockRuns.get(rid);
+      if (!entry?.run.metadata?.agent_execution) throw new Error("Unknown durable public agent run");
+      return {ok:true,cancelled:false,cancel_requested:false,run_id:rid,run_status:entry.run.status};
+    }
 
     case "mobile.list":
       return { devices: [] };

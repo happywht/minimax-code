@@ -7,8 +7,8 @@ Pins the three wiring surfaces of per-project workspace roots:
    process default (zero prompt noise for default-root sessions).
 2. **Sub-agent entrypoints** — ``agent.invoke`` / ``agent.spawn_subagent``
    are top-level handlers (no parent task context to inherit), so each
-   wraps its ``runtime.invoke`` in ``session_root_scope``. The runtime
-   must observe the session's project root.
+   admits a Native run whose frozen profile and working copy derive from
+   the explicit source session, independently of the process default.
 3. **Team runs** — ``teams.spawn`` scopes the whole orchestrator run to
    the driving session's root; members spawned via ``create_task`` copy
    the context and inherit it.
@@ -26,6 +26,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_agent_execution import agent_env as agent_env
+from test_agent_execution import invoke as invoke_agent_root
+from test_skill_execution import skill_env as skill_env
 
 from minimax_code.app import set_projects_dao, set_sessions_dao
 from minimax_code.config import Config
@@ -338,88 +341,37 @@ async def test_prompt_advisory_absent_without_scope() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_invoke_scopes_to_project_root(
-    agent_handlers: dict[str, Any],
-    agent_dao: AgentDAO,
-    projects_dao: ProjectsDAO,
-    sessions_dao: SessionsDAO,
-    root_runtime: _RootRecordingRuntime,
-    tmp_path: Path,
-) -> None:
-    proj = tmp_path / "projA"
-    proj.mkdir()
-    pid = _pid()
-    await projects_dao.create(id=pid, name="A", root_path=str(proj))
-    sid = _sid()
-    await sessions_dao.create(id=sid, title="in A", project_id=pid)
-    set_projects_dao(projects_dao)
-    set_sessions_dao(sessions_dao)
-
-    name = _agname()
-    await agent_dao.upsert(name=name, system_prompt="x")
-    ctx = _FakeContext()
-    await agent_handlers["agent.invoke"](
-        {"name": name, "request": "hi", "session_id": sid}, ctx
-    )
-
-    assert ctx.error_value is None, ctx.error_value
-    assert root_runtime.observed == [proj.resolve()]
-    assert current_root() is None  # scope closed — no leak into the caller
+async def test_invoke_scopes_to_project_root(agent_env, monkeypatch):
+    state = agent_env
+    other = state.root / "global-b"
+    other.mkdir()
+    (other / "hello.txt").write_text("global-b",encoding="utf-8")
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(other))
+    ctx = await invoke_agent_root(state)
+    ctx.reply_error.assert_not_awaited()
+    result = ctx.reply.await_args.args[0]
+    assert Path(result["workspace"]["path"]).joinpath("hello.txt").read_text() == "source-a"
+    assert result["workspace"]["path"] != str(other)
+    assert current_root() is None
 
 
-@pytest.mark.asyncio
-async def test_invoke_defaults_without_project(
-    agent_handlers: dict[str, Any],
-    agent_dao: AgentDAO,
-    sessions_dao: SessionsDAO,
-    projects_dao: ProjectsDAO,
-    root_runtime: _RootRecordingRuntime,
-) -> None:
-    """A session without a project resolves to the process default root."""
-    sid = _sid()
-    await sessions_dao.create(id=sid, title="no project")
-    set_sessions_dao(sessions_dao)
-    set_projects_dao(projects_dao)
 
-    name = _agname()
-    await agent_dao.upsert(name=name, system_prompt="x")
-    ctx = _FakeContext()
-    await agent_handlers["agent.invoke"](
-        {"name": name, "request": "hi", "session_id": sid}, ctx
-    )
-
-    assert ctx.error_value is None, ctx.error_value
-    assert root_runtime.observed == [env_or_cwd_root()]
+async def test_invoke_defaults_without_project(agent_env):
+    # An explicit Native source session owns the selected workspace even inbox.
+    ctx = await invoke_agent_root(agent_env)
+    ctx.reply_error.assert_not_awaited()
+    row = await agent_env.dao.get_run(ctx.reply.await_args.args[0]["run_id"])
+    assert row["metadata"]["agent_execution"]["source_workspace"] == str(agent_env.source)
 
 
-@pytest.mark.asyncio
-async def test_spawn_subagent_scopes_to_parent_session_root(
-    agent_handlers: dict[str, Any],
-    agent_dao: AgentDAO,
-    projects_dao: ProjectsDAO,
-    sessions_dao: SessionsDAO,
-    root_runtime: _RootRecordingRuntime,
-    tmp_path: Path,
-) -> None:
-    proj = tmp_path / "projB"
-    proj.mkdir()
-    pid = _pid()
-    await projects_dao.create(id=pid, name="B", root_path=str(proj))
-    sid = _sid()
-    await sessions_dao.create(id=sid, title="parent", project_id=pid)
-    set_projects_dao(projects_dao)
-    set_sessions_dao(sessions_dao)
 
-    name = _agname()
-    await agent_dao.upsert(name=name, system_prompt="x")
-    ctx = _FakeContext()
-    await agent_handlers["agent.spawn_subagent"](
-        {"name": name, "request": "hi", "parent_session_id": sid}, ctx
-    )
+async def test_spawn_subagent_scopes_to_parent_session_root(agent_env):
+    ctx = await invoke_agent_root(agent_env, "agent.spawn_subagent")
+    ctx.reply_error.assert_not_awaited()
+    result = ctx.reply.await_args.args[0]
+    assert result["parent_session_id"] == "one"
+    assert Path(result["workspace"]["path"]).joinpath("hello.txt").read_text() == "source-a"
 
-    assert ctx.error_value is None, ctx.error_value
-    assert root_runtime.observed == [proj.resolve()]
 
 
 # ---------------------------------------------------------------------------
@@ -550,64 +502,24 @@ async def test_repo_map_default_root_writes_legacy_slot(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_send_message_publishes_and_resets_root(
-    projects_dao: ProjectsDAO,
-    tmp_path: Path,
-) -> None:
-    """The run publishes the session root before AgentCore.run and
-    resets it in the finally block — no ContextVar leak afterwards."""
-    proj = tmp_path / "projSend"
-    proj.mkdir()
-    pid = _pid()
-    await projects_dao.create(id=pid, name="S", root_path=str(proj))
-    sid = _sid()
-    # Publish the project DAO so workspace_ctx can resolve pid -> root;
-    # the sessions DAO is faked below (single row carrying project_id).
-    set_projects_dao(projects_dao)
+async def test_send_message_publishes_and_resets_root(agent_env, monkeypatch):
+    from test_budget_transport import client, response
+    from test_run_service import Context
 
-    fake_sessions = _FakeSessionsDAO({"id": sid, "project_id": pid})
-
-    mock_result = MagicMock()
-    mock_result.final_text = "done"
-    mock_result.iterations = 1
-    mock_result.usage = {}
-    mock_core = MagicMock()
-    observed: list[Path | None] = []
-
-    async def _capture_run(*args: Any, **kwargs: Any) -> MagicMock:
+    from minimax_code import app
+    state = agent_env
+    observed = []
+    def wire(request):
         observed.append(current_root())
-        return mock_result
-
-    mock_core.run = AsyncMock(side_effect=_capture_run)
-
-    ctx = _FakeContext(server=IPCServer(Config()))
-    with (
-        patch("minimax_code.app.get_subagent_llm", return_value=SimpleNamespace(default_model="test", mock=True)),
-        patch("minimax_code.app.init_runtime", return_value=MagicMock()),
-        patch("minimax_code.app.get_sessions_dao", return_value=fake_sessions),
-        patch("minimax_code.app.get_db", return_value=_make_fake_db()),
-        patch(
-            "minimax_code.storage.dao.runs.AgentRunsDAO",
-            return_value=_make_fake_runs_dao(),
-        ),
-        patch("minimax_code.agent.AgentCore", return_value=mock_core),
-        patch(
-            "minimax_code.ipc.builtins._build_system_prompt_extra",
-            return_value=None,
-        ),
-        patch(
-            "minimax_code.perm_consent.PermissionGater",
-            return_value=MagicMock(),
-        ),
-        patch(
-            "minimax_code.ipc.handlers_permissions._ensure_permission_store",
-            return_value=None,
-        ),
-    ):
-        await handle_agent_send_message({"content": "hi", "session_id": sid}, ctx)
-
-    assert ctx.error_value is None, ctx.error_value
-    assert ctx.reply_value is not None
-    assert observed == [proj.resolve()], "AgentCore.run must see the project root"
-    assert current_root() is None, "root must be reset after the run"
+        return response()
+    llm = client(wire, require_budget=True)
+    monkeypatch.setattr(app, "get_subagent_llm", lambda:llm)
+    monkeypatch.setattr(app, "ensure_hook_manager", lambda:None)
+    ctx = Context(state.server)
+    try:
+        await handle_agent_send_message({"content":"hi","session_id":"one"},ctx)
+        ctx.reply_error.assert_not_awaited()
+        assert observed == [state.source]
+        assert current_root() is None
+    finally:
+        await llm.close()

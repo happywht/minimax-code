@@ -295,6 +295,8 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             await ctx.reply({"ok": True, "session_id": session_id})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("session.delete failed")
             await ctx.reply_error(

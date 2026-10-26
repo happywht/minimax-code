@@ -421,10 +421,14 @@ export interface SpawnSubagentParams {
   /** Legacy/internal id. Kept for existing callers; backend now tolerates name or id. */
   agent_id: string;
   prompt: string;
+  session_id: string;
+  idempotency_key: string;
+  model?: string;
+  budget_tokens?: number;
   parent_session_id?: string;
   context_message_id?: string;
   display_name?: string;
-  /** Client-generated run_id — passed to backend to avoid orphaned optimistic rows. */
+  /** Client association only; the server always allocates the durable run ID. */
   run_id?: string;
 }
 
@@ -1243,6 +1247,12 @@ export interface PreviewAccessResult {
 }
 
 export interface SpawnSubagentResult {
+  run_id: string;
+  session_id: string;
+  run_status: AgentRunStatus;
+  text: string;
+  agent: string;
+  status: AgentRunStatus;
   agent_run_id: string;
   agent_id: string;
   workspace?: ChildWorkspaceSummary;
@@ -1505,6 +1515,12 @@ export interface SubAgentProgress {
 /** Frontend-tracked row for a single sub-agent run (UI state). */
 export interface SubAgentRun {
   run_id: string;
+  session_id?: string;
+  run_status?: AgentRunStatus;
+  request?: SpawnSubagentParams;
+  admission_unknown?: boolean;
+  cancel_requested?: boolean;
+  partial?: boolean;
   agent_id: string;
   agent_name: string;
   display_name?: string;

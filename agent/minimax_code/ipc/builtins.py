@@ -318,6 +318,11 @@ class _RunRecorder:
                 "verification": verification,
             },
         )
+        if self.run_metadata.get("agent_execution") is not None and (
+            run is None or run["id"] != self.run_id or run["status"] != status
+        ):
+            from ..run_errors import RunPersistenceError
+            raise RunPersistenceError("Agent terminal receipt could not be confirmed")
         await self.emit("run.completed", {"run": run})
         await self._persist_memories(result)
 
@@ -408,6 +413,7 @@ async def _build_system_prompt_extra(
     session_id: str | None = None,
     project_id: str | None = None,
     validate_command_override: str | None = None,
+    workspace_advisory_override: str | None = None,
 ) -> str | None:
     """Build the ``system_prompt_extra`` payload for the current turn.
 
@@ -439,9 +445,11 @@ async def _build_system_prompt_extra(
     # anchored at a project root that differs from the process default
     # — sessions on the default root see no extra prompt noise.
     try:
+        from pathlib import Path
+
         from ..workspace_ctx import current_root, env_or_cwd_root
 
-        root = current_root()
+        root = Path(workspace_advisory_override) if workspace_advisory_override else current_root()
         if root is not None and root != env_or_cwd_root():
             parts.append(
                 f"Workspace root for this session: {root}\n"
@@ -551,6 +559,12 @@ async def _reply_for_run(ctx, dao, service, run, job, *, created, wait):
             # and later retries. If persistence failed, report unconfirmed below.
             logger.debug("Run worker exited with an error", exc_info=True)
     receipt = await dao.result_payload(run["id"])
+    if "agent_execution" in (run.get("metadata") or {}):
+        current = await dao.get_run(run["id"])
+        if current is None or current["status"] not in {"completed", "failed", "cancelled", "interrupted", "budget_paused"}:
+            await ctx.reply_error(LLM_ERROR, "Agent terminal state is unconfirmed; inspect the retained run before recovery",
+                                  {"run_id": run["id"], "requires_review": True})
+            return
     if receipt is not None:
         if "error" in receipt:
             error = receipt["error"]
@@ -568,6 +582,7 @@ async def handle_agent_send_message(
     required_model: dict[str, Any] | None = None, required_workspace: str | None = None,
     continuation: bool = False, internal_schedule: dict[str, Any] | None = None,
     internal_skill: Any = None, skill_model: ModelSnapshot | None = None, skill_runtime: Any = None,
+    internal_agent: Any = None,
 ) -> None:
     from ..execution import ExecutionPolicy, execution_scope
     from ..storage.dao.runs import AgentRunsDAO, RequestConflictError
@@ -575,6 +590,9 @@ async def handle_agent_send_message(
     if not isinstance(params, dict):
         await ctx.reply_error(-32602, "params must be an object")
         return
+    profile_key = "agent_execution" if internal_agent is not None else "skill_execution"
+    if internal_agent is not None:
+        internal_skill = internal_agent
     mode = params.get("mode", "chat")
     if mode not in {"chat", "plan", "execute"}:
         await ctx.reply_error(-32602, "mode must be chat, plan, or execute")
@@ -591,7 +609,8 @@ async def handle_agent_send_message(
     session_id = str(params.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
     request = {"session_id": session_id, "mode": mode, "content": copy.deepcopy(content)}
     if internal_skill is not None:
-        request["skill_intent"] = copy.deepcopy(params["skill_intent"])
+        intent_key = "agent_intent" if internal_agent is not None else "skill_intent"
+        request[intent_key] = copy.deepcopy(params[intent_key])
     service = get_run_service(ctx.server)
     try:
         from ..app import get_db, get_sessions_dao, init_runtime
@@ -604,6 +623,10 @@ async def handle_agent_send_message(
         scheduled = await db.fetchone("SELECT id FROM schedule_occurrences WHERE session_id=? LIMIT 1", (session_id,))
         if scheduled and internal_schedule is None:
             await ctx.reply_error(-32602, "Scheduled conversations require reviewed run.resume with their saved context")
+            return
+        agent_bound = await db.fetchone("SELECT run_id FROM agent_root_admissions WHERE execution_session_id=?", (session_id,))
+        if agent_bound and internal_agent is None:
+            await ctx.reply_error(-32602, "Agent execution sessions require their saved profile through run.resume or continue_run")
             return
         pinned = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (session_id,))
         if pinned and pinned["engine"] != "native":
@@ -632,15 +655,19 @@ async def handle_agent_send_message(
         sessions = get_sessions_dao()
         if sessions is None:
             raise RuntimeError("Session storage is unavailable")
-        session = await sessions.get(session_id)
-        if session is None:
-            try:
-                session = await sessions.create(id=session_id, title=f"chat:{title}", system_prompt="", model=None)
-            except Exception:
-                session = await sessions.get(session_id)
-                if session is None:
-                    raise
-        root = str(await resolve_root_for_session(session_id))
+        if internal_agent is not None and not resumed_from_id:
+            session = {"project_id": internal_agent.data["project_id"]}
+            root = internal_agent.data["workspace"]
+        else:
+            session = await sessions.get(session_id)
+            if session is None:
+                try:
+                    session = await sessions.create(id=session_id, title=f"chat:{title}", system_prompt="", model=None)
+                except Exception:
+                    session = await sessions.get(session_id)
+                    if session is None:
+                        raise
+            root = str(await resolve_root_for_session(session_id))
         if required_workspace is not None and root != required_workspace:
             raise RuntimeError("Session workspace changed; restore its binding or start a new task")
         project_id = session.get("project_id")
@@ -706,14 +733,18 @@ async def handle_agent_send_message(
                 logger.exception("scheduled model client close failed")
 
     async def execute(job: RunJob) -> None:
+        nonlocal internal_skill
         from ..budget_ledger import BudgetHandle, budget_scope
         from ..run_ownership import owned_runtime
         from ..schedule_context import RetainedChildren, scheduled_runtime
         job.budget_handle = await BudgetHandle.for_run(db, job.run_id, daily_limit=daily_limit)
         children = RetainedChildren() if internal_schedule is not None or internal_skill is not None else None
         schedule_token = scheduled_runtime.set({"context":internal_schedule["context"],"children":children}) if internal_schedule is not None else None
-        owner_token = owned_runtime.set({"context": internal_skill.data["model_snapshot"], "children": children}) if internal_skill is not None else None
+        owner_token = owned_runtime.set({"context": internal_skill.data["model_snapshot"], "children": children,
+            **({"profile_kind": "agent", "verified_models": internal_skill.data["verified_models"]} if internal_agent is not None else {})}) if internal_skill is not None else None
         try:
+            if internal_agent is not None:
+                internal_skill = await internal_skill.prepare(db, job.run_id)
             if internal_skill is not None:
                 # Validate revocations and dependency identity when the queued
                 # worker actually obtains the session lease.
@@ -805,7 +836,7 @@ async def handle_agent_send_message(
         run, job, created = await admit_owned(service.admit(
             dao=dao, session_id=session_id, request=request, request_key=key, title=title,
             metadata={**({"schedule": internal_schedule} if internal_schedule is not None else {}),
-                      **({"skill_execution": internal_skill.snapshot()} if internal_skill is not None else {}),
+                      **({profile_key: internal_skill.snapshot()} if internal_skill is not None else {}),
                       "model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
                       "project_id": project_id,
                       "validate_command": validate_command,
@@ -1170,7 +1201,8 @@ async def _handle_agent_send_message(
                 **({"validate_command_override": job.validate_command} if internal_schedule is not None else {}),
             ),
             **({"skill_instructions":internal_skill.data["instructions"],
-                "max_iterations":internal_skill.data["max_iterations"]} if internal_skill is not None else {}),
+                "max_iterations":internal_skill.data["max_iterations"],
+                "temperature":internal_skill.data.get("temperature")} if internal_skill is not None else {}),
             stall_timeout=stall_timeout,
             reasoning_effort=model_snapshot.reasoning_effort,
             context_window=model_snapshot.context_window,
@@ -1481,8 +1513,11 @@ async def _handle_agent_send_message(
             if internal_skill is not None:
                 job.result = internal_skill.receipt(job.result, tool_calls=getattr(result, "tool_calls", None) or [])
             current_run = await runs_dao.get_run(job.run_id)
-            await runs_dao.update_run_status(job.run_id,status=current_run["status"],result=job.result,
+            saved_preliminary = await runs_dao.update_run_status(job.run_id,status=current_run["status"],result=job.result,
                 metadata={**(current_run.get("metadata") or {}),"verification":pending_proof})
+            if internal_skill is not None and saved_preliminary is None:
+                from ..run_errors import RunPersistenceError
+                raise RunPersistenceError("Owned preliminary receipt could not be confirmed")
         if children is not None:
             descendants = await children.drain(cancel=bool(result.cancelled or result.truncated or getattr(result,"budget_exhausted",False)))
         child_drain_complete = True
@@ -1615,8 +1650,11 @@ async def _handle_agent_send_message(
     # Save the output before waiting for validation. Cancellation/restart must
     # preserve the answer while leaving configured-but-unfinished proof unknown.
     current_run = await runs_dao.get_run(job.run_id)
-    await runs_dao.update_run_status(job.run_id, status=current_run["status"], result=job.result,
+    saved_preliminary = await runs_dao.update_run_status(job.run_id, status=current_run["status"], result=job.result,
         metadata={**(current_run.get("metadata") or {}), "verification": verification})
+    if internal_skill is not None and saved_preliminary is None:
+        from ..run_errors import RunPersistenceError
+        raise RunPersistenceError("Owned preliminary receipt could not be confirmed")
     verification = await verify_native_result(status=execution_status, mode=params.get("mode", "chat"),
         command=job.validate_command, workspace=job.workspace, truncated=bool(result.truncated), base=verification_base)
     job.result["verification"] = verification
@@ -1811,13 +1849,24 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
             await ctx.reply_error(-32602, "Saved skill intent is missing; start a new task")
             return
         skill_intent = {"skill_intent": previous["skill_intent"]}
+    agent_spec = None
+    if "agent_execution" in metadata or (previous and "agent_intent" in previous):
+        from ..agent_execution import AgentExecutionSpec
+        try:
+            agent_spec = AgentExecutionSpec(metadata.get("agent_execution"))
+            if previous is None or "agent_intent" not in previous:
+                raise ValueError("Saved agent intent is missing; start a new task")
+        except ValueError as exc:
+            await ctx.reply_error(-32602, str(exc))
+            return
+        skill_intent = {"agent_intent": previous["agent_intent"]}
     await handle_agent_send_message(
         {"session_id": session_id, "content": _CONTINUE_PROMPT + f"\n[Continuation of run {run['id']}]",
          "mode": run.get("mode", "chat"), "idempotency_key": key,
          "budget_tokens": (metadata.get("budget") or {}).get("limit_tokens"), **skill_intent}, ctx,
         resumed_from_id=run["id"], continuation=True,
         required_model=metadata.get("model_snapshot"), required_workspace=metadata.get("workspace_snapshot"),
-        internal_skill=skill_spec,
+        internal_skill=skill_spec, internal_agent=agent_spec,
     )
 
 

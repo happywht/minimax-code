@@ -259,7 +259,7 @@ on the next `readline() == ""`.
 | `message.list` / `message.update` / `message.delete` | req/res | List messages in a session; update or delete a single message. |
 | `skill.list` / `skill.install` / `skill.uninstall` / `skill.enable` / `skill.disable` / `skill.invoke` | req/res | List, import, remove, configure, and invoke skills. |
 | `scheduler.*`              | req/res   | Reserved.                                          |
-| `agent.list` / `agent.spawn_subagent` | req/res | Sub-agent list and spawn. `agent.spawn_subagent` is keyed by `name` (`agents.name`); clients may also pass legacy `agent_id`, and the backend resolves by name first, then id. Since v1.4.0, sub-agents spawned through the `spawn_subagent` **tool path** also emit `agent.subagent_progress` events (same wire shape, always carrying `parent_session_id`) and persist to `agent_runs` with `mode='subagent'` — the SubAgentPanel picks them up with zero frontend changes. |
+| `agent.list` / `agent.spawn_subagent` | req/res | List configurations or admit a durable Native agent root. Spawn and invoke require explicit Native source `session_id`, stable `idempotency_key`, nonempty string `request`, and required `name` (which may itself carry a legacy ID), with optional compatibility `agent_id`. See the execution contract below. Internal tool children also retain progress events and their own persistent runs. |
 | `mobile.*`                 | req/res   | Phase 2.                                            |
 | `permission.*`             | req/res   | Tool-call consent rules; ships `exec_*` → ask factory defaults in code (R18). See §6 for the full method table. |
 | `model.list` / `model.get_current` / `model.set_current` / `model.set_reasoning_effort` | req/res | Dynamic model list + current selection + reasoning-effort override. `model.list` entries may carry optional reasoning-effort meta (R58); the `model.list` and `model.get_current` responses echo the user's persisted `reasoning_effort` override (R61 read-back). |
@@ -274,12 +274,38 @@ on the next `readline() == ""`.
 
 ### Sub-agent working copies (M1, additive result fields)
 
+Public `agent.invoke` and `agent.spawn_subagent` share the existing Native admitted executor.
+A replay finds the source/key intent before live configuration/model lookup. Required
+`name` (name or legacy ID) resolves first; optional `agent_id` is a compatibility identity
+fallback. Changed input under that key is INVALID_PARAMS. Optional
+`parent_session_id` is a source-session alias and must agree with `session_id` when both are
+present. `context_message_id` and `display_name` are provenance/display fields. Client `run_id`
+is only a receipt association; callers cannot supply family IDs, execution instructions or
+internal profiles. Agents with nonempty skills dependencies currently fail before admission.
+
+Admission atomically saves an independent execution session, queued run, new budget family,
+event and schema038 source/key mapping. Only the created RunService owner prepares one working
+copy, persists its identity and enters the Native core. Public roots do not inherit the source's
+budget family. Trusted tool descendants inherit their actual durable parent's family.
+`admission_only:true` returns the normal `{run,created}` admission envelope. Waiting calls retain
+`agent`, `text`, `agent_run_id` and add `run_id`, execution `session_id`, `run_status`, `status`,
+partial flags and workspace evidence; the durable result is saved before terminal completion.
+Queries and replay return that same receipt, including after restart.
+
+`agent.cancel_subagent` takes the durable `run_id` and returns request acknowledgement
+(`cancel_requested`/compatibility `cancelled`) plus observed `run_status`; acknowledgement does
+not certify cleanup finished. Read the run's actual terminal state. Reviewed `run.resume` and
+`agent.continue_run` retain saved profile, prepared copy and cumulative family. Pending or
+unconfirmed preparation cannot be rebuilt automatically. See [agent-execution.md](agent-execution.md)
+for supported models, revocations, recovery and evidence boundaries.
+
 Real `agent.invoke`, `agent.spawn_subagent`, `spawn_subagent` tool runs and
 `team.spawn` members now use an independent working copy by default. Git roots
 use detached worktrees; other roots use owned directories. `sandbox=false`
 does not restore shared-directory execution. The explicit legacy
 `sandbox=true` file overlay remains available and still forbids shell commands.
-Stub/mock runs create no working copy and omit this field.
+Public Native mock execution uses the same durable admission and working-copy contract.
+The frontend-only mock backend simulates those receipts without filesystem isolation.
 
 Their result may include `workspace` (`ChildWorkspaceSummary` in Python/TS):
 

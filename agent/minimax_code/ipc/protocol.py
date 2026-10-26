@@ -366,6 +366,30 @@ class Request(_Base):
         return self.model_dump_json(exclude_none=True)
 
 
+class AgentInvokeParams(_Base):
+    """Public root intent; family, instructions and execution IDs are private."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1)
+    request: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    agent_id: str | None = None
+    parent_session_id: str | None = None
+    context_message_id: str | None = None
+    display_name: str | None = None
+    run_id: str | None = None
+    model: str | None = None
+    budget_tokens: int | None = Field(default=None, gt=0)
+    admission_only: bool = False
+
+    @field_validator("name", "request", "session_id", "idempotency_key")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("A non-blank string is required")
+        return value
+
+
 class SkillInvokeParams(_Base):
     """Client intent only; executable skill authority is resolved server-side."""
     model_config = ConfigDict(extra="forbid", strict=True)

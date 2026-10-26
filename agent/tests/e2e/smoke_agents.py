@@ -1,42 +1,7 @@
-"""E2E smoke test for the ``agent.*`` (sub-agent) IPC namespace.
+"""Subprocess smoke for durable Native agent admission and saved receipts.
 
-This is a black-box subprocess test. It:
-
-1. Spawns the agent via ``python -m minimax_code`` (the same
-   entry point Tauri uses).
-2. Creates a sub-agent config via ``agent.create`` (system prompt
-   + model). The DAO round-trip is the same path the UI uses
-   when the user hits "new sub-agent".
-3. Invokes the sub-agent via ``agent.invoke``. With the process-
-   wide ``MiniMaxClient`` wired in by
-   :func:`minimax_code.app._maybe_open_db`, the response is the
-   model's actual final text (or the mock-mode canned string
-   when ``MINIMAX_API_KEY`` is unset). The handler also emits a
-   ``agent.message_chunk`` event with the same text.
-4. Confirms ``task_id`` is wired through the progress tracker
-   and the task lifecycle (``task.list`` finds the row in
-   ``completed`` state).
-5. Shuts the agent down cleanly.
-
-Pass criteria
--------------
-
-* Every JSON-RPC call returns without an error envelope.
-* ``agent.create`` round-trips a row in the ``agents`` table
-  (visible in the very next ``agent.list``).
-* ``agent.invoke`` returns ``stub=False`` (because the runtime
-  has an injected LLM) and a non-empty ``text`` field.
-* If the smoke runner set ``MINIMAX_API_KEY`` in the
-  environment, the response ``text`` MUST NOT start with the
-  stub prefix — it must be the real model answer.
-* A ``task.*`` row is visible in ``completed`` state.
-
-Usage
------
-
-``python tests/e2e/smoke_agents.py <python> <agent_dir> [<workdir>]``
-
-Exit code 0 = pass, 1 = fail.
+The runner supplies an isolated data/workspace directory. Verification can
+force mock mode; this script does not certify a paid provider from a key alone.
 """
 
 from __future__ import annotations
@@ -57,10 +22,8 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
     # Isolate the DB so the test never touches the real user profile.
     env["MINIMAX_CODE_DATA_DIR"] = workdir
 
-    has_api_key = bool(env.get("MINIMAX_API_KEY"))
-
     proc = await asyncio.create_subprocess_exec(
-        python, "-m", "minimax_code",
+        python, "-m", "minimax_code", "--stdio",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -153,6 +116,11 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         else:
             print(f"[agent.list] ok, total={r['result'].get('total')}")
 
+    source = await call("session.create", {
+        "title": "Agent smoke source", "engine": "native",
+        "workspace_path": str(Path(workdir).resolve()),
+    })
+    source_id = source.get("result", {}).get("session", {}).get("id")
     # 4. agent.invoke — the real-LLM path (the runtime has the
     # process-wide MiniMaxClient injected at boot).
     r = await call(
@@ -160,6 +128,8 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         {
             "name": agent_name,
             "request": "In one short sentence, what does this code do?",
+            "session_id": source_id,
+            "idempotency_key": "smoke-agent-once",
         },
         timeout=20.0,
     )
@@ -168,6 +138,9 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         print("[agent.invoke] FAIL", r)
         return _finish(proc, failures)
     result = r["result"]
+    durable = await call("run.get", {"run_id": result["run_id"]})
+    if durable.get("result", {}).get("result") != result:
+        failures.append("run.get: waiting result was not durably retained")
     text = result.get("text", "")
     is_stub = result.get("stub", True)
     iterations = result.get("iterations", 0)
@@ -178,42 +151,12 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
     )
     print(f"[agent.invoke] text={text[:120]!r}{'...' if len(text) > 120 else ''}")
 
-    # The runtime was built with a real (or mock-mode)
-    # MiniMaxClient, so ``stub`` must be False and ``text``
-    # must be non-empty.
-    if is_stub is not False:
-        failures.append(
-            f"agent.invoke: expected stub=False (real-LLM path), got {is_stub!r}"
-        )
-    if not isinstance(text, str) or not text.strip():
-        failures.append(
-            f"agent.invoke: text must be a non-empty string, got {text!r}"
-        )
+    if not isinstance(text, str) or not text.strip() or "stub: agent" in text:
+        failures.append(f"agent.invoke: expected Native answer, got {text!r}")
     if not isinstance(iterations, int) or iterations < 1:
-        failures.append(
-            f"agent.invoke: iterations must be >=1, got {iterations!r}"
-        )
-    # The model's actual text must not be the stub prefix.
-    if "stub:" in text:
-        failures.append(
-            f"agent.invoke: text contains 'stub:' prefix (LLM path not taken): {text!r}"
-        )
-
-    # When the smoke runner has set MINIMAX_API_KEY, the response
-    # should be the real model answer (not the mock-mode canned
-    # text either). We assert the stub prefix is absent — which
-    # it is, regardless of mock-vs-real, because the new path
-    # never emits the stub prefix. (Tighten this further when
-    # the smoke runner is wired to a fixture that returns a
-    # known phrase.)
-    if has_api_key and "stub:" in text:
-        failures.append(
-            f"agent.invoke: MINIMAX_API_KEY is set but text still contains "
-            f"'stub:' prefix: {text!r}"
-        )
-    print(
-        f"[agent.invoke] has_api_key={has_api_key} stub_prefix_absent={'stub:' not in text}"
-    )
+        failures.append(f"agent.invoke: iterations must be >=1, got {iterations!r}")
+    if result.get("run_status") != "completed":
+        failures.append(f"agent.invoke: expected completed receipt, got {result.get('run_status')!r}")
 
     # 5. task.list — the progress row landed.
     if task_id:
@@ -264,11 +207,9 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
             print(f"  FAIL: {f}")
         return 1
     print("  PASS: agent.create round-trips a row in the agents table")
-    print("  PASS: agent.invoke returns stub=False with a real-LLM text")
+    print("  PASS: agent.invoke returns a durable Native answer")
     print("  PASS: 'stub:' prefix is absent from the response text")
-    if has_api_key:
-        print("  PASS: MINIMAX_API_KEY was set; response is the real model answer")
-    print("  PASS: progress task lifecycle (start → 50 → complete) recorded")
+    print("  PASS: durable receipt matches run.get")
     return 0
 
 

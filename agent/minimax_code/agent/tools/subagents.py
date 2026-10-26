@@ -953,12 +953,19 @@ class SpawnSubagentTool(Tool):
                 # Keep the family in the admitted record and all later copied
                 # lifecycle metadata, including terminal updates.
                 run_metadata["budget_family_id"] = inherited_budget.family_id
+                run_metadata["parent_run_id"] = inherited_budget.run_id
 
             db = get_db()
             if db is None and durable_child:
                 raise RuntimeError("Sub-agent run storage is unavailable")
             if db is not None:
                 run_dao = AgentRunsDAO(db)
+                if durable_child:
+                    owner = await run_dao.get_run(inherited_budget.run_id)
+                    if owner is None:
+                        raise RuntimeError("Sub-agent parent run storage is unavailable")
+                    run_metadata["parent_session_id"] = owner["session_id"]
+                    run_metadata["root_source_session_id"] = parent
                 if durable_child:
                     await _ensure_session_row(sub_session, title=f"[subagent] {row['name']}", required=True)
                 else:

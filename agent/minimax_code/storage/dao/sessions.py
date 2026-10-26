@@ -185,6 +185,13 @@ class SessionsDAO:
         Cascades to ``messages`` and ``tasks`` via FK ON DELETE CASCADE.
         """
         async with self._db.transaction() as conn:
+            cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_root_admissions'")
+            if await cursor.fetchone():
+                cursor = await conn.execute(
+                    "SELECT run_id FROM agent_root_admissions WHERE source_session_id=? OR execution_session_id=? LIMIT 1",
+                    (session_id, session_id))
+                if await cursor.fetchone():
+                    raise ValueError("This session retains durable Agent admission history; archive it instead. Deletion requires a supported history-retention flow.")
             cur = await conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return cur.rowcount > 0
 

@@ -70,7 +70,7 @@ export function useMentionPicker({
   const [picker, setPicker] = useState<MentionState>(INITIAL_MENTION_STATE);
   const addLocalMessage = useChat((s) => s.addLocalMessage);
   const subInit = useSubAgentStore((s) => s.init);
-  const subRegister = useSubAgentStore((s) => s.register);
+  const subSpawn = useSubAgentStore((s) => s.spawn);
   const recentFiles = useCodebaseStore((s) => s.recentFiles);
   const touchFile = useCodebaseStore((s) => s.touchFile);
 
@@ -138,6 +138,11 @@ export function useMentionPicker({
         closePicker();
         return;
       }
+      if (agent.skills?.length) {
+        closePicker();
+        toast.error(strings.chat.toast.subagentFailed, "含 skills 依赖的 Agent 暂不可执行，请单独调用对应技能");
+        return;
+      }
       const promptText = tail.trim() || "(no prompt)";
       const marker = `@${agent.name} `;
       const newValue = `${head}${marker}${tail}`;
@@ -145,52 +150,20 @@ export function useMentionPicker({
       closePicker();
       textareaRef.current?.focus();
       const sessionId = useSessionStore.getState().currentSessionId;
-      const runId = `run_${Math.random().toString(36).slice(2, 10)}`;
       try {
+        if (!sessionId) throw new Error("请选择 Native 来源会话");
         await subInit();
-        subRegister({
-          run_id: runId,
-          agent_id: agent.id,
-          agent_name: agent.name,
-          display_name: agent.name,
-          parent_session_id: sessionId ?? undefined,
-          prompt: promptText,
-          status: "started",
-          progress: 0,
-          summary: `queued for ${agent.name}`,
-          started_at: Date.now(),
-          updated_at: Date.now(),
-        });
-        await typedIPC.spawnSubagent({
-          agent_id: agent.id,
-          agent_name: agent.name,
-          prompt: promptText,
-          parent_session_id: sessionId ?? undefined,
-          display_name: agent.name,
-          run_id: runId,
-        });
-        addLocalMessage(`${marker}${promptText}`);
+        if (useSessionStore.getState().currentSessionId !== sessionId) return;
+        await subSpawn({agent_id:agent.id,agent_name:agent.name,prompt:promptText,
+          session_id:sessionId,parent_session_id:sessionId,display_name:agent.name,
+          idempotency_key:crypto.randomUUID()});
+        if (useSessionStore.getState().currentSessionId === sessionId) addLocalMessage(`${marker}${promptText}`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        subRegister({
-          run_id: runId,
-          agent_id: agent.id,
-          agent_name: agent.name,
-          display_name: agent.name,
-          parent_session_id: sessionId ?? undefined,
-          prompt: promptText,
-          status: "failed",
-          progress: 1,
-          summary: "failed",
-          error: message,
-          started_at: Date.now(),
-          updated_at: Date.now(),
-          finished_at: Date.now(),
-        });
         toast.error(strings.chat.toast.subagentFailed, message);
       }
     },
-    [value, picker.anchor, closePicker, setValue, textareaRef, subInit, subRegister, addLocalMessage, touchFile],
+    [value, picker.anchor, closePicker, setValue, textareaRef, subInit, subSpawn, addLocalMessage, touchFile],
   );
 
   const updateForInput = useCallback(

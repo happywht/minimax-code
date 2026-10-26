@@ -336,7 +336,7 @@ def test_migration_035_upgrades_populated_tasks_with_indexes_triggers_and_foreig
         conn.execute("CREATE TRIGGER task_custom AFTER UPDATE ON tasks BEGIN INSERT INTO task_audit VALUES(NEW.id); END")
         conn.execute("CREATE INDEX task_custom_idx ON tasks(title)")
         monkeypatch.setattr(db_module, "discover_migrations", discover)
-        assert db.migrate() == [35, 36, 37]
+        assert db.migrate() == [35, 36, 37, 38]
         assert tuple(conn.execute("SELECT result,run_id FROM tasks WHERE id='t'").fetchone()) == ("saved old answer", None)
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         for state in ["budget_paused", "interrupted", "requires_review"]:

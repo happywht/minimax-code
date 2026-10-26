@@ -230,6 +230,16 @@ def register_run_handlers(server: Any) -> None:
                 if "skill_intent" not in previous:
                     raise HandlerError(INVALID_PARAMS, "Saved skill intent is missing; start a new task")
                 saved_skill = SkillExecutionSpec(metadata.get("skill_execution"))
+            saved_agent = None
+            if "agent_execution" in metadata or "agent_intent" in previous:
+                from ..agent_execution import AgentExecutionSpec
+                if "agent_intent" not in previous:
+                    raise HandlerError(INVALID_PARAMS, "Saved agent intent is missing; start a new task")
+                saved_agent = AgentExecutionSpec(metadata.get("agent_execution"))
+                if not saved_agent.data["prepared"]:
+                    raise HandlerError(INVALID_PARAMS, "Agent workspace preparation is unconfirmed; inspect it and start a new task")
+                if not request.reviewed:
+                    raise HandlerError(INVALID_PARAMS, "Review the agent workspace and prior actions before recovery")
             if saved_schedule and budget_override is not None:
                 saved_schedule = {**saved_schedule, "context": {**saved_schedule["context"], "budget_tokens": budget_override}}
             await handle_agent_send_message(
@@ -237,7 +247,7 @@ def register_run_handlers(server: Any) -> None:
                  "budget_tokens": budget_override},
                 ctx, wait=False, resumed_from_id=run["id"],
                 required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"],
-                internal_schedule=saved_schedule, internal_skill=saved_skill)
+                internal_schedule=saved_schedule, internal_skill=saved_skill, internal_agent=saved_agent)
         except (ValidationError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except HandlerError as exc:

@@ -461,3 +461,9 @@ scheduled_jobs 追加 revision/context_version/context/timezone/binding_state/bi
 budget_families 保存不可重置的累计上限、旧历史下界与明确授权；budget_attempts 保存每次实际发送的不可变身份、模型/提供方/目的/价格快照、Asia/Shanghai 预留日、估算、nullable 用量、责任及状态。budget_days 记录升级时历史覆盖缺口与核定依据，budget_coverage 记录覆盖起点。
 
 家族和全机日额度在同一写事务检查与预留，结算和 budget RunEvent 在同一事务落盘；Codex 同线程水位也加入该事务。外键和日/家族索引保留结束后的未知责任。Schema037 临时禁止预算及运行依赖的 JSON 替换式恢复，允许无关部分导入；完整灾难恢复兼容性列为 M7 必做后续项。备份/回退与语义详见 [共享预算账本](budget-ledger.md)。
+
+### Schema038：公开 Agent 根接单映射
+
+agent_root_admissions 以 (source_session_id, request_key) 为唯一键，保存规范意图摘要、独立 execution_session_id、run_id 和创建时间。两个关联均有外键及唯一约束。该映射与 execution session、queued run、预算家族和初始事件同事务创建；它不另设执行状态机。准备身份、冻结执行配置和 pending/ready 证据保存在运行的 agent_execution metadata，状态仍由 RunService 管理。
+
+重放先读此映射，不创建第二副本或读取已删除的实时配置。启动恢复只把旧活动运行及保存回执投影为 interrupted，保留未知预算责任；不自动重建 pending 副本或重放未知写。038 映射也受运行历史 JSON 替换导入保护。升级前使用 SQLite 在线备份；回退须停止服务并恢复匹配旧程序的完整备份，保留升级后的数据库及工作副本供核对，不删除映射来重复执行。

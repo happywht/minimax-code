@@ -51,6 +51,14 @@ class AgentRunsDAO:
             raise RequestConflictError("idempotency_key already belongs to different input")
         return _hydrate_run(row)
 
+    async def find_agent_root(self, source_session_id, key, intent):
+        row = await self._db.fetchone(
+            "SELECT a.request_hash,r.* FROM agent_root_admissions a JOIN agent_runs r ON r.id=a.run_id "
+            "WHERE a.source_session_id=? AND a.request_key=?", (source_session_id, key))
+        if row is not None and row["request_hash"] != _request_hash(intent):
+            raise RequestConflictError("idempotency_key already belongs to different agent input")
+        return _hydrate_run(row)
+
     async def admit_run(
         self, *, session_id: str, request: dict[str, Any], title: str,
         metadata: dict[str, Any], request_key: str | None = None,
@@ -72,6 +80,36 @@ class AgentRunsDAO:
         canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         fingerprint = _request_hash(request)
         async with self._db.transaction() as conn:
+            agent_profile = metadata.get("agent_execution")
+            root_admission = agent_profile is not None and not resumed_from_id
+            if root_admission:
+                source_id = agent_profile["source_session_id"]
+                intent_hash = _request_hash(agent_profile["intent"])
+                existing = await _fetchone(conn,
+                    "SELECT * FROM agent_root_admissions WHERE source_session_id=? AND request_key=?",
+                    (source_id, request_key))
+                if existing is not None:
+                    if existing["request_hash"] != intent_hash:
+                        raise RequestConflictError("idempotency_key already belongs to different agent input")
+                    return _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (existing["run_id"],))), False
+                source = await _fetchone(conn, "SELECT * FROM sessions WHERE id=?", (source_id,))
+                if source is None or source["engine"] != "native":
+                    raise ValueError("Agent root requires an existing explicit Native source session")
+                if source["project_id"] != agent_profile["project_id"]:
+                    raise ValueError("Agent source project changed during admission; retry")
+                from pathlib import Path
+                binding = source["workspace_path"]
+                if not binding and source["project_id"]:
+                    project = await _fetchone(conn, "SELECT root_path FROM projects WHERE id=?", (source["project_id"],))
+                    binding = project["root_path"] if project else None
+                if binding and str(Path(binding).resolve(strict=True)) != agent_profile["source_workspace"]:
+                    raise ValueError("Agent source workspace changed during admission; retry")
+                ts = now_iso()
+                await conn.execute(
+                    "INSERT INTO sessions(id,title,created_at,updated_at,model,system_prompt,workspace_path,project_id,engine) "
+                    "VALUES(?,?,?,?,?,?,?,?, 'native')",
+                    (session_id, "agent:" + agent_profile["agent"], ts, ts,
+                     agent_profile["model_snapshot"]["model"], "", agent_profile["workspace"], source["project_id"]))
             if request_key is not None:
                 old = await _fetchone(conn, "SELECT * FROM agent_runs WHERE session_id = ? AND request_key = ?",
                                       (session_id, request_key))
@@ -132,6 +170,10 @@ class AgentRunsDAO:
                 "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, session_id, mode, title, ts, f"msg_{uuid.uuid4().hex}",
                  dumps_json(metadata), request_key, fingerprint, canonical, resumed_from_id))
+            if root_admission:
+                await conn.execute(
+                    "INSERT INTO agent_root_admissions VALUES(?,?,?,?,?,?)",
+                    (source_id, request_key, intent_hash, session_id, run_id, ts))
             from .budgets import attach_family
             await attach_family(conn, run_id, metadata, source_id=resumed_from_id)
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
@@ -471,6 +513,10 @@ class AgentRunsDAO:
             row = await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,))
             if row is None or row["status"] in {"completed", "failed", "cancelled", "interrupted"}:
                 return _hydrate_run(row)
+            profile = (loads_json(row["metadata"]) or {}).get("agent_execution")
+            if profile is not None:
+                from ...agent_execution import terminal_receipt
+                result = terminal_receipt(profile, _hydrate_run(row), result, status)
             async with conn.execute(
                 "SELECT id FROM agent_run_steps WHERE run_id = ? AND status IN ('pending', 'running')",
                 (run_id,),
@@ -534,6 +580,9 @@ class AgentRunsDAO:
                 if "skill_execution" in md:
                     from ...skill_execution import interrupted_receipt
                     receipt = interrupted_receipt(md["skill_execution"], interrupted, receipt)
+                if "agent_execution" in md:
+                    from ...agent_execution import interrupted_receipt
+                    receipt = interrupted_receipt(md["agent_execution"], interrupted, receipt)
                 if receipt is not None:
                     receipt.update(verification=evidence, run_status="interrupted", cancelled=False, budget_paused=False)
                 await conn.execute("UPDATE agent_runs SET metadata=?,result=? WHERE id=?",

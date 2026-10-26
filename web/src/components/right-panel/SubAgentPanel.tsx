@@ -29,6 +29,7 @@ import {
 import type { SubAgentRun, SubAgentStatus } from "../../types/ipc";
 import { StructuredErrorCallout } from "../StructuredErrorCallout";
 import { strings } from "../../ui/strings";
+import { useSessionStore } from "../../stores/sessionStore";
 
 export interface SubAgentPanelProps {
   testId?: string;
@@ -36,6 +37,7 @@ export interface SubAgentPanelProps {
   sessionId?: string | null;
   /** Subscribe to the IPC progress event on mount. Defaults to true. */
   autoInit?: boolean;
+  onOpenRun?: () => void;
 }
 
 const STATUS_TONE: Record<SubAgentStatus, { label: string; cls: string; icon: "spin" | "ok" | "err" | "idle" }> = {
@@ -84,18 +86,21 @@ export function SubAgentPanel({
   testId = "sub-agent-panel",
   sessionId,
   autoInit = true,
+  onOpenRun,
 }: SubAgentPanelProps): JSX.Element {
   const runsMap = useSubAgentStore((s) => s.runs);
   const init = useSubAgentStore((s) => s.init);
   const clearCompleted = useSubAgentStore((s) => s.clearCompleted);
+  const currentSession = useSessionStore((s) => s.currentSessionId);
+  const visibleSession = sessionId === undefined ? currentSession : sessionId;
 
   useEffect(() => {
     if (autoInit) void init();
   }, [autoInit, init]);
 
   const runs = useMemo<SubAgentRun[]>(
-    () => runsForSession({ runs: runsMap, subscribed: true, error: null } as SubAgentState, sessionId),
-    [runsMap, sessionId],
+    () => runsForSession({ runs: runsMap, subscribed: true, error: null } as SubAgentState, visibleSession),
+    [runsMap, visibleSession],
   );
   // Sort: in-flight first (oldest first), then finished (newest first).
   runs.sort((a, b) => {
@@ -138,7 +143,7 @@ export function SubAgentPanel({
       ) : (
         <ul data-testid={`${testId}-list`} className="space-y-2">
           {runs.map((r) => (
-            <SubAgentRow key={r.run_id} run={r} testId={`${testId}-row`} />
+            <SubAgentRow key={r.run_id} run={r} testId={`${testId}-row`} onOpenRun={onOpenRun} />
           ))}
         </ul>
       )}
@@ -149,9 +154,11 @@ export function SubAgentPanel({
 function SubAgentRow({
   run,
   testId,
+  onOpenRun,
 }: {
   run: SubAgentRun;
   testId: string;
+  onOpenRun?: () => void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const tone = STATUS_TONE[run.status];
@@ -186,7 +193,7 @@ function SubAgentRow({
           {run.display_name || run.agent_name}
         </span>
         <StatusPill tone={tone} testId={`${testId}-${run.run_id}-status`} />
-        {!isFinished(run.status) && (
+        {!isFinished(run.status) && !run.admission_unknown && (
           <button
             type="button"
             data-testid={`${testId}-${run.run_id}-cancel`}
@@ -258,6 +265,12 @@ function SubAgentRow({
               {run.prompt}
             </div>
           )}
+          {run.run_status && <div>持久状态：{run.run_status}{run.partial ? " · 部分结果，需核对" : ""}</div>}
+          {run.request && <div className="flex gap-2">
+            {run.admission_unknown && <button type="button" onClick={() => void useSubAgentStore.getState().retry(run.run_id)}>使用原请求重试</button>}
+            {run.session_id && <button type="button" onClick={() => void useSubAgentStore.getState().openRun(run.run_id).then((opened) => { if (opened) onOpenRun?.(); })}>查看任务</button>}
+            <button type="button" onClick={() => void useSubAgentStore.getState().refresh()}>刷新结果</button>
+          </div>}
           {run.error && (
             <StructuredErrorCallout
               testId={`${testId}-${run.run_id}-error`}

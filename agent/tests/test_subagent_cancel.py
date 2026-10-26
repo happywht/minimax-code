@@ -1,12 +1,6 @@
-"""Tests for ``agent.cancel_subagent`` IPC handler.
+"""Cooperative child cancellation acknowledges a request without inventing cleanup.
 
-Validates the cooperative cancellation mechanism for sub-agent runs:
-- Graceful response when no active run matches the ``run_id``.
-- ``AgentCore.cancel()`` is called when a run is found in ``_ACTIVE_RUNS``.
-- A ``failed`` subagent_progress event is emitted on cancellation.
-- Missing ``run_id`` parameter triggers a -32602 error.
-- Non-dict ``params`` triggers a -32602 error.
-- ``_ACTIVE_RUNS`` is cleaned up after cancellation.
+Actual public root/process lifecycle is covered by test_agent_execution.
 """
 
 from __future__ import annotations
@@ -46,10 +40,23 @@ def _clean_active_runs():
 
 
 @pytest.fixture
-def handlers():
+async def handlers(tmp_path, monkeypatch):
     """Register agent handlers onto a fresh IPCServer and return the
     handler dict. Uses the same pattern as ``test_subagent_spawn.py``.
     """
+    from minimax_code import app
+    from minimax_code.storage.dao.runs import AgentRunsDAO
+    from minimax_code.storage.dao.sessions import SessionsDAO
+    from minimax_code.storage.db import AsyncDatabase
+
+    db = AsyncDatabase(tmp_path / "cancel.db")
+    await db.connect()
+    await db.migrate()
+    await SessionsDAO(db).create(id="child")
+    runs = AgentRunsDAO(db)
+    for run_id in ("run_abc123", "run_emit", "run_cleanup", "run_nocore"):
+        await runs.create_run(id=run_id, session_id="child", mode="subagent", metadata={"source":"tool"})
+    monkeypatch.setattr(app, "get_db", lambda: db)
     prev = None
     try:
         from minimax_code.orchestrator import get_subagent_runtime
@@ -65,6 +72,7 @@ def handlers():
     register_agent_handlers(server)
     yield server._handlers
     set_subagent_runtime(prev)
+    await db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -106,9 +114,8 @@ async def test_cancel_active_run_calls_core_cancel(handlers):
 
 
 @pytest.mark.asyncio
-async def test_cancel_emits_failed_progress_event(handlers):
-    """Cancelling a running sub-agent emits a ``failed`` progress event
-    so the frontend row transitions to a terminal state."""
+async def test_cancel_does_not_fabricate_terminal_progress(handlers):
+    """Only the actual owner may report its terminal cleanup state."""
     core = MagicMock()
     core.cancel = MagicMock()
     _ACTIVE_RUNS["run_emit"] = {"core": core, "type": "subagent"}
@@ -117,14 +124,10 @@ async def test_cancel_emits_failed_progress_event(handlers):
     ctx = _make_ctx()
     await handler({"run_id": "run_emit"}, ctx)
 
-    # The handler should have emitted a subagent_progress event.
-    ctx.emit.assert_awaited()
-    event_name = ctx.emit.call_args[0][0]
-    event_data = ctx.emit.call_args[0][1]
-    assert event_name == "agent.subagent_progress"
-    assert event_data["status"] == "failed"
-    assert event_data["summary"] == "cancelled"
-    assert event_data["error"] == "cancelled by user"
+    ctx.emit.assert_not_awaited()
+    assert ctx.reply.await_args.args[0]["run_status"] == "running"
+    assert ctx.reply.await_args.args[0]["cancel_requested"] is True
+
 
 
 @pytest.mark.asyncio
@@ -152,8 +155,8 @@ async def test_cancel_non_dict_params_returns_error(handlers):
 
 
 @pytest.mark.asyncio
-async def test_cancel_removes_entry_from_active_runs(handlers):
-    """After cancellation, the run_id is removed from ``_ACTIVE_RUNS``."""
+async def test_cancel_retains_active_owner_until_actual_cleanup(handlers):
+    """Cancellation acknowledgement must not detach the live owner."""
     core = MagicMock()
     core.cancel = MagicMock()
     _ACTIVE_RUNS["run_cleanup"] = {"core": core, "type": "subagent"}
@@ -163,7 +166,8 @@ async def test_cancel_removes_entry_from_active_runs(handlers):
     ctx = _make_ctx()
     await handler({"run_id": "run_cleanup"}, ctx)
 
-    assert "run_cleanup" not in _ACTIVE_RUNS
+    assert _ACTIVE_RUNS["run_cleanup"]["core"] is core
+    core.cancel.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -176,7 +180,8 @@ async def test_cancel_does_not_remove_if_no_core(handlers):
     ctx = _make_ctx()
     await handler({"run_id": "run_nocore"}, ctx)
 
-    # Should reply with cancelled=False (entry was popped but no core).
+    # No active core means no cancellation was requested.
+    assert "run_nocore" in _ACTIVE_RUNS
     ctx.reply.assert_awaited_once()
     result = ctx.reply.call_args[0][0]
     assert result["ok"] is True

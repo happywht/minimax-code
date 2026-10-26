@@ -1,17 +1,7 @@
-"""E2E smoke for the agents IPC + sub-agent stub pipeline.
+"""Offline-capable subprocess smoke for durable Native agent invocation.
 
-Black-box subprocess test:
-  1. spawn the agent
-  2. agent.list -> empty initially
-  3. agent.create { name: "reviewer", ... } -> row
-  4. agent.list -> find the row
-  5. agent.invoke -> stream events (status + message_chunk)
-                 + return envelope with the stub text
-  6. task.list -> see the sub-agent's task created with status=completed
-  7. agent.delete -> ok
-  8. shutdown
-
-Exit 0 = pass, 1 = fail.
+Creates an explicit source session, invokes with a stable key and verifies
+the waiting receipt against run.get. Exit 0 means all checks passed.
 """
 
 from __future__ import annotations
@@ -49,7 +39,10 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
                 break
             if not raw:
                 break
-            obj = json.loads(raw.decode("utf-8").strip())
+            try:
+                obj = json.loads(raw.decode("utf-8").strip())
+            except json.JSONDecodeError:
+                continue
             if obj.get("id") == rid:
                 return obj
             if "event" in obj:
@@ -57,7 +50,7 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
         return {"error": {"code": -32000, "message": f"timeout waiting for {method}"}}
 
     proc = await asyncio.create_subprocess_exec(
-        python, "-m", "minimax_code",
+        python, "-m", "minimax_code", "--stdio",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -85,7 +78,7 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
     r = await call(proc, "agent.create", {
         "name": "reviewer",
         "system_prompt": "You review code.",
-        "tool_allowlist": ["read_file", "shell"],
+        "tool_allowlist": ["read_file"],
     })
     if "error" in r:
         failures.append(f"agent.create failed: {r['error']}")
@@ -102,48 +95,45 @@ async def main(python: str, agent_dir: str, workdir: str) -> int:
     else:
         print("[agent.list] ok, found reviewer")
 
+    # Public execution requires an explicit Native source and stable admission key.
+    source = await call(proc, "session.create", {
+        "title": "Agent smoke source", "engine": "native", "workspace_path": workdir,
+    })
+    source_id = source.get("result", {}).get("session", {}).get("id")
     # 5. invoke
     events_before = len(events_seen)
     r = await call(proc, "agent.invoke", {
         "name": "reviewer",
         "request": "review main.py",
+        "session_id": source_id,
+        "idempotency_key": "smoke-review-once",
     }, timeout=10)
     if "error" in r:
         failures.append(f"agent.invoke failed: {r['error']}")
         print("[agent.invoke] FAIL", r)
     else:
         text = r["result"].get("text", "")
-        # Phase 4: sub-agent uses real LLM when injected. In mock mode
-        # (no MINIMAX_API_KEY) it returns the LLM client's mock text
-        # (starts with "[mock]"). In real mode it returns model output.
-        # The OLD sub-agent stub fallback (text "stub: agent <name> ...")
-        # is also acceptable as a backward-compat path. Accept any of:
-        #   - "stub: agent <name> would handle"  (sub-agent stub)
-        #   - "[mock]" prefix                       (LLM client mock mode)
-        #   - any other non-empty text              (real LLM)
-        if not text:
-            failures.append(f"agent.invoke: empty text")
-        elif "stub: agent" in text or text.startswith("[mock]") or len(text) > 20:
-            print(f"[agent.invoke] ok text={text!r}")
+        if not text or not r["result"].get("run_id"):
+            failures.append("agent.invoke: empty text")
         else:
-            failures.append(f"agent.invoke: unexpected text {text!r}")
+            print(f"[agent.invoke] ok text={text!r}")
+        receipt = r["result"]
+        durable = await call(proc, "run.get", {"run_id": receipt["run_id"]})
+        if durable.get("result", {}).get("result") != receipt:
+            failures.append("run.get: durable receipt differs from waiting invocation")
         new_events = events_seen[events_before:]
         if not any(e.startswith("agent.") for e in new_events):
             failures.append(f"agent.invoke: no agent.* events streamed ({new_events})")
         else:
             print(f"[agent.invoke] events: {new_events}")
 
-    # 6. task.list — see the sub-agent task
+    # 6. task.list remains available; public execution evidence lives in run.get.
     r = await call(proc, "task.list")
     if "error" in r:
         failures.append(f"task.list failed: {r['error']}")
     else:
         tasks = r["result"].get("tasks", [])
-        sub = [t for t in tasks if "reviewer" in (t.get("title") or "")]
-        if not sub:
-            failures.append(f"task.list: no subagent task found (titles: {[t.get('title') for t in tasks]})")
-        else:
-            print(f"[task.list] ok, found subagent task title={sub[0]['title']!r} status={sub[0]['status']!r}")
+        print(f"[task.list] ok, {len(tasks)} progress rows")
 
     # 7. delete
     r = await call(proc, "agent.delete", {"name": "reviewer"})
