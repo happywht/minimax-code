@@ -106,6 +106,8 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
         pass
     server = IPCServer(config=config, stdin=sys.stdin, stdout=sys.stdout)
     register_app_handlers(server)
+    from .app import initialize_execution_service
+    await initialize_execution_service(server)
 
     if mode == "stdio":
         from .runtime.shutdown import shutdown_runtime

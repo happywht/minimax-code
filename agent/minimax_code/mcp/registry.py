@@ -245,6 +245,8 @@ class MCPRegistry:
         if not config.enabled:
             logger.info("MCP server %s disabled, skipping", config.name)
             return False
+        from ..app import before_executable_extension
+        await before_executable_extension("MCP server")
         transport = self._build_transport(config)
         client = MCPClient(transport)
         return await self._attach_client(config, client, transport)

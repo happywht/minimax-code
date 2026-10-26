@@ -21,6 +21,10 @@ erDiagram
     sessions ||--o{ tasks    : has
     sessions }o--|| projects : "belongs to"
     sessions ||..|| agents   : "uses (config)"
+    execution_installation ||--o{ process_executions : owns
+    agent_runs ||--o{ process_executions : "run and family root (RESTRICT)"
+    budget_families ||--o{ process_executions : "reserves resources (RESTRICT)"
+    process_executions ||--o{ process_execution_events : "CAS history (RESTRICT)"
     messages ||--o| messages : "parent/child"
     skills  }o..o{ sessions  : "may inject into"
     scheduled_jobs }o..o{ sessions : "may target"
@@ -93,6 +97,7 @@ erDiagram
         TEXT system_prompt
         JSON tool_allowlist
         TEXT model
+        TEXT execution_profile_id "nullable, Schema040"
         TEXT created_at
     }
     permission_rules {
@@ -220,6 +225,7 @@ The dashed edges in the diagram (`agents → sessions`, `skills → sessions`, `
 | `system_prompt`  | TEXT    | Default `''`.                                        |
 | `tool_allowlist` | JSON    | Array of tool names the sub-agent may call. `NULL` means "all". |
 | `model`          | TEXT    | Override the global model. Nullable.                 |
+| `execution_profile_id` | TEXT | Schema040, default NULL. Public roots default to native-host; trusted children inherit their parent's frozen target. Unknown IDs remain saved but cannot execute without catalog availability. |
 | `created_at`     | TEXT    |                                                      |
 
 ### 2.7 `permission_rules`
@@ -467,3 +473,59 @@ budget_families 保存不可重置的累计上限、旧历史下界与明确授�
 agent_root_admissions 以 (source_session_id, request_key) 为唯一键，保存规范意图摘要、独立 execution_session_id、run_id 和创建时间。两个关联均有外键及唯一约束。该映射与 execution session、queued run、预算家族和初始事件同事务创建；它不另设执行状态机。准备身份、冻结执行配置和 pending/ready 证据保存在运行的 agent_execution metadata，状态仍由 RunService 管理。
 
 重放先读此映射，不创建第二副本或读取已删除的实时配置。启动恢复只把旧活动运行及保存回执投影为 interrupted，保留未知预算责任；不自动重建 pending 副本或重放未知写。038 映射也受运行历史 JSON 替换导入保护。升级前使用 SQLite 在线备份；回退须停止服务并恢复匹配旧程序的完整备份，保留升级后的数据库及工作副本供核对，不删除映射来重复执行。
+
+### Schema039：持久进程所有权基础（L1 尚未验收）
+
+039 新建三张表，不重建既有业务表；这项迁移不表示容器 profile 已可用。
+
+| 表 | 字段与约束 |
+|---|---|
+| `execution_installation` | `singleton=1` 主键；唯一 `install_id`；UID、host/store/location fingerprint、bootstrap nonce、canonical dataDir 与 dev/ino、marker hash；`phase` 仅 bootstrap_pending/active；创建及激活时间。 |
+| `process_executions` | `exec_id` 主键；run、budget family、family root、installation 均为显式 ON DELETE RESTRICT 外键；唯一 container name 和 nullable 唯一完整 CID；state/revision、target JSON/hash、workspace/identity、argv hash、container cwd、deadline、资源保留、outcome/exit/OOM/error、时间。 |
+| `process_execution_events` | `(exec_id, ordinal)` 复合主键；exec_id RESTRICT 外键；前后 state、最小 evidence JSON 与创建时间。 |
+
+所有目录 device/inode 字段使用精确十进制 TEXT，包含超过有符号 int64 的 Windows
+identity；DAO 不转 float。installation store 指纹绑定持久 graphRoot 路径/dev/ino、driver、
+UID 与 host；location 指纹只绑定 host/UID/canonical graphRoot/dataDir，允许诊断同路径
+恢复后的旧容器。临时 runRoot inode 不作为持久所有权。
+
+`process_executions.state` 为 intent/created/starting/running/stopped/removing/removed/
+cleanup_pending/needs_review。每次 revision CAS 与 event 在同一事务提交。intent 同事务
+核对实际 run/family/root 与唯一 admitted snapshot，检查安装/家族资源并保留额度；
+`resource_held=1` 的未知结果继续占用。只有精确持久 name/CID 已证实 absent 的 removed 状态才释放。
+索引 `idx_process_executions_active(install_id,resource_held)` 和
+`idx_process_executions_family(family_id,resource_held)` 支持这些核对。
+
+新 policy2 intent 一次固定 `deadline_boot_id` 与正 int64 `deadline_boottime_ns`，使用
+CLOCK_BOOTTIME 绝对期限；旧 `deadline` REAL 为 Unix 审计展示值。两个新字段允许 NULL
+仅为历史责任清理兼容：缺字段、boot 改变、旧 policy1 不得 create/start，也不补写新期限。
+容器 created 状态常有 ExitCode 0；它不是成功。终结结果必须核对 exited、Running=false、
+Pid=0 和有效非零 StartedAt/FinishedAt；raw 124/125 仍有 guard/payload 歧义。
+
+运行 metadata 是唯一授权源：公共根使用 `agent_execution` v3，可信内部孩子使用
+`process_execution_owner` v1；同时出现拒绝。私有固定零模型 runtime preflight 使用 v2
+owner variant，必须由同一 RunService 私有路径生成自己的真实 run/family，普通元数据
+不能授予该能力。复制准备状态与 source/owned 身份也保存在这个 snapshot。
+
+L1 初始化在服务租约内、后台任务之前将该 AsyncDatabase connection 切换为
+`synchronous=FULL` 并读回；每次 intent 再确认。DB 先落 pending 身份，随后独占发布并
+fsync 私有 marker，最后 CAS active。active 缺 marker、DB 丢失而 marker 尚存、换主机/
+UID/store/dataDir、同安装 orphan 或 inventory 未知均不能自动认领或按标签清理。
+
+`data.export` 和 SQLite online backup 包含全部三表；`data.import` 拒绝替换这三表，
+即使输入仅含空表也在写入前拒绝。037 的预算/run 历史导入保护继续生效。JSON export
+不包含 marker，不能当作安装恢复手段。完整恢复须离线保留匹配 DB、marker、服务目录
+物理身份和 Podman store，并在相同租约下核对全部持久责任；复制 DB 不取得删除权限。
+
+### Schema040：nullable Agent execution profile 与升级/回退
+
+040 仅追加 `agents.execution_profile_id TEXT DEFAULT NULL`，旧行自然保持 NULL，
+因此默认 host 兼容。CRUD update 缺失字段保留原值，显式 null 恢复默认。profile 参数
+保存在服务私有 catalog，不把 image/resource/env 放到 Agent 可写 JSON 参数中。
+
+升级前使用 SQLite online backup，保存应用版本、DB 与私有 marker（若已有）及安装
+身份信息；自动迁移仍为向前迁移。当前 profile unavailable，不因升级启动用户容器。
+回退前停止接单，保留 RunService/supervisor/DB/租约直到清理已核实；清理未知时不能
+删表、删 marker、改 run 状态或释放资源来凑回退。保存升级后 DB、marker、owned copies
+及完整 CID 证据，再恢复匹配旧程序的完整升级前备份。没有 039/040 down-migration，
+也不承诺旧二进制直接打开升级后 DB 或跨安装恢复。L1 整体及灾难恢复仍须独立验收。

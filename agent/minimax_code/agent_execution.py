@@ -36,15 +36,26 @@ class AgentExecutionSpec:
                     "max_iterations", "system_prompt_extra", "prepared", "directory_identity",
                     "mock", "model_provider_fingerprint", "allowlist", "temperature", "tool_identity", "verified_models"}
         if (not isinstance(self.data, dict) or not required.issubset(self.data)
-                or self.data.get("version") not in (1, 2)
+                or type(self.data.get("version")) is not int or self.data.get("version") not in (1, 2, 3)
                 or self.data.get("digest") != _digest({k: v for k, v in self.data.items() if k != "digest"})):
             raise ValueError("Saved agent profile is incompatible; start a new task")
-        if self.data["version"] == 2:
+        if self.data["version"] >= 2:
             check_bindings(self.data.get("skill_bindings"))
             if not isinstance(self.data.get("agent_instructions"), str):
                 raise ValueError("Saved agent instructions are incompatible")
         elif self.data.get("skill_bindings") or self.data.get("skills"):
             raise ValueError("Legacy agent profiles support only known no-skills execution")
+        from .process_binding import validate_target
+        from .process_types import canonical_hash
+        if self.data["version"] == 3:
+            target = validate_target(self.data.get("execution_target"))
+            if (self.data.get("execution_target_hash") != canonical_hash(target)
+                    or "execution_installation_id" not in self.data
+                    or (target["mode"] == "host" and self.data["execution_installation_id"] is not None)
+                    or (target["mode"] == "podman" and not isinstance(self.data["execution_installation_id"], str))):
+                raise ValueError("Saved execution target binding is incompatible")
+        elif any(key in self.data for key in ("execution_target", "execution_target_hash", "execution_installation_id")):
+            raise ValueError("Legacy agent profile cannot carry a new execution target")
 
     def snapshot(self):
         return copy.deepcopy(self.data)
@@ -61,9 +72,26 @@ class AgentExecutionSpec:
 
         if not row.get("enabled", True):
             raise ValueError("Agent is disabled")
-        from .app import init_runtime
-        bindings = SkillBindings.capture(await init_runtime(), row.get("skills"))
+        from .app import ensure_execution_profiles, init_runtime
+        from .process_boundary import assert_supported_tools, assert_text_skills
+        from .process_types import canonical_hash
+        catalog = await ensure_execution_profiles(db)
+        await catalog.prepare_service(server)
+        execution_target = catalog.resolve(row.get("execution_profile_id"))
+        runtime = await init_runtime()
+        if execution_target["mode"] == "podman":
+            from .process_workspace import validate_process_workspace
+            from .schedule_context import scheduled_runtime
+            if scheduled_runtime.get() is not None:
+                raise ValueError("L1 不支持无人值守任务")
+            catalog.assert_compatible(execution_target, catalog.installation_id)
+            assert_text_skills(runtime, row.get("skills"))
+            validate_process_workspace(Path(workspace), data_dir=catalog.data_dir,
+                protected_roots=catalog.supervisor._protected_roots)
+        bindings = SkillBindings.capture(runtime, row.get("skills"))
         tools = bindings.candidates(get_default_registry(), row.get("tool_allowlist"))
+        if execution_target["mode"] == "podman":
+            assert_supported_tools(tools)
         names = [t.name for t in tools]
         identity = tool_identity(tools)
         selected = ModelSnapshot.capture()
@@ -89,7 +117,9 @@ class AgentExecutionSpec:
                 workspace_advisory_override=str(target))
         finally:
             reset_current_root(token)
-        data = dict(version=2, agent_id=row["id"], agent=row["name"],
+        data = dict(version=3, agent_id=row["id"], agent=row["name"],
+                    execution_target=execution_target, execution_target_hash=canonical_hash(execution_target),
+                    execution_installation_id=catalog.installation_id if execution_target["mode"] == "podman" else None,
                     instructions=row["system_prompt"] + bindings.instructions,
                     agent_instructions=row["system_prompt"], skill_bindings=bindings.data,
                     model_snapshot=selected.metadata(), permission_rules=copy.deepcopy(permissions.list_rules()),
@@ -119,6 +149,11 @@ class AgentExecutionSpec:
         from .workspace.child import load_child
 
         self.__post_init__()
+        if self.data["version"] == 3:
+            from .app import ensure_execution_profiles
+            from .process_boundary import assert_text_skills
+            catalog = await ensure_execution_profiles(db)
+            catalog.assert_compatible(self.data["execution_target"], self.data["execution_installation_id"])
         row = await AgentsDAO(db).get(self.data["agent_id"])
         if row is None or not row.get("enabled", True):
             raise ValueError("Saved agent is unavailable or disabled; start a new task")
@@ -133,8 +168,13 @@ class AgentExecutionSpec:
             tools = []
         else:
             from .agent.tools import get_default_registry
+            if self.data.get("execution_target", {}).get("mode") == "podman":
+                assert_text_skills(runtime, row.get("skills"))
             bindings = SkillBindings(self.data["skill_bindings"]).validate(runtime, row.get("skills"))
             tools = bindings.candidates(get_default_registry(), self.data["allowlist"])
+            if self.data.get("execution_target", {}).get("mode") == "podman":
+                from .process_boundary import assert_supported_tools
+                assert_supported_tools(tools)
             if tool_identity(tools) != self.data["tool_identity"]:
                 raise ValueError("Saved agent tool provider changed; start a new task")
         # Both supported profile versions obey current revocations. Additions
@@ -168,8 +208,13 @@ class AgentExecutionSpec:
             return self
         if directory_identity(self.data["source_workspace"]) != self.data["source_identity"]:
             raise ValueError("Source workspace identity changed before preparation")
-        child = await prepare_child(Path(self.data["source_workspace"]), self.data["workspace_id"])
+        restricted = self.data.get("execution_target", {}).get("mode") == "podman"
+        child = await prepare_child(Path(self.data["source_workspace"]), self.data["workspace_id"],
+                                    **({"restricted": True} if restricted else {}))
         data = {**self.data, "prepared": True, "directory_identity": directory_identity(str(child.root))}
+        if restricted:
+            data["copy_binding"] = {"kind": "directory", **{key: data[key] for key in (
+                "workspace_id", "workspace", "source_workspace", "source_identity", "directory_identity")}}
         data["digest"] = _digest({k: v for k, v in data.items() if k != "digest"})
         spec = type(self)(data, self.tools)
 
@@ -188,7 +233,7 @@ class AgentExecutionSpec:
 
     def install(self, registry):
         allowlist = self.data["allowlist"]
-        if self.data["version"] == 2:
+        if self.data["version"] >= 2:
             registry.clear()
             for tool in self.tools:
                 registry.register(tool)
@@ -219,6 +264,9 @@ class AgentExecutionSpec:
                   "partial": bool(receipt.get("error") or receipt.get("cancelled") or receipt.get("truncated")
                                   or receipt.get("budget_paused") or (receipt.get("verification") or {}).get("requires_review")),
                   "budget_exhausted": bool(receipt.get("budget_paused"))}
+        if self.data["version"] == 3:
+            result.update({key: copy.deepcopy(self.data[key]) for key in
+                ("execution_target", "execution_target_hash", "execution_installation_id")})
         if self.data["prepared"]:
             child = load_child(Path(self.data["source_workspace"]), self.data["workspace_id"])
             if child is None:

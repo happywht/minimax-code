@@ -47,6 +47,7 @@ _REPO_MAP_INDEXER: Any = None  # type: ignore[no-untyped-def]
 _REPO_MAP_INDEXERS: dict[str, Any] = {}
 _DB_SINGLETON: Any = None  # process-wide AsyncDatabase
 _DB_LOCK = asyncio.Lock()
+_EXECUTION_PROFILES: Any = None
 # MCP server config DAO + runtime registry singletons (v0.11.0 Milestone 1).
 _MCP_SERVERS_DAO: Any = None  # type: ignore[no-untyped-def]
 _MCP_REGISTRY: Any = None  # type: ignore[no-untyped-def]
@@ -103,6 +104,9 @@ async def init_runtime(*, skills_root: Path | str | None = None) -> SkillRuntime
             tool_registry=None,
         )
         _RUNTIME = runtime
+        catalog = get_execution_profiles()
+        if catalog is not None and runtime._tool_providers:
+            catalog.revoke_for_extension("已加载 Skill Python providers")
         return _RUNTIME
 
 
@@ -145,6 +149,9 @@ async def _maybe_open_db() -> Any:
         await db.connect()
         await db.migrate()
         _DB_SINGLETON = db
+        # Ownership durability and extension inventory precede autoattach and
+        # delayed producers. An unavailable L1 catalog preserves host behavior.
+        await ensure_execution_profiles(db)
         # Spin up the process-wide progress tracker that backs
         # the ``task.*`` IPC namespace. Doing it here (next to
         # the DB open) keeps the singleton's lifetime tied to
@@ -295,6 +302,60 @@ _PROGRESS_TRACKER: Any = None  # type: ignore[no-untyped-def]
 def get_db() -> Any:
     """Return the process-wide :class:`AsyncDatabase`, or ``None``."""
     return _DB_SINGLETON
+
+
+def get_execution_profiles():
+    catalog = _EXECUTION_PROFILES
+    return catalog if catalog is not None and catalog._db is get_db() else None
+
+
+async def ensure_execution_profiles(db=None):
+    from .execution_profiles import ExecutionProfileCatalog
+    from .runtime.service_lease import ServiceLeaseError, assert_owned
+    from .storage.db import default_data_dir
+
+    db = db if db is not None else await ensure_db()
+    global _EXECUTION_PROFILES
+    lock = getattr(db, "_execution_profiles_lock", None) if db is not None else None
+    if lock is None:
+        lock = asyncio.Lock()
+        if db is not None:
+            db._execution_profiles_lock = lock
+    async with lock:
+        if _EXECUTION_PROFILES is not None and _EXECUTION_PROFILES._db is db:
+            return _EXECUTION_PROFILES
+        directory = Path(db.path).parent if db is not None else default_data_dir()
+        try:
+            lease = assert_owned(directory, db.path if db is not None else None)
+        except ServiceLeaseError:
+            lease = None
+        catalog = ExecutionProfileCatalog(data_dir=directory, lease=lease, db=db)
+        _EXECUTION_PROFILES = catalog
+        # Unknown analyzers are pending executable extensions. Audit can later
+        # replace this conservative inventory, never a user bypass switch.
+        if os.environ.get("MINIMAX_CODE_DISABLE_AUTO_INDEX") != "1":
+            catalog.revoke_for_extension("待启动的 codebase analyzer 尚未经 L1 审计")
+        if db is not None:
+            from .storage.dao.mcp_servers import McpServersDAO
+            try:
+                if await McpServersDAO(db).list(enabled=True):
+                    catalog.revoke_for_extension("已配置 MCP server")
+            except Exception:
+                catalog.revoke_for_extension("无法盘点已配置 MCP server")
+        await catalog.initialize()
+        return catalog
+
+
+async def before_executable_extension(extension: str):
+    catalog = get_execution_profiles()
+    if catalog is not None:
+        await catalog.before_extension_start(extension)
+
+
+async def initialize_execution_service(server):
+    catalog = get_execution_profiles()
+    if catalog is not None:
+        await catalog.prepare_service(server)
 
 
 async def ensure_db() -> Any:

@@ -406,6 +406,8 @@ export interface AgentInfo {
   system_prompt?: string;
   tool_allowlist?: string[];
   model?: string;
+  /** null/missing: root uses host; trusted descendants inherit the parent. */
+  execution_profile_id?: string | null;
   // v0.8.0 extended fields
   icon?: string;
   color?: string;
@@ -1116,7 +1118,38 @@ export interface ListSkillsResult {
 
 export interface ListAgentsResult {
   agents: AgentInfo[];
+  execution_profiles: ExecutionProfileCapability[];
 }
+
+export interface ExecutionProfileCapability {
+  id: string;
+  label: string;
+  mode: "host" | "podman";
+  available: boolean;
+  reason: string | null;
+  unattended_supported: false;
+  boundary_summary: string;
+}
+
+export type ExecutionTarget = {
+  version: 1;
+  policy_version: 1;
+  mode: "host";
+  profile_id: "native-host";
+} | {
+  version: 1;
+  policy_version: 2;
+  mode: "podman";
+  profile_id: "linux-podman-l1";
+  image_id: string;
+  memory_bytes: number;
+  cpus_millis: number;
+  pids_limit: number;
+  timeout_seconds: number;
+  tmpfs_bytes: number;
+  output_limit: number;
+  governor: { kind: "pid1-boottime-v1"; guard_sha256: string; seccomp_sha256: string };
+};
 
 export interface ListJobsResult {
   jobs: ScheduledJob[];
@@ -1262,6 +1295,9 @@ export interface SpawnSubagentResult {
   workspace?: ChildWorkspaceSummary;
   budget_exhausted?: boolean;
   partial?: boolean;
+  execution_target?: ExecutionTarget;
+  execution_target_hash?: string;
+  execution_installation_id?: string | null;
 }
 
 /* ─────────────────────── Git integration (§3-4 of v0.3.0 design) ─────────────────────── */
@@ -1525,6 +1561,7 @@ export interface SubAgentRun {
   admission_unknown?: boolean;
   cancel_requested?: boolean;
   partial?: boolean;
+  execution_target?: ExecutionTarget;
   agent_id: string;
   agent_name: string;
   display_name?: string;

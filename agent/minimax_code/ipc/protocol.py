@@ -164,6 +164,10 @@ class SendMessageResult(_Base):
     usage_certainty: Literal["unknown", "observed", "uncertain", "recovery_interval"] | None = None
     tokens_total: int | None = None
     verification: VerificationEvidence | None = None
+    # Derived from the authoritative saved v3 profile; never request overrides.
+    execution_target: dict[str, Any] | None = None
+    execution_target_hash: str | None = None
+    execution_installation_id: str | None = None
 
 
 class MessageMetadata(_Base):
@@ -377,6 +381,23 @@ class AgentSkillsConfig(_Base):
         if any(not item.strip() for item in value) or len(set(value)) != len(value):
             raise ValueError("skills require unique non-blank IDs or names")
         return value
+
+
+class AgentExecutionProfileConfig(_Base):
+    """Persistent configured ID; no per-invocation execution override."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    execution_profile_id: str | None = Field(default=None, min_length=1, max_length=64,
+                                             pattern=r"^[a-z][a-z0-9_-]*$")
+
+
+class ExecutionProfileCapability(_Base):
+    id: str
+    label: str
+    mode: Literal["host", "podman"]
+    available: bool
+    reason: str | None = None
+    unattended_supported: Literal[False] = False
+    boundary_summary: str
 
 
 class AgentInvokeParams(_Base):

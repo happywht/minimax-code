@@ -1,12 +1,39 @@
 # Linux L1 实施规格
 
 本文件细化 [Linux 执行链](linux-execution-plan.md) 的 L1，是实现与验收约束，
-不是已实现能力。先以真实 `agent.invoke` / `agent.spawn_subagent` 独立副本为入口。
+不是 L1 已通过的声明。基础模块及默认 host 接线已实现并做局部验证；真实
+`agent.invoke` / `agent.spawn_subagent` 容器整链仍待验收。
 复用同一个 RunService、持久 run/预算家族和服务目录租约，不增加第二个调度循环。
 
 profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
-[接线契约](linux-execution-profile-contract.md)。其中严格绝对截止尚缺已验收的治理器；
-不能将 conmon 相对运行期限视为该门槛已满足。
+[接线契约](linux-execution-profile-contract.md)。其中严格绝对截止尚缺产品整链验收；
+加固 PID1 的实现与 helper 验证由单独批次接受，不能将 conmon 相对运行期限或 helper
+成功视为 L1 门槛已满足。
+
+## 当前实现与未完成范围
+
+已实现的基础包括：Schema039/040、私有安装 pending/marker/active 协议、FULL-before-
+intent、唯一 run snapshot 归属、完整 CID/config 核验、CAS 与 event 同事务、保留取消/
+清理责任、历史 policy1 只清理不启动、policy2 boot/BOOTTIME 固定期限、固定完整 seccomp
+资产及打包，以及同一 RunService 内的私有零模型 preflight。preflight 生成自己的真实
+run/family 与 v2 internal owner，保存解释器/boot/time namespace/时钟区间及原始 stdout，
+确认容器 absent、释放责任和持久回执后才产生运行时证明。该证明仍须匹配已接受资产；
+当前 `ACCEPTED_GOVERNORS` 为空，Linux L1 能力卡始终 unavailable。
+
+公共 Agent 新接单保存 v3 的实际 target/hash/install，默认 null 配置继续 native-host；
+v1/v2 恢复维持 legacy-host，不自动升级。Python/TS/typed/mock/设置选择器与结果展示已有
+字段接线，host Native/技能/副本兼容测试已通过。配置 ID 仅作选择，RPC 不接受镜像、
+资源、env 或任意 controller 命令。
+
+这些是局部基础，尚未完成：可信 restricted child 支持链及其 legacy overlay 分离、
+terminal/runner 会话绑定与私有子归属、无人值守全部准入/派发门槛、included 同设备 bind
+mount/alias 复制准入的专测和收口、UI/IPC 最终组合，以及真实公开 Native → 容器修改 →
+容器验证 → durable receipt 和服务死亡/截止故障验收。未审计工具实际类仍拒绝，不能用
+这些未完成入口获取 host fallback。基础 review 和受控 controller 测试不构成 L1 验收。
+
+本批源清单与命令/原始输出记录在 `.verification/linux-l1-source-checkpoint-20261026-home-fixed.json`
+及关联日志；这份清单记录局部冻结范围，不替代后续实际 Linux 产品证据。迁移和回退须
+同时遵守 [存储契约](storage-schema.md) 的 Schema039/040 说明。
 
 ## 模块与接口
 
@@ -15,11 +42,16 @@ profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
 - `process_context.py`：required-target ContextVar，独立于可重建的 ExecutionPolicy。
   内层 scope 不得改回 host、换镜像或扩大资源；派生绑定须引用实际登记的子 run。
 - `podman_execution.py`：一个 supervisor 管理准入、创建、核验、启动、清理和恢复。
-- `storage/dao/process_executions.py` 与递增 Schema039；实际编号须在实施前复核。
+- `storage/dao/process_executions.py` 与 Schema039；Schema040 保存 nullable Agent profile ID。
+- `process_binding.py`、`process_installation.py`：唯一 admitted authority 和私有安装身份。
+- `execution_profiles.py`、`process_preflight.py`：启动冻结 catalog、扩展污染 latch 与私有证明。
+- `process_deadline.py`、`process_assets.py`、`pid1_guard.py` 及固定 Linux assets：期限与加固治理。
+- `process_workspace.py`：source/copy/mount 的敏感路径和物理身份准入；完整支持链仍按上文收口。
 
 保留 `execution.py` 的 spawn_exec/spawn_shell、communicate_bounded、capture_output、
 terminate_tree 调用形状。容器 handle 提供流、returncode、wait、execution_id 与
-terminate_owned_tree；payload 退出码来自容器 inspect，不能用 attach CLI 退出码代替。
+terminate_owned_tree；raw container/guard 退出码来自容器 inspect，不能用 attach CLI
+退出码代替。正常 leader 码经 guard 映射；124/125 仍保留 guard/payload 歧义。
 容器不借用 CLI PID 冒充身份；controller_pid 仅作控制进程诊断。
 
 ## 持久身份与事务
@@ -48,7 +80,11 @@ intent → created → starting → running → stopped → removing → removed
 
 更新 JSON 导入保护覆盖这些表；SQLite 一致备份包含全部状态。恢复旧备份发现标签
 属于同安装却没有 DB 行的容器，诊断并阻止受限准入，不按标签全局删除。
-回退须停止并核对本次执行，保全证据，恢复配套程序/数据库；无逆向迁移承诺。
+升级前使用完整 SQLite online backup，并单独保全私有 marker 和安装身份；JSON export
+不是 marker 备份。039 新增三表，040 仅追加默认 NULL 字段，默认 host 不变。回退须先
+停止接单并等待已确认清理，保全升级后 DB/marker/copy/CID 证据，再恢复匹配旧程序的
+完整升级前数据库；未知责任仍保留，不删表或 marker 来释放资源。无逆向迁移或旧程序
+直接读取升级后 DB 的承诺；跨安装/旧备份恢复须另行核对，不自动认领或重放。
 
 ## 控制面与容器边界
 
@@ -67,8 +103,9 @@ network none、cap-drop ALL、no-new-privileges、只读 rootfs、有限 tmpfs�
 memory/swap/pids 和唯一工作区挂载。具体参数按官方对应版本复核，并 inspect 实际值。
 不得新增 AppArmor 已生效的声明。
 
-仅挂载已证明归属的独立目录副本；source/copy/mount 均须排除服务 dataDir、HOME 和
-凭据目录，不能先把秘密复制进工作区再声称没有直接挂载。Git worktree 外部 `.git`
+仅挂载已证明归属的独立目录副本；source/copy/mount 与服务 dataDir、凭据及 runtime
+store/socket 根双向重叠均拒绝。HOME 自身及包含 HOME 的祖先拒绝，正常 HOME/project
+可用；敏感树物理别名仍须拒绝。不能先复制秘密再声称没有直接挂载。Git worktree 外部 `.git`
 不可通过额外挂载源仓库或服务数据修复。容器 cwd 从 owned root 相对映射到 /workspace，
 拒绝越界或身份变化，不无声重写任意宿主绝对参数。
 
@@ -80,9 +117,11 @@ memory/swap/pids 和唯一工作区挂载。具体参数按官方对应版本复
 3. inspect 对照完整 CID、owner 标签、image、mount/env、security 与资源；证据持久
    成功才进入 created。先提交 starting，再 start attach，不能 CAS 失败后仍启动。
 4. stdin 在 create/start 一致启用，默认关闭；禁 TTY/detach keys，分离 stdout/stderr。
-   输出和运行时日志都限额；Python 超时之外设置 conmon 硬期限，覆盖服务 SIGKILL。
+   输出和运行时日志都限额；固定 PID1/BOOTTIME 治理负责绝对期限，conmon timeout
+   仅作相对运行上限。服务 SIGKILL、迟到启动与阻塞 IO 仍需产品故障验收。
    已超过绝对 deadline 不再启动，控制命令也有有限超时。
-5. stop 后核实非 Running/Pid 和 payload exit，提交 stopped/removing，按完整 CID
+5. stop 后核实 Running=false/Pid0；只有 exited 和有效非零 StartedAt/FinishedAt 才读
+   raw exit，created 的 0 不算成功。未知结果不重放。提交 stopped/removing，按完整 CID
    rm，再核实不存在。exists 返回 1 才是不存在；125 是故障。
 6. 取消及重复取消等待同一个保留 cleanup；清理中新后代仍须停止。
    DB/runtime/identity 错误保留责任并停止新启动，不能用 attach CLI 被杀证明容器停止。

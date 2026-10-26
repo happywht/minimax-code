@@ -245,6 +245,13 @@ class SkillRuntime:
             )
             tool_registry = None
 
+        if not isinstance(provider, _NoopSkillToolProvider):
+            from ...app import before_executable_extension
+            from ...process_context import current_process_target
+            from ...process_types import ProcessBoundaryError
+            if current_process_target() is not None:
+                raise ProcessBoundaryError("L1 不支持可执行 skill provider")
+            await before_executable_extension("Skill Python provider")
         installed = provider.install(tool_registry) if tool_registry is not None else set()
         self.registry.register_skill_tools(skill, installed)
         try:

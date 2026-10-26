@@ -236,6 +236,8 @@ class ToolRegistry:
             from ...execution import require_tool_access
 
             require_tool_access(name)
+            from ...process_boundary import assert_restricted_dispatch
+            assert_restricted_dispatch(tool)
             # All tools speak the kwargs convention: run(**args). The former
             # "single positional parameter = legacy args-dict" heuristic silently
             # misrouted the whole args dict into tools that merely happened to

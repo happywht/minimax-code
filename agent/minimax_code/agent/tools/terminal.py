@@ -588,7 +588,13 @@ class ExecCommandTool(Tool):
         extra_env = {str(k): str(v) for k, v in (env_arg or {}).items()}
 
         # Build sanitized child environment.
-        child_env = _build_safe_env(extra_env)
+        from ...process_context import current_process_target
+        if current_process_target() is not None:
+            if extra_env:
+                return ToolResult.fail("L1 container environment is server owned")
+            child_env = None
+        else:
+            child_env = _build_safe_env(extra_env)
 
         # v1.6.0 — sandbox escape detection setup. Sandbox runs only;
         # the main agent's exec calls skip all of this. The pre-walk sits

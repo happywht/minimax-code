@@ -118,6 +118,10 @@ export function SubAgentResultCard({
           {run.summary}
         </div>
       )}
+      {run.execution_target && <p data-testid={`${testId}-execution-target`}
+        className="border-t border-minimax-border/40 px-3 py-1 text-[11px] text-minimax-muted">
+        实际执行环境：{run.execution_target.mode === "podman" ? "Linux 容器 L1（需人工监督）" : "Native 宿主"}
+      </p>}
       {expanded && run.text && (
         <div
           data-testid={`${testId}-text`}

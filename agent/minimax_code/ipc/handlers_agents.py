@@ -50,7 +50,9 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 )
             check_params(params, expected_keys=set())
             agents = await agent_dao.list_all()
-            await ctx.reply({"agents": agents})
+            from ..app import ensure_execution_profiles
+            catalog = await ensure_execution_profiles(agent_dao._db)
+            await ctx.reply({"agents": agents, "execution_profiles": catalog.cards()})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception:  # pragma: no cover — defensive
@@ -126,6 +128,8 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     raise HandlerError(INVALID_PARAMS, "tags must be a list of strings")
                 upsert_kwargs["tags"] = tags
             if skills is not None:
+                if not isinstance(skills, list):
+                    raise HandlerError(INVALID_PARAMS, "skills must be a list of strings")
                 from .protocol import AgentSkillsConfig
                 upsert_kwargs["skills"] = AgentSkillsConfig(skills=skills).skills
             if max_iterations is not None:
@@ -134,6 +138,10 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 upsert_kwargs["temperature"] = float(temperature)
             if enabled is not None:
                 upsert_kwargs["enabled"] = bool(enabled)
+            if "execution_profile_id" in params:
+                from .protocol import AgentExecutionProfileConfig
+                upsert_kwargs["execution_profile_id"] = AgentExecutionProfileConfig(
+                    execution_profile_id=params["execution_profile_id"]).execution_profile_id
             agent = await agent_dao.upsert(
                 name=name,
                 system_prompt=system_prompt,
@@ -196,6 +204,8 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 upsert_kwargs["tags"] = tags
             if "skills" in params:
                 skills = params["skills"]
+                if skills is not None and not isinstance(skills, list):
+                    raise HandlerError(INVALID_PARAMS, "skills must be a list of strings")
                 from .protocol import AgentSkillsConfig
                 upsert_kwargs["skills"] = AgentSkillsConfig(skills=skills).skills
             if "max_iterations" in params:
@@ -208,6 +218,10 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 # write path either) — the toggle reported success but the
                 # row never changed.
                 upsert_kwargs["enabled"] = bool(params["enabled"])
+            if "execution_profile_id" in params:
+                from .protocol import AgentExecutionProfileConfig
+                upsert_kwargs["execution_profile_id"] = AgentExecutionProfileConfig(
+                    execution_profile_id=params["execution_profile_id"]).execution_profile_id
             agent = await agent_dao.upsert(
                 name=name,
                 system_prompt=str(new_prompt),
@@ -424,6 +438,7 @@ def _config_from_row(config_row: dict[str, Any]) -> Any:
         color=str(config_row.get("color") or ""),
         category=str(config_row.get("category") or ""),
         team_id=config_row.get("team_id"),
+        execution_profile_id=config_row.get("execution_profile_id"),
         **kwargs,
     )
 

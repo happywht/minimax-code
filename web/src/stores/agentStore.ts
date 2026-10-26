@@ -10,28 +10,30 @@
 import { create } from "zustand";
 import { typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
-import type { AgentInfo } from "../types/ipc";
+import type { AgentInfo, ExecutionProfileCapability } from "../types/ipc";
 import { strings } from "../ui/strings";
 
 export interface AgentState {
   agents: AgentInfo[];
+  executionProfiles: ExecutionProfileCapability[];
   loading: boolean;
 
   refresh: () => Promise<void>;
-  create: (opts: { name: string; system_prompt: string; tool_allowlist?: string[]; skills?: string[]; model?: string }) => Promise<AgentInfo | null>;
-  update: (opts: { name: string; system_prompt?: string; tool_allowlist?: string[]; skills?: string[]; model?: string; enabled?: boolean }) => Promise<void>;
+  create: (opts: { name: string; system_prompt: string; execution_profile_id?: string | null; tool_allowlist?: string[]; skills?: string[]; model?: string }) => Promise<AgentInfo | null>;
+  update: (opts: { name: string; system_prompt?: string; execution_profile_id?: string | null; tool_allowlist?: string[]; skills?: string[]; model?: string; enabled?: boolean }) => Promise<void>;
   remove: (name: string) => Promise<void>;
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
   agents: [],
+  executionProfiles: [],
   loading: false,
 
   refresh: async () => {
     set({ loading: true });
     try {
       const r = await typedIPC.listAgents();
-      set({ agents: r.agents, loading: false });
+      set({ agents: r.agents, executionProfiles: r.execution_profiles ?? [], loading: false });
     } catch (err) {
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);

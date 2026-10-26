@@ -28,6 +28,7 @@ not parent/child.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from sqlite3 import IntegrityError
 from typing import Any
@@ -38,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 
 _SORTABLE: tuple[str, ...] = ("name", "created_at")
+_UNSET = object()
+
+
+def _profile_id(value):
+    if value is not None and (not isinstance(value, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value)):
+        raise ValueError("execution_profile_id must be a profile ID or null")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -59,12 +68,13 @@ class AgentsDAO:
         system_prompt: str = "",
         tool_allowlist: list[str] | None = None,
         model: str | None = None,
+        execution_profile_id: str | None = None,
         created_at: str | None = None,
     ) -> dict[str, Any]:
         sql = (
             "INSERT INTO agents "
-            "(id, name, system_prompt, tool_allowlist, model, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)"
+            "(id, name, system_prompt, tool_allowlist, model, execution_profile_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
         params = (
             id,
@@ -72,6 +82,7 @@ class AgentsDAO:
             system_prompt,
             dumps_json(tool_allowlist) if tool_allowlist is not None else None,
             model,
+            _profile_id(execution_profile_id),
             created_at or now_iso(),
         )
         async with self._db.transaction() as conn:
@@ -114,9 +125,13 @@ class AgentsDAO:
         skills: list[str] | None = None,
         max_iterations: int | None = None,
         temperature: float | None = None,
+        execution_profile_id: Any = _UNSET,
     ) -> dict[str, Any] | None:
         sets: list[str] = []
         params: list[Any] = []
+        if execution_profile_id is not _UNSET:
+            sets.append("execution_profile_id = ?")
+            params.append(_profile_id(execution_profile_id))
         if system_prompt is not None:
             sets.append("system_prompt = ?")
             params.append(system_prompt)
@@ -190,8 +205,8 @@ def _hydrate(row: Any) -> dict[str, Any] | None:
 def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     sql = (
         "INSERT INTO agents "
-        "(id, name, system_prompt, tool_allowlist, model, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)"
+        "(id, name, system_prompt, tool_allowlist, model, execution_profile_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     params = (
         fields["id"],
@@ -201,6 +216,7 @@ def create_sync(db, **fields) -> dict[str, Any]:  # type: ignore[no-untyped-def]
         if fields.get("tool_allowlist") is not None
         else None,
         fields.get("model"),
+        _profile_id(fields.get("execution_profile_id")),
         fields.get("created_at") or now_iso(),
     )
     with db.transaction() as conn:
@@ -294,6 +310,7 @@ class AgentDAO:
         max_iterations: int | None = None,
         temperature: float | None = None,
         enabled: bool | None = None,
+        execution_profile_id: Any = _UNSET,
     ) -> dict[str, Any]:
         """Insert-or-update by ``name``.
 
@@ -327,6 +344,8 @@ class AgentDAO:
                 )
         if model is not None and not isinstance(model, str):
             raise ValueError(f"model must be a string or None, got {model!r}")
+        if execution_profile_id is not _UNSET:
+            _profile_id(execution_profile_id)
 
         existing = await self.get(name)
         if existing is None:
@@ -337,8 +356,8 @@ class AgentDAO:
                 "(id, name, system_prompt, tool_allowlist, model, "
                 "description, icon, color, category, tags, team_id, "
                 "skills, max_iterations, temperature, enabled, "
-                "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "execution_profile_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             params = (
                 agent_id,
@@ -360,6 +379,7 @@ class AgentDAO:
                 max_iterations if max_iterations is not None else 100,
                 temperature,
                 1 if (enabled is None or enabled) else 0,
+                execution_profile_id if execution_profile_id is not _UNSET else None,
                 now,
                 now,
             )
@@ -373,6 +393,9 @@ class AgentDAO:
         if existing is not None:
             sets: list[str] = []
             params: list[Any] = []
+            if execution_profile_id is not _UNSET:
+                sets.append("execution_profile_id = ?")
+                params.append(execution_profile_id)
             sets.append("system_prompt = ?")
             params.append(system_prompt)
             if tool_allowlist is not None:

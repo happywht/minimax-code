@@ -249,6 +249,7 @@ export interface TypedIPC {
   createAgent(opts: {
     name: string;
     system_prompt: string;
+    execution_profile_id?: string | null;
     tool_allowlist?: string[];
     model?: string;
     description?: string;
@@ -264,6 +265,7 @@ export interface TypedIPC {
   updateAgent(opts: {
     name: string;
     system_prompt?: string;
+    execution_profile_id?: string | null;
     tool_allowlist?: string[];
     model?: string;
     enabled?: boolean;

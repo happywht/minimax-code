@@ -75,7 +75,7 @@ async def test_two_skills_order_actual_provider_tools_and_durable_replay(agent_e
     receipt = ctx.reply.await_args.args[0]
     row = await state.dao.get_run(receipt["run_id"])
     saved = row["metadata"]["agent_execution"]
-    assert saved["version"] == 2 and saved["skill_bindings"]["version"] == 1
+    assert saved["version"] == 3 and saved["skill_bindings"]["version"] == 1
     assert [s["id"] for s in saved["skill_bindings"]["skills"]] == [
         state.skill.skill_id,
         other.skill_id,
@@ -277,7 +277,8 @@ async def test_profile_versions_are_explicit_and_corruption_fails_closed(agent_e
         with pytest.raises(ValueError):
             AgentExecutionSpec(broken)
     legacy = {
-        k: v for k, v in data.items() if k not in {"agent_instructions", "skill_bindings", "digest"}
+        k: v for k, v in data.items() if k not in {"agent_instructions", "skill_bindings", "digest",
+            "execution_target", "execution_target_hash", "execution_installation_id"}
     }
     legacy["version"] = 1
     legacy["digest"] = _digest(legacy)
@@ -827,6 +828,8 @@ async def test_known_no_skills_v1_profile_executes_continue_without_upgrade(agen
     data = metadata["agent_execution"]
     data.pop("skill_bindings")
     data.pop("agent_instructions")
+    for field in ("execution_target", "execution_target_hash", "execution_installation_id"):
+        data.pop(field)
     data["version"] = 1
     data["digest"] = _digest({k: v for k, v in data.items() if k != "digest"})
     await state.dao.update_run_status(old["id"], status=old["status"], metadata=metadata)

@@ -10,11 +10,13 @@ import type { AgentInfo } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { Field, InlineCode, TabHeader } from "./fields";
 import { AgentRow } from "./agents/AgentRow";
+import { ExecutionProfileSelect } from "./agents/ExecutionProfileSelect";
 
 export { AgentsTab };
 
 function AgentsTab(): JSX.Element {
   const agents = useAgentStore((s) => s.agents);
+  const profiles = useAgentStore((s) => s.executionProfiles);
   const loading = useAgentStore((s) => s.loading);
   const refresh = useAgentStore((s) => s.refresh);
   const create = useAgentStore((s) => s.create);
@@ -25,14 +27,16 @@ function AgentsTab(): JSX.Element {
   const [formName, setFormName] = useState("");
   const [formPrompt, setFormPrompt] = useState("");
   const [formSkills, setFormSkills] = useState("");
+  const [formProfile, setFormProfile] = useState("");
 
   useEffect(() => { if (agents.length === 0) void refresh(); }, [agents.length, refresh]);
 
   const handleCreate = async () => {
     if (!formName.trim() || !formPrompt.trim()) return;
     const a = await create({ name: formName.trim(), system_prompt: formPrompt.trim(),
+      execution_profile_id: formProfile || null,
       skills: formSkills.split(/[\n,]/).map((v) => v.trim()).filter(Boolean) });
-    if (a) { setFormName(""); setFormPrompt(""); setFormSkills(""); setShowForm(false); }
+    if (a) { setFormName(""); setFormPrompt(""); setFormSkills(""); setFormProfile(""); setShowForm(false); }
   };
 
   const handleDelete = async (agent: AgentInfo) => {
@@ -48,7 +52,7 @@ function AgentsTab(): JSX.Element {
     void update({ name: agent.name, enabled: !agent.enabled });
   };
 
-  const handleSave = (agent: AgentInfo, fields: { system_prompt?: string; model?: string; skills?: string[] }) => {
+  const handleSave = (agent: AgentInfo, fields: { system_prompt?: string; model?: string; skills?: string[]; execution_profile_id?: string | null }) => {
     void update({ name: agent.name, ...fields });
   };
 
@@ -117,6 +121,7 @@ function AgentsTab(): JSX.Element {
                 placeholder="使用技能库中的 ID；留空表示不附加技能" />
             </Field>
             <p className="text-xs text-ink-2">技能共用此 Agent 的模型、预算和工具授权；必需工具与名单冲突时会拒绝执行。</p>
+            <ExecutionProfileSelect id="agent-form-profile" value={formProfile} profiles={profiles} onChange={setFormProfile} />
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
                 {strings.settings.agents.cancel}
@@ -150,6 +155,7 @@ function AgentsTab(): JSX.Element {
             <AgentRow
               key={a.id}
               agent={a}
+              profiles={profiles}
               onToggleEnabled={() => handleToggle(a)}
               onSave={(fields) => handleSave(a, fields)}
               onDelete={() => void handleDelete(a)}

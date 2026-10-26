@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { ipc, typedIPC } from "../ipc";
 import { StreamEvent, type SubAgentProgress, type SubAgentRun, type SubAgentStatus,
-  type SpawnSubagentParams, type AgentRunStatus, type SendMessageResult } from "../types/ipc";
+  type SpawnSubagentParams, type AgentRunStatus, type SendMessageResult, type SpawnSubagentResult } from "../types/ipc";
 import { evictOldest, MAX_SUBAGENT_RUNS } from "../lib/eviction";
 import { useSessionStore } from "./sessionStore";
 import { useRunTimelineStore } from "./runStore";
@@ -125,10 +125,11 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
         const snapshot = await typedIPC.getRun(id);
         if (get().runs[id] !== row) continue;
         if (snapshot.run.id !== id || snapshot.run.session_id !== row.session_id) throw new Error("运行回执身份不一致");
-        const receipt = snapshot.result as (SendMessageResult & { partial?: boolean }) | null;
+        const receipt = snapshot.result as (SendMessageResult & Partial<SpawnSubagentResult>) | null;
         const partial = Boolean(receipt?.partial || receipt?.verification?.requires_review);
         const next = { ...get().runs, [id]: { ...row, run_status: snapshot.run.status, status: statusView(snapshot.run.status, partial),
           text: receipt?.text ?? row.text, partial, error: snapshot.run.error ?? undefined,
+          execution_target: receipt?.execution_target ?? row.execution_target,
           summary: partial ? `${snapshot.run.status} · 部分结果，需核对` : snapshot.run.status,
           updated_at: Date.now(), finished_at: terminal.has(snapshot.run.status) ? (row.finished_at ?? Date.now()) : undefined } };
         persist(next); set({ runs: next });

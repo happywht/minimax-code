@@ -162,6 +162,15 @@ async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
             "use a reviewed offline SQLite restore and budget reconciliation flow. "
             "Unrelated settings and memory imports remain supported."
         )
+    if max(current, default=0) >= 39 and any(
+        name in {"execution_installation", "process_executions", "process_execution_events"}
+        for name in envelope_tables
+    ):
+        raise ValueError(
+            "Process installation/ownership JSON restore is unsupported on Schema039; "
+            "restore the complete SQLite database offline with its original private marker "
+            "and reconcile exact container responsibility before accepting new work."
+        )
 
     # FK enforcement must be off for the truncate-and-refill dance (SQLite
     # bulk-load idiom); PRAGMA is a no-op inside a transaction, so toggle it

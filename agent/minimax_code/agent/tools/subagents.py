@@ -516,6 +516,8 @@ async def _drive_run(
         failure_status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
         if run_dao is not None:
             try:
+                from ...process_children import refresh_child_metadata
+                await refresh_child_metadata(run_dao, run_id, run_metadata)
                 await run_dao.update_run_status(
                     run_id, status=failure_status, error=str(exc) or type(exc).__name__, metadata=run_metadata
                 )
@@ -598,6 +600,8 @@ async def _drive_run(
     }
     if run_dao is not None:
         try:
+            from ...process_children import refresh_child_metadata
+            await refresh_child_metadata(run_dao, run_id, completion_metadata)
             saved_run = await run_dao.update_run_status(
                 run_id,
                 status=terminal_status,
@@ -861,6 +865,7 @@ class SpawnSubagentTool(Tool):
             skills=row.get("skills"),
             max_iterations=parsed_max,
             temperature=row.get("temperature"),
+            execution_profile_id=row.get("execution_profile_id"),
         )
 
         # v1.4.0 — completion protocol injection: a cloned registry with
@@ -959,6 +964,10 @@ class SpawnSubagentTool(Tool):
                 # lifecycle metadata, including terminal updates.
                 run_metadata["budget_family_id"] = inherited_budget.family_id
                 run_metadata["parent_run_id"] = inherited_budget.run_id
+                from ...process_children import owner_snapshot
+                run_metadata["process_execution_owner"] = owner_snapshot(
+                    handle.execution_target, handle.execution_installation_id,
+                    parent_run_id=inherited_budget.run_id)
 
             db = get_db()
             if db is None and durable_child:
@@ -1007,6 +1016,23 @@ class SpawnSubagentTool(Tool):
             run_metadata=run_metadata,
         )
 
+        restricted_job = None
+        if handle.execution_target and handle.execution_target["mode"] == "podman":
+            from ...orchestrator.subagent import register_background_run
+            from ...runs import RunJob, RunService
+            service = (owned_runtime.get() or {}).get("run_service")
+            if not isinstance(service, RunService):
+                raise RuntimeError("Restricted child requires its parent's RunService")
+            try:
+                restricted_job = service.submit(sub_session,
+                    lambda job: _drive_run(**drive_kwargs),
+                    job=RunJob(sub_session, run_id=run_id, dao=run_dao))
+            except BaseException:
+                await run_dao.update_run_status(run_id, status="cancelled",
+                    error="Service closed before child execution")
+                raise
+            register_background_run(run_id, restricted_job.task)
+
         if not wait:
             # Background path: hand the full lifecycle to a task the
             # module-level registry keeps alive (weak task refs would
@@ -1019,7 +1045,7 @@ class SpawnSubagentTool(Tool):
             # callback (registered below) fires on the task's done state.
             record_background_started(run_id)
             set_background_deps(run_id, deps)
-            task = asyncio.get_running_loop().create_task(
+            task = restricted_job.task if restricted_job is not None else asyncio.get_running_loop().create_task(
                 _drive_run(**drive_kwargs), name=f"subagent:{run_id}"
             )
             register_background_run(run_id, task)
@@ -1057,7 +1083,8 @@ class SpawnSubagentTool(Tool):
             }
             return ToolResult.ok(envelope)
 
-        result = await _drive_run(**drive_kwargs)
+        result = (await service.wait(restricted_job) if restricted_job is not None
+                  else await _drive_run(**drive_kwargs))
         envelope: dict[str, Any] = {
             "agent": row["name"],
             "run_id": run_id,

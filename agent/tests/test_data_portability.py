@@ -68,6 +68,15 @@ async def _seed(db: AsyncDatabase) -> None:
     )
 
 
+@pytest.mark.parametrize("table", ["execution_installation", "process_executions", "process_execution_events"])
+async def test_process_identity_restore_rejected_before_any_mutation(async_db, table):
+    before = await dump_database(async_db)
+    envelope = {**before, "tables": {table: []}}
+    with pytest.raises(ValueError, match="Process installation/ownership JSON restore"):
+        await restore_database(async_db, envelope)
+    assert (await dump_database(async_db))["tables"] == before["tables"]
+
+
 class TestBudgetRestoreFence:
     @pytest.mark.parametrize("source", ["old", "partial", "current"])
     async def test_accounting_restore_rejected_before_any_mutation(self, async_db, source):

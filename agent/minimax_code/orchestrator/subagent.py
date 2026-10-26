@@ -253,6 +253,7 @@ class SubAgentConfig:
     # truncated run.
     max_iterations: int = 100
     temperature: float | None = None
+    execution_profile_id: str | None = None
 
 
 @dataclass
@@ -276,6 +277,8 @@ class SubAgentHandle:
     config: SubAgentConfig
     core: Any = field(default=None)
     skill_profile: dict | None = None
+    execution_target: dict | None = None
+    execution_installation_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +395,12 @@ class SubAgentRuntime:
         from ..run_ownership import owned_runtime
         from ..skill_bindings import SkillBindings, tool_dependencies, tool_identity
         owned = owned_runtime.get()
+        from ..process_children import child_target
+        target, installation_id = child_target(config.execution_profile_id)
+        restricted = target["mode"] == "podman"
+        if restricted:
+            from ..process_boundary import assert_text_skills
+            assert_text_skills(owned.get("skill_runtime"), config.skills)
         child_profile = None
         if owned is not None:
             bindings = SkillBindings.capture(owned.get("skill_runtime"), config.skills)
@@ -416,6 +425,9 @@ class SubAgentRuntime:
             parent_cap = set(parent_registry.names()) | channels
             tools = bindings.candidates(base_registry, config.tool_allowlist,
                                         parent_cap=parent_cap, inherited_provider_names=inherited_names)
+            if restricted:
+                from ..process_boundary import assert_supported_tools
+                assert_supported_tools(tools)
             from ..agent.tools.base import ToolRegistry
             private_registry = ToolRegistry()
             for tool in tools:
@@ -478,7 +490,8 @@ class SubAgentRuntime:
         shared_budget = current_budget()
         if shared_budget is not None:
             core.budget = shared_budget
-        return SubAgentHandle(agent_id=config.id, config=config, core=core, skill_profile=child_profile)
+        return SubAgentHandle(agent_id=config.id, config=config, core=core, skill_profile=child_profile,
+            execution_target=target, execution_installation_id=installation_id)
 
     # -- invoke ------------------------------------------------------------
 
@@ -569,6 +582,12 @@ class SubAgentRuntime:
         # The legacy explicit file overlay remains file-only; otherwise a
         # child always receives an owned working copy, even sandbox=false.
         require_write_access()
+        from ..process_children import child_target, prepare_child_owner
+        target, installation_id = child_target(handle.config.execution_profile_id)
+        if handle.execution_target is not None and (target != handle.execution_target
+                or installation_id != handle.execution_installation_id):
+            raise RunPersistenceError("Child execution profile changed after construction")
+        restricted = target["mode"] == "podman"
         owned = owned_runtime.get() is not None
         durable_owner = current_run_id() if owned else None
         inherited = current_handle()
@@ -596,6 +615,9 @@ class SubAgentRuntime:
             row = await AgentsDAO(get_db()).get(handle.agent_id)
             if row is None or not row.get("enabled", True):
                 raise RunPersistenceError("Owned child agent is unavailable or disabled")
+            latest_target, _ = child_target(row.get("execution_profile_id"))
+            if latest_target != target:
+                raise RunPersistenceError("Owned child execution profile was revoked")
             SkillBindings(profile["skill_bindings"]).validate(
                 owned_runtime.get().get("skill_runtime"), row.get("skills"))
             inherited_bindings = SkillBindings(profile["inherited_tool_bindings"])
@@ -607,11 +629,11 @@ class SubAgentRuntime:
             if tool_identity(core.registry.list()) != profile["tool_identity"]:
                 raise RunPersistenceError("Owned child tool identity changed")
         child = None
-        if current_sandbox() is None:
+        if restricted or current_sandbox() is None:
             run_id = (current_run_id() if not active_child() else None) or f"run_{uuid.uuid4().hex[:12]}"
-            child = await prepare_child(current_root() or env_or_cwd_root(), run_id)
+            child = await prepare_child(current_root() or env_or_cwd_root(), run_id,
+                **({"restricted": True} if restricted else {}))
         try:
-            from contextlib import nullcontext
 
             if owned:
                 from ..app import get_db
@@ -627,8 +649,19 @@ class SubAgentRuntime:
                 inherited = current_handle()
             budget_owner = durable_owner or (child.run_id if child is not None else current_run_id())
             descendant = inherited.descendant(budget_owner or inherited.run_id) if inherited else None
-            with budget_scope(descendant), child.scope() if child is not None else nullcontext():
+            from contextlib import ExitStack
+            with ExitStack() as scopes:
+                scopes.enter_context(budget_scope(descendant))
+                if child is not None:
+                    scopes.enter_context(child.scope())
+                if restricted:
+                    from ..process_context import registered_child_target_scope
+                    binding = await prepare_child_owner(db, durable_owner, child,
+                        target=target, installation_id=installation_id)
+                    scopes.enter_context(registered_child_target_scope(binding.owner,
+                        parent_run_id=binding.parent_run_id))
                 owner_token = owned_runtime.set({**owned_runtime.get(), "registry": core.registry,
+                    "execution_target": target, "execution_installation_id": installation_id,
                     "tool_bindings": tool_dependencies([handle.skill_profile["skill_bindings"], handle.skill_profile["inherited_tool_bindings"]], core.registry.names())}) if owned else None
                 try:
                     run_result = await core.run(session_id=session_id, user_message=request)

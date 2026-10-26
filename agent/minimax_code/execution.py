@@ -154,8 +154,34 @@ async def _finish_owned(task: asyncio.Task[Any]) -> Any:
 async def spawn_exec(*argv: str, cwd: str | Path | None = None,
                      env: Mapping[str, str] | None = None, **kwargs: Any) -> asyncio.subprocess.Process:
     resolved_cwd = process_cwd(cwd)
+    from .process_context import current_process_target
+    if current_process_target() is not None:
+        return await _spawn_restricted(argv, cwd=resolved_cwd, env=env, options=kwargs)
     child_env = process_environment(env)
     return await _spawn_managed_exec(*argv, cwd=resolved_cwd, env=child_env, **kwargs)
+
+
+async def _spawn_restricted(argv, *, cwd, env, options):
+    from .app import get_execution_profiles
+    from .process_context import current_process_target
+    from .process_types import ProcessBoundaryError
+
+    required = current_process_target()
+    if required is None or required.owner is None:
+        raise ProcessBoundaryError("Restricted process requires its durable prepared run owner")
+    catalog = get_execution_profiles()
+    if catalog is None or catalog.supervisor is None:
+        raise ProcessBoundaryError("Restricted process service is unavailable")
+    catalog.assert_compatible(required.target.to_dict(), catalog.installation_id)
+    if (set(options) - {"stdin", "stdout", "stderr"}
+            or options.get("stdin", asyncio.subprocess.DEVNULL) not in
+                (asyncio.subprocess.PIPE, asyncio.subprocess.DEVNULL)
+            or any(options.get(name, asyncio.subprocess.PIPE) != asyncio.subprocess.PIPE
+                   for name in ("stdout", "stderr"))):
+        raise ProcessBoundaryError("Restricted processes require bounded separate pipe streams")
+    return await catalog.supervisor.spawn(argv, target=required.target,
+        owner=required.owner, cwd=cwd, env=env,
+        stdin=options.get("stdin") == asyncio.subprocess.PIPE)
 
 
 async def _spawn_managed_exec(*argv: str, cwd: str,
@@ -188,6 +214,9 @@ async def _spawn_managed_exec(*argv: str, cwd: str,
 
 async def spawn_shell(command: str, *, cwd: str | Path | None = None,
                       env: Mapping[str, str] | None = None, **kwargs: Any) -> asyncio.subprocess.Process:
+    from .process_context import current_process_target
+    if current_process_target() is not None:
+        return await spawn_exec("/bin/sh", "-c", command, cwd=cwd, env=env, **kwargs)
     if sys.platform == "win32":
         from ._windows_process_host import parent_arguments
 
@@ -204,6 +233,10 @@ async def spawn_shell(command: str, *, cwd: str | Path | None = None,
 
 
 async def terminate_tree(proc: asyncio.subprocess.Process) -> None:
+    from .process_types import OwnedProcessHandle
+    if isinstance(proc, OwnedProcessHandle):
+        await proc.terminate_owned_tree()
+        return
     if sys.platform == "win32":
         if proc.returncode is None:
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):

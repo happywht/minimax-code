@@ -1,0 +1,23 @@
+Linux L1 frozen seccomp policy
+
+Source: Ubuntu package golang-github-containers-common 0.57.4+ds1-2ubuntu0.2
+Original installed path: /usr/share/containers/seccomp.json
+Baseline file: seccomp-baseline-0.57.4.json
+Baseline SHA-256: cc374cf23846ce1f62f4dc807a8e2b8673c783c6f56cb475467621035d281e6c
+Derived file: seccomp-pid1-v1.json
+Derived SHA-256: 41353e75c367b32482d0367ba5632ea6f27fba0b390b68418401549ab8cd545f
+Transform: build_seccomp.py, version 1; MiniMax Code contributors, 2026.
+
+The complete upstream default-deny policy is retained. This derived policy
+removes all allow rules for cross-process scheduling/priority and observation
+syscalls listed in build_seccomp.py, replacing them with EPERM. prlimit64 is
+allowed only for pid=0, preserving the baseline conditions. Other syscall rules
+and default errno/architecture mappings are unchanged.
+
+The applicable source copyright and license notices are preserved in COPYRIGHT
+(Debian-format source package copyright, Files: * and seccomp sections), and the
+complete Apache License, Version 2.0 is in LICENSE-APACHE-2.0. This NOTICE records
+the source and modifications; it does not replace those notices or license.
+
+This is a versioned product policy asset. Availability and platform verification
+are governed separately; shipping this file does not establish L1 acceptance.

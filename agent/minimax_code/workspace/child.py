@@ -92,20 +92,29 @@ def _raise_walk_error(error: OSError) -> None:
     raise error
 
 
-def _scan(root: Path) -> dict[str, str]:
+def _scan(root: Path, *, restricted=False) -> dict[str, str]:
     root = require_directory(root)
     result: dict[str, str] = {}
     total = 0
+    device = root.stat().st_dev
     for directory, dirs, files in os.walk(root, onerror=_raise_walk_error):
         base = Path(directory)
         dirs[:] = sorted(d for d in dirs if _included((base / d).relative_to(root).as_posix()))
         for name in dirs:
-            _path(root, (base / name).relative_to(root).as_posix())
+            target = _path(root, (base / name).relative_to(root).as_posix())
+            if restricted:
+                info = target.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_dev != device:
+                    raise ValueError("Restricted copy cannot traverse aliases or mounted directories")
         for name in sorted(files):
             relative = (base / name).relative_to(root).as_posix()
             if not _included(relative):
                 continue
             target = _path(root, relative)
+            if restricted:
+                info = target.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_dev != device:
+                    raise ValueError("Restricted copy requires ordinary files without hardlinks")
             total += target.stat().st_size
             if len(result) >= MAX_FILES or total > MAX_BYTES:
                 raise ValueError("Child workspace snapshot exceeds its file/byte limit")
@@ -171,7 +180,7 @@ class ChildWorkspace:
     def finish(self, state: str) -> None:
         self.record["state"] = state
         try:
-            final = _scan(self.root)
+            final = _scan(self.root, restricted=self.record.get("restricted", False))
             self.record["final"] = final
             baseline = self.record["baseline"]
             self.record["changes"] = sorted(p for p in baseline.keys() | final.keys()
@@ -227,20 +236,32 @@ def load_child(parent: Path, run_id: str) -> ChildWorkspace | None:
     return ChildWorkspace(parent, run_id, base, record)
 
 
-async def prepare_child(parent: Path, run_id: str) -> ChildWorkspace:
+async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> ChildWorkspace:
     require_write_access()
     parent = require_directory(parent)
+    if restricted:
+        from ..app import get_execution_profiles
+        from ..process_workspace import validate_process_workspace
+        catalog = get_execution_profiles()
+        if catalog is None or catalog.supervisor is None:
+            raise ValueError("Restricted workspace service is unavailable")
+        catalog.assert_extension_boundary()
+        validate_process_workspace(parent, data_dir=catalog.data_dir,
+            protected_roots=catalog.supervisor._protected_roots)
+        source_snapshot = _scan(parent, restricted=True)
+        source_identity = parent.stat().st_dev, parent.stat().st_ino
     base = _base(parent, run_id)
     base.mkdir(parents=True, exist_ok=False)
     child = ChildWorkspace(parent, run_id, base, {
         "version": 1, "parent": str(parent), "run_id": run_id,
         "state": "preparing", "kind": "directory", "baseline": {}, "omitted": [],
+        "restricted": restricted,
     })
     child.save()
     try:
         # Detect Git from the selected root, never silently substitute an
         # ancestor repository or a process-wide working directory.
-        if (parent / ".git").exists():
+        if not restricted and (parent / ".git").exists():
             revision = (await _git(parent, "rev-parse", "--verify", "HEAD^{commit}")).strip()
             names = (await _git(parent, "ls-files", "-z", "--cached", "--others",
                                 "--exclude-standard")).split("\0")
@@ -250,7 +271,7 @@ async def prepare_child(parent: Path, run_id: str) -> ChildWorkspace:
             child.record.update(kind="git_worktree", revision=revision)
         else:
             child.root.mkdir()
-            relative_files = sorted(_scan(parent))
+            relative_files = sorted(source_snapshot if restricted else _scan(parent))
         total = 0
         baseline = child.record["baseline"]
         for relative in relative_files:
@@ -258,6 +279,10 @@ async def prepare_child(parent: Path, run_id: str) -> ChildWorkspace:
                 child.record["omitted"].append(relative)
                 continue
             source = _path(parent, relative)
+            if restricted:
+                info = source.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_dev != source_identity[0]:
+                    raise ValueError("Restricted input identity changed during copy")
             if not source.exists():  # An existing uncommitted deletion.
                 continue
             digest = _digest(source)
@@ -273,6 +298,13 @@ async def prepare_child(parent: Path, run_id: str) -> ChildWorkspace:
             baseline[relative] = digest
             # Yield between copies so cancellation can stop a large snapshot.
             await asyncio.sleep(0)
+        if restricted:
+            if (source_identity != (parent.stat().st_dev, parent.stat().st_ino)
+                    or _scan(parent, restricted=True) != source_snapshot
+                    or _scan(child.root, restricted=True) != source_snapshot):
+                raise ValueError("Restricted source changed during preparation")
+            validate_process_workspace(child.root, data_dir=catalog.data_dir,
+                protected_roots=catalog.supervisor._protected_roots)
         child.record["state"] = "running"
         child.save()
         return child

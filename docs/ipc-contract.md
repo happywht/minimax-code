@@ -281,7 +281,7 @@ fallback. Changed input under that key is INVALID_PARAMS. Optional
 `parent_session_id` is a source-session alias and must agree with `session_id` when both are
 present. `context_message_id` and `display_name` are provenance/display fields. Client `run_id`
 is only a receipt association; callers cannot supply family IDs, execution instructions or
-internal profiles. Agent CRUD skills is an ordered list of unique non-blank strings. Execution resolves exact composite IDs first, or a unique short name; unknown/ambiguous/disabled/duplicate canonical dependencies fail before new root admission. The server saves Agent profile v2 with bindings v1 (canonical IDs/version/full frozen instructions/manifest and actual private exports/provider class/schema identity). Replay still precedes live resolution. None tool_allowlist freezes baseline plus selected provider candidates; [] permits no tools; explicit lists must include all skill-required tools and cannot add unknown names. Tool-name collisions and reserved runtime receipt names refuse. Skills share the root Native Core/client/model/budget/copy and do not change its generic result format. Current dependency/provider/allowlist/permission revocations tighten queued or reviewed recovery/continue. Known no-skills Agent v1 remains compatible; damaged v2 fails closed without generic fallback. No SQL migration is added. Trusted descendants persist their own bindings before child admission and stay within the parent's actual business tool cap; only server-constructed child-bound report_completion/report_progress channels are injected separately. See [Agent execution](agent-execution.md) and [Skill configuration](skills.md).
+internal profiles. Agent CRUD skills is an ordered list of unique non-blank strings. Execution resolves exact composite IDs first, or a unique short name; unknown/ambiguous/disabled/duplicate canonical dependencies fail before new root admission. New admissions save Agent profile v3, retaining v2's bindings v1 (canonical IDs/version/full frozen instructions/manifest and actual private exports/provider class/schema identity), and freeze the resolved execution target described below. Replay still precedes live resolution. None tool_allowlist freezes baseline plus selected provider candidates; [] permits no tools; explicit lists must include all skill-required tools and cannot add unknown names. Tool-name collisions and reserved runtime receipt names refuse. Skills share the root Native Core/client/model/budget/copy and do not change its generic result format. Current dependency/provider/allowlist/permission revocations tighten queued or reviewed recovery/continue. Known no-skills Agent v1 and valid v2 remain legacy-host compatible; damaged profiles fail closed without generic fallback. Skill bindings themselves add no migration; execution profiles use Schema039/040. Trusted descendants retain their own bindings and the parent's actual business tool cap; only server-constructed child-bound report_completion/report_progress channels are injected separately. See [Agent execution](agent-execution.md) and [Skill configuration](skills.md).
 
 Admission atomically saves an independent execution session, queued run, new budget family,
 event and schema038 source/key mapping. Only the created RunService owner prepares one working
@@ -306,6 +306,52 @@ does not restore shared-directory execution. The explicit legacy
 `sandbox=true` file overlay remains available and still forbids shell commands.
 Public Native mock execution uses the same durable admission and working-copy contract.
 The frontend-only mock backend simulates those receipts without filesystem isolation.
+
+### Agent execution profile fields (Schema040 / Agent profile v3)
+
+`agent.create` and `agent.update` accept persistent `execution_profile_id`: `null` or a
+1–64 character ID matching `^[a-z][a-z0-9_-]*$`. Create omission/null means the default;
+update omission preserves the saved value, while explicit null restores the default.
+Agent definitions returned by list/get/create/update include this nullable field. Unknown
+IDs are retained for configuration portability, but execution refuses an unknown,
+disabled or unavailable ID. There is no per-invocation profile, image, resource or env override.
+
+`agent.list` returns `{agents, execution_profiles}`. Each capability card has:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id`, `label` | string | Server catalog identity and display name. |
+| `mode` | `"host"` or `"podman"` | Actual execution mechanism. |
+| `available` | boolean | Current service readiness, including ownership, extension and deadline gates. |
+| `reason` | string or null | Why the profile cannot accept new work. |
+| `unattended_supported` | false | L1 does not authorize scheduler/webhook/team execution. |
+| `boundary_summary` | string | Visible scope of isolation. |
+
+A public Native root with omitted/null configuration resolves to `native-host`. A trusted
+child's omitted/null configuration inherits its parent's frozen target; an explicit different
+ID must be rejected. This inheritance is a required contract; the restricted child/terminal
+support chain remains unfinished in the current foundation checkpoint. Ordinary host execution
+keeps its existing behavior.
+
+Every new v3 snapshot saves `execution_target`, its canonical SHA-256
+`execution_target_hash`, and `execution_installation_id` (null for host). Host target is
+`{version:1, policy_version:1, mode:"host", profile_id:"native-host"}`. Podman target is
+version 1/policy 2 with mode/profile/image ID, `memory_bytes`, `cpus_millis`, `pids_limit`,
+`timeout_seconds`, `tmpfs_bytes`, `output_limit`, and a governor object containing
+`kind:"pid1-boottime-v1"`, `guard_sha256` and `seccomp_sha256`. These are server-resolved
+fields, not invocation input. Canonical JSON sorts keys, uses compact UTF-8, and rejects
+NaN/infinity. Missing/malformed v3 fields cannot be treated as legacy host or upgraded on
+recovery. Historical v1/v2 retain their legacy-host meaning without an implicit upgrade.
+
+Completed v3 receipts include those same actual target/hash/installation fields; query/replay
+uses the saved receipt. The UI displays the saved target rather than the agent's later setting.
+The browser mock returns a simulated host receipt and marks Linux L1 unavailable. The current
+product also keeps Linux L1 unavailable: the accepted governor pair set is empty, and real
+public Native/container/deadline acceptance remains pending. An unavailable profile always
+refuses execution; it never falls back to host. L1 describes supervised process isolation,
+not a complete filesystem sandbox or disk quota. See the
+[profile contract](linux-execution-profile-contract.md) and
+[foundation status](linux-process-adapter-design.md).
 
 Their result may include `workspace` (`ChildWorkspaceSummary` in Python/TS):
 

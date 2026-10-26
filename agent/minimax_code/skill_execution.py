@@ -17,7 +17,7 @@ from .model_snapshot import ModelSnapshot
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(
-        json.dumps(value, sort_keys=True, ensure_ascii=False).encode()
+        json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
     ).hexdigest()
 
 
@@ -62,6 +62,20 @@ def _provider_tools(runtime, skill):
         if skill.tools:
             raise ValueError("Skill tool provider is unavailable; start a new task after repair")
         return None, [], _digest(None)
+    from .app import get_execution_profiles
+    from .process_context import current_process_target
+    from .process_types import ProcessBoundaryError
+    if current_process_target() is not None:
+        raise ProcessBoundaryError("L1 不支持可执行 skill provider")
+    catalog = get_execution_profiles()
+    if catalog is not None:
+        catalog.revoke_for_extension("Skill Python provider")
+        # Capture is synchronous. Never execute an installer while the
+        # supervisor can still own resources; async runtime installation uses
+        # the common inventory gate below instead.
+        manager = catalog.supervisor
+        if manager is not None and (manager._spawning or manager._handles or not manager._ready):
+            raise ProcessBoundaryError("L1 资源责任未确认，不能安装 Python provider")
     # Providers may contain mutable installer state. Never install a shared
     # provider or use its uninstall against another run's registry.
     provider = copy.deepcopy(provider)

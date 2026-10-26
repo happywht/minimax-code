@@ -10,29 +10,33 @@ import { Bot, Pencil, Trash2, X } from "lucide-react";
 import { Badge, Button, IconButton, Input, Textarea } from "../../../ui";
 import { strings } from "../../../ui/strings";
 import { Field } from "../fields";
-import type { AgentInfo } from "../../../types/ipc";
+import type { AgentInfo, ExecutionProfileCapability } from "../../../types/ipc";
+import { ExecutionProfileSelect } from "./ExecutionProfileSelect";
 
 export interface AgentRowProps {
   agent: AgentInfo;
+  profiles?: ExecutionProfileCapability[];
   onToggleEnabled: () => void;
-  onSave: (fields: { system_prompt?: string; model?: string; skills?: string[] }) => void;
+  onSave: (fields: { system_prompt?: string; model?: string; skills?: string[]; execution_profile_id?: string | null }) => void;
   onDelete: () => void;
 }
 
-export function AgentRow({ agent, onToggleEnabled, onSave, onDelete }: AgentRowProps): JSX.Element {
+export function AgentRow({ agent, profiles = [], onToggleEnabled, onSave, onDelete }: AgentRowProps): JSX.Element {
   const [showEdit, setShowEdit] = useState(false);
   const [prompt, setPrompt] = useState(agent.system_prompt ?? "");
   const [model, setModel] = useState(agent.model ?? "");
   const [skills, setSkills] = useState((agent.skills ?? []).join("\n"));
+  const [profile, setProfile] = useState(agent.execution_profile_id ?? "");
 
   const dirty = prompt !== (agent.system_prompt ?? "") || model !== (agent.model ?? "")
-    || skills !== (agent.skills ?? []).join("\n");
+    || skills !== (agent.skills ?? []).join("\n") || profile !== (agent.execution_profile_id ?? "");
 
   const submit = () => {
     onSave({
       system_prompt: prompt.trim() || undefined,
       model: model.trim() || undefined,
       skills: skills.split(/[\n,]/).map((v) => v.trim()).filter(Boolean),
+      execution_profile_id: profile || null,
     });
     setShowEdit(false);
   };
@@ -53,6 +57,9 @@ export function AgentRow({ agent, onToggleEnabled, onSave, onDelete }: AgentRowP
             {agent.model && <Badge tone="neutral">{agent.model}</Badge>}
           </div>
           {!!agent.skills?.length && <p className="mt-1 text-xs text-ink-2">技能：{agent.skills.join(" → ")}</p>}
+          <p className="mt-1 text-xs text-ink-2">执行环境：{agent.execution_profile_id
+            ? profiles.find((item) => item.id === agent.execution_profile_id)?.label ?? agent.execution_profile_id
+            : "默认（根宿主 / 子继承）"}</p>
           {agent.description && (
             <p className="mt-0.5 truncate text-[11px] text-ink-2">{agent.description}</p>
           )}
@@ -121,6 +128,7 @@ export function AgentRow({ agent, onToggleEnabled, onSave, onDelete }: AgentRowP
               placeholder="技能库 ID；留空移除技能" />
           </Field>
           <p className="text-xs text-ink-2">技能不会扩大工具名单；未知、禁用或工具冲突会阻止新执行。请修正 ID、工具名单或移除冲突技能。</p>
+          <ExecutionProfileSelect id={`agent-edit-profile-${agent.name}`} value={profile} profiles={profiles} onChange={setProfile} />
           <div className="flex justify-end gap-2">
             <Button
               size="sm"
@@ -129,6 +137,7 @@ export function AgentRow({ agent, onToggleEnabled, onSave, onDelete }: AgentRowP
                 setPrompt(agent.system_prompt ?? "");
                 setModel(agent.model ?? "");
                 setSkills((agent.skills ?? []).join("\n"));
+                setProfile(agent.execution_profile_id ?? "");
                 setShowEdit(false);
               }}
             >

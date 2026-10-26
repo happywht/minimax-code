@@ -22,7 +22,7 @@ async def _drain_tasks(tasks) -> None:
 
 
 async def _shutdown(server: Any) -> None:
-    from ..app import get_db, get_mcp_registry, get_subagent_llm
+    from ..app import get_db, get_execution_profiles, get_mcp_registry, get_subagent_llm
     from ..ipc.builtins import _ACTIVE_RUNS
     from ..ipc.handlers_terminal import _SESSIONS
     from ..orchestrator.subagent import _BACKGROUND_RUNS
@@ -50,6 +50,13 @@ async def _shutdown(server: Any) -> None:
     if any(s.process is not None and s.process.returncode is None for s in _SESSIONS.values()):
         raise ShutdownIncomplete("A terminal process is still running")
     await quiesce_scheduler(wait=True)
+    catalog = get_execution_profiles()
+    if catalog is not None:
+        try:
+            await catalog.close()
+        except Exception as exc:
+            # SQLite and lease must survive unknown container responsibility.
+            raise ShutdownIncomplete("Restricted process cleanup remains unconfirmed") from exc
 
     # Attempt every independent resource closure. Preserve the failed outcome
     # even if the rest close successfully; the CLI must retain its dirty marker.

@@ -189,6 +189,12 @@ export function resetMockMemories(): void {
   mockMemories.clear();
 }
 const mockHosts = new Map<string, import("../types/ipc").RemoteHost>();
+const mockHostTarget = {version:1, policy_version:1, mode:"host", profile_id:"native-host"} as const;
+const mockHostTargetHash = "094561ef2e4b5cf95b780c57bd740ae1a2cf62fa05bc7711f87cc54272a78d16";
+function validateMockExecutionProfile(value: unknown): void {
+  if (value !== undefined && value !== null && (typeof value !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(value)))
+    throw new Error("execution_profile_id must be a profile ID or null");
+}
 
 function requireMockHost(id: string): import("../types/ipc").RemoteHost {
   const host = mockHosts.get(id);
@@ -881,19 +887,21 @@ function mockHandle(
       return { agent: a ?? null };
     }
     case "agent.create": {
-      const p = params as { name: string; system_prompt: string; skills?: string[]; tool_allowlist?: string[]; model?: string };
+      const p = params as { name: string; system_prompt: string; execution_profile_id?: string | null; skills?: string[]; tool_allowlist?: string[]; model?: string };
+      validateMockExecutionProfile(p.execution_profile_id);
       if (p.skills !== undefined && (!Array.isArray(p.skills) || p.skills.some((id) => typeof id !== "string" || !id.trim()) || new Set(p.skills).size !== p.skills.length)) throw new Error("skills require unique non-blank IDs or names");
-      const a: AgentInfo = { skills:p.skills ?? [], tool_allowlist:p.tool_allowlist, model:p.model, id: `agent_${Date.now()}`, name: p.name, description: p.system_prompt.slice(0, 40), enabled: true, system_prompt: p.system_prompt };
+      const a: AgentInfo = { execution_profile_id:p.execution_profile_id ?? null, skills:p.skills ?? [], tool_allowlist:p.tool_allowlist, model:p.model, id: `agent_${Date.now()}`, name: p.name, description: p.system_prompt.slice(0, 40), enabled: true, system_prompt: p.system_prompt };
       mockAgents.push(a);
       return { agent: a };
     }
     case "agent.update": {
       const p = params as { name: string };
       const a = mockAgents.find((x) => x.name === p.name);
-      const fields = p as { name:string; skills?:string[]; system_prompt?:string; model?:string; tool_allowlist?:string[]; enabled?:boolean };
+      const fields = p as { name:string; execution_profile_id?:string | null; skills?:string[]; system_prompt?:string; model?:string; tool_allowlist?:string[]; enabled?:boolean };
+      validateMockExecutionProfile(fields.execution_profile_id);
       if (fields.skills !== undefined && (!Array.isArray(fields.skills) || fields.skills.some((id) => typeof id !== "string" || !id.trim()) || new Set(fields.skills).size !== fields.skills.length)) throw new Error("skills require unique non-blank IDs or names");
       if (a) {
-        for (const key of ["skills", "system_prompt", "model", "tool_allowlist", "enabled"] as const) {
+        for (const key of ["skills", "system_prompt", "model", "tool_allowlist", "enabled", "execution_profile_id"] as const) {
           if (key in fields) Object.assign(a, { [key]:fields[key] });
         }
       }
@@ -1012,7 +1020,10 @@ function mockHandle(
     case "schedule.run_now": throw new Error("Mock 模式不执行真实调度");
 
     case "agent.list":
-      return { agents: mockAgents };
+      return { agents: mockAgents, execution_profiles: [
+        {id:"native-host",label:"Native 宿主",mode:"host",available:true,reason:null,unattended_supported:false,boundary_summary:"宿主 Native 进程"},
+        {id:"linux-podman-l1",label:"Linux 容器 L1（需人工监督）",mode:"podman",available:false,reason:"Mock 模式不执行真实容器",unattended_supported:false,boundary_summary:"受监督的进程隔离；尚非完整 OS 文件沙盒"},
+      ] };
 
     case "agent.invoke":
     case "agent.spawn_subagent": {
@@ -1031,6 +1042,8 @@ function mockHandle(
       }
       const agent = mockAgents.find((item) => item.id === p.agent_id || item.name === p.name);
       if (!agent?.enabled) throw new Error("Agent is missing or disabled");
+      if (agent.execution_profile_id != null && agent.execution_profile_id !== "native-host")
+        throw new Error("Mock 模式下执行配置不可用，不能回退宿主");
       const dependencies = (agent.skills ?? []).map((id) => {
         const exact = mockSkills.find((skill) => skill.id === id);
         const matches = exact ? [exact] : mockSkills.filter((skill) => skill.name === id);
@@ -1045,9 +1058,10 @@ function mockHandle(
       mockSessions.set(execution, {...mockSessions.get(sid)!, id:execution, title:`agent:${agent.name}`});
       const run: import("../types/ipc").AgentRun = {id:rid,session_id:execution,mode:"execute",status:"completed",title:p.request.slice(0,32),
         created_at:now,started_at:now,completed_at:now,assistant_message_id:mid,request_key:String(p.idempotency_key),
-        metadata:{agent_execution:{version:2,agent_id:agent.id,agent:agent.name,source_session_id:sid,skill_bindings:{version:1,skills:dependencies.map((skill) => ({id:skill.id,version:skill.version ?? "mock",manifest_tools:skill.tools ?? []}))}}}};
+        metadata:{agent_execution:{version:3,execution_target:mockHostTarget,execution_target_hash:mockHostTargetHash,execution_installation_id:null,agent_id:agent.id,agent:agent.name,source_session_id:sid,skill_bindings:{version:1,skills:dependencies.map((skill) => ({id:skill.id,version:skill.version ?? "mock",manifest_tools:skill.tools ?? []}))}}}};
       const receipt: import("../types/ipc").SpawnSubagentResult = {run_id:rid,agent_run_id:rid,agent_id:agent.id,agent:agent.name,
-        session_id:execution,run_status:"completed",status:"completed",text:`[mock] ${agent.name}: ${p.request}`,partial:false};
+        session_id:execution,run_status:"completed",status:"completed",text:`[mock] ${agent.name}: ${p.request}`,partial:false,
+        execution_target:mockHostTarget,execution_target_hash:mockHostTargetHash,execution_installation_id:null};
       mockRuns.set(rid,{run,steps:[]});
       mockRunReceipts.set(rid,{...receipt,run_status:"completed",message_id:mid,cancelled:false});
       mockAgentKeys.set(key,{signature,runId:rid});

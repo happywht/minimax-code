@@ -465,6 +465,8 @@ def build_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        from .app import initialize_execution_service
+        await initialize_execution_service(server)
         # No background tasks to spawn — the IPCServer handlers
         # are the work, and they are driven by incoming requests.
         # The lifespan hook exists so future work (a heartbeat

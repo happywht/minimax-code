@@ -753,9 +753,29 @@ async def handle_agent_send_message(
             "skill_runtime": skill_runtime, "model_provider_fingerprint": internal_skill.data["model_provider_fingerprint"],
             "mock": internal_skill.data["mock"], "tool_bindings": tool_bindings,
             **({"profile_kind": "agent", "verified_models": internal_skill.data["verified_models"]} if internal_agent is not None else {})}) if internal_skill is not None else None
+        from contextlib import ExitStack
+
+        from ..process_context import required_target_scope
+        from ..process_types import ExecutionTargetSpec
+        process_scopes = ExitStack()
         try:
             if internal_agent is not None:
+                target = internal_skill.data.get("execution_target")
+                restricted = target is not None and target["mode"] == "podman"
+                process_scopes.enter_context(required_target_scope(
+                    ExecutionTargetSpec(**target) if restricted else None))
                 internal_skill = await internal_skill.prepare(db, job.run_id)
+                if restricted:
+                    from ..storage.dao.process_executions import ProcessExecutionsDAO
+                    binding = await ProcessExecutionsDAO(db).binding_for_run(job.run_id)
+                    if binding is None or binding.owner is None:
+                        raise ValueError("Prepared agent process authority is unavailable")
+                    process_scopes.enter_context(required_target_scope(
+                        ExecutionTargetSpec(**binding.target), binding.owner))
+                owned_runtime.set({**owned_runtime.get(), "execution_target": target,
+                    "run_service": service,
+                    "execution_installation_id": internal_skill.data.get("execution_installation_id"),
+                    "execution_origin": "manual"})
             if internal_skill is not None:
                 # Validate revocations and dependency identity when the queued
                 # worker actually obtains the session lease.
@@ -774,6 +794,7 @@ async def handle_agent_send_message(
                 if children is not None:
                     await children.drain(cancel=True)
             finally:
+                process_scopes.close()
                 if schedule_token is not None:
                     scheduled_runtime.reset(schedule_token)
                 if owner_token is not None:
