@@ -59,6 +59,42 @@ manifest 及日志 SHA 均匹配。暖到健康样本 2010.7 / 1959.0 毫秒，�
 `.verification/linux-execution-baseline-fixed.json`，首轮失败日志同样保留。
 这些验证现有 Native 进程/工作区行为，不是新 Podman 适配器验收。
 
+## 固定 PID1 helper 的实际故障验证
+
+在同一 Linux 6.8.0-101-generic / rootless Podman 4.9.3 环境，固定本地镜像
+`sha256:f4b7b8044a873fcc0f348549a19b9075cd77bd56ead7177192cfec38d85bce4a`
+运行产品 `pid1_guard.py` 中的固定源码，**18 项通过，exit 0**。这验证 helper，
+尚未验证公开 Native/子任务产品接线，公共 L1 profile 仍不可用。
+
+覆盖正常/非零及 payload124/125、缺执行文件、信号退出、二进制独立双流、
+已过期及迟到启动零 canary、boot 不符、FD 关闭、leader 退出清理孙进程、
+沿用原绝对期限、堵塞 stderr 并持续 SIGINT、CPU 饱和、杀 attach 客户端、
+pids 耗尽和真实 memcg OOM。18 只容器均核对完整 CID/nonce 后清理并确认 absent，
+本轮临时目录已删除；未拉取镜像、改 systemd 或调用模型。
+
+OOM 使用存活的固定 payload 父进程，在宿主保存 exact cgroup 的基线与同 inode
+后测计数，再放行父进程结束：container 的 `memory.events.local.oom_kill` 增加 1，
+scope 的 local `oom` 增加 1、`max` 增加 18；实读内存上限 128 MiB、swap 0、
+`memory.oom.group=0`，分配子进程 wait 结果为 SIGKILL。由此证明子进程遭 memcg OOM，
+不能据此声称 guard 本身曾被 OOM 杀死，也不追认先前单凭 137 的未知原因。
+计数口径见 [Linux cgroup v2 文档](https://docs.kernel.org/admin-guide/cgroup-v2.html)。
+
+冻结输入与原始证据：
+
+- 实际 guard UTF-8 源码 SHA-256：`1fc6aeeaab3ed10c37fbee7606f5cc5859212baff908a37c8740063abceccb12`。
+- helper 模块 SHA-256：`ce1c0d038086648ac2dfd3a93d3ec3bf11845b6185a8188e96e0b9a921bd1637`。
+- 完整 seccomp 策略 SHA-256：`41353e75c367b32482d0367ba5632ea6f27fba0b390b68418401549ab8cd545f`。
+- 实际验证脚本 `verify_pid1_guard_remote.py` SHA-256：`48e030718f5a1cd1c332e177e0b9c8cde24dcc385add62a8d504922ccbc19366`。
+- `.verification/pid1-guard-linux-faults.{json,stdout,stderr,exit}`，stdout SHA-256：`216ca7c5c6297ef7159b9ec9e6db0f89b666d4301476d2e68ec3b7aa60010beb`。
+- Windows 纯单元验证 38 项通过；Ruff 通过，日志 `.verification/pid1-guard-windows.log`。
+
+原始失败保留：`pid1-guard-linux-initial.*` 发现固定 musl 镜像没有 libc close_range
+符号，改为显式受支持 x86_64 syscall 并在 fork 前探测；`pid1-guard-linux-backpressure.*`
+暴露验证脚本在释放故意堵塞的 attach 前等待清理的问题；`pid1-guard-linux-created-fixture-failure.*`
+记录尚未启动就被夹具当成退出，现要求实际终结证据；`pid1-guard-linux-tail-oom-unattributed.*`
+保留 137 但 OOMKilled=false 的失败，后续才增加上述内核事件取证。失败次数不与最终
+通过数相加。完整公开入口、服务崩溃窗口、重启核对及剩余故障矩阵仍须单独验收。
+
 ## 截止治理候选的攻击探测
 
 独立临时容器在固定本地 image ID、私有 PID namespace、无网络、只读根、cap-drop ALL、

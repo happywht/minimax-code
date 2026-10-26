@@ -77,6 +77,30 @@ restart=no、固定 seccomp path 和原有资源限制，保存相关原始 insp
 7. guard 异常直接非零退出，不能尝试可能阻塞的错误日志。OOM/guard 死亡通过 PID1
    teardown 失败关闭。Podman --timeout 仅作为另一重相对期限。
 
+## 私有启动能力核验
+
+运行能力核验也必须经过同一 RunService、持久家族、已准备的独立工作区、process intent
+与资源事务。它是固定 argv 的零模型调用，不是绕过注册表的临时容器，也不是可由
+RPC、配置布尔值或用户参数授权的执行入口。
+
+`process_execution_owner` v2 使用 `kind=runtime_preflight`、`parent_run_id=null`、
+固定 `probe_kind=pid1-clock-v1` 与 `probe_argv_hash`。私有 factory 固定 payload 和
+target；DAO 核对 family root 与 run_id、可信来源、当前 probe hash、copy binding、
+target 与 installation。普通公开任务和可信子任务均不能选择该 owner。
+
+使用数据目录之外的两只私有空临时目录分别作为 source 与 owned copy；不增加数据目录
+挂载例外。只有精确 CID 确认不存在、目录物理身份未变时才清理；失败保留清理责任。
+catalog 在核验期间不接受外部 L1 执行，只豁免「尚未取得本次 preflight」这个循环依赖，
+其余所有权、资源、扩展盘点和重启核对限制照常生效。
+
+固定探针核对镜像内绝对 Python 路径和受支持的 3.12 版本、payload 的 PID/父 PID、
+boot identity、time namespace，并要求容器 BOOTTIME 样本处于宿主前后采样之间。
+持久保存原输出、两侧时钟及清理证据。核验成功只证明当前安装与启动环境满足这些条件；
+仍需发布代码中精确 guard/policy hash 对的验收允许集。该集合在产品实机验收前为空，
+不能用运行探针成功替代发布验收或放行任意 argv。
+发布允许集约束公共 L1 准入；私有 factory 可在允许集为空时执行上述固定 probe，
+但不能扩展为任意 argv 的豁免。
+
 ## 结果与清理
 
 v1 stdout/stderr 直通，由现有宿主层和 runtime log 分别限额，不新增私有 mount/IPC。
@@ -87,6 +111,17 @@ container ExitCode 是 guard code，不能使用 attach CLI 状态。正常 payl
 或 guard 故障。服务死亡后证据缺失/歧义保持 interrupted/unknown，不能重放。
 guard 仅实际观察 leader 正常退出 0 后可返回 0；所有初始化/内部失败非零。
 成功还须核实 namespace/container 清理和正常 durable receipt 条件；未知责任继续占额度。
+
+Podman `created/configured` 即使带 `Running=false`、`Pid=0` 和 `ExitCode=0`，也不构成
+已启动或已退出证据。当前受支持版本的正常终结至少要求完整身份和配置匹配、
+`Status=exited`、非运行、PID 为零，以及有效非零的 StartedAt/FinishedAt，之后才读取
+raw exit code。日期只证明发生过启动与终结，不用于期限计算，也不要求墙钟单调。
+缺字段、dead/unknown 或矛盾状态保持结果未知。
+
+attach 提前死亡或 start 响应丢失不能引发重发 start。继续核对同一 CID 与原期限；
+合法 exited 按上述取证，running 继续治理，created 仍未证实启动。精确确认 absent
+后可以释放容量，但不能将未知运行改写为成功或自动重放；已确定取消、截止或故障
+同样不能被随后读到的零退出码覆盖。
 
 以后如需精确区分，由 guard 独占外层 stdout，child 双流只进内部管道，guard 框化转发
 并发 final status；需非阻塞有界缓存、timer 优先与 final 缺失处理。混入 stderr 的标记
@@ -102,6 +137,14 @@ analyzer scheduling。动态启用先撤销 L1 准入；仍有 L1 清理责任�
 capture、child、dispatch 均重新检查此服务级状态。
 
 ## 必须通过的实机集合
+
+公共准入测试采用隔离的发行候选，避免增加运行时豁免：helper 与基础批次验收后，
+冻结源码，在独立 staging 副本中仅将精确 guard/policy hash 对编入允许集，记录唯一
+补丁、全树 manifest、固定镜像与平台。使用独立 dataDir、installation、受控 runtime
+责任空间与 owned 工作区，实际运行未 monkeypatch 准入的公开 Native 入口、私有
+preflight、继承/撤销、故障/恢复与持久回执。受控 SDK 可替代付费模型响应，不能替代
+真实准入或容器执行。失败候选保留证据与清理责任，不发布；主工作区允许集继续为空。
+全部验收后才合入同一被测源码及精确允许集补丁，核对最终树字节；实质改动重验相关项。
 
 - 最终策略下的同 UID 调度/priority/affinity/ioprio/prlimit、ptrace/process_vm/proc1fd
   攻击；self prlimit 查询及正常工作负载仍可用。
@@ -119,4 +162,6 @@ capture、child、dispatch 均重新检查此服务级状态。
 强化 seccomp 研究已在当前平台阻止原攻击，记录于
 `.verification/linux-pid1-seccomp-probe.{json,stdout,stderr}`；probe SHA-256 为
 `0de1c8dc89fdc21a79bec9f1c3dc317ee80aea81e8763c821ef2981f3f98fad0`，policy 如上。
-这只支持实施方向，尚未执行本文件定义的真实 guard 和产品故障集合。
+另已完成固定产品 helper 的 18 项真实容器故障验证，范围与冻结输入见
+[实际证据](linux-runtime-readiness.md#固定-pid1-helper-的实际故障验证)。这两项均不能
+替代本文件要求的公开产品入口与完整恢复故障集合；公共 profile 仍未通过发行验收。
