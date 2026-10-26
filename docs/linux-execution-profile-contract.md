@@ -11,7 +11,8 @@
 首批仅 `native-host` 和 `linux-podman-l1`；后者绑定本地完整 image ID，缺配置、
 runtime、私有目录或 reconcile 失败时显示不可用及原因，不回退 host。
 
-L1 固定 policy_version=1、network=none；默认资源为 memory_bytes=134217728、
+Host 固定 policy_version=1；Podman 采用 [截止治理规格](linux-pid1-governor-design.md)
+的 policy_version=2 与必填 governor，network=none。默认资源为 memory_bytes=134217728、
 cpus_millis=500、pids_limit=64、timeout_seconds=300、tmpfs_bytes=33554432、
 output_limit=5242880（每个流），家族并发 1、安装总并发 2。它仍需人工监督；
 `unattended_supported=false`，不得称完整 Native OS 沙盒。
@@ -34,7 +35,7 @@ AgentExecutionSpec v3 保留全部 v2 技能、模型、工具、权限、工作
 Podman target：
 
 ```json
-{"version":3,"execution_target":{"version":1,"policy_version":1,"mode":"podman","profile_id":"linux-podman-l1","image_id":"sha256:<64 lowercase hex>","memory_bytes":134217728,"cpus_millis":500,"pids_limit":64,"timeout_seconds":300,"tmpfs_bytes":33554432,"output_limit":5242880},"execution_target_hash":"<canonical SHA-256>","execution_installation_id":"<installation UUID>"}
+{"version":3,"execution_target":{"version":1,"policy_version":2,"mode":"podman","profile_id":"linux-podman-l1","image_id":"sha256:<64 lowercase hex>","memory_bytes":134217728,"cpus_millis":500,"pids_limit":64,"timeout_seconds":300,"tmpfs_bytes":33554432,"output_limit":5242880,"governor":{"kind":"pid1-boottime-v1","guard_sha256":"<64 lowercase hex>","seccomp_sha256":"<64 lowercase hex>"}},"execution_target_hash":"<canonical SHA-256>","execution_installation_id":"<installation UUID>"}
 ```
 
 Host envelope 不传给仅适用于 Podman 的 ExecutionTargetSpec。Hash 统一 UTF-8、
@@ -119,8 +120,9 @@ conmon 最大运行时长，以及服务存活时按绝对 deadline 停止。服
 普通同 UID wrapper 不合格；真正 namespace PID1 可以利用内核 init 保护及退出时
 namespace teardown，但目前仅是候选治理器。PR_SET_DUMPABLE=0 不隔离调度权限，
 CLOCK_BOOTTIME timerfd 只提供到期通知，仍需受保护执行流；一次性 stop timer
-存在迟到启动竞争。这里修正早期“必须独立宿主治理服务”的过强判断，并未批准 PID1
-方案。完成调度攻击、迟到启动与服务死亡实机验收前，profile 维持 unavailable。
+存在迟到启动竞争。这里修正早期“必须独立宿主治理服务”的过强判断；加固 PID1 方向
+已获准进入实现，但未通过 guard、截止或 L1 验收。完成最终调度攻击、迟到启动与
+服务死亡实机验收前，profile 维持 unavailable。
 Podman --timeout 仅作第二重相对期限。治理方案须单独审定，不能以改名义范围避过验收。
 
 固定绝对期限的工程语义为：持久 boot_id 与 CLOCK_BOOTTIME ns，同一 intent 在所有
@@ -134,5 +136,6 @@ teardown。普通 Linux 不保证 D-state 等任务在截止纳秒瞬间物理�
 追加确定性测试覆盖 CRUD 缺省/null、v1/v2、v3 损坏、冻结 receipt/幂等、父子继承与
 独立 owner、禁止 provider 安装计数为零、无人值守间接入口、所有 bootstrap 窗口、
 publish 冲突、active 缺 marker、备份/移动/orphan/inventory 故障、FULL-before-create、
-source 敏感重叠/alias/HOME 正常子项目及 128bit 身份。真实 Linux 产品链与治理故障
+source 敏感重叠/alias/HOME 正常子项目及 128bit 身份。policy2/boot 期限、全局扩展
+污染与治理实机集合见 [截止治理规格](linux-pid1-governor-design.md)。真实 Linux 产品链与治理故障
 证据仍必需；基础模块通过不能替代公开入口和最终交付回执。
