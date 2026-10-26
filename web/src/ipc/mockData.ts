@@ -91,6 +91,7 @@ export const mockSkills: SkillInfo[] = [
   {
     id: "commit-helper",
     name: "Commit Helper",
+    version: "1.0.0", tools: ["get_git_diff"],
     description: "Draft commit messages from staged diffs",
     enabled: true,
     builtin: true,
@@ -98,6 +99,7 @@ export const mockSkills: SkillInfo[] = [
   {
     id: "code-review",
     name: "Code Review",
+    version: "2.0.0", tools: ["run_linter", "find_complex_functions", "security_scan", "performance_check", "type_check", "test_coverage"],
     description: "Review a diff for bugs and style issues",
     enabled: true,
     builtin: true,

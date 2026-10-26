@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { AGENT_BASE, AGENT_PORT } from "./runtime-config";
 
-test("public agent uses selected source, one actual durable copy and reloadable timeline", async ({page, request}) => {
+test("configured Agent skills use selected source, one durable copy and reloadable timeline", async ({page, request}) => {
   const rpc = async (method:string, params:Record<string,unknown>) => {
     const response = await request.post(`${AGENT_BASE}/rpc`, {data:{jsonrpc:"2.0",id:method,method,params}});
     const body = await response.json(); expect(body.error).toBeUndefined(); return body.result;
@@ -18,8 +18,20 @@ test("public agent uses selected source, one actual durable copy and reloadable 
     git("-c", "user.name=Offline test", "-c", "user.email=offline@example.invalid", "commit", "-m", "fixture");
     sources.push((await rpc("session.create", {title:`Agent source ${suffix}`,engine:"native",workspace_path:path})).session);
   }
-  const {agent} = await rpc("agent.create", {name:"durable-browser-worker",system_prompt:"Inspect the selected source",tool_allowlist:["read_file"]});
+  const {skills}=await rpc("skill.list",{});
+  const dependency=skills.find((skill:any) => skill.name==="commit-helper");
+  expect(dependency?.enabled).toBe(true);
   await page.goto("/");
+  await page.getByTestId("sidebar-nav-agents").click();
+  await page.getByTestId("settings-agent-create").click();
+  await page.getByTestId("settings-agent-form-name").fill("durable-browser-worker");
+  await page.getByTestId("settings-agent-form-prompt").fill("Inspect the selected source");
+  await page.getByTestId("settings-agent-form-skills").fill(dependency.id);
+  await page.getByTestId("settings-agent-form-submit").click();
+  await expect(page.getByTestId("settings-agent-row-durable-browser-worker")).toContainText(dependency.id);
+  const {agent}=await rpc("agent.get",{name:"durable-browser-worker"});
+  expect(agent.skills).toEqual([dependency.id]);
+  await page.getByTestId("settings-close").click();
   const input = page.getByPlaceholder(/问 MiniMax 任何问题/); await expect(input).toBeVisible();
   // Select actual loaded rows. A programmatic refresh immediately after mount
   // can be superseded by App's bootstrap refresh; setCurrent then invalidates
@@ -36,6 +48,10 @@ test("public agent uses selected source, one actual durable copy and reloadable 
   const {run,result} = await rpc("run.get", {run_id:saved.run_id});
   expect(run.session_id).not.toBe(sources[0].id);
   expect(run.metadata.agent_execution.source_workspace).toBe(sources[0].workspace_path);
+  expect(run.metadata.agent_execution.version).toBe(2);
+  expect(run.metadata.agent_execution.skill_bindings.skills.map((binding:any) => binding.id)).toEqual([dependency.id]);
+  expect(run.metadata.agent_execution.instructions).toContain(dependency.name);
+  expect(run.metadata.agent_execution.allowlist).toContain("get_git_diff");
   expect(result.agent_run_id).toBe(run.id); expect(result.run_status).toBe("completed");
   expect(readFileSync(join(result.workspace.path, "source.txt"), "utf8")).toBe("a");
   expect((await rpc("run.list", {session_id:sources[1].id})).runs).toHaveLength(0);
@@ -103,4 +119,31 @@ test("agent controls retain uncertain admission, cancellation and partial/budget
     });
     await expect(page.getByTestId("right-panel-sub-panel-row-ui-uncertain-summary")).toContainText(`${state} · 部分结果`);
   }
+});
+
+
+test("Agent skill conflict is displayed without reporting a successful run (controlled UI)", async ({page,request}) => {
+  const created=await request.post(`${AGENT_BASE}/rpc`,{data:{jsonrpc:"2.0",id:1,method:"session.create",params:{title:"Skill conflict UI",engine:"native"}}});
+  const source=(await created.json()).result.session;
+  let admissions=0;
+  await page.route("**/rpc",async (route) => {
+    const body=route.request().postDataJSON();
+    if(body.method==="agent.list") {
+      await route.fulfill({json:{jsonrpc:"2.0",id:body.id,result:{agents:[{id:"conflict-agent",name:"conflict-agent",enabled:true,skills:["pack:required"]}]}}});
+    } else if(body.method==="agent.spawn_subagent") {
+      admissions++;
+      await route.fulfill({json:{jsonrpc:"2.0",id:body.id,error:{code:-32602,message:"Agent allowlist excludes required skill tools: skill_probe"}}});
+    } else await route.continue();
+  });
+  await page.goto("/");
+  const input=page.getByPlaceholder(/问 MiniMax 任何问题/);
+  await expect(input).toBeVisible();
+  await page.getByTestId(`sidebar-session-${source.id}`).click();
+  await input.fill("@conflict");
+  await page.getByTestId("message-input-mention-picker-item-agent-conflict-agent").click();
+  await expect(page.getByText("[-32602] Agent allowlist excludes required skill tools: skill_probe",{exact:true}).first()).toBeVisible();
+  expect(admissions).toBe(1);
+  const rows:any[]=await page.evaluate(() => Object.values(JSON.parse(localStorage.getItem("minimax-code:agent-roots:v1")??"{}")));
+  expect(rows).toHaveLength(1);
+  expect(rows[0].run_status).not.toBe("completed");
 });

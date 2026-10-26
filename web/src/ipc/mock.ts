@@ -881,15 +881,22 @@ function mockHandle(
       return { agent: a ?? null };
     }
     case "agent.create": {
-      const p = params as { name: string; system_prompt: string };
-      const a: AgentInfo = { id: `agent_${Date.now()}`, name: p.name, description: p.system_prompt.slice(0, 40), enabled: true, system_prompt: p.system_prompt };
+      const p = params as { name: string; system_prompt: string; skills?: string[]; tool_allowlist?: string[]; model?: string };
+      if (p.skills !== undefined && (!Array.isArray(p.skills) || p.skills.some((id) => typeof id !== "string" || !id.trim()) || new Set(p.skills).size !== p.skills.length)) throw new Error("skills require unique non-blank IDs or names");
+      const a: AgentInfo = { skills:p.skills ?? [], tool_allowlist:p.tool_allowlist, model:p.model, id: `agent_${Date.now()}`, name: p.name, description: p.system_prompt.slice(0, 40), enabled: true, system_prompt: p.system_prompt };
       mockAgents.push(a);
       return { agent: a };
     }
     case "agent.update": {
       const p = params as { name: string };
       const a = mockAgents.find((x) => x.name === p.name);
-      if (a && "enabled" in p) a.enabled = p.enabled as boolean;
+      const fields = p as { name:string; skills?:string[]; system_prompt?:string; model?:string; tool_allowlist?:string[]; enabled?:boolean };
+      if (fields.skills !== undefined && (!Array.isArray(fields.skills) || fields.skills.some((id) => typeof id !== "string" || !id.trim()) || new Set(fields.skills).size !== fields.skills.length)) throw new Error("skills require unique non-blank IDs or names");
+      if (a) {
+        for (const key of ["skills", "system_prompt", "model", "tool_allowlist", "enabled"] as const) {
+          if (key in fields) Object.assign(a, { [key]:fields[key] });
+        }
+      }
       return { agent: a ?? null };
     }
 
@@ -1024,13 +1031,21 @@ function mockHandle(
       }
       const agent = mockAgents.find((item) => item.id === p.agent_id || item.name === p.name);
       if (!agent?.enabled) throw new Error("Agent is missing or disabled");
-      if (agent.skills?.length) throw new Error("Agents with skills dependencies are not supported yet");
+      const dependencies = (agent.skills ?? []).map((id) => {
+        const exact = mockSkills.find((skill) => skill.id === id);
+        const matches = exact ? [exact] : mockSkills.filter((skill) => skill.name === id);
+        if (matches.length !== 1 || !matches[0].enabled) throw new Error("Skill dependency is unknown, ambiguous or disabled; use an exact enabled ID");
+        return matches[0];
+      });
+      if (new Set(dependencies.map((skill) => skill.id)).size !== dependencies.length) throw new Error("Duplicate canonical skill dependency");
+      const required = dependencies.flatMap((skill) => skill.tools ?? []);
+      if (agent.tool_allowlist && required.some((name) => !agent.tool_allowlist!.includes(name))) throw new Error("Agent allowlist excludes required skill tools");
       const execution = `ses_agent_${crypto.randomUUID()}`, rid = `run_agent_${crypto.randomUUID()}`;
       const now = new Date().toISOString(), mid = `msg_${crypto.randomUUID()}`;
       mockSessions.set(execution, {...mockSessions.get(sid)!, id:execution, title:`agent:${agent.name}`});
       const run: import("../types/ipc").AgentRun = {id:rid,session_id:execution,mode:"execute",status:"completed",title:p.request.slice(0,32),
         created_at:now,started_at:now,completed_at:now,assistant_message_id:mid,request_key:String(p.idempotency_key),
-        metadata:{agent_execution:{agent_id:agent.id,agent:agent.name,source_session_id:sid}}};
+        metadata:{agent_execution:{version:2,agent_id:agent.id,agent:agent.name,source_session_id:sid,skill_bindings:{version:1,skills:dependencies.map((skill) => ({id:skill.id,version:skill.version ?? "mock",manifest_tools:skill.tools ?? []}))}}}};
       const receipt: import("../types/ipc").SpawnSubagentResult = {run_id:rid,agent_run_id:rid,agent_id:agent.id,agent:agent.name,
         session_id:execution,run_status:"completed",status:"completed",text:`[mock] ${agent.name}: ${p.request}`,partial:false};
       mockRuns.set(rid,{run,steps:[]});

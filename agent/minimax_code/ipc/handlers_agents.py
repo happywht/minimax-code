@@ -126,9 +126,8 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                     raise HandlerError(INVALID_PARAMS, "tags must be a list of strings")
                 upsert_kwargs["tags"] = tags
             if skills is not None:
-                if not isinstance(skills, list):
-                    raise HandlerError(INVALID_PARAMS, "skills must be a list of strings")
-                upsert_kwargs["skills"] = skills
+                from .protocol import AgentSkillsConfig
+                upsert_kwargs["skills"] = AgentSkillsConfig(skills=skills).skills
             if max_iterations is not None:
                 upsert_kwargs["max_iterations"] = int(max_iterations)
             if temperature is not None:
@@ -197,9 +196,8 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 upsert_kwargs["tags"] = tags
             if "skills" in params:
                 skills = params["skills"]
-                if not isinstance(skills, list):
-                    raise HandlerError(INVALID_PARAMS, "skills must be a list of strings")
-                upsert_kwargs["skills"] = skills
+                from .protocol import AgentSkillsConfig
+                upsert_kwargs["skills"] = AgentSkillsConfig(skills=skills).skills
             if "max_iterations" in params:
                 upsert_kwargs["max_iterations"] = int(params["max_iterations"])
             if "temperature" in params:

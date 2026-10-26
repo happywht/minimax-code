@@ -256,6 +256,7 @@ export interface TypedIPC {
     color?: string;
     category?: string;
     tags?: string[];
+    /** Ordered server-resolved skill IDs; tools and model stay bounded by the agent. */
     skills?: string[];
     max_iterations?: number;
     temperature?: number;
@@ -271,6 +272,7 @@ export interface TypedIPC {
     color?: string;
     category?: string;
     tags?: string[];
+    /** Ordered server-resolved skill IDs; tools and model stay bounded by the agent. */
     skills?: string[];
     max_iterations?: number;
     temperature?: number;

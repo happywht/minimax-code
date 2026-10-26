@@ -24,13 +24,15 @@ function AgentsTab(): JSX.Element {
   const [showForm, setShowForm] = useState(false);
   const [formName, setFormName] = useState("");
   const [formPrompt, setFormPrompt] = useState("");
+  const [formSkills, setFormSkills] = useState("");
 
   useEffect(() => { if (agents.length === 0) void refresh(); }, [agents.length, refresh]);
 
   const handleCreate = async () => {
     if (!formName.trim() || !formPrompt.trim()) return;
-    const a = await create({ name: formName.trim(), system_prompt: formPrompt.trim() });
-    if (a) { setFormName(""); setFormPrompt(""); setShowForm(false); }
+    const a = await create({ name: formName.trim(), system_prompt: formPrompt.trim(),
+      skills: formSkills.split(/[\n,]/).map((v) => v.trim()).filter(Boolean) });
+    if (a) { setFormName(""); setFormPrompt(""); setFormSkills(""); setShowForm(false); }
   };
 
   const handleDelete = async (agent: AgentInfo) => {
@@ -46,7 +48,7 @@ function AgentsTab(): JSX.Element {
     void update({ name: agent.name, enabled: !agent.enabled });
   };
 
-  const handleSave = (agent: AgentInfo, fields: { system_prompt?: string; model?: string }) => {
+  const handleSave = (agent: AgentInfo, fields: { system_prompt?: string; model?: string; skills?: string[] }) => {
     void update({ name: agent.name, ...fields });
   };
 
@@ -109,6 +111,12 @@ function AgentsTab(): JSX.Element {
                 className="resize-none text-xs"
               />
             </Field>
+            <Field label="技能（按顺序，每行一个 ID 或唯一短名）" htmlFor="agent-form-skills">
+              <Textarea id="agent-form-skills" data-testid="settings-agent-form-skills"
+                value={formSkills} onChange={(e) => setFormSkills(e.target.value)} rows={2}
+                placeholder="使用技能库中的 ID；留空表示不附加技能" />
+            </Field>
+            <p className="text-xs text-ink-2">技能共用此 Agent 的模型、预算和工具授权；必需工具与名单冲突时会拒绝执行。</p>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
                 {strings.settings.agents.cancel}

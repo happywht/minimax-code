@@ -74,9 +74,14 @@ export function useMentionPicker({
   const recentFiles = useCodebaseStore((s) => s.recentFiles);
   const touchFile = useCodebaseStore((s) => s.touchFile);
 
-  // Fetch the agent list lazily — used by the @-picker.
+  // Reopen reads current declarations, including agents just configured in
+  // Settings. A response from a closed picker cannot replace a newer list.
+  const agentPickerOpen = picker.open && picker.kind === "agent";
   useEffect(() => {
+    if (!agentPickerOpen) return;
     let cancelled = false;
+    setAgents([]);
+    setAgentsError(null);
     (async () => {
       try {
         const list = loadAgents
@@ -90,7 +95,7 @@ export function useMentionPicker({
     return () => {
       cancelled = true;
     };
-  }, [loadAgents]);
+  }, [loadAgents, agentPickerOpen]);
 
   const mentionOptions = useMemo(
     () => [
@@ -136,11 +141,6 @@ export function useMentionPicker({
       const agent = option.payload;
       if (!isAgentPayload(agent)) {
         closePicker();
-        return;
-      }
-      if (agent.skills?.length) {
-        closePicker();
-        toast.error(strings.chat.toast.subagentFailed, "含 skills 依赖的 Agent 暂不可执行，请单独调用对应技能");
         return;
       }
       const promptText = tail.trim() || "(no prompt)";

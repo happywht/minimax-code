@@ -88,6 +88,7 @@ describe("AgentsTab edit & toggle (P1-3)", () => {
       name: "code-reviewer",
       system_prompt: "你是一个安全审查员",
       model: "abab6.5s-chat",
+      skills: [],
     });
   });
 
@@ -108,6 +109,32 @@ describe("AgentsTab edit & toggle (P1-3)", () => {
       name: "code-reviewer",
       system_prompt: "你是一个代码审查员",
       model: undefined,
+      skills: [],
     });
+  });
+  it("edits ordered skill IDs and explicitly clears the dependency list", async () => {
+    (store() as { agents:unknown[] }).agents = [{...AGENT,skills:["old:skill"]}];
+    render(<AgentsTab />);
+    fireEvent.click(screen.getByTestId("settings-agent-edit-code-reviewer"));
+    const input = screen.getByTestId("settings-agent-edit-skills-code-reviewer");
+    fireEvent.change(input, { target:{value:"pack:one\npack:two"} });
+    fireEvent.click(screen.getByTestId("settings-agent-edit-submit-code-reviewer"));
+    const state = store() as { update: ReturnType<typeof vi.fn> };
+    expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ skills:["pack:one","pack:two"] }));
+    fireEvent.click(screen.getByTestId("settings-agent-edit-code-reviewer"));
+    fireEvent.change(screen.getByTestId("settings-agent-edit-skills-code-reviewer"), { target:{value:""} });
+    fireEvent.click(screen.getByTestId("settings-agent-edit-submit-code-reviewer"));
+    expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ skills:[] }));
+  });
+  it("creates an Agent with ordered skill dependencies", async () => {
+    const state = store() as { create: ReturnType<typeof vi.fn> };
+    state.create.mockResolvedValue(AGENT);
+    render(<AgentsTab />);
+    fireEvent.click(screen.getByTestId("settings-agent-create"));
+    fireEvent.change(screen.getByTestId("settings-agent-form-name"), { target:{value:"with-skills"} });
+    fireEvent.change(screen.getByTestId("settings-agent-form-prompt"), { target:{value:"Agent"} });
+    fireEvent.change(screen.getByTestId("settings-agent-form-skills"), { target:{value:"pack:one, pack:two"} });
+    fireEvent.click(screen.getByTestId("settings-agent-form-submit"));
+    await waitFor(() => expect(state.create).toHaveBeenCalledWith({name:"with-skills",system_prompt:"Agent",skills:["pack:one","pack:two"]}));
   });
 });

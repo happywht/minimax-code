@@ -708,8 +708,9 @@ async def handle_agent_send_message(
     try:
         if internal_skill is not None:
             from ..skill_execution import _private_model
-            if skill_model is None:
+            if skill_runtime is None:
                 skill_runtime = await init_runtime()
+            if skill_model is None:
                 internal_skill, skill_model = await internal_skill.restore(internal_skill.data, skill_runtime, db)
             # The original selected client is borrowed only long enough to
             # copy configuration. The admitted run owns its private client.
@@ -740,7 +741,17 @@ async def handle_agent_send_message(
         job.budget_handle = await BudgetHandle.for_run(db, job.run_id, daily_limit=daily_limit)
         children = RetainedChildren() if internal_schedule is not None or internal_skill is not None else None
         schedule_token = scheduled_runtime.set({"context":internal_schedule["context"],"children":children}) if internal_schedule is not None else None
+        if internal_skill is not None:
+            from ..skill_bindings import SkillBindings
+            tool_bindings = internal_skill.data.get("skill_bindings")
+            if tool_bindings is None:
+                # B1 retains its original v1 profile and frozen instructions;
+                # this only records provider provenance inherited by children.
+                tool_bindings = SkillBindings.capture(skill_runtime,
+                    [internal_skill.data["skill_id"]] if "skill_id" in internal_skill.data else []).data
         owner_token = owned_runtime.set({"context": internal_skill.data["model_snapshot"], "children": children,
+            "skill_runtime": skill_runtime, "model_provider_fingerprint": internal_skill.data["model_provider_fingerprint"],
+            "mock": internal_skill.data["mock"], "tool_bindings": tool_bindings,
             **({"profile_kind": "agent", "verified_models": internal_skill.data["verified_models"]} if internal_agent is not None else {})}) if internal_skill is not None else None
         try:
             if internal_agent is not None:
@@ -748,7 +759,8 @@ async def handle_agent_send_message(
             if internal_skill is not None:
                 # Validate revocations and dependency identity when the queued
                 # worker actually obtains the session lease.
-                await internal_skill.validate(skill_runtime, db)
+                from dataclasses import replace
+                internal_skill = replace(internal_skill, tools=tuple(await internal_skill.validate(skill_runtime, db)))
             from ..orchestrator.subagent import SubAgentRuntime, subagent_runtime_scope
 
             runtime = SubAgentRuntime(llm=model_snapshot.client,

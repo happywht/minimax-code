@@ -275,6 +275,7 @@ class SubAgentHandle:
     agent_id: str | None
     config: SubAgentConfig
     core: Any = field(default=None)
+    skill_profile: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +389,43 @@ class SubAgentRuntime:
         # when the handler didn't inject one) — i.e. the parent surface
         # the sub-agent inherits from.
         base_registry = registry or get_default_registry()
+        from ..run_ownership import owned_runtime
+        from ..skill_bindings import SkillBindings, tool_dependencies, tool_identity
+        owned = owned_runtime.get()
+        child_profile = None
+        if owned is not None:
+            bindings = SkillBindings.capture(owned.get("skill_runtime"), config.skills)
+            # Reinstall only the same inherited provider identity. A different
+            # skill exporting an already-present name remains a collision even
+            # when it happens to use the same Tool class/schema.
+            inherited_names = {
+                name for item in bindings.data["skills"]
+                for parent in (owned.get("tool_bindings") or {}).get("skills", [])
+                if item["id"] == parent["id"] and item["provider_digest"] == parent["provider_digest"]
+                and item["tool_identity"] == parent["tool_identity"]
+                for name in item["provider_tools"]
+            }
+            parent_registry = owned.get("registry")
+            if parent_registry is None:
+                raise SubAgentConfigError("Accepted parent tool capability is unavailable")
+            # Existing run-scoped receipt channels do not grant file/process
+            # capabilities; all business tools remain bounded by the parent.
+            from ..agent.tools.artifacts import ReportCompletionTool, ReportProgressTool
+            channels = {t.name for t in base_registry.list()
+                        if isinstance(t, (ReportCompletionTool, ReportProgressTool))}
+            parent_cap = set(parent_registry.names()) | channels
+            tools = bindings.candidates(base_registry, config.tool_allowlist,
+                                        parent_cap=parent_cap, inherited_provider_names=inherited_names)
+            from ..agent.tools.base import ToolRegistry
+            private_registry = ToolRegistry()
+            for tool in tools:
+                private_registry.register(tool)
+            base_registry = private_registry
+            inherited_bindings = tool_dependencies([owned["tool_bindings"]], base_registry.names())
+            child_profile = dict(version=1, skill_bindings=bindings.data,
+                                 inherited_tool_bindings=inherited_bindings,
+                                 allowlist=list(base_registry.names()), tool_identity=tool_identity(tools),
+                                 instructions=config.system_prompt + bindings.instructions)
         spec = resolve_subagent_spec(
             config, available_tool_names=base_registry.names(),
             parent_model=str(getattr(self._llm, "default_model", "") or default_model()),
@@ -420,7 +458,7 @@ class SubAgentRuntime:
             child_model = config.model
         core_config = AgentConfig(
             model=child_model,
-            system_prompt_extra=config.system_prompt or None,
+            system_prompt_extra=(child_profile["instructions"] if child_profile is not None else config.system_prompt) or None,
             max_iterations=config.max_iterations,
             reasoning_effort=self._reasoning_effort,
             # v1.1.0: real context window so the compaction gate opens for
@@ -440,7 +478,7 @@ class SubAgentRuntime:
         shared_budget = current_budget()
         if shared_budget is not None:
             core.budget = shared_budget
-        return SubAgentHandle(agent_id=config.id, config=config, core=core)
+        return SubAgentHandle(agent_id=config.id, config=config, core=core, skill_profile=child_profile)
 
     # -- invoke ------------------------------------------------------------
 
@@ -517,6 +555,7 @@ class SubAgentRuntime:
             )
         from ..budget_ledger import budget_scope, current_handle
         from ..execution import require_write_access
+        from ..run_errors import RunPersistenceError
         from ..run_ownership import owned_runtime
         from ..workspace.child import active_child, prepare_child
         from ..workspace_ctx import (
@@ -534,8 +573,39 @@ class SubAgentRuntime:
         durable_owner = current_run_id() if owned else None
         inherited = current_handle()
         if owned and (not durable_owner or inherited is None):
-            from ..run_errors import RunPersistenceError
             raise RunPersistenceError("Owned sub-agent has no durable run/budget owner")
+        if owned:
+            from ..skill_bindings import SkillBindings, tool_dependencies, tool_identity
+            profile = handle.skill_profile
+            if profile is None:
+                raise RunPersistenceError("Owned child skill profile is missing")
+            from .. import secrets
+            from ..app import get_db
+            from ..schedule_context import provider_fingerprint
+            from ..storage.dao.agents import AgentsDAO
+            from ..storage.dao.providers import ProviderDAO
+            context = owned_runtime.get()
+            provider_id = context["context"].get("provider_id")
+            provider = await ProviderDAO(get_db()).get(provider_id) if provider_id else None
+            fingerprint = context.get("model_provider_fingerprint")
+            if fingerprint is not None and (not provider or not provider.get("enabled")
+                    or provider_fingerprint(provider) != fingerprint):
+                raise RunPersistenceError("Owned child model provider changed or was revoked")
+            if not context.get("mock", True) and (not provider or not secrets.get_provider_key(provider_id)):
+                raise RunPersistenceError("Owned child provider credentials are unavailable")
+            row = await AgentsDAO(get_db()).get(handle.agent_id)
+            if row is None or not row.get("enabled", True):
+                raise RunPersistenceError("Owned child agent is unavailable or disabled")
+            SkillBindings(profile["skill_bindings"]).validate(
+                owned_runtime.get().get("skill_runtime"), row.get("skills"))
+            inherited_bindings = SkillBindings(profile["inherited_tool_bindings"])
+            inherited_bindings.validate(context.get("skill_runtime"),
+                [item["id"] for item in inherited_bindings.data["skills"]])
+            current = row.get("tool_allowlist")
+            if current is not None and set(profile["allowlist"]) - set(current) - {"report_completion", "report_progress"}:
+                raise RunPersistenceError("Owned child tool capability was revoked")
+            if tool_identity(core.registry.list()) != profile["tool_identity"]:
+                raise RunPersistenceError("Owned child tool identity changed")
         child = None
         if current_sandbox() is None:
             run_id = (current_run_id() if not active_child() else None) or f"run_{uuid.uuid4().hex[:12]}"
@@ -545,7 +615,6 @@ class SubAgentRuntime:
 
             if owned:
                 from ..app import get_db
-                from ..run_errors import RunPersistenceError
                 from ..storage.dao.runs import AgentRunsDAO
                 db = get_db()
                 owner = await AgentRunsDAO(db).get_run(durable_owner) if db is not None else None
@@ -559,7 +628,13 @@ class SubAgentRuntime:
             budget_owner = durable_owner or (child.run_id if child is not None else current_run_id())
             descendant = inherited.descendant(budget_owner or inherited.run_id) if inherited else None
             with budget_scope(descendant), child.scope() if child is not None else nullcontext():
-                run_result = await core.run(session_id=session_id, user_message=request)
+                owner_token = owned_runtime.set({**owned_runtime.get(), "registry": core.registry,
+                    "tool_bindings": tool_dependencies([handle.skill_profile["skill_bindings"], handle.skill_profile["inherited_tool_bindings"]], core.registry.names())}) if owned else None
+                try:
+                    run_result = await core.run(session_id=session_id, user_message=request)
+                finally:
+                    if owner_token is not None:
+                        owned_runtime.reset(owner_token)
         except BaseException as exc:
             if child is not None:
                 child.finish("cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")

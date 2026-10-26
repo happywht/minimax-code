@@ -274,7 +274,11 @@ def _clone_registry_with_report(
     cloned = ToolRegistry()
     base = (owned_runtime.get() or {}).get("registry") or get_default_registry()
     for tool in base.list():
-        cloned.register(tool)
+        if tool.name in {"report_completion", "report_progress"}:
+            if not isinstance(tool, (ReportCompletionTool, ReportProgressTool)):
+                raise ValueError("Untrusted tool uses a reserved receipt channel")
+        else:
+            cloned.register(tool)
     cloned.register(ReportCompletionTool(run_id, agent_name=agent_name))
     cloned.register(
         ReportProgressTool(run_id, agent_name=agent_name, agent_id=agent_id)
@@ -933,6 +937,7 @@ class SpawnSubagentTool(Tool):
             "agent_id": row.get("id"),
             "prompt": prompt,
             "source": "tool",
+            **({"agent_skill_profile": handle.skill_profile} if handle.skill_profile is not None else {}),
             # v1.5.0 — rides the JSON metadata column (no migration):
             # _drive_run reads it to publish the sandbox ContextVar and
             # the collect path reads it after restarts.

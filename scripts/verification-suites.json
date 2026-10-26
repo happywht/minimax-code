@@ -2,6 +2,10 @@
   "core": [
     "tests/test_test_isolation.py",
     "tests/test_agent_core.py",
+    "tests/test_skill_execution.py",
+    "tests/test_agent_execution.py",
+    "tests/test_agent_skill_bindings.py",
+    "tests/test_subagent_config_passthrough.py",
     "tests/test_agent_runs.py",
     "tests/test_run_events.py",
     "tests/test_run_service.py",

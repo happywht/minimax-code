@@ -15,7 +15,7 @@ import type { AgentInfo } from "../../../types/ipc";
 export interface AgentRowProps {
   agent: AgentInfo;
   onToggleEnabled: () => void;
-  onSave: (fields: { system_prompt?: string; model?: string }) => void;
+  onSave: (fields: { system_prompt?: string; model?: string; skills?: string[] }) => void;
   onDelete: () => void;
 }
 
@@ -23,13 +23,16 @@ export function AgentRow({ agent, onToggleEnabled, onSave, onDelete }: AgentRowP
   const [showEdit, setShowEdit] = useState(false);
   const [prompt, setPrompt] = useState(agent.system_prompt ?? "");
   const [model, setModel] = useState(agent.model ?? "");
+  const [skills, setSkills] = useState((agent.skills ?? []).join("\n"));
 
-  const dirty = prompt !== (agent.system_prompt ?? "") || model !== (agent.model ?? "");
+  const dirty = prompt !== (agent.system_prompt ?? "") || model !== (agent.model ?? "")
+    || skills !== (agent.skills ?? []).join("\n");
 
   const submit = () => {
     onSave({
       system_prompt: prompt.trim() || undefined,
       model: model.trim() || undefined,
+      skills: skills.split(/[\n,]/).map((v) => v.trim()).filter(Boolean),
     });
     setShowEdit(false);
   };
@@ -49,6 +52,7 @@ export function AgentRow({ agent, onToggleEnabled, onSave, onDelete }: AgentRowP
             </Badge>
             {agent.model && <Badge tone="neutral">{agent.model}</Badge>}
           </div>
+          {!!agent.skills?.length && <p className="mt-1 text-xs text-ink-2">技能：{agent.skills.join(" → ")}</p>}
           {agent.description && (
             <p className="mt-0.5 truncate text-[11px] text-ink-2">{agent.description}</p>
           )}
@@ -111,6 +115,12 @@ export function AgentRow({ agent, onToggleEnabled, onSave, onDelete }: AgentRowP
               spellCheck={false}
             />
           </Field>
+          <Field label="技能（按顺序，每行一个 ID 或唯一短名）" htmlFor={`agent-edit-skills-${agent.name}`}>
+            <Textarea id={`agent-edit-skills-${agent.name}`} data-testid={`settings-agent-edit-skills-${agent.name}`}
+              value={skills} onChange={(e) => setSkills(e.target.value)} rows={2}
+              placeholder="技能库 ID；留空移除技能" />
+          </Field>
+          <p className="text-xs text-ink-2">技能不会扩大工具名单；未知、禁用或工具冲突会阻止新执行。请修正 ID、工具名单或移除冲突技能。</p>
           <div className="flex justify-end gap-2">
             <Button
               size="sm"
@@ -118,6 +128,7 @@ export function AgentRow({ agent, onToggleEnabled, onSave, onDelete }: AgentRowP
               onClick={() => {
                 setPrompt(agent.system_prompt ?? "");
                 setModel(agent.model ?? "");
+                setSkills((agent.skills ?? []).join("\n"));
                 setShowEdit(false);
               }}
             >

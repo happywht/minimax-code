@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .model_snapshot import ModelSnapshot
+from .skill_bindings import SkillBindings, check_bindings, skill_ids, tool_identity
 from .skill_execution import SkillExecutionSpec, _digest
 
 
@@ -13,11 +14,7 @@ def _tool_identity(names):
     from .agent.tools import get_default_registry
 
     registry = get_default_registry()
-    return _digest([{ "name": name,
-                      "class": f"{type(registry.get(name)).__module__}.{type(registry.get(name)).__qualname__}",
-                      "parameters": registry.get(name).parameters,
-                      "description": registry.get(name).description}
-                    for name in sorted(names)])
+    return tool_identity([registry.get(name) for name in names])
 
 
 def canonical_intent(values, method):
@@ -39,9 +36,15 @@ class AgentExecutionSpec:
                     "max_iterations", "system_prompt_extra", "prepared", "directory_identity",
                     "mock", "model_provider_fingerprint", "allowlist", "temperature", "tool_identity", "verified_models"}
         if (not isinstance(self.data, dict) or not required.issubset(self.data)
-                or self.data.get("version") != 1
+                or self.data.get("version") not in (1, 2)
                 or self.data.get("digest") != _digest({k: v for k, v in self.data.items() if k != "digest"})):
             raise ValueError("Saved agent profile is incompatible; start a new task")
+        if self.data["version"] == 2:
+            check_bindings(self.data.get("skill_bindings"))
+            if not isinstance(self.data.get("agent_instructions"), str):
+                raise ValueError("Saved agent instructions are incompatible")
+        elif self.data.get("skill_bindings") or self.data.get("skills"):
+            raise ValueError("Legacy agent profiles support only known no-skills execution")
 
     def snapshot(self):
         return copy.deepcopy(self.data)
@@ -58,14 +61,11 @@ class AgentExecutionSpec:
 
         if not row.get("enabled", True):
             raise ValueError("Agent is disabled")
-        if row.get("skills"):
-            raise ValueError("Agents with skill dependencies require a supported profile; use skill.invoke")
-        names = row.get("tool_allowlist")
-        names = list(get_default_registry().names()) if names is None else list(names)
-        try:
-            tool_identity = _tool_identity(names)
-        except KeyError as exc:
-            raise ValueError("Agent tool provider is unavailable") from exc
+        from .app import init_runtime
+        bindings = SkillBindings.capture(await init_runtime(), row.get("skills"))
+        tools = bindings.candidates(get_default_registry(), row.get("tool_allowlist"))
+        names = [t.name for t in tools]
+        identity = tool_identity(tools)
         selected = ModelSnapshot.capture()
         provider = await ProviderDAO(db).get(selected.provider_id) if selected.provider_id else None
         if not selected.client.mock and (
@@ -89,19 +89,21 @@ class AgentExecutionSpec:
                 workspace_advisory_override=str(target))
         finally:
             reset_current_root(token)
-        data = dict(version=1, agent_id=row["id"], agent=row["name"], instructions=row["system_prompt"],
+        data = dict(version=2, agent_id=row["id"], agent=row["name"],
+                    instructions=row["system_prompt"] + bindings.instructions,
+                    agent_instructions=row["system_prompt"], skill_bindings=bindings.data,
                     model_snapshot=selected.metadata(), permission_rules=copy.deepcopy(permissions.list_rules()),
                     workspace=str(target), source_workspace=workspace, source_identity=directory_identity(workspace),
                     workspace_id=workspace_id, project_id=project_id, source_session_id=values["session_id"],
                     execution_session_id=session_id, intent=intent, max_iterations=row.get("max_iterations") or 100,
                     system_prompt_extra=extra, prepared=False, directory_identity=None,
                     mock=bool(selected.client.mock), model_provider_fingerprint=provider_fingerprint(provider) if provider else None,
-                    allowlist=names, tool_identity=tool_identity, temperature=row.get("temperature"),
+                    allowlist=names, tool_identity=identity, temperature=row.get("temperature"),
                     verified_models=sorted({selected.model, *(m["id"] for m in provider["models"])}) if provider else [selected.model],
                     client_run_id=values.get("run_id"),
                     permission_policy_version=1, hooks_policy="disabled")
         data["digest"] = _digest(data)
-        return cls(data), selected
+        return cls(data, tools), selected
 
     @classmethod
     async def restore(cls, data, runtime, db):
@@ -120,13 +122,26 @@ class AgentExecutionSpec:
         row = await AgentsDAO(db).get(self.data["agent_id"])
         if row is None or not row.get("enabled", True):
             raise ValueError("Saved agent is unavailable or disabled; start a new task")
-        if row.get("skills"):
-            raise ValueError("Agent dependencies changed; start a new task")
-        try:
-            if _tool_identity(self.data["allowlist"]) != self.data["tool_identity"]:
+        if self.data["version"] == 1:
+            if skill_ids(row.get("skills")):
+                raise ValueError("Legacy agent dependencies changed; start a new task")
+            try:
+                if _tool_identity(self.data["allowlist"]) != self.data["tool_identity"]:
+                    raise ValueError("Saved agent tool provider changed; start a new task")
+            except KeyError as exc:
+                raise ValueError("Saved agent tool provider is unavailable; start a new task") from exc
+            tools = []
+        else:
+            from .agent.tools import get_default_registry
+            bindings = SkillBindings(self.data["skill_bindings"]).validate(runtime, row.get("skills"))
+            tools = bindings.candidates(get_default_registry(), self.data["allowlist"])
+            if tool_identity(tools) != self.data["tool_identity"]:
                 raise ValueError("Saved agent tool provider changed; start a new task")
-        except KeyError as exc:
-            raise ValueError("Saved agent tool provider is unavailable; start a new task") from exc
+        # Both supported profile versions obey current revocations. Additions
+        # never expand the frozen accepted tool set.
+        current = row.get("tool_allowlist")
+        if current is not None and set(self.data["allowlist"]) - set(current):
+            raise ValueError("Saved agent tool capability was revoked; start a new task")
         provider_id = self.data["model_snapshot"]["provider_id"]
         provider = await ProviderDAO(db).get(provider_id) if provider_id else None
         if self.data["model_provider_fingerprint"] is not None and (
@@ -141,7 +156,7 @@ class AgentExecutionSpec:
                     or directory_identity(str(child.root)) != self.data["directory_identity"]
                     or child.record["state"] in {"preparing", "collected", "needs_review"}):
                 raise ValueError("Agent workspace identity is unconfirmed; inspect it and start a new task")
-        return []
+        return tools
 
     async def prepare(self, db, run_id):
         from .budget_ledger import owned_cleanup
@@ -156,7 +171,7 @@ class AgentExecutionSpec:
         child = await prepare_child(Path(self.data["source_workspace"]), self.data["workspace_id"])
         data = {**self.data, "prepared": True, "directory_identity": directory_identity(str(child.root))}
         data["digest"] = _digest({k: v for k, v in data.items() if k != "digest"})
-        spec = type(self)(data)
+        spec = type(self)(data, self.tools)
 
         async def save():
             async with db.transaction() as conn:
@@ -173,6 +188,11 @@ class AgentExecutionSpec:
 
     def install(self, registry):
         allowlist = self.data["allowlist"]
+        if self.data["version"] == 2:
+            registry.clear()
+            for tool in self.tools:
+                registry.register(tool)
+            return
         missing = set(allowlist) - set(registry.names())
         if missing:
             raise ValueError(f"Saved agent tools unavailable: {sorted(missing)}")

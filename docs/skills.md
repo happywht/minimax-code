@@ -251,3 +251,12 @@ All three are documented in their own `SKILL.md` files under
 | IPC handlers           | `minimax_code/ipc/handlers_skills.py`     |
 | App bootstrap          | `minimax_code/app.py`                     |
 | Unit tests             | `agent/tests/test_skills.py`              |
+
+
+## Skills attached to a Native Agent
+
+An Agent's ordered skills list is now executable configuration. The server resolves exact composite IDs first, then unique legacy short names; unknown, ambiguous, repeated canonical IDs or disabled skills are rejected. Agent instructions precede each selected Skill's complete frozen instructions, including its applicability text and version header. Skills share the Agent's Native Core, private client, model route, iteration policy, cumulative budget family and independent working copy. They do not launch additional SkillRuntime loops or select models from arbitrary manifest extra fields.
+
+Private provider exports are added to baseline candidates before the Agent allowlist is applied. None freezes all candidates; [] permits no tools; explicit lists cannot exclude a skill's required tools or include unknown names. Manifest tools are requirements, not the complete provider surface. Baseline/provider and cross-provider name collisions fail closed. report_completion/report_progress are reserved trusted runtime receipt channels, freshly bound to each internal child; providers cannot override them.
+
+Bindings v1 are saved inside Agent profile v2 metadata, with canonical order, declared versions, frozen text, actual exports and provider/class/schema identity. Queued/resumed/continued executions check current dependencies and revocations while preserving accepted text and tool limits. Trusted children save their own bindings before admission and cannot exceed their parent's business capabilities. The standalone durable skill invocation contract and its v1 profiles are unchanged. A mounted code-review skill has a generic Agent receipt; structured deterministic diff comments belong only to the explicit diff-review adapter. See [Agent execution](agent-execution.md) for lifecycle, compatibility, verification and rollback.

@@ -55,8 +55,10 @@ async def skill_env(tmp_path, monkeypatch):
     await db.connect()
     await db.migrate()
     sessions = SessionsDAO(db)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     for sid in ("one", "two"):
-        await sessions.create(id=sid, workspace_path=str(tmp_path))
+        await sessions.create(id=sid, workspace_path=str(workspace))
     provider = await ProviderDAO(db).create(
         name="offline",
         protocol="openai",

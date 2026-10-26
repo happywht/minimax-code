@@ -347,6 +347,9 @@ export interface SkillInfo {
   description: string;
   enabled: boolean;
   builtin: boolean;
+  /** Manifest requirements, when available from the skill catalogue. */
+  tools?: string[];
+  version?: string;
 }
 
 /**
@@ -409,6 +412,7 @@ export interface AgentInfo {
   category?: string;
   tags?: string[];
   team_id?: string | null;
+  /** Ordered dependencies: exact skill ID, or an unambiguous legacy short name. */
   skills?: string[];
   max_iterations?: number;
   temperature?: number | null;

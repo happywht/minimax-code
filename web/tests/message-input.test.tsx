@@ -3,7 +3,7 @@
  * state during streaming, and the custom `minimax:suggestion` event.
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageInput } from "../src/components/chat/MessageInput";
 import { useChat, useCodebaseStore } from "../src/stores";
@@ -129,5 +129,32 @@ describe("MessageInput", () => {
     expect(
       screen.getByTestId("message-input-mention-picker-item-file-src/api.ts"),
     ).toHaveTextContent("api.ts");
+  });
+  it("reloads newly configured agents when the picker reopens", async () => {
+    const user=userEvent.setup();
+    const load=vi.fn().mockResolvedValueOnce(AGENTS).mockResolvedValueOnce([{...AGENTS[0],name:"New skills agent",skills:["pack:skill"]}]);
+    render(<MessageInput loadAgents={load} />);
+    const input=screen.getByTestId("message-input-textarea");
+    await user.type(input,"@general");
+    expect(await screen.findByTestId("message-input-mention-picker-item-agent-general")).toHaveTextContent("General");
+    await user.keyboard("{Escape}");
+    await user.clear(input); await user.type(input,"@new");
+    expect(await screen.findByTestId("message-input-mention-picker-item-agent-general")).toHaveTextContent("New skills agent");
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it("ignores an old list response after closing and reopening the picker", async () => {
+    let resolve!: (agents:AgentInfo[]) => void;
+    const delayed=new Promise<AgentInfo[]>((yes) => {resolve=yes;});
+    const load=vi.fn().mockReturnValueOnce(delayed).mockResolvedValueOnce([{...AGENTS[0],name:"Current helper"}]);
+    const user=userEvent.setup();
+    render(<MessageInput loadAgents={load} />);
+    const input=screen.getByTestId("message-input-textarea");
+    await user.type(input,"@helper");
+    await user.keyboard("{Escape}");
+    await user.clear(input); await user.type(input,"@current");
+    expect(await screen.findByTestId("message-input-mention-picker-item-agent-general")).toHaveTextContent("Current helper");
+    await act(async () => {resolve(AGENTS);});
+    expect(screen.getByTestId("message-input-mention-picker-item-agent-general")).toHaveTextContent("Current helper");
+    expect(screen.queryByTestId("message-input-mention-picker-item-agent-code-reviewer")).toBeNull();
   });
 });

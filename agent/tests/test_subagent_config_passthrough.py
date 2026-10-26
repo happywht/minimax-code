@@ -24,11 +24,11 @@ async def test_profile_passes_extended_supported_config_fields(agent_env, method
 
 
 @pytest.mark.parametrize("method", ["agent.invoke", "agent.spawn_subagent"])
-async def test_skill_dependencies_are_explicitly_unsupported_before_admission(agent_env, method):
+async def test_unknown_skill_dependencies_are_rejected_before_admission(agent_env, method):
     state = agent_env
     await state.agents.upsert(name="worker", system_prompt="x", skills=["commit-helper"])
     ctx = await invoke(state, method)
-    assert "skill dependencies" in str(ctx.reply_error.await_args)
+    assert "unknown or ambiguous" in str(ctx.reply_error.await_args)
     assert not state.calls and not await state.dao.list_runs()
     assert not (state.source / ".minimax").exists()
 

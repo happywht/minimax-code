@@ -382,7 +382,7 @@ async def test_queued_agent_prompt_tools_model_are_frozen(agent_env, monkeypatch
     await entered.wait()
     state.selected.default_model = "unrelated-global"
     await state.agents.upsert(name="worker", system_prompt="changed prompt", model="changed-model",
-                              tool_allowlist=["write_file"])
+                              tool_allowlist=["read_file", "write_file"])
     job = get_run_service(state.server).get_job(run["id"])
     release.set()
     await get_run_service(state.server).wait(job)
@@ -495,7 +495,7 @@ async def test_agent_continue_uses_saved_profile_copy_and_family(agent_env):
     assert receipt["truncated"]
     state.wire = lambda _: response()
     state.selected.default_model = "unrelated-global"
-    await state.agents.upsert(name="worker", system_prompt="New instructions", tool_allowlist=["write_file"])
+    await state.agents.upsert(name="worker", system_prompt="New instructions", tool_allowlist=["read_file", "write_file"])
     ctx = Context(state.server)
     await handle_agent_continue_run({"session_id": receipt["session_id"], "run_id": receipt["run_id"]}, ctx)
     ctx.reply_error.assert_not_awaited()
@@ -655,7 +655,7 @@ async def test_explicit_child_model_is_verified_not_silently_replaced(agent_env,
     from minimax_code.storage.dao.providers import ProviderDAO
 
     state = agent_env
-    await state.agents.upsert(name="worker", system_prompt="Root", tool_allowlist=["spawn_subagent"])
+    await state.agents.upsert(name="worker", system_prompt="Root", tool_allowlist=["spawn_subagent", "read_file"])
     await state.agents.upsert(name="child", system_prompt="Child", model="child-wire", tool_allowlist=["read_file"])
     if supported:
         await ProviderDAO(state.db).update(state.provider["id"], models=[{"id": "wire"}, {"id": "child-wire"}])

@@ -366,6 +366,19 @@ class Request(_Base):
         return self.model_dump_json(exclude_none=True)
 
 
+class AgentSkillsConfig(_Base):
+    """Ordered dependency declarations; executable binding is server-only."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    skills: list[str]
+
+    @field_validator("skills")
+    @classmethod
+    def valid_skills(cls, value):
+        if any(not item.strip() for item in value) or len(set(value)) != len(value):
+            raise ValueError("skills require unique non-blank IDs or names")
+        return value
+
+
 class AgentInvokeParams(_Base):
     """Public root intent; family, instructions and execution IDs are private."""
     model_config = ConfigDict(extra="forbid", strict=True)

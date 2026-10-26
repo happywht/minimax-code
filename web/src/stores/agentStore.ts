@@ -18,8 +18,8 @@ export interface AgentState {
   loading: boolean;
 
   refresh: () => Promise<void>;
-  create: (opts: { name: string; system_prompt: string; tool_allowlist?: string[]; model?: string }) => Promise<AgentInfo | null>;
-  update: (opts: { name: string; system_prompt?: string; tool_allowlist?: string[]; model?: string; enabled?: boolean }) => Promise<void>;
+  create: (opts: { name: string; system_prompt: string; tool_allowlist?: string[]; skills?: string[]; model?: string }) => Promise<AgentInfo | null>;
+  update: (opts: { name: string; system_prompt?: string; tool_allowlist?: string[]; skills?: string[]; model?: string; enabled?: boolean }) => Promise<void>;
   remove: (name: string) => Promise<void>;
 }
 
