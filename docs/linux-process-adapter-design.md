@@ -4,6 +4,10 @@
 不是已实现能力。先以真实 `agent.invoke` / `agent.spawn_subagent` 独立副本为入口。
 复用同一个 RunService、持久 run/预算家族和服务目录租约，不增加第二个调度循环。
 
+profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
+[接线契约](linux-execution-profile-contract.md)。其中严格绝对截止尚缺服务外 governor；
+不能将 conmon 相对运行期限视为该门槛已满足。
+
 ## 模块与接口
 
 - `process_types.py`：纯类型 `ProcessIO`、`OwnedProcessHandle`、不可变
