@@ -132,7 +132,16 @@ pnpm dev:web   # http://localhost:5173，跨源访问 8765（默认白名单已�
 `2dfe7bd` 的隔离源码真实健康/SPA/认证与 CLI。日志为
 `.verification/production-start-frozen-final.log`，隔离源与前端校验值为
 `production-start-snapshot.json`。两次健康样本为 3594.8 / 3665.8 毫秒，缓存已热，
-不作为固定验收机冷启动或 M7 性能门槛通过的证明。Linux 平台尚未执行本批实机检查。
+不作为固定验收机冷启动或 M7 性能门槛通过的证明。
+
+Linux 追加检查使用提交 `c7c0029` 的四个脚本文件归档，在隔离临时目录运行，传输
+前后 SHA-256 一致。Ubuntu 主机 Python 3.12.3 / Node 22.22.2 实测 **10 项通过、
+4 项跳过**（3.46 秒）：六项单元检查及四项真实合成进程检查，包括导入失败、双流
+尾部排空、正常停止与父进程突退后的心跳停止。两项 Windows Job 场景按平台跳过，
+两项真实 Agent 健康/SPA/认证检查因未提供隔离预构建后端跳过。证据为
+`.verification/production-start-linux.log` 与 `production-start-linux.json`。
+本次没有安装依赖、修改服务配置或调用模型，不能据此证明 Linux 完整工具树清理、
+真实产品服务、容器执行适配、冷启动或 Windows 断线后任务继续。
 
 本批不改数据库结构。回退启动入口时先停止原进程并保留运行恢复证据，再恢复匹配的
 脚本和 `package.json`；原启动命令会重新执行构建。用户数据、附件和数据库完整恢复

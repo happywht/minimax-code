@@ -34,6 +34,10 @@
 
 ## 后续接入
 
+另有提交 `c7c0029` 的启动器实机检查：Linux 隔离临时目录 10 项通过、4 项明确跳过，
+其中四项为真实合成进程验证。没有运行真实后端健康/SPA/认证，也没有安装产品服务。
+源码归档、校验值、日志及具体跳过范围见 [部署说明](deployment.md)。
+
 M5 仍须将受限执行适配器接入真实 RunService，校验明确的挂载、网络和资源配置，容器不可用时暂停无人值守任务。还需完成版本化安装、systemd 用户服务、受认证 SSH 隧道、Windows 断开后任务继续、重连恢复及文件交付。当前单次容器实测不能替代这些验收。
 
 参考：[Podman 安装](https://podman.io/docs/installation)、[Ubuntu 24.04 Podman run 手册](https://manpages.ubuntu.com/manpages/noble/man1/podman-run.1.html)。实现与部署应使用实际安装版本支持的参数。
