@@ -1328,7 +1328,7 @@ async def _run_crash_recovery(db: Any) -> None:
     db._budget_governance_error = "startup budget recovery has not completed"
 
     try:
-        from .runtime.crash_detect import check_previous_crash, crash_report_to_dict
+        from .runtime.crash_detect import crash_report_to_dict, startup_previous_crash
         from .storage.dao.runs import AgentRunsDAO
         from .storage.db import default_database_path
     except Exception:
@@ -1341,7 +1341,7 @@ async def _run_crash_recovery(db: Any) -> None:
     crashed = False
     try:
         data_dir = Path(default_database_path()).parent
-        report = check_previous_crash(data_dir)
+        report = startup_previous_crash(data_dir)
         crashed = crash_report_to_dict(report) is not None
     except Exception:
         logger.exception("previous-crash detection failed (fail-open)")

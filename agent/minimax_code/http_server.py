@@ -475,66 +475,26 @@ def build_app(
         try:
             yield
         finally:
-            await preview_state.stop()
+            from .runtime.shutdown import ShutdownIncomplete, shutdown_runtime
 
-            # Fence cron/manual dispatch before cancelling admitted work. Never
-            # wait for approval here: RunService owns cancellation and cleanup.
-            from .scheduler import quiesce_scheduler
-            await quiesce_scheduler()
-
-            # Native jobs outlive their RPC waiters. Drain them before closing
-            # shared model clients or SQLite so cancellation can be persisted.
-            from .runs import get_run_service
-
-            await get_run_service(server).shutdown()
-
-            # ── Graceful shutdown sequence ──────────────────────────
-            # 1. Cancel any in-flight agent runs.
-            from .ipc.builtins import _ACTIVE_RUNS
-
-            for _key, entry in list(_ACTIVE_RUNS.items()):
-                try:
-                    core = entry.get("core") if isinstance(entry, dict) else entry
-                    if core:
-                        core.cancel()
-                except Exception:
-                    pass
-            count = len(_ACTIVE_RUNS)
-            _ACTIVE_RUNS.clear()
-            logger.info("graceful shutdown: cancelled %d active runs", count)
-
-            # Dispatcher waiters now observe durable terminal run receipts.
-            await quiesce_scheduler(wait=True)
-
-            # 3. Close the LLM client (httpx connection pool).
+            failures = []
             try:
-                from .app import get_subagent_llm
-
-                llm = get_subagent_llm()
-                if llm is not None and hasattr(llm, "close"):
-                    await llm.close()
-                    logger.info("graceful shutdown: LLM client closed")
-            except Exception:
-                pass
-
-            # 4. Close the SQLite database.
+                await preview_state.stop()
+            except BaseException as exc:
+                failures.append(exc)
             try:
-                from .app import get_db
-
-                db = get_db()
-                if db is not None and hasattr(db, "close"):
-                    await db.close()
-                    logger.info("graceful shutdown: database closed")
-            except Exception:
-                pass
-
-            # 5. Close any still-open WebSocket connections.
+                await shutdown_runtime(server)
+            except BaseException as exc:
+                failures.append(exc)
             for ws in list(ws_manager._clients):
                 try:
                     await ws.close()
-                except Exception:
-                    pass
-            logger.info("graceful shutdown: %d ws clients closed", len(ws_manager._clients))
+                except BaseException as exc:
+                    failures.append(exc)
+            if failures:
+                error = ShutdownIncomplete("HTTP transport/runtime teardown was not confirmed")
+                server._transport_shutdown_error = error
+                raise error from failures[0]
 
     app = FastAPI(
         title="minimax-code-agent",

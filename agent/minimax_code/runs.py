@@ -17,6 +17,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+class RunServiceClosing(RuntimeError):
+    """Admission was safely rejected because service shutdown has started."""
+
+
+class RunShutdownError(RuntimeError):
+    """An admission or run did not confirm successful teardown."""
+
+
 @dataclass(eq=False)
 class RunJob:
     session_id: str
@@ -59,7 +67,7 @@ class RunService:
     ) -> RunJob:
         """Atomically enqueue before the first await; same-session jobs are FIFO."""
         if self._closing:
-            raise RuntimeError("Run service is shutting down")
+            raise RunServiceClosing("Run service is shutting down")
         queue = self._jobs.setdefault(session_id, [])
         if job is None and len(queue) >= 32:
             raise RuntimeError("Session queue is full (32 pending tasks)")
@@ -112,7 +120,7 @@ class RunService:
         async def accept():
             async with self._admission_lock:
                 if self._closing:
-                    raise RuntimeError("Run service is shutting down")
+                    raise RunServiceClosing("Run service is shutting down")
                 run, created = await dao.admit_run(
                     session_id=session_id, request=request, title=title, metadata=metadata,
                     request_key=request_key, resumed_from_id=resumed_from_id,
@@ -203,11 +211,21 @@ class RunService:
     async def shutdown(self) -> None:
         """Drain cancellation/child-process cleanup before closing the database."""
         self._closing = True
-        await asyncio.gather(*self._admissions, return_exceptions=True)
-        jobs = [job for queue in self._jobs.values() for job in queue]
-        for session_id in list(self._jobs):
-            self.cancel_session(session_id)
-        await asyncio.gather(*(job.task for job in jobs if job.task), return_exceptions=True)
+        # A job can finish/remove itself while admissions are being awaited.
+        # Retain both sides of that await so its cleanup error is not lost.
+        jobs = {job for queue in self._jobs.values() for job in queue}
+        admissions = await asyncio.gather(*list(self._admissions), return_exceptions=True)
+        jobs.update(job for queue in self._jobs.values() for job in queue)
+        for job in jobs:
+            self._cancel(job)
+        results = await asyncio.gather(*(job.task for job in jobs if job.task), return_exceptions=True)
+        failures = [value for value in admissions
+                    if isinstance(value, BaseException)
+                    and not isinstance(value, (asyncio.CancelledError, RunServiceClosing))]
+        failures.extend(value for value in results if isinstance(value, BaseException)
+                        and not isinstance(value, asyncio.CancelledError))
+        if failures:
+            raise RunShutdownError("Run cleanup ended with an error") from failures[0]
 
 
 def get_run_service(server: Any) -> RunService:

@@ -27,12 +27,9 @@ test("Native review uses selected Git workspace and reloads its actual durable r
   await page.goto("/");
   await expect(page.getByPlaceholder(/问 MiniMax 任何问题/)).toBeVisible();
   const select = async (id:string) => {
-    await page.evaluate(async (sessionId) => {
-      // @ts-expect-error Vite source module is available to the browser.
-      const {useSessionStore} = await import("/src/stores/sessionStore.ts");
-      await useSessionStore.getState().refresh();
-      useSessionStore.getState().setCurrent(sessionId);
-    }, id);
+    // Real navigation waits for bootstrap's session map. A competing refresh
+    // followed by setCurrent can select an id missing from that newer map.
+    await page.getByTestId(`sidebar-session-${id}`).click();
     await page.getByTestId("right-panel-tab-review").click();
     await expect(page.getByTestId("code-review-binding")).toContainText(sessions.find((s) => s.id === id)!.workspace);
   };

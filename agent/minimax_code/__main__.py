@@ -108,7 +108,12 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
     register_app_handlers(server)
 
     if mode == "stdio":
-        await server.run_forever()
+        from .runtime.shutdown import shutdown_runtime
+
+        try:
+            await server.run_forever()
+        finally:
+            await shutdown_runtime(server)
         return 0
 
     # HTTP mode. uvicorn is blocking, so we run it in a thread
@@ -159,7 +164,15 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
     # shows the line. uvicorn's log config doesn't get to stdout
     # until the first request, and we want it up front.
     print(f"agent server listening on http://{host}:{port}", flush=True)
-    await server_uv.serve()
+    from .runtime.shutdown import ShutdownIncomplete, shutdown_runtime
+
+    try:
+        await server_uv.serve()
+    finally:
+        # Also covers binding/startup failure before the lifespan was entered.
+        await shutdown_runtime(server)
+    if getattr(server, "_transport_shutdown_error", None) is not None:
+        raise ShutdownIncomplete("HTTP transport shutdown failed") from server._transport_shutdown_error
     return 0
 
 
@@ -238,37 +251,20 @@ def cli_entry() -> None:
     config = Config.from_env()
     if args.log_level:
         config = config.model_copy(update={"log_level": args.log_level})
-    configure_logging(config.log_level)
+    from .runtime.crash_detect import install_faulthandler, prepare_startup_marker
+    from .runtime.service_lease import ServiceLeaseError, acquire_service_lease
+    from .storage.db import default_database_path
 
-    # R12 — crash detection. Install faulthandler (captures segfault
-    # tracebacks to last_fault.trace), drop a dirty-start marker, and arm
-    # ``atexit`` to clear it on graceful exit. ``atexit`` does NOT fire on
-    # hard crashes (OOM / segfault / ``kill -9``), so a leftover marker on
-    # the next boot means the previous run died unexpectedly →
-    # ``_run_crash_recovery`` (called from ``_maybe_open_db``) consumes it
-    # and recovers orphan runs. Fail-open: a missing storage layer or a
-    # locked data dir never blocks boot — the agent still starts.
+    # Competing services must stop before logging, marker writes or recovery.
     try:
-        import atexit
-        from pathlib import Path
-
-        from .runtime.crash_detect import (
-            install_faulthandler,
-            mark_clean_exit,
-            mark_dirty_start,
-        )
-        from .storage.db import default_database_path
-
-        _data_dir = Path(default_database_path()).parent
-        install_faulthandler(_data_dir)
-        mark_dirty_start(_data_dir)
-        atexit.register(mark_clean_exit, _data_dir)
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).debug(
-            "crash-detection install failed (fail-open)", exc_info=True
-        )
+        lease = acquire_service_lease(default_database_path().parent)
+    except ServiceLeaseError as exc:
+        print(f"Cannot start agent: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(1) from None
+    os.environ["MINIMAX_CODE_DATA_DIR"] = str(lease.data_dir)
+    configure_logging(config.log_level)
+    marker = prepare_startup_marker(lease)
+    install_faulthandler(lease.data_dir)
 
     # R230 — xai-crash-handler CrashBlob layer (write + read half).
     # Complementary to R12 above: installs sys.excepthook /
@@ -300,6 +296,11 @@ def cli_entry() -> None:
         rc = asyncio.run(amain(config, args.mode, port=port, host=host))
     except KeyboardInterrupt:
         rc = 130
+    else:
+        # asyncio.run has drained its loop. Cleanup errors and interruptions
+        # deliberately retain the raw FD and marker until actual process exit.
+        marker.mark_clean()
+        lease.close()
     sys.exit(rc)
 
 

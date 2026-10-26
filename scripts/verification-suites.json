@@ -18,6 +18,8 @@
     "tests/test_auto_continue.py",
     "tests/test_conversation_recovery.py",
     "tests/test_crash_recovery.py",
+    "tests/test_service_lifetime.py",
+    "tests/test_runtime_shutdown.py",
     "tests/test_ipc.py",
     "tests/test_ipc_contract_doc.py",
     "tests/test_http_server.py",
