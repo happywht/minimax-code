@@ -116,9 +116,20 @@ provider 的文本技能、经过审计的内置工具实际类；MCP、provider
 Podman `--timeout` 从实际启动起计时，不是 intent 的绝对截止。当前可实现保证为
 conmon 最大运行时长，以及服务存活时按绝对 deadline 停止。服务被 SIGKILL、start
 延迟落地时，预留 30 秒或 start 前检查不能证明严格截止，因此完整 L1 尚不得通过。
-需要服务外受信 governor 同时管理 start、deadline、清理及到期 late-start 栅栏。
-容器内同 UID wrapper 可被 SIGSTOP；一次性 stop timer 有迟到启动竞争，均不替代。
-治理方案须单独审定、真实故障验证，不能通过改名义范围规避验收门槛。
+普通同 UID wrapper 不合格；真正 namespace PID1 可以利用内核 init 保护及退出时
+namespace teardown，但目前仅是候选治理器。PR_SET_DUMPABLE=0 不隔离调度权限，
+CLOCK_BOOTTIME timerfd 只提供到期通知，仍需受保护执行流；一次性 stop timer
+存在迟到启动竞争。这里修正早期“必须独立宿主治理服务”的过强判断，并未批准 PID1
+方案。完成调度攻击、迟到启动与服务死亡实机验收前，profile 维持 unavailable。
+Podman --timeout 仅作第二重相对期限。治理方案须单独审定，不能以改名义范围避过验收。
+
+固定绝对期限的工程语义为：持久 boot_id 与 CLOCK_BOOTTIME ns，同一 intent 在所有
+启动中沿用，过期不执行 payload，到期进入不可被 payload 或服务死亡绕过的 namespace
+teardown。普通 Linux 不保证 D-state 等任务在截止纳秒瞬间物理消失；该边界明确展示，
+责任和资源仅在真实清理结果核实后释放。候选机制的内核依据见
+[PID namespace](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html) 与
+[dumpable](https://man7.org/linux/man-pages/man2/PR_SET_DUMPABLE.2const.html)；平台探测
+和候选方案仍不能当产品能力。
 
 追加确定性测试覆盖 CRUD 缺省/null、v1/v2、v3 损坏、冻结 receipt/幂等、父子继承与
 独立 owner、禁止 provider 安装计数为零、无人值守间接入口、所有 bootstrap 窗口、

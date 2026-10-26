@@ -59,6 +59,30 @@ manifest 及日志 SHA 均匹配。暖到健康样本 2010.7 / 1959.0 毫秒，�
 `.verification/linux-execution-baseline-fixed.json`，首轮失败日志同样保留。
 这些验证现有 Native 进程/工作区行为，不是新 Podman 适配器验收。
 
+## 截止治理候选的攻击探测
+
+独立临时容器在固定本地 image ID、私有 PID namespace、无网络、只读根、cap-drop ALL、
+no-new-privileges 和默认 seccomp 下运行真正 PID 1（Python `-I -S`，UID 1000，
+dumpable=0）。这项研究尚未运行产品适配器；它发现普通 Python PID1 包装不足以保证截止：
+
+| 探测 | 实际结果 |
+|---|---|
+| 同 namespace 子进程发 SIGSTOP/SIGKILL 到 PID 1 | 调用返回成功，但 PID 1 继续运行 |
+| 修改 PID 1 的 nice/CPU affinity | 成功，nice 读回 19、affinity 读回单核 |
+| 直接 sched_setattr syscall 设置 SCHED_IDLE | 成功；相同镜像的 Python sched API 返回 ENOSYS，不能据此认定攻击已被阻止 |
+| ptrace、process_vm_writev、`/proc/1/mem` 与 fd 访问 | EPERM/EACCES，guard buffer 未改变；未将所有拒绝均归因于 dumpable |
+| CLOCK_BOOTTIME 绝对 POSIX timer 发 SIGKILL 到 PID 1 | 创建/设定成功，到期后 PID 1 仍运行 |
+| 容器与宿主 clock/boot identity | 本机 boot_id 一致，容器 BOOTTIME 样本位于宿主前后采样之间 |
+
+Linux 6.8.0-101-generic、Podman 4.9.3 的上述事实不能自动推广到其他安装。
+证据为 `.verification/linux-pid1-attack-probe.{json,stdout,stderr}`，实际研究源码为
+`probe_pid1_attacks_remote.py`，SHA-256：
+`a1d447aeeb3f914848eb0cb3c248b72e5a90cb6597e7e7091333040f58d385bb`。
+两只随机名称容器均按完整 CID 和 nonce 标签核对后清理，exists 返回 1，临时目录删除。
+未修改 systemd、拉取新镜像或调用模型；不据此计入 L1 产品通过项。
+候选需补充可信治理执行流及调度防护，具体约束见
+[profile 契约](linux-execution-profile-contract.md)；验收前 profile 保持不可用。
+
 M5 仍须将受限执行适配器接入真实 RunService，校验明确的挂载、网络和资源配置，容器不可用时暂停无人值守任务。还需完成版本化安装、systemd 用户服务、受认证 SSH 隧道、Windows 断开后任务继续、重连恢复及文件交付。当前单次容器实测不能替代这些验收。
 
 参考：[Podman 安装](https://podman.io/docs/installation)、[Ubuntu 24.04 Podman run 手册](https://manpages.ubuntu.com/manpages/noble/man1/podman-run.1.html)。实现与部署应使用实际安装版本支持的参数。
