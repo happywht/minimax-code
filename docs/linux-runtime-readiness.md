@@ -122,3 +122,45 @@ Linux 6.8.0-101-generic、Podman 4.9.3 的上述事实不能自动推广到其�
 M5 仍须将受限执行适配器接入真实 RunService，校验明确的挂载、网络和资源配置，容器不可用时暂停无人值守任务。还需完成版本化安装、systemd 用户服务、受认证 SSH 隧道、Windows 断开后任务继续、重连恢复及文件交付。当前单次容器实测不能替代这些验收。
 
 参考：[Podman 安装](https://podman.io/docs/installation)、[Ubuntu 24.04 Podman run 手册](https://manpages.ubuntu.com/manpages/noble/man1/podman-run.1.html)。实现与部署应使用实际安装版本支持的参数。
+
+## 产品适配器的固定私有 schema preflight
+
+2026-10-27，提交 `428652a` 对应的冻结 schema 与宿主会话准入修复，在同一
+Linux 6.8.0-101-generic / amd64 / systemd-cgroup v2 / rootless Podman 4.9.3 /
+crun 1.14.1 环境通过了实际固定私有 preflight，零模型调用。归档 1065 个后端输入
+文件逐项核对，源码归档 SHA-256 为
+`9d6088861c6a3de0305d9b0e891086f0047355607e4b0fe74add765b7100077b`。
+
+运行 `run_5a986686b8544d269a12ada4835ba417` 为 completed；持久 process 为
+removed、resource_held=0，关闭后 active 为空。实际 UID 1000/GID 1001、自身内核
+uid_map/gid_map、inspect 中间映射与 info 外层映射复合一致，固定工作区写入读回、
+PID/父 PID、boot identity、time namespace 和 BOOTTIME 两侧采样均通过。
+runtime 与映射 fingerprint 和原输出随 durable receipt 保留。
+
+原始证据 `.verification/linux-l1-private-preflight-schema-pass.json` 的 SHA-256 为
+`9506e7469fd515073f3c183da8d5e2a42221c35c8194b2e4688440f115eafa6a`。
+本地较宽进程回归为 **404 通过、1 项 POSIX 目录模式检查在 Windows 跳过**；后续
+失败取证补强后的受影响 preflight/runtime 回归为 **104 通过**，Ruff 通过。两批有
+重叠，分别记账，不相加；Linux 私有 probe 也不折算为这些单元测试数量。
+
+同一 1065 文件归档随后在真实 Linux 环境再次逐项核对，离线十一模块回归为
+**430 通过、无跳过**（40.83 秒），exit 0、stderr 为空。覆盖 runtime/preflight/
+supervisor、安装、profiles、宿主会话 gate、terminal/runner handlers、terminal
+hardening、binding 和 runtime shutdown；包含受控 runtime、真实 SQLite 与进程，
+不等于公共 L1 故障验收，也不与 Windows 两批相加。原证据
+`.verification/linux-schema-regression.{json,stdout,stderr,exit}`，JSON SHA-256 为
+`e56719d5699b45b3bf079def9f573bfeb2768d129071e9d0d9fdd6793e9a523f`。
+
+首次归档在到达 schema 检查前被固定 policy SHA 拒绝：Windows Git 的
+`core.autocrlf=true` 将归档中该 JSON 的 LF 转成 CRLF，工作区及 HEAD blob 的原始
+policy hash 均正确。保留失败归档和
+`.verification/linux-l1-private-preflight-archive-eol-failure.*`；归档器显式使用
+`git -c core.autocrlf=false archive` 后才得到上述通过结果。随后添加的精确
+`.gitattributes` 路径规则对该 policy 设置 `-text`，防止 fresh checkout 或 archive
+再次改写字节；专用真实 Git 回归在首次 commit 前启用 autocrlf=true，验证提交 blob、
+新 checkout 与二进制 tar 内容。policy 原字节及 SHA
+`41353e75c367b32482d0367ba5632ea6f27fba0b390b68418401549ab8cd545f` 不变。
+
+以上只接受产品适配器的固定私有 schema/时钟/映射核验，公共 guard/policy 允许集
+仍为空，`linux-podman-l1` 仍 unavailable。公开 Native/子任务入口、受限 copy/mount
+完整性、服务故障与恢复矩阵、L2/L3、正式 40 项三轮及安装恢复仍须各自验收。

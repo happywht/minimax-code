@@ -161,3 +161,17 @@ fork、重复取消、各登记窗口服务死亡、SIGKILL 后硬期限、runti
 [stop](https://docs.podman.io/en/v4.9.3/markdown/podman-stop.1.html)、
 [rm](https://docs.podman.io/en/v4.9.3/markdown/podman-rm.1.html)、
 [exists](https://docs.podman.io/en/v4.9.3/markdown/podman-container-exists.1.html)。
+
+## 固定私有 schema 核验状态
+
+2026-10-27 的 `428652a` 批次已在实际受支持平台经过产品 RunService、持久家族和
+process intent 执行固定私有 probe：run completed、process removed、资源释放，
+关闭后无 active 责任；UID/GID、内核与 inspect/info 复合映射、工作区读回和时钟轴
+均核对。冻结 1065 文件归档及原证据 SHA、404/104 两批分别记账的本地回归范围，见
+[运行环境实测](linux-runtime-readiness.md#产品适配器的固定私有-schema-preflight)。
+
+首次失败来自 Windows Git 归档的 LF→CRLF 改写，固定策略 hash 检查正确拒绝；
+修复归档器并保留原失败证据后，私有 probe 才通过。精确 `.gitattributes -text`
+规则与真实 Git commit/fresh checkout/archive 回归保护 policy 原始字节，不改变策略
+或授权。公共允许集仍为空，公开 Native 与子任务、copy/mount 完整性及服务故障矩阵
+尚未验收；该私有通过不能宣称公共 L1 或完整 Native OS 沙盒已可用。
