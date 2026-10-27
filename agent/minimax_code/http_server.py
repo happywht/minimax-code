@@ -72,7 +72,7 @@ CORS_ALLOW_ORIGINS: list[str] = [
     "http://127.0.0.1:5173",
 ]
 CORS_ALLOW_METHODS: list[str] = ["GET", "POST"]
-CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization", "X-Minimax-Client"]
+CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization", "X-Minimax-Client", "X-Attachment-Service-Id"]
 
 # Maximum request body size for POST /rpc (10 MB).
 # Prevents OOM from oversized payloads.
@@ -513,7 +513,8 @@ def build_app(
         allow_credentials=True,
         allow_methods=CORS_ALLOW_METHODS,
         allow_headers=CORS_ALLOW_HEADERS,
-        expose_headers=["X-Artifact-Service-Id", "X-Artifact-SHA256"],
+        expose_headers=["X-Artifact-Service-Id", "X-Artifact-SHA256",
+                        "X-Attachment-Service-Id", "X-Attachment-SHA256"],
     )
 
     # Stash the WS manager on the app state so tests / future
@@ -727,6 +728,8 @@ def build_app(
 
     from .artifact_http import register_artifact_routes
     register_artifact_routes(app)
+    from .attachment_http import register_attachment_routes
+    register_attachment_routes(app)
 
     from .preview.server import register_preview_routes
 

@@ -5,6 +5,7 @@
 
 The Python sidecar persists structured agent state in a single SQLite database file;
 registered text artifact originals live in the separate managed vault described in Schema041.
+Uploaded attachment originals use a second managed vault described in Schema042.
 The database file lives at:
 
 | OS      | Path                                                                |
@@ -557,3 +558,26 @@ SQLite online backup 也不含这些外部字节；恢复数据库而没有 vaul
 missing/corrupt，不回读 source。M7 再集成完整备份包，本片不扩大现有备份实现。
 迁移仅向前，回退应恢复匹配旧程序的完整 DB/文件备份，不删除 vault 猜测
 回收。本片只支持显式 TXT/MD/CSV 登记；RPC/下载契约见 ipc-contract.md 的 artifact 节。
+
+### Schema042：项目附件原件与有界文本预览
+
+新增普通表 `attachments`：id 主键、project_id、service_id、唯一 snapshot_id、original_name、
+declared_type、recognized_type、size_bytes（0–10485760）、sha256、version、parser_status、
+parser_version（当前 1）、preview_text、preview_truncated（0/1）、quality_status（仅 unverified）、created_at。
+`UNIQUE(project_id,original_name,version)` 在 IMMEDIATE 事务分配版本，同时复核项目 id/root_path/created_at
+与共享 artifact_service 身份。项目无需设置根目录；文件名仅是显示元数据，不能指定主机路径。
+项目删除不级联销毁历史行/原件，API 仍要求项目存在。
+
+原始字节单独位于 `attachment-vault/<snapshot_id>`，与 text-artifact-vault 分开。
+流接收有 10 MiB/120 秒硬限；只在完整、fsync 和无覆盖发布后提交可用行。
+中断/超限精确清理自有 pending；发布与 DB 提交之间故障可能留下完整 orphan，不能凭扫描补造记录。
+读取固定句柄检查普通文件、链接/重解析点、所有者、大小、两次 SHA256 和文件身份，损坏不回读外部源。
+POSIX 文件/目录为 0600/0700，并 fsync 发布目录；Windows 文件刷新+无覆盖发布，未承诺断电目录持久性。
+
+TXT/CSV 完整检查严格 UTF-8/NUL/CSV 语法，预览最多 64 KiB/2000 行；失败保留原件并显式 parse_failed。
+PDF/Office 标记 parser_unavailable，图片 ocr_not_attempted；类型异常 type_mismatch。
+原件保存不证明可解析、质量通过或交付。Office 不解压/执行，CSV 不计算公式。
+`data.export` 自动包含该表元数据和有界预览，但 JSON/SQLite-only 备份不包含独立原件。
+离线 bundle v2 固定支持 Schema042，DB 与两个 vault 必须共同保全；没有 042 down-migration。
+升级前停服务并用旧 v1 工具保存 Schema041 DB+文本 vault；升级后用 v2 保存完整数据。
+回退应恢复与旧程序匹配的升级前备份，不能把旧程序直接指向042，不能删表/vault伪造回退。

@@ -127,7 +127,8 @@ async def test_cli_round_trip_original_bytes_all_versions_readonly(source, tmp_p
     result, report = cli("restore", "--bundle", archive, "--new-data-dir", target)
     assert result.returncode == 0, report
     assert report["operation"] == "restore"
-    assert set(target.iterdir()) == {target / "data.db", target / bundle.VAULT}
+    assert set(target.iterdir()) == {target / "data.db", target / bundle.VAULT,
+                                    target / bundle.ATTACHMENT_VAULT}
 
     # Adapter proves ArtifactService can read all historical versions without a migration,
     # source access, service startup or even a write-capable SQLite connection.

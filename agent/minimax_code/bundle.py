@@ -1,4 +1,4 @@
-"""Offline DATA-ONLY SQLite + registered text vault bundles.
+"""Offline DATA-ONLY SQLite + registered text/attachment vault bundles.
 
 This module deliberately imports no application, scheduler, plugin or process
 runtime. Restore is a byte-preserving data clone, not an operational recovery.
@@ -26,6 +26,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
+from .attachments import (
+    DECLARED_TYPES,
+    MAX_PREVIEW_BYTES,
+    MAX_PREVIEW_LINES,
+    PARSER_VERSION,
+    RECOGNIZED_TYPES,
+    STATUSES,
+    display_name,
+)
+from .attachments import (
+    MAX_BYTES as MAX_ATTACHMENT_BYTES,
+)
+from .attachments import (
+    VAULT as ATTACHMENT_VAULT,
+)
 from .runtime.service_lease import ServiceLeaseError, acquire_service_lease
 from .text_artifacts import (
     MAX_BYTES,
@@ -38,8 +53,9 @@ from .text_artifacts import (
 )
 
 FORMAT = "minimax-code-data-vault"
-FORMAT_VERSION = 1
-SCHEMA_VERSION = 41
+FORMAT_VERSION = 2
+SCHEMA_VERSION = 42
+SUPPORTED_SCHEMAS = {1: 41, 2: 42}
 MAX_FILES = 10_000
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 MAX_WAL_BYTES = MAX_DATABASE_BYTES
@@ -52,9 +68,10 @@ _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _SNAPSHOT = re.compile(r"[0-9a-f]{32}\Z")
 _SERVICE = re.compile(r"svc_[0-9a-f]{32}\Z")
 _ARTIFACT = re.compile(r"art_[0-9a-f]{32}\Z")
+_ATTACHMENT = re.compile(r"att_[0-9a-f]{32}\Z")
 EXCLUSIONS = [
     "project trees and .minimax child copies",
-    "handoff files and external attachments",
+    "handoff files and unregistered external attachments",
     "configuration, skills and plugins",
     "SSH material and OS keyring",
     "containers and images",
@@ -253,9 +270,13 @@ def _inventory(path):
         versions = [
             row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")
         ]
-        _require(
-            versions == list(range(1, SCHEMA_VERSION + 1)), "Unsupported SQLite schema version"
-        )
+        schema_version = versions[-1] if versions else 0
+        _require(schema_version in SUPPORTED_SCHEMAS.values()
+                 and versions == list(range(1, schema_version + 1)),
+                 "Unsupported SQLite schema version")
+        attachment_table = conn.execute("SELECT type,sql FROM sqlite_schema WHERE name='attachments'").fetchone()
+        if schema_version == 41:
+            _require(attachment_table is None, "Schema041 must not contain attachment metadata")
         columns = [row[1] for row in conn.execute("PRAGMA table_info(text_artifacts)")]
         _require(
             columns
@@ -342,6 +363,11 @@ def _inventory(path):
             len({row["snapshot_id"] for row in artifacts}) == len(artifacts),
             "Duplicate SQLite snapshot reference",
         )
+        attachments = []
+        if schema_version == 42:
+            attachments = _attachment_inventory(conn, service_id, len(artifacts))
+            _require(total + sum(row["size_bytes"] for row in attachments) <= MAX_TOTAL_BYTES,
+                     "Registered vaults exceed shared bundle limit")
         schema = conn.execute(
             "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name"
         ).fetchall()
@@ -349,11 +375,49 @@ def _inventory(path):
             json.dumps(schema, ensure_ascii=True, separators=(",", ":")).encode()
         ).hexdigest()
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": schema_version,
             "schema_sha256": schema_hash,
             "service_id": service_id,
             "artifacts": artifacts,
+            **({"attachments": attachments} if schema_version == 42 else {}),
         }
+
+
+def _attachment_inventory(conn, service_id, artifact_count):
+    row = conn.execute("SELECT type,sql FROM sqlite_schema WHERE name='attachments'").fetchone()
+    _require(row is not None and row[0] == "table" and row[1].lstrip().upper().startswith("CREATE TABLE"),
+             "Schema042 requires an ordinary attachments table")
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(attachments)")]
+    _require(columns == ["id", "project_id", "service_id", "snapshot_id", "original_name",
+                         "declared_type", "recognized_type", "size_bytes", "sha256", "version",
+                         "parser_status", "parser_version", "preview_text", "preview_truncated",
+                         "quality_status", "created_at"], "Unsupported attachment schema")
+    rows = conn.execute("SELECT id,snapshot_id,size_bytes,sha256,version,service_id,original_name,"
+                        "declared_type,recognized_type,parser_status,parser_version,preview_text,"
+                        "preview_truncated,quality_status FROM attachments ORDER BY snapshot_id LIMIT ?",
+                        (MAX_FILES + 1,)).fetchall()
+    _require(len(rows) + artifact_count <= MAX_FILES, "Too many registered vault files")
+    result, ids, snapshots = [], set(), set()
+    for (attachment, snapshot, size, digest, version, service, name, declared, recognized,
+         status, parser, preview, truncated, quality) in rows:
+        _require(isinstance(attachment, str) and _ATTACHMENT.fullmatch(attachment)
+                 and isinstance(snapshot, str) and _SNAPSHOT.fullmatch(snapshot)
+                 and type(size) is int and 0 <= size <= MAX_ATTACHMENT_BYTES
+                 and isinstance(digest, str) and _HEX.fullmatch(digest)
+                 and type(version) is int and version > 0 and service is not None and service == service_id
+                 and declared in DECLARED_TYPES and recognized in RECOGNIZED_TYPES
+                 and status in STATUSES and parser == PARSER_VERSION and type(parser) is int
+                 and isinstance(preview, str) and len(preview.encode("utf-8")) <= MAX_PREVIEW_BYTES
+                 and len(preview.splitlines()) <= MAX_PREVIEW_LINES and truncated in (0, 1)
+                 and bool(truncated) == (status == "truncated") and quality == "unverified",
+                 "Invalid attachment reference or parser metadata in SQLite")
+        display_name(name)
+        _require(attachment not in ids and snapshot not in snapshots, "Duplicate attachment reference")
+        ids.add(attachment)
+        snapshots.add(snapshot)
+        result.append({"attachment_id": attachment, "snapshot_id": snapshot, "size_bytes": size,
+                       "sha256": digest, "version": version})
+    return result
 
 
 def _snapshot(root, stage, lease):
@@ -407,6 +471,12 @@ def _snapshot(root, stage, lease):
                 "SQLite input identity changed",
             )
         lease.assert_owned(root)
+    # SQLite can create an empty WAL even for a closed source without a sidecar.
+    # Own both possible private sidecars before it opens anything, so cleanup
+    # never needs to delete untracked SQLite-created files.
+    if not (private / "data.db-wal").exists():
+        with stage.file("sqlite-input/data.db-wal"):
+            pass
     # Track the rebuilt SHM before SQLite opens it, including on exception paths.
     with stage.file("sqlite-input/data.db-shm"):
         pass
@@ -427,20 +497,18 @@ def _snapshot(root, stage, lease):
     lease.assert_owned(root)
 
 
-def _copy_file(source, stage, name, expected):
+def _copy_file(source, stage, name, expected, limit=MAX_BYTES):
     with _safe_open(source) as fd, stage.file(name) as output:
         before = os.fstat(fd)
         _regular(before)
         _owner(before)
         _require(before.st_size == expected["size_bytes"], "Vault size does not match SQLite")
         digest, total = hashlib.sha256(), 0
-        data = bytearray()
-        while chunk := os.read(fd, min(65536, MAX_BYTES + 1 - total)):
+        while chunk := os.read(fd, min(65536, limit + 1 - total)):
             total += len(chunk)
-            _require(total <= MAX_BYTES, "Vault snapshot exceeds limit")
+            _require(total <= limit, "Vault snapshot exceeds limit")
             output.write(chunk)
             digest.update(chunk)
-            data.extend(chunk)
         _require(
             total == expected["size_bytes"]
             and digest.hexdigest() == expected["sha256"]
@@ -448,8 +516,6 @@ def _copy_file(source, stage, name, expected):
             and _identity(before)[:4] == _identity(source.lstat())[:4],
             "Vault snapshot changed or does not match SQLite",
         )
-        # UTF-8/NUL validation; CSV parse is checked from DB source suffix below.
-        return bytes(data)
 
 
 def _json(data):
@@ -460,11 +526,14 @@ def _report(manifest, operation):
     return {
         "operation": operation,
         "format": FORMAT,
-        "format_version": FORMAT_VERSION,
+        "format_version": manifest["format_version"],
         "scope": "data-only",
         "schema_version": manifest["schema_version"],
         "artifact_count": len(manifest["artifacts"]),
+        "attachment_count": len(manifest.get("attachments", [])),
         "excluded_vault_entries": manifest["excluded_vault_entries"],
+        **({"excluded_attachment_entries": manifest["excluded_attachment_entries"]}
+           if manifest["format_version"] == 2 else {}),
         "notice": NOTICE,
         "exclusions": EXCLUSIONS,
         "publication_durability": (
@@ -474,6 +543,27 @@ def _report(manifest, operation):
             else "File payloads and publication directory entries fsynced"
         ),
     }
+
+
+def _collect_vault(root, stage, name, rows, limit):
+    stage.directory(name)
+    refs = {row["snapshot_id"] for row in rows}
+    excluded = {"orphan": 0, "pending": 0}
+    vault = root / name
+    if not os.path.lexists(vault):
+        _require(not refs, "Registered vault is missing")
+        return excluded
+    with _safe_open(vault, directory=True):
+        info = vault.lstat()
+        _owner(info)
+        _require(os.name == "nt" or not info.st_mode & 0o077, "Vault must be private")
+        for entry in os.scandir(vault):
+            if entry.name not in refs:
+                excluded["pending" if entry.name.startswith(".pending-") else "orphan"] += 1
+        for row in rows:
+            _copy_file(vault / row["snapshot_id"], stage, f"{name}/{row['snapshot_id']}",
+                       {key: row[key] for key in ("size_bytes", "sha256")}, limit)
+    return excluded
 
 
 def create_bundle(data_dir, output):
@@ -490,33 +580,15 @@ def create_bundle(data_dir, output):
                 pass
             _snapshot(root, stage, lease)
             inventory = _inventory(stage.path / "data.db")
+            _require(inventory["schema_version"] == SCHEMA_VERSION,
+                     "Create requires known Schema042; old v1/Schema041 is verify/restore only")
             database = _file_meta(stage.path / "data.db", MAX_DATABASE_BYTES)
-            stage.directory(VAULT)
-            refs = {row["snapshot_id"] for row in inventory["artifacts"]}
-            excluded = {"orphan": 0, "pending": 0}
-            vault = root / VAULT
-            if os.path.lexists(vault):
-                with _safe_open(vault, directory=True):
-                    info = vault.lstat()
-                    _owner(info)
-                    _require(os.name == "nt" or not info.st_mode & 0o077, "Vault must be private")
-                    # Do not inspect or copy unregistered entries, even symlinks.
-                    for entry in os.scandir(vault):
-                        if entry.name not in refs:
-                            excluded[
-                                "pending" if entry.name.startswith(".pending-") else "orphan"
-                            ] += 1
-                    for row in inventory["artifacts"]:
-                        _copy_file(
-                            vault / row["snapshot_id"],
-                            stage,
-                            f"{VAULT}/{row['snapshot_id']}",
-                            {key: row[key] for key in ("size_bytes", "sha256")},
-                        )
-            else:
-                _require(not refs, "Registered vault is missing")
+            excluded = _collect_vault(root, stage, VAULT, inventory["artifacts"], MAX_BYTES)
+            excluded_attachments = _collect_vault(root, stage, ATTACHMENT_VAULT,
+                                                  inventory["attachments"], MAX_ATTACHMENT_BYTES)
             _require(
-                database["size_bytes"] + sum(row["size_bytes"] for row in inventory["artifacts"])
+                database["size_bytes"] + sum(row["size_bytes"] for row in
+                                             inventory["artifacts"] + inventory["attachments"])
                 <= MAX_TOTAL_BYTES,
                 "Bundle exceeds total size limit",
             )
@@ -528,12 +600,14 @@ def create_bundle(data_dir, output):
                 **inventory,
                 "database": database,
                 "excluded_vault_entries": excluded,
+                "excluded_attachment_entries": excluded_attachments,
             }
             payload = _json(manifest)
             _require(len(payload) <= MAX_MANIFEST_BYTES, "Manifest exceeds limit")
             with stage.file("manifest.json") as stream:
                 stream.write(payload)
             _fsync_directory(stage.path / VAULT)
+            _fsync_directory(stage.path / ATTACHMENT_VAULT)
             _fsync_directory(stage.path)
             with (
                 stage.file("bundle.zip") as stream,
@@ -545,6 +619,7 @@ def create_bundle(data_dir, output):
                     "manifest.json",
                     "data.db",
                     *[f"{VAULT}/{row['snapshot_id']}" for row in inventory["artifacts"]],
+                    *[f"{ATTACHMENT_VAULT}/{row['snapshot_id']}" for row in inventory["attachments"]],
                 ]:
                     archive.write(stage.path / name, name)
             # Verify the complete archive with the same path used by restore.
@@ -594,17 +669,22 @@ def _manifest(payload):
         "database",
         "excluded_vault_entries",
     }
-    _require(type(value) is dict and set(value) == keys, "Invalid manifest fields")
+    _require(type(value) is dict, "Invalid manifest fields")
+    version = value.get("format_version")
+    _require(type(version) is int and version in SUPPORTED_SCHEMAS, "Unsupported bundle format")
+    if version == 2:
+        keys |= {"attachments", "excluded_attachment_entries"}
+    _require(set(value) == keys, "Invalid manifest fields")
     _require(
         value["format"] == FORMAT
         and type(value["format_version"]) is int
-        and value["format_version"] == FORMAT_VERSION,
+        and value["format_version"] in SUPPORTED_SCHEMAS,
         "Unsupported bundle format",
     )
     _require(
         value["app_version"] == __version__
         and type(value["schema_version"]) is int
-        and value["schema_version"] == SCHEMA_VERSION,
+        and value["schema_version"] == SUPPORTED_SCHEMAS[version],
         "Unsupported app or schema version",
     )
     _require(
@@ -651,14 +731,29 @@ def _manifest(payload):
         snapshots.add(row["snapshot_id"])
         ids.add(row["artifact_id"])
         total += row["size_bytes"]
-    _require(total <= MAX_TOTAL_BYTES, "Bundle exceeds total size limit")
-    counts = value["excluded_vault_entries"]
-    _require(
-        type(counts) is dict
-        and set(counts) == {"orphan", "pending"}
-        and all(type(count) is int and count >= 0 for count in counts.values()),
-        "Invalid excluded entry counts",
-    )
+    if version == 2:
+        attachments = value["attachments"]
+        _require(type(attachments) is list and len(attachments) + len(value["artifacts"]) <= MAX_FILES,
+                 "Invalid shared vault file count")
+        attachment_ids, attachment_snapshots = set(), set()
+        for row in attachments:
+            _require(type(row) is dict and set(row) == {"attachment_id", "snapshot_id", "size_bytes",
+                                                      "sha256", "version"}, "Invalid attachment manifest")
+            _require(type(row["attachment_id"]) is str and _ATTACHMENT.fullmatch(row["attachment_id"])
+                     and type(row["snapshot_id"]) is str and _SNAPSHOT.fullmatch(row["snapshot_id"])
+                     and type(row["version"]) is int and row["version"] > 0, "Invalid attachment identity")
+            _metadata({key: row[key] for key in ("size_bytes", "sha256")}, MAX_ATTACHMENT_BYTES)
+            _require(row["attachment_id"] not in attachment_ids
+                     and row["snapshot_id"] not in attachment_snapshots, "Duplicate attachment identity")
+            attachment_ids.add(row["attachment_id"])
+            attachment_snapshots.add(row["snapshot_id"])
+            total += row["size_bytes"]
+    _require(total <= MAX_TOTAL_BYTES, "Bundle exceeds shared total size limit")
+    for key in ["excluded_vault_entries", *(["excluded_attachment_entries"] if version == 2 else [])]:
+        counts = value[key]
+        _require(type(counts) is dict and set(counts) == {"orphan", "pending"}
+                 and all(type(count) is int and count >= 0 for count in counts.values()),
+                 "Invalid excluded entry counts")
     return value
 
 
@@ -779,9 +874,15 @@ def _unpack_archive(bundle, stage, archive, stream, fd, before, central_offset, 
             f"{VAULT}/{row['snapshot_id']}": {key: row[key] for key in ("size_bytes", "sha256")}
             for row in manifest["artifacts"]
         },
+        **{
+            f"{ATTACHMENT_VAULT}/{row['snapshot_id']}": {key: row[key] for key in ("size_bytes", "sha256")}
+            for row in manifest.get("attachments", [])
+        },
     }
     _require(set(names) == {"manifest.json", *expected}, "Extra or missing archive members")
     stage.directory(VAULT)
+    if manifest["format_version"] == 2:
+        stage.directory(ATTACHMENT_VAULT)
     for name, metadata in expected.items():
         member = archive.getinfo(name)
         _require(member.file_size == metadata["size_bytes"], "Archive size mismatch")
@@ -856,6 +957,8 @@ def restore_bundle(bundle, new_data_dir):
         manifest = _unpack(bundle, stage)
         _check_directory(target.parent, parent_identity)
         _fsync_directory(stage.path / VAULT)
+        if manifest["format_version"] == 2:
+            _fsync_directory(stage.path / ATTACHMENT_VAULT)
         _fsync_directory(stage.path)
         _publish_directory(stage.path, target)
         stage.relocate(target)

@@ -33,6 +33,28 @@ export interface ArtifactRegisterParams {
 export interface ArtifactListResult { artifacts: TextArtifact[]; service_id: string }
 export interface ArtifactGetResult { artifact: TextArtifact; preview_text: string }
 
+export type AttachmentKind = "txt" | "csv" | "pdf" | "docx" | "xlsx" | "png" | "jpeg" | "gif" | "webp" | "unknown";
+export type AttachmentParserStatus = "parsed" | "empty" | "truncated" | "parse_failed" | "type_mismatch" | "parser_unavailable" | "ocr_not_attempted";
+export interface AttachmentOriginal {
+  id: string;
+  project_id: string;
+  service_id: string;
+  snapshot_id: string;
+  original_name: string;
+  declared_type: AttachmentKind;
+  recognized_type: AttachmentKind | "utf8_text" | "zip" | "binary";
+  size_bytes: number;
+  sha256: string;
+  version: number;
+  parser_status: AttachmentParserStatus;
+  parser_version: 1;
+  preview_truncated: boolean;
+  quality_status: "unverified";
+  created_at: string;
+}
+export interface AttachmentListResult { attachments: AttachmentOriginal[]; service_id: string }
+export interface AttachmentGetResult { attachment: AttachmentOriginal; preview_text: string }
+
 /** SSH credentials are referenced by identity-file path, never embedded. */
 export interface HostConfig {
   name: string;

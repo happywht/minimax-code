@@ -9,6 +9,7 @@
 
 import { StreamEvent } from "../types/ipc";
 import { artifactMock } from "./artifactMock";
+import { attachmentMock } from "./attachmentMock";
 import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../lib/defaultTitles";
 import type { BackendPermissionRule } from "./typed";
 import type {
@@ -495,6 +496,11 @@ function mockHandle(
     case "artifact.get": {
       const p = (params ?? {}) as Record<string, unknown>;
       return artifactMock(method, p, mockProjects.has(String(p.project_id)));
+    }
+    case "attachment.list":
+    case "attachment.get": {
+      const p = (params ?? {}) as Record<string, unknown>;
+      return attachmentMock(method, p, mockProjects.has(String(p.project_id)));
     }
     case "project.list": {
       const p = params as { archived?: boolean } | undefined;

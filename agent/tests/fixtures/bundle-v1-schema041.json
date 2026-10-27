@@ -1,0 +1,16 @@
+{
+  "generator_commit": "dc1d554",
+  "generator_path": "agent/minimax_code/bundle.py",
+  "generator_sha256": "11fb0bd93206e86514bae8928e65645084c75a58c4c4a38bc8c55ac1464ad863",
+  "format_version": 1,
+  "schema_version": 41,
+  "compressed_bytes": 16813,
+  "compressed_sha256": "cb6be0dd38da1c5868774a464af6a24899366d162e6f2d18fe051d6fbeeec5f7",
+  "bundle_bytes": 676918,
+  "bundle_sha256": "3cda5c16ba9d6138881371357427bb5e133d7c016b26d4d8c5381877d29b7731",
+  "artifact_id": "art_a01f6ef152ab4acf89ed3731c233ad66",
+  "project_id": "legacy-project",
+  "original_hex": "efbbbf6c6567616379206f726967696e616c2076310d0a",
+  "scope": "Actual committed v1 writer output, generated before Schema042 implementation; compressed only for repository storage.",
+  "generator_fixture": "bundle-v1-writer.py.txt"
+}

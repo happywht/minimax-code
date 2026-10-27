@@ -49,9 +49,12 @@ const SkillsPanel = lazy(() =>
 const ArtifactsPanel = lazy(() =>
   import("./components/panels/ArtifactsPanel").then((module) => ({ default: module.ArtifactsPanel })),
 );
+const AttachmentsPanel = lazy(() =>
+  import("./components/panels/AttachmentsPanel").then((module) => ({ default: module.AttachmentsPanel })),
+);
 
 type MainView = "chat" | "preview";
-type OverlayView = "skills" | "settings" | "scheduled" | "agents" | "artifacts";
+type OverlayView = "skills" | "settings" | "scheduled" | "agents" | "artifacts" | "attachments";
 type SidebarView = MainView | OverlayView;
 
 /** Connection status derived from sidecar events. */
@@ -126,7 +129,7 @@ export default function App() {
   }, [probeStorageHealth]);
 
   const handleViewChange = useCallback((next: SidebarView) => {
-    if (next === "skills" || next === "settings" || next === "scheduled" || next === "agents" || next === "artifacts") {
+    if (next === "skills" || next === "settings" || next === "scheduled" || next === "agents" || next === "artifacts" || next === "attachments") {
       if (next === "settings") setSettingsInitialTab("models");
       if (next === "scheduled") setSettingsInitialTab("scheduled");
       if (next === "agents") setSettingsInitialTab("agents");
@@ -313,7 +316,9 @@ export default function App() {
             {overlayView && (
               <WorkspaceOverlay onClose={() => setOverlayView(null)}>
                 <Suspense fallback={<DeferredPanelFallback />}>
-                  {overlayView === "artifacts" ? (
+                  {overlayView === "attachments" ? (
+                    <AttachmentsPanel onClose={() => setOverlayView(null)} />
+                  ) : overlayView === "artifacts" ? (
                     <ArtifactsPanel onClose={() => setOverlayView(null)} />
                   ) : overlayView === "skills" ? (
                     <SkillsPanel onClose={() => setOverlayView(null)} />

@@ -129,6 +129,8 @@ export interface TypedIPC {
   registerArtifact(params: import("../types/ipc").ArtifactRegisterParams): Promise<{ artifact: import("../types/ipc").TextArtifact }>;
   listArtifacts(projectId: string): Promise<import("../types/ipc").ArtifactListResult>;
   getArtifact(projectId: string, artifactId: string): Promise<import("../types/ipc").ArtifactGetResult>;
+  listAttachments(projectId: string): Promise<import("../types/ipc").AttachmentListResult>;
+  getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
 
   // Remote host registry and file transfer. Pre-record transfer_id before push
   // when recovery after a lost HTTP response or cancellation is required.
@@ -600,6 +602,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     registerArtifact: (params) => client.request("artifact.register", params),
     listArtifacts: (projectId) => client.request("artifact.list", { project_id: projectId }),
     getArtifact: (projectId, artifactId) => client.request("artifact.get", { project_id: projectId, artifact_id: artifactId }),
+    listAttachments: (projectId) => client.request("attachment.list", { project_id: projectId }),
+    getAttachment: (projectId, attachmentId) => client.request("attachment.get", { project_id: projectId, attachment_id: attachmentId }),
 
     createHost: (params) => client.request("host.create", params),
     listHosts: (params) => client.request("host.list", params ?? {}),

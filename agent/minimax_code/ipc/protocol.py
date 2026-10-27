@@ -42,6 +42,14 @@ class ArtifactGetParams(ArtifactListParams):
     artifact_id: str = Field(pattern=r"^art_[0-9a-f]{32}$")
 
 
+class AttachmentListParams(ArtifactListParams):
+    """Project association only; caller host/path authority is not accepted."""
+
+
+class AttachmentGetParams(AttachmentListParams):
+    attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
+
+
 class SendMessageParams(_Base):
     """Additive task mode; plan is enforced by execution/tool policy."""
 

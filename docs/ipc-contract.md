@@ -1546,6 +1546,45 @@ document the migration in this file.
 | `agent.invoke` | 直接调用一个子 Agent |
 | `agent.cancel_subagent` | 取消正在运行的子 Agent |
 
+### attachment.* — 项目附件原件（Schema042）
+
+| 方法 | 参数 | 返回 |
+|------|------|------|
+| `attachment.list` | `{project_id}` | `{attachments, service_id}`，最近 200 条元数据，不含预览 |
+| `attachment.get` | `{project_id, attachment_id}` | `{attachment, preview_text}`，核对原件后返回有界纯文本 |
+
+严格拒绝额外字段；project_id 为非空、最长 128 字符，attachment_id 为 `att_` 加 32 位小写十六进制。
+项目须存在，不要求 root_path。服务身份复用 artifact_service，项目删除后历史行/字节保留，但 API 不再可访问。
+attachment 字段：id、project_id、service_id、snapshot_id、original_name（1–240 个无控制显示字符）、
+declared_type、recognized_type、size_bytes（0–10485760）、sha256、version、parser_status、parser_version:1、
+preview_truncated:boolean、quality_status:"unverified"、created_at。列表/上传响应均不包含 preview_text。
+
+上传为认证 `POST /attachments?project_id=...&filename=...` 的 raw body，非 multipart。
+必须携带当前 list 获得的 `X-Attachment-Service-Id`，与 HTTP bearer/cookie 一起只放 header；
+服务在读 body 前及提交事务内复核身份和项目，拒绝同 URL 下旧服务身份。Host/Origin/认证边界与 RPC 共用；
+CORS 允许该请求 header，暴露下载的 `X-Attachment-Service-Id`、`X-Attachment-SHA256`。
+成功 HTTP201 `{attachment}`；参数错误400、身份/项目/存储一致性409、超限413、接收超时408、存储不可用503。
+不依赖 Content-Length：包括缺失/chunked/谎报长度，累计流最多 10 MiB，接收期限 120 秒。
+中断/超限没有可用记录，私有 pending 仅清理精确自有文件；取消须等待实际文件线程结束再关闭。
+完成文件先 fsync、无覆盖原子发布，再提交 DB；二者之间失败可能保留完整未登记 orphan，不能视为上传成功。
+filename 仅显示和下载名称，从不作为主机路径；版本按项目+同名递增，原件互不覆盖。
+
+TXT/CSV 严格 UTF-8、拒绝 NUL；CSV 逐行检查语法、不建立工作簿或执行公式，单字段由标准库限制为 131072 字符。
+完整输入检查后最多显示 64 KiB/2000 行，保留 BOM/CRLF，UTF-8 边界截断。
+parser_status 为 `parsed`、`empty`、`truncated`、`parse_failed`、`type_mismatch`、`parser_unavailable`、`ocr_not_attempted`。
+乱码/NUL/CSV 错误保留原件为 parse_failed；扩展名和内容候选异常为 type_mismatch，不选错解析器。
+PDF/DOCX/XLSX 只保存原件并标记 parser_unavailable；图片标记 ocr_not_attempted。
+recognized_type 只是魔数/容器候选，不证明格式有效或内容已读完。Office 仅检查有界 ZIP 目录
+（至多 1 MiB/2048 成员/512 字节成员名），不解压、不读取文档 XML，不执行宏、公式、外链。
+quality_status 始终 unverified，保存/解析/质量/交付分别处理；不自动注入上下文，不替换输入框附件机制。
+mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可解析，不承诺持久化。
+
+认证 `GET /attachments/{attachment_id}/content?project_id=...` 返回原字节；只按受约束 ID 读 attachment-vault，
+核对大小/hash/身份，缺失/损坏拒绝，没有 source fallback。返回 application/octet-stream、
+attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）、no-store、nosniff、sandbox CSP、
+上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
+Schema042 原件同时纳入离线 bundle v2；旧 v1/schema041 仍只读校验/恢复，详见 data-vault-bundle.md。
+
 ### artifact.* — 显式登记文本成果（Schema041）
 
 | 方法 | 参数 | 返回 |

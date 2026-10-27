@@ -53,6 +53,7 @@ export {
 } from "./subAgent";
 export { useGitStore, type GitState } from "./git";
 export { useArtifactStore } from "./artifactStore";
+export { useAttachmentStore } from "./attachmentStore";
 export {
   usePatchPreviewStore,
   type PatchPreviewScope,
