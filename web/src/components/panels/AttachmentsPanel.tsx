@@ -24,7 +24,7 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       <Button variant="ghost" onClick={onClose}>关闭</Button>
     </div>
     <p className="text-sm text-ink-1">最大 10 MiB。每次上传保留独立原件；同名文件创建新版本。</p>
-    <p className="text-sm text-ink-1">TXT / CSV 严格 UTF-8 预览，最多 64 KiB / 2000 行；CSV 公式只作文本。PDF / Office 暂无解析器，图片未尝试 OCR。</p>
+    <p className="text-sm text-ink-1">TXT / CSV 严格 UTF-8 预览，最多 64 KiB / 2000 行；CSV 公式只作文本。可选 DOCX 解析仅包含正文段落和表格，保留位置标签；不含页眉页脚、修订、文本框、批注、脚注或图片文字。PDF / XLSX 暂无解析器，图片未尝试 OCR。</p>
     <p className="text-sm text-ink-1">原件保存、可解析、质量验证与交付是不同状态；当前质量均为未验证。附件不会自动加入对话上下文。</p>
     {ipc.isMock && <p role="status">演示模式：原件仅保存在本页内存，刷新后清空；Office 容器只标记候选 ZIP。</p>}
     <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (file) void state.upload(file); }}>
@@ -43,6 +43,8 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
     </li>)}</ul>
     {scoped && state.selected && <div className="space-y-2">
       <p className="break-all text-xs text-ink-1">声明类型: {state.selected.declared_type} · 识别候选: {state.selected.recognized_type} · {labels[state.selected.parser_status]} · 未验证</p>
+      <p className="break-all text-xs text-ink-1">解析算法 v{state.selected.parser_version} · 范围 {state.selected.parser_scope} · 原因 {state.selected.parser_reason}</p>
+      {state.selected.parser_reason === "no_extracted_body_text_no_ocr" && <p role="status">未提取到正文文本；未尝试 OCR。原件可能仍包含其他内容。</p>}
       <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
       <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)

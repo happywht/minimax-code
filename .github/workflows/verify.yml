@@ -37,9 +37,10 @@ jobs:
         with:
           version: '0.10.8'
       - run: pnpm install --frozen-lockfile
-      - run: uv sync --frozen --extra dev
+      - run: uv sync --frozen --extra dev --extra attachments
         working-directory: agent
       - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm verify:attachments
       - run: pnpm verify:baseline
       - name: Save evidence (including failures)
         if: always()
@@ -72,7 +73,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.10.8'
-      - run: uv sync --frozen --extra dev
+      - run: uv sync --frozen --extra dev --extra attachments
         working-directory: agent
       - run: node scripts/verify.mjs --suite=full
       - name: Save backend evidence

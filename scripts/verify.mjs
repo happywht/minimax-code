@@ -12,10 +12,10 @@ const suites = JSON.parse(readFileSync(new URL("verification-suites.json", impor
 const args = process.argv.slice(2);
 const suite = args.find((arg) => arg.startsWith("--suite="))?.split("=")[1] ?? "baseline";
 const repeat = Number(args.find((arg) => arg.startsWith("--repeat="))?.split("=")[1] ?? 1);
-const allowed = new Set(["baseline", "core", "replay", "full"]);
+const allowed = new Set(["baseline", "core", "replay", "full", "attachments"]);
 if (!allowed.has(suite) || !Number.isInteger(repeat) || repeat < 1 || repeat > 3 ||
     args.some((arg) => !/^--(suite|repeat)=/.test(arg))) {
-  throw new Error("Usage: node scripts/verify.mjs --suite=baseline|core|replay|full --repeat=1|2|3");
+  throw new Error("Usage: node scripts/verify.mjs --suite=baseline|core|replay|full|attachments --repeat=1|2|3");
 }
 for (const files of Object.values(suites)) {
   for (const file of files) {
@@ -49,6 +49,7 @@ for (const key of Object.keys(env)) {
 }
 // An isolated product data directory, including for subprocess-based tests.
 env.MINIMAX_CODE_DATA_DIR = join(tmpdir(), `minimax-verify-${stamp}-${process.pid}`);
+env.MINIMAX_REQUIRE_ATTACHMENT_EXTRA = ["attachments", "full"].includes(suite) ? "1" : "0";
 const metadata = { suite, repeat, commit: git("rev-parse", "HEAD"),
   dirty: Boolean(git("status", "--porcelain")), sourceHash: sourceHash(),
   platform: process.platform, node: process.version, startedAt: new Date().toISOString(),
@@ -87,7 +88,7 @@ async function run(name, command, commandArgs, cwd = root) {
 }
 
 async function pythonSuite(name, files) {
-  await run(name, "uv", ["run", "--frozen", "--extra", "dev", "python", "-m", "pytest", "-q",
+  await run(name, "uv", ["run", "--frozen", "--extra", "dev", "--extra", "attachments", "python", "-m", "pytest", "-q",
     ...files, "--junitxml", join(output, `${name}.xml`)], join(root, "agent"));
 }
 
@@ -103,6 +104,7 @@ try {
     if (suite === "baseline") await run(`web-${pass}`, "pnpm", ["test"]);
     if (suite === "core" || suite === "baseline") await pythonSuite(`core-${pass}`, suites.core);
     if (suite === "replay" || suite === "baseline") await pythonSuite(`replay-${pass}`, suites.replay);
+    if (suite === "attachments") await pythonSuite(`attachments-${pass}`, suites.attachments);
     if (suite === "full") await pythonSuite(`full-${pass}`, []);
     if (suite === "baseline") await run(`e2e-${pass}`, "pnpm", ["test:e2e"]);
   }

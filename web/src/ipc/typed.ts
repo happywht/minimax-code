@@ -603,6 +603,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     listArtifacts: (projectId) => client.request("artifact.list", { project_id: projectId }),
     getArtifact: (projectId, artifactId) => client.request("artifact.get", { project_id: projectId, artifact_id: artifactId }),
     listAttachments: (projectId) => client.request("attachment.list", { project_id: projectId }),
+    // Preview results retain versioned parser scope/reason independently of quality.
     getAttachment: (projectId, attachmentId) => client.request("attachment.get", { project_id: projectId, attachment_id: attachmentId }),
 
     createHost: (params) => client.request("host.create", params),

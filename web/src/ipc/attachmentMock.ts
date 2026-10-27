@@ -97,7 +97,9 @@ export async function storeMockAttachment(file: File, project: string, requireCu
     original_name: file.name, declared_type: declared, recognized_type: parsed.recognized,
     size_bytes: bytes.byteLength, sha256: Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(""),
     version: rows.filter((row) => row.metadata.project_id === project && row.metadata.original_name === file.name).length + 1,
-    parser_status: parsed.status, parser_version: 1, preview_truncated: parsed.status === "truncated",
+    parser_status: parsed.status, parser_version: 2,
+    parser_reason: parsed.status === "type_mismatch" ? "type_mismatch" : parsed.status === "parse_failed" ? "invalid_text" : parsed.status === "truncated" ? "preview_limit" : parsed.status === "parser_unavailable" ? "missing_dependency" : parsed.status === "ocr_not_attempted" ? "ocr_not_attempted" : "ok",
+    parser_scope: declared === "txt" || declared === "csv" ? "inert_text" : "original_only", preview_truncated: parsed.status === "truncated",
     quality_status: "unverified", created_at: new Date().toISOString(),
   };
   rows.push({ metadata, bytes, preview: parsed.preview });

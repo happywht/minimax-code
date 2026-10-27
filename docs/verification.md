@@ -8,7 +8,7 @@ M0 建立于 2026-10-22，起点提交 `78962fb`。测试结果证明对应受�
 
 ```sh
 pnpm install --frozen-lockfile
-uv sync --frozen --extra dev --directory agent
+uv sync --frozen --extra dev --extra attachments --directory agent
 pnpm exec playwright install --with-deps chromium
 pnpm verify:baseline
 ```
@@ -18,6 +18,7 @@ pnpm verify:baseline
 | `pnpm verify:baseline` | ESLint、Ruff、TypeScript/生产构建一次；前端单元、后端核心、协议回放、Playwright 连续三轮 | M0 验收及双平台 CI |
 | `pnpm verify:core` | 生命周期、权限、路径、终端、调度、迁移、数据、契约等高风险回归 | 本地快速确认 |
 | `pnpm verify:replay` | 真实协议解析器/SDK + 受控 HTTP/SSE/stdio 响应 | Provider/MCP 相关变更 |
+| `pnpm verify:attachments` | 安装锁定可选依赖并执行DOCX真实资源子进程/原件/HTTP/迁移/包兼容专项，依赖缺失报错而非跳过 | Windows/Ubuntu CI及本地附件变更 |
 | `pnpm verify:full` | `agent/tests/` 全量 pytest，独立任务 | 每次 CI，与核心基线分开报告 |
 | `node scripts/verify.mjs --suite=baseline --repeat=1` | 单轮基线 | 日常迭代 |
 

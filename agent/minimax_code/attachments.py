@@ -26,7 +26,7 @@ MAX_BYTES = 10 * 1024 * 1024
 MAX_PREVIEW_BYTES = 64 * 1024
 MAX_PREVIEW_LINES = 2000
 UPLOAD_TIMEOUT = 120
-PARSER_VERSION = 1
+PARSER_VERSION = 2
 VAULT = "attachment-vault"
 STATUSES = {"parsed", "empty", "truncated", "parse_failed", "type_mismatch",
             "parser_unavailable", "ocr_not_attempted"}
@@ -117,10 +117,11 @@ def inspect_text(data, name):
     declared, recognized = declared_type(name), recognize(data)
     result = {"declared_type": declared, "recognized_type": recognized,
               "parser_version": PARSER_VERSION, "preview_text": "", "preview_truncated": 0,
-              "quality_status": "unverified"}
+              "quality_status": "unverified", "parser_reason": "unsupported_type",
+              "parser_scope": "inert_text" if declared in {"txt", "csv"} else "original_only"}
     if declared in {"txt", "csv"}:
         if recognized not in {"utf8_text", "binary"}:
-            return {**result, "parser_status": "type_mismatch"}
+            return {**result, "parser_status": "type_mismatch", "parser_reason": "type_mismatch"}
         try:
             text = data.decode("utf-8", errors="strict")
             if "\x00" in text:
@@ -130,16 +131,19 @@ def inspect_text(data, name):
                 for _ in csv.reader(io.StringIO(text, newline=""), strict=True):
                     pass
         except (UnicodeDecodeError, ValueError, csv.Error):
-            return {**result, "parser_status": "parse_failed"}
+            return {**result, "parser_status": "parse_failed", "parser_reason": "invalid_text"}
         prefix = text.encode("utf-8")[:MAX_PREVIEW_BYTES].decode("utf-8", errors="ignore")
         lines = prefix.splitlines(keepends=True)
         prefix = "".join(lines[:MAX_PREVIEW_LINES])
         truncated = prefix != text
         return {**result, "preview_text": prefix, "preview_truncated": int(truncated),
+                "parser_reason": "preview_limit" if truncated else "ok",
                 "parser_status": "empty" if not text else "truncated" if truncated else "parsed"}
     if declared != "unknown" and recognized != declared:
-        return {**result, "parser_status": "type_mismatch"}
-    return {**result, "parser_status": "ocr_not_attempted" if recognized in
+        return {**result, "parser_status": "type_mismatch", "parser_reason": "type_mismatch"}
+    return {**result, "parser_reason": "ocr_not_attempted" if recognized in
+            {"png", "jpeg", "gif", "webp"} else "unsupported_type",
+            "parser_status": "ocr_not_attempted" if recognized in
             {"png", "jpeg", "gif", "webp"} else "parser_unavailable"}
 
 
@@ -286,7 +290,15 @@ class AttachmentService:
                 async for chunk in chunks:
                     await _blocking(upload.write, chunk)
             await _blocking(upload.seal)
-            parsed = await _blocking(_inspect_pending, self.vault / upload.name, name)
+            original = await _blocking(read_original, self.vault / upload.name)
+            if declared_type(name) == "docx" and recognize(original) in {"docx", "zip"}:
+                from .attachment_parser import inspect_docx
+
+                # Fixed trusted parser, anonymous input bytes; filename is metadata.
+                parsed = {"declared_type": "docx", "recognized_type": recognize(original),
+                          **await inspect_docx(original)}
+            else:
+                parsed = await _blocking(_inspect_pending, self.vault / upload.name, name)
             await _blocking(upload.publish)
             published = await _blocking(read_original, self.vault / upload.snapshot)
             if len(published) != upload.size or hashlib.sha256(published).hexdigest() != upload.hash.hexdigest():

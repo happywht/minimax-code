@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { AGENT_BASE } from "./runtime-config";
 
 test("attachment originals survive reload, display honest states and download exact version bytes", async ({ page, request }) => {
@@ -47,4 +48,36 @@ test("attachment originals survive reload, display honest states and download ex
   await expect(page.getByRole("button", { name: /report.txt · v1/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /report.txt · v2/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /paper.pdf.*解析器不可用/ })).toBeVisible();
+});
+
+test("DOCX body scope, table positions and original bytes survive upload and reload", async ({ page, request }) => {
+  const response = await request.post(`${AGENT_BASE}/rpc`, { data: {
+    jsonrpc: "2.0", id: "docx-project", method: "project.create", params: { name: "DOCX body" },
+  } });
+  const projectId = (await response.json()).result.project.id;
+  await page.goto("/");
+  await expect(page.getByPlaceholder(/问 MiniMax 任何问题/)).toBeVisible();
+  await page.evaluate(async (id) => {
+    // @ts-expect-error Vite source module resolves inside browser.
+    const { useSessionStore } = await import("/src/stores/sessionStore.ts");
+    await useSessionStore.getState().loadProjects(); useSessionStore.getState().setCurrentProject(id);
+  }, projectId);
+  await page.getByTestId("sidebar-nav-attachments").click();
+  const panel = page.getByRole("region", { name: "项目附件" });
+  const original = readFileSync(fileURLToPath(new URL("./fixtures/body-text.docx", import.meta.url)));
+  await panel.getByLabel("选择附件原件").setInputFiles({ name: "body.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: original });
+  await panel.getByRole("button", { name: "上传原件" }).click();
+  const preview = panel.getByLabel("附件纯文本预览");
+  await expect(preview).toContainText("[body/1] 中文开头");
+  await expect(preview).toContainText("[body/2/row1/cell1/1] 表格正文");
+  await expect(preview).toContainText("[body/3] 中文结尾");
+  await expect(preview).not.toContainText("不得出现的页眉");
+  await expect(panel.getByText(/解析算法 v2.*docx_body_paragraphs_tables.*原因 ok/)).toBeVisible();
+  const downloadEvent = page.waitForEvent("download");
+  await panel.getByRole("button", { name: "下载附件原始字节" }).click();
+  expect(readFileSync((await (await downloadEvent).path())!)).toEqual(original);
+  await expect(panel.getByText(`SHA-256: ${createHash("sha256").update(original).digest("hex")}`)).toBeVisible();
+  await page.reload(); await page.getByTestId("sidebar-nav-attachments").click();
+  await page.getByRole("button", { name: /body.docx.*已解析 \/ 未验证/ }).click();
+  await expect(page.getByLabel("附件纯文本预览")).toContainText("[body/2/row1/cell1/1] 表格正文");
 });

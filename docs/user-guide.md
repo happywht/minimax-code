@@ -217,7 +217,7 @@ uv run python -m minimax_code.bundle restore --bundle /absolute/backups/data-vau
 位于源数据目录外，恢复目录必须全新且不存在。正在占用目录的服务、链接/损坏/超限
 文件或不支持的格式会使操作失败；不会覆盖已有目标。该包保存一致 SQLite 快照和
 全部已登记历史文本版本及附件原件，孤儿/待发布文件只计数、不收取。
-当前新包为v2/Schema042；仍能校验/恢复旧v1/Schema041，不自动迁移，旧工具拒绝v2。
+当前新包为v3/Schema043；仍能校验/恢复旧v1/Schema041、v2/Schema042，不自动迁移，旧工具拒绝v3。
 任一已登记原件缺失或损坏都会失败，不会默默跳过无法解析的附件。
 
 这是 **data-only 副本，不能直接作为可运行实例启动**。数据库中的原主机路径、凭据、
@@ -264,3 +264,22 @@ uv run python -m minimax_code.bundle restore --bundle /absolute/backups/data-vau
 - 生产部署、端口与数据目录、日志：[deployment.md](./deployment.md)
 - 性能基线参考：[performance-baseline.md](./performance-baseline.md)
 - IPC 协议与架构（开发者向）：[architecture.md](./architecture.md)
+
+
+## 项目附件的 DOCX 正文预览
+
+服务可手动安装可选依赖 `cd agent && uv sync --extra attachments`，随后重启服务。
+新上传DOCX只显示正文段落和表格，保留位置标签，最多64 KiB/2000行；
+不含页眉页脚、修订、文本框、批注、脚注、图像OCR或版式质量检查。
+“未提取到正文文本；未尝试OCR”不代表读完整个文档。面板显示算法版本、解析范围、
+稳定原因与未验证状态。依赖缺失、格式异常、超时和资源超限仍可下载原始字节；
+历史记录保留原解析版本，不自动重解析。演示模式不运行DOCX解析。
+详见[DOCX有界解析](attachment-docx.md)。
+
+
+本DOCX正文切片已有Windows私有staging后端163项、前端28项、真实浏览器2项通过，
+以及最终Linux315项通过、1项仅Windows路径测试跳过的回执。最终补充文档证据及
+一处不改变Python AST的末尾空白清理；
+测试范围、两项测试修正与精确源码/回执hash见[本批验收证据](attachment-docx.md#本批验收证据)。
+这些计数有重叠，不相加；质量状态仍为未验证，PDF/XLSX、OCR、完整办公交付和
+独立Linux启动窗口故障仍未纳入本片验收。

@@ -21,7 +21,7 @@ import { uploadAttachment, fetchAttachmentContent } from "../../ipc/attachmentCo
 const row: AttachmentOriginal = {
   id: `att_${"1".repeat(32)}`, project_id: "p", service_id: "svc_test", snapshot_id: "1".repeat(32),
   original_name: "report.txt", declared_type: "txt", recognized_type: "utf8_text", size_bytes: 10,
-  sha256: "a".repeat(64), version: 1, parser_status: "parsed", parser_version: 1, preview_truncated: false, quality_status: "unverified", created_at: "now",
+  sha256: "a".repeat(64), version: 1, parser_status: "parsed", parser_version: 1, parser_reason: "legacy_v1", parser_scope: "legacy_v1", preview_truncated: false, quality_status: "unverified", created_at: "now",
 };
 const preview = "<script>window.exploit=true</script>\n=1+1";
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
@@ -65,6 +65,16 @@ describe("project attachment panel and dispatch epochs", () => {
     await screen.findByText("当前状态不提供文本预览；可下载保存的原件。");
     expect(screen.queryByLabelText("附件纯文本预览")).toBeNull();
     expect(screen.getByText("下载附件原始字节")).toBeTruthy();
+  });
+  it("labels DOCX body-only empty extraction and retains original download", async () => {
+    const empty = { ...row, original_name: "empty.docx", declared_type: "docx", recognized_type: "docx", parser_version: 2, parser_status: "empty", parser_scope: "docx_body_paragraphs_tables", parser_reason: "no_extracted_body_text_no_ocr" };
+    wire.request.mockImplementation(async (method: string) => method === "attachment.list"
+      ? { attachments: [empty], service_id: "svc_test" } : { attachment: empty, preview_text: "" });
+    render(<AttachmentsPanel onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /empty.docx/ }));
+    await screen.findByText("未提取到正文文本；未尝试 OCR。原件可能仍包含其他内容。");
+    expect(screen.getByText(/解析算法 v2.*docx_body_paragraphs_tables.*no_extracted_body_text_no_ocr/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "下载附件原始字节" })).toBeTruthy();
   });
   it("drops stale project and host lists, and rejects foreign service associations", async () => {
     const pending = deferred<AttachmentListResult>(); wire.request.mockReturnValue(pending.promise);

@@ -50,6 +50,20 @@ class AttachmentGetParams(AttachmentListParams):
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
 
 
+class AttachmentParserMetadata(BaseModel):
+    """Additive Schema043 result fields; v1 is preserved without reparsing."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    parser_version: Literal[1, 2]
+    parser_scope: Literal["legacy_v1", "inert_text", "docx_body_paragraphs_tables", "original_only"]
+    parser_reason: Literal[
+        "legacy_v1", "ok", "no_extracted_body_text_no_ocr", "preview_limit",
+        "invalid_package", "unsafe_package", "package_limit", "unsupported_feature",
+        "missing_dependency", "limits_unavailable", "queue_timeout", "parser_timeout",
+        "parser_crash", "output_limit", "invalid_parser_output", "invalid_text",
+        "type_mismatch", "unsupported_type", "ocr_not_attempted",
+    ]
+
+
 class SendMessageParams(_Base):
     """Additive task mode; plan is enforced by execution/tool policy."""
 

@@ -35,6 +35,7 @@ export interface ArtifactGetResult { artifact: TextArtifact; preview_text: strin
 
 export type AttachmentKind = "txt" | "csv" | "pdf" | "docx" | "xlsx" | "png" | "jpeg" | "gif" | "webp" | "unknown";
 export type AttachmentParserStatus = "parsed" | "empty" | "truncated" | "parse_failed" | "type_mismatch" | "parser_unavailable" | "ocr_not_attempted";
+export type AttachmentParserReason = "legacy_v1" | "ok" | "no_extracted_body_text_no_ocr" | "preview_limit" | "invalid_package" | "unsafe_package" | "package_limit" | "unsupported_feature" | "missing_dependency" | "limits_unavailable" | "queue_timeout" | "parser_timeout" | "parser_crash" | "output_limit" | "invalid_parser_output" | "invalid_text" | "type_mismatch" | "unsupported_type" | "ocr_not_attempted";
 export interface AttachmentOriginal {
   id: string;
   project_id: string;
@@ -47,7 +48,9 @@ export interface AttachmentOriginal {
   sha256: string;
   version: number;
   parser_status: AttachmentParserStatus;
-  parser_version: 1;
+  parser_version: 1 | 2;
+  parser_reason: AttachmentParserReason;
+  parser_scope: "legacy_v1" | "inert_text" | "docx_body_paragraphs_tables" | "original_only";
   preview_truncated: boolean;
   quality_status: "unverified";
   created_at: string;

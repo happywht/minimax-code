@@ -1,0 +1,28 @@
+{
+  "generator_commit": "a6bdcf0",
+  "generator_sha256": "4e5ca9bb8cfaebb051193d3b23a72367a0183dfd8149d095eace510243874602",
+  "format_version": 2,
+  "schema_version": 42,
+  "bundle_bytes": 697470,
+  "bundle_sha256": "9dff48cfdc32ae8b21d80f56907101508ec6748d2a8b37a736b3c90787e60397",
+  "compressed_bytes": 17204,
+  "compressed_sha256": "36b4b44ebe83e428d923ff244c7e28f397abb193a6851d9a466190d7c3dd73a7",
+  "attachment": {
+    "id": "att_81d178284a6c4d869222dae4d18d2d03",
+    "project_id": "legacy-project",
+    "service_id": "svc_c79ee1491aca4b5b918a2b069b520b3e",
+    "snapshot_id": "9de0931b7e1546798712236d2a324108",
+    "original_name": "legacy.txt",
+    "size_bytes": 27,
+    "sha256": "c59d6f2fcbf81a3fe586f5f8332aa0466ab9ca4a441789afe3a012f1fb067479",
+    "declared_type": "txt",
+    "recognized_type": "utf8_text",
+    "parser_version": 1,
+    "preview_truncated": false,
+    "quality_status": "unverified",
+    "parser_status": "parsed",
+    "version": 1,
+    "created_at": "2026-10-27T05:13:49Z"
+  },
+  "original_hex": "6c656761637920736368656d61303432206f726967696e616c0d0a"
+}

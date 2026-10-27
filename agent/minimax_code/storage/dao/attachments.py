@@ -6,7 +6,8 @@ from .text_artifacts import ArtifactDAO
 
 METADATA_COLUMNS = (
     "id,project_id,service_id,snapshot_id,original_name,declared_type,recognized_type,"
-    "size_bytes,sha256,version,parser_status,parser_version,preview_truncated,quality_status,created_at"
+    "size_bytes,sha256,version,parser_status,parser_version,preview_truncated,quality_status,created_at,"
+    "parser_reason,parser_scope"
 )
 
 

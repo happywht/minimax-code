@@ -1546,7 +1546,7 @@ document the migration in this file.
 | `agent.invoke` | 直接调用一个子 Agent |
 | `agent.cancel_subagent` | 取消正在运行的子 Agent |
 
-### attachment.* — 项目附件原件（Schema042）
+### attachment.* — 项目附件原件（Schema043）
 
 | 方法 | 参数 | 返回 |
 |------|------|------|
@@ -1556,7 +1556,7 @@ document the migration in this file.
 严格拒绝额外字段；project_id 为非空、最长 128 字符，attachment_id 为 `att_` 加 32 位小写十六进制。
 项目须存在，不要求 root_path。服务身份复用 artifact_service，项目删除后历史行/字节保留，但 API 不再可访问。
 attachment 字段：id、project_id、service_id、snapshot_id、original_name（1–240 个无控制显示字符）、
-declared_type、recognized_type、size_bytes（0–10485760）、sha256、version、parser_status、parser_version:1、
+declared_type、recognized_type、size_bytes（0–10485760）、sha256、version、parser_status、parser_version:1|2、parser_scope、parser_reason、
 preview_truncated:boolean、quality_status:"unverified"、created_at。列表/上传响应均不包含 preview_text。
 
 上传为认证 `POST /attachments?project_id=...&filename=...` 的 raw body，非 multipart。
@@ -1573,9 +1573,10 @@ TXT/CSV 严格 UTF-8、拒绝 NUL；CSV 逐行检查语法、不建立工作簿�
 完整输入检查后最多显示 64 KiB/2000 行，保留 BOM/CRLF，UTF-8 边界截断。
 parser_status 为 `parsed`、`empty`、`truncated`、`parse_failed`、`type_mismatch`、`parser_unavailable`、`ocr_not_attempted`。
 乱码/NUL/CSV 错误保留原件为 parse_failed；扩展名和内容候选异常为 type_mismatch，不选错解析器。
-PDF/DOCX/XLSX 只保存原件并标记 parser_unavailable；图片标记 ocr_not_attempted。
-recognized_type 只是魔数/容器候选，不证明格式有效或内容已读完。Office 仅检查有界 ZIP 目录
-（至多 1 MiB/2048 成员/512 字节成员名），不解压、不读取文档 XML，不执行宏、公式、外链。
+PDF/XLSX 只保存原件并标记 parser_unavailable；图片标记 ocr_not_attempted。
+DOCX 可选 extra 仅解析正文段落/表格，详见 [DOCX 有界解析](attachment-docx.md)。算法 v2 新增稳定 parser_reason 与 parser_scope，旧 v1 两字段为 legacy_v1，不自动重解析。
+empty + no_extracted_body_text_no_ocr 仅说明未提取到正文，不代表整个文件没有内容。
+recognized_type 只是魔数/容器候选，不证明格式有效或内容已读完。Office 候选识别只检查有界 ZIP 目录；DOCX 子进程另行校验实际解压计数和全部 XML/rels，拒绝宏/嵌入对象，不执行公式或访问外链。
 quality_status 始终 unverified，保存/解析/质量/交付分别处理；不自动注入上下文，不替换输入框附件机制。
 mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可解析，不承诺持久化。
 
@@ -1583,7 +1584,7 @@ mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可�
 核对大小/hash/身份，缺失/损坏拒绝，没有 source fallback。返回 application/octet-stream、
 attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）、no-store、nosniff、sandbox CSP、
 上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
-Schema042 原件同时纳入离线 bundle v2；旧 v1/schema041 仍只读校验/恢复，详见 data-vault-bundle.md。
+Schema043 原件和解析元数据同时纳入离线 bundle v3；旧 v1/041、v2/042 仍只读校验/恢复，详见 data-vault-bundle.md。
 
 ### artifact.* — 显式登记文本成果（Schema041）
 

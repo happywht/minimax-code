@@ -16,6 +16,7 @@
     "verify:baseline": "node scripts/verify.mjs --suite=baseline --repeat=3",
     "verify:core": "node scripts/verify.mjs --suite=core",
     "verify:replay": "node scripts/verify.mjs --suite=replay",
+    "verify:attachments": "node scripts/verify.mjs --suite=attachments",
     "verify:full": "node scripts/verify.mjs --suite=full",
     "py:install": "cd agent && uv sync",
     "py:run": "cd agent && uv run python -m minimax_code",

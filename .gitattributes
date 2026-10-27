@@ -1,2 +1,4 @@
 agent/minimax_code/assets/linux_l1/seccomp-pid1-v1.json -text
 agent/tests/fixtures/bundle-v1-writer.py.txt -text
+agent/tests/fixtures/bundle-v2-writer.py.txt -text
+agent/tests/fixtures/bundle-v2-attachments.py.txt -text

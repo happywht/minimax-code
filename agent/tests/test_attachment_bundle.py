@@ -10,6 +10,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import types
 import zipfile
 from pathlib import Path
 
@@ -44,6 +45,67 @@ def legacy_writer():
     loader.exec_module(module)
     assert module.FORMAT_VERSION == 1 and module.SCHEMA_VERSION == 41
     return module
+
+
+def legacy_v2_writer():
+    # Exact HEAD writer and its historical attachment constants in a separate
+    # namespace. Current v2 algorithm constants must not change the old reader.
+    import minimax_code
+    name = "minimax_code._frozen_v2"
+    package = types.ModuleType(name)
+    package.__path__ = [str(Path(minimax_code.__file__).parent)]
+    package.__version__ = minimax_code.__version__
+    sys.modules[name] = package
+    for suffix, filename, digest in (
+        ("attachments", "bundle-v2-attachments.py.txt", "6b37320be1b76db7d1153f89a4ec04554e9f9bed3855028e1652fce6e57a2025"),
+        ("bundle", "bundle-v2-writer.py.txt", "4e5ca9bb8cfaebb051193d3b23a72367a0183dfd8149d095eace510243874602"),
+    ):
+        path = FIXTURES / filename
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        loader = importlib.machinery.SourceFileLoader(name + "." + suffix, str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[loader.name] = module
+        loader.exec_module(module)
+    assert module.FORMAT_VERSION == 2 and module.SCHEMA_VERSION == 42
+    return module
+
+
+async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_all_v1_values(tmp_path):
+    meta = json.loads((FIXTURES / "bundle-v2-schema042.json").read_bytes())
+    compressed = (FIXTURES / "bundle-v2-schema042.zip.gz").read_bytes()
+    assert len(compressed) == meta["compressed_bytes"]
+    assert hashlib.sha256(compressed).hexdigest() == meta["compressed_sha256"]
+    raw = gzip.decompress(compressed)
+    assert len(raw) == meta["bundle_bytes"] and hashlib.sha256(raw).hexdigest() == meta["bundle_sha256"]
+    archive = tmp_path / "v2.zip"
+    archive.write_bytes(raw)
+    assert legacy_v2_writer().verify_bundle(archive)["schema_version"] == 42
+    assert bundle.verify_bundle(archive)["format_version"] == 2
+    target = tmp_path / "restored"
+    bundle.restore_bundle(archive, target)
+    with sqlite3.connect(target / "data.db") as conn:
+        before = conn.execute("SELECT * FROM attachments").fetchone()
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (42,)
+        assert conn.execute("SELECT root_path FROM projects WHERE id='legacy-project'").fetchone() == ("/original/v2/project",)
+    conn.close()
+    db = AsyncDatabase(target / "data.db")
+    await db.connect()
+    try:
+        assert await db.migrate() == [43]
+        after = await db.fetchone("SELECT * FROM attachments")
+        assert tuple(after)[:-2] == before
+        assert after["parser_version"] == 1 and after["parser_reason"] == after["parser_scope"] == "legacy_v1"
+        row, data = await AttachmentService(db, target).content("legacy-project", meta["attachment"]["id"])
+        assert data == bytes.fromhex(meta["original_hex"])
+        assert row["service_id"] == meta["attachment"]["service_id"]
+    finally:
+        await db.close()
+    new = tmp_path / "v3.zip"
+    assert bundle.create_bundle(target, new)["schema_version"] == 43
+    with pytest.raises(ValueError):
+        legacy_v2_writer().verify_bundle(new)
+    assert bundle.verify_bundle(new)["format_version"] == 3
 
 
 async def stream(data):
@@ -119,7 +181,7 @@ async def test_forward_schema041_upgrade_preserves_registered_text_bytes_and_ser
     try:
         before = dict(await db.fetchone("SELECT * FROM text_artifacts"))
         service = dict(await db.fetchone("SELECT * FROM artifact_service"))
-        assert await db.migrate() == [42]
+        assert await db.migrate() == [42, 43]
         assert dict(await db.fetchone("SELECT * FROM text_artifacts")) == before
         assert dict(await db.fetchone("SELECT * FROM artifact_service")) == service
         assert not await db.fetchall("SELECT * FROM attachments")
@@ -135,7 +197,7 @@ async def test_v2_restores_all_registered_originals_and_public_authenticated_dow
     archive = tmp_path / "v2.zip"
     report = cli("create", "--data-dir", data, "--output", archive)
     assert not list(tmp_path.glob(".bundle-pending-*"))
-    assert report["format_version"] == 2 and report["schema_version"] == 42
+    assert report["format_version"] == 3 and report["schema_version"] == 43
     assert report["artifact_count"] == 1 and report["attachment_count"] == 2
     assert report["excluded_attachment_entries"] == {"orphan": 1, "pending": 1}
     assert cli("verify", "--bundle", archive)["attachment_count"] == 2
@@ -143,6 +205,8 @@ async def test_v2_restores_all_registered_originals_and_public_authenticated_dow
         assert (data / name).read_bytes() == value
     with pytest.raises(ValueError):
         legacy_writer().verify_bundle(archive)  # Actual old reader fails closed on v2.
+    with pytest.raises(ValueError):
+        legacy_v2_writer().verify_bundle(archive)
     target = tmp_path / "restored"
     assert cli("restore", "--bundle", archive, "--new-data-dir", target)["attachment_count"] == 2
     db = AsyncDatabase(target / "data.db")
@@ -202,7 +266,7 @@ async def test_v2_version_reference_member_rules_fail_closed(both_vaults, tmp_pa
         members = [(item.filename, archive.read(item)) for item in archive.infolist()]
     manifest = json.loads(members[0][1])
     if change == "unknown-version":
-        manifest["format_version"] = 3
+        manifest["format_version"] = 4
     elif change == "schema-format-mismatch":
         manifest["schema_version"] = 41
     elif change == "attachment-path":

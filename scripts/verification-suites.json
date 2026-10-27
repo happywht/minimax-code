@@ -70,5 +70,14 @@
     "tests/test_anthropic_multimodal.py",
     "tests/test_mcp_client.py",
     "tests/test_mcp_sse_transport.py"
+  ],
+  "attachments": [
+    "tests/test_attachment_docx.py",
+    "tests/test_attachments.py",
+    "tests/test_attachment_http.py",
+    "tests/test_attachment_bundle.py",
+    "tests/test_bundle.py",
+    "tests/test_bundle_fixture_packaging.py",
+    "tests/test_ipc_contract_doc.py"
   ]
 }

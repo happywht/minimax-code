@@ -581,3 +581,13 @@ PDF/Office 标记 parser_unavailable，图片 ocr_not_attempted；类型异常 t
 离线 bundle v2 固定支持 Schema042，DB 与两个 vault 必须共同保全；没有 042 down-migration。
 升级前停服务并用旧 v1 工具保存 Schema041 DB+文本 vault；升级后用 v2 保存完整数据。
 回退应恢复与旧程序匹配的升级前备份，不能把旧程序直接指向042，不能删表/vault伪造回退。
+
+
+### Schema043：版本化 DOCX 正文解析元数据
+
+重建 attachments，保留042全部旧字段和值，parser_version允许1/2；新增parser_reason、parser_scope。
+历史v1两字段固定legacy_v1，不自动重解析；新上传算法为2，scope为inert_text、
+docx_body_paragraphs_tables或original_only。所有记录quality_status仍为unverified。
+稳定原因和子进程边界见[DOCX有界解析](attachment-docx.md)。DOCX解析失败/依赖缺失/超限仍保存原件。
+043只由bundle v3新建；v1/041、v2/042仍可原样验证/恢复，不迁移或重新绑定。旧工具拒绝v3，
+没有043降级迁移；回退必须恢复匹配旧程序的升级前备份。

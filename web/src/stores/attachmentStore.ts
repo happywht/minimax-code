@@ -17,6 +17,7 @@ let epoch = 0, selection = 0;
 let uploading: AbortController | null = null, downloading: AbortController | null = null;
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const statuses = new Set(["parsed", "empty", "truncated", "parse_failed", "type_mismatch", "parser_unavailable", "ocr_not_attempted"]);
+const reasons = new Set(["ok", "no_extracted_body_text_no_ocr", "preview_limit", "invalid_package", "unsafe_package", "package_limit", "unsupported_feature", "missing_dependency", "limits_unavailable", "queue_timeout", "parser_timeout", "parser_crash", "output_limit", "invalid_parser_output", "invalid_text", "type_mismatch", "unsupported_type", "ocr_not_attempted"]);
 
 export const useAttachmentStore = create<AttachmentState>((set, get) => {
   const current = (ticket: number, project: string, host: string) =>
@@ -26,7 +27,9 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
     if (!/^att_[a-f0-9]{32}$/.test(row.id) || !/^[a-f0-9]{64}$/.test(row.sha256)
       || typeof row.original_name !== "string" || !row.original_name.trim() || [...row.original_name].length > 240
       || [...row.original_name].some((char) => char.charCodeAt(0) < 32 || (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159)) || !Number.isInteger(row.size_bytes) || row.size_bytes < 0 || row.size_bytes > 10485760
-      || !statuses.has(row.parser_status) || row.quality_status !== "unverified" || row.parser_version !== 1) throw new Error("Attachment metadata is inconsistent");
+      || !statuses.has(row.parser_status) || row.quality_status !== "unverified"
+      || !(row.parser_version === 1 && row.parser_scope === "legacy_v1" && row.parser_reason === "legacy_v1"
+        || row.parser_version === 2 && ["inert_text", "docx_body_paragraphs_tables", "original_only"].includes(row.parser_scope) && reasons.has(row.parser_reason))) throw new Error("Attachment metadata is inconsistent");
   };
   const ready = (project: string | null, host: string, service: string | null) => {
     if (project && service && current(epoch, project, host)) return true;
@@ -96,7 +99,8 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
         if (!current(ticket, project, host) || selection !== request) return;
         const url = URL.createObjectURL(blob), anchor = document.createElement("a");
         anchor.href = url; anchor.download = row.original_name.replace(/[\\/:*?"<>|]/g, "_");
-        anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+        const revoke = URL.revokeObjectURL.bind(URL);
+        anchor.click(); setTimeout(() => revoke(url), 1000);
       } catch (error) { if (current(ticket, project, host) && selection === request) set({ error: errorText(error) }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
     },
