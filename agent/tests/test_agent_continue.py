@@ -11,6 +11,8 @@ Validates:
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -71,7 +73,16 @@ def _truncated_run(session_id: str = "ses_x") -> dict:
 @pytest.fixture
 def wire_dao(monkeypatch: pytest.MonkeyPatch):
     """Install a fake db + DAO; returns the DAO holder to mutate per test."""
-    holder: dict[str, object] = {"db": object(), "dao": _FakeRunsDAO([])}
+    holder: dict[str, object] = {"dao": _FakeRunsDAO([])}
+
+    async def raw_history(_query, params):
+        return [
+            {"id": run["id"], "session_id": run["session_id"],
+             "metadata": json.dumps(run.get("metadata", {}))}
+            for run in holder["dao"]._runs if run["session_id"] == params[0]
+        ]
+
+    holder["db"] = SimpleNamespace(fetchall=AsyncMock(side_effect=raw_history))
 
     def _get_db():  # type: ignore[no-untyped-def]
         return holder["db"]

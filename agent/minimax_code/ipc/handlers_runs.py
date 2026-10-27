@@ -114,7 +114,10 @@ def register_run_handlers(server: Any) -> None:
             return
         try:
             from ..app import get_db, init_runtime
+            from .host_session_gate import require_chat_session
+
             await init_runtime()
+            await require_chat_session(request.session_id)
             db = get_db()
             session = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (request.session_id,)) if db else None
             pinned = session["engine"] if session else (request.engine or "native")
@@ -164,12 +167,18 @@ def register_run_handlers(server: Any) -> None:
         try:
             request = RunResumeParams.model_validate(params)
             dao = await _get_dao()
+            from .host_session_gate import require_public_recovery
+
+            await require_public_recovery(None, request.run_id)
             run = await dao.get_run(request.run_id)
             if run is None or run["status"] not in {"interrupted", "failed", "cancelled", "budget_paused"}:
                 raise HandlerError(INVALID_PARAMS, "Only interrupted, failed, cancelled or budget-paused runs can be resumed")
             previous = await dao.request_payload(request.run_id)
             metadata = run.get("metadata") or {}
             if metadata.get("engine") == "codex":
+                from .host_session_gate import require_chat_session
+
+                await require_chat_session(run["session_id"])
                 from ..engines.codex import SUPPORTED_PROTOCOL_PIN
                 if previous is None or not metadata.get("codex_thread_id") or not metadata.get("workspace_snapshot"):
                     raise HandlerError(INVALID_PARAMS, "Codex recovery has no saved thread/context; create a new session with a handoff")
@@ -263,6 +272,9 @@ def register_run_handlers(server: Any) -> None:
 
 
 async def _start_codex_run(request: RunStartParams, ctx: Context, **options: Any) -> None:
+    from .host_session_gate import require_chat_session
+
+    await require_chat_session(request.session_id)
     from ..engines.codex_service import start_codex_run
     await start_codex_run(request, ctx, **options)
 

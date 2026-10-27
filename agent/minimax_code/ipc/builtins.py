@@ -586,6 +586,8 @@ async def handle_agent_send_message(
 ) -> None:
     from ..execution import ExecutionPolicy, execution_scope
     from ..storage.dao.runs import AgentRunsDAO, RequestConflictError
+    from .handler_utils import HandlerError
+    from .host_session_gate import require_chat_session
 
     if not isinstance(params, dict):
         await ctx.reply_error(-32602, "params must be an object")
@@ -620,6 +622,7 @@ async def handle_agent_send_message(
         if db is None:
             raise RuntimeError("storage unavailable: database not initialized")
         dao = AgentRunsDAO(db)
+        await require_chat_session(session_id, internal_agent=internal_agent)
         scheduled = await db.fetchone("SELECT id FROM schedule_occurrences WHERE session_id=? LIMIT 1", (session_id,))
         if scheduled and internal_schedule is None:
             await ctx.reply_error(-32602, "Scheduled conversations require reviewed run.resume with their saved context")
@@ -632,6 +635,9 @@ async def handle_agent_send_message(
         if pinned and pinned["engine"] != "native":
             await ctx.reply_error(-32602, "This session uses Codex; send through run.start or create a Native session")
             return
+    except HandlerError as exc:
+        await ctx.reply_error(exc.code, exc.message, exc.data)
+        return
     except Exception as exc:
         await ctx.reply_error(-32004, f"Cannot start task: {exc}")
         return
@@ -738,6 +744,15 @@ async def handle_agent_send_message(
         from ..budget_ledger import BudgetHandle, budget_scope
         from ..run_ownership import owned_runtime
         from ..schedule_context import RetainedChildren, scheduled_runtime
+        async def check_dispatch():
+            try:
+                await require_chat_session(session_id, internal_agent=(
+                    internal_skill if internal_agent is not None else None))
+            except HandlerError as exc:
+                job.error = {"code": exc.code, "message": exc.message, "data": exc.data}
+                raise
+
+        await check_dispatch()
         job.budget_handle = await BudgetHandle.for_run(db, job.run_id, daily_limit=daily_limit)
         children = RetainedChildren() if internal_schedule is not None or internal_skill is not None else None
         schedule_token = scheduled_runtime.set({"context":internal_schedule["context"],"children":children}) if internal_schedule is not None else None
@@ -783,6 +798,7 @@ async def handle_agent_send_message(
                 internal_skill = replace(internal_skill, tools=tuple(await internal_skill.validate(skill_runtime, db)))
             from ..orchestrator.subagent import SubAgentRuntime, subagent_runtime_scope
 
+            await check_dispatch()
             runtime = SubAgentRuntime(llm=model_snapshot.client,
                                       reasoning_effort=model_snapshot.reasoning_effort)
             with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle):
@@ -1836,22 +1852,34 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
     try:
         from ..app import get_db
         from ..storage.dao.runs import AgentRunsDAO
+        from .handler_utils import HandlerError
+        from .host_session_gate import require_public_recovery
 
         db = get_db()
         if db is None:
             await ctx.reply({"ok": False, "error": "storage unavailable"})
             return
+        await require_public_recovery(session_id, source_id)
         dao = AgentRunsDAO(db)
         if source_id is not None:
             run = await dao.get_run(source_id)
         else:
             runs = await dao.list_runs(session_id=session_id, limit=1)
             run = runs[0] if runs else None
+    except HandlerError as exc:
+        await ctx.reply_error(exc.code, exc.message, exc.data)
+        return
     except Exception as exc:
         await ctx.reply({"ok": False, "error": f"run lookup failed: {exc}"})
         return
 
     metadata = (run or {}).get("metadata") or {}
+    if source_id is None and run and run.get("session_id") == session_id:
+        try:
+            await require_public_recovery(session_id, run["id"])
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+            return
     if (
         not run
         or run.get("session_id") != session_id
