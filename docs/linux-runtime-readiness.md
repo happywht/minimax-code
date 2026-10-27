@@ -306,3 +306,36 @@ outcome 保持 unknown，不当作 payload 成功。全批共 **5 次受控 SDK 
 安装身份及租约丢失、持续 fork 与真正阻塞输出故障。公开子任务、无人值守全部准入、
 公共允许集发布、正式 40 项三轮及 L2/L3 仍各自待验收；不据四个 case 宣称 M1 或
 公共 L1 整体完成。
+
+## 三个启动窗口候选用例的失败收口
+
+2026-10-27，另一次真实 Linux 执行尝试覆盖迟到启动、create 返回后服务死亡、start
+返回后服务死亡三个窗口，**本批未通过，三个用例均未验收**。输入以 `70870b4` 的
+1072 文件候选为基底，另在独立 staging 的 `podman_execution.py` 加入明确冻结的
+三个 observer 调用点和有界暂停；这是带观测补丁的候选，不能视为此前接受的相同
+源码字节，也没有改动主分支产品或发布允许集。
+
+实际执行 44.973 秒、远端 exit1，只进入 `late-start`。`after-create` 记录真实 create
+已返回、持久行仍为 intent；随后 `before-start` 记录 starting/revision2、资源占用1，
+并进入暂停。harness 的 `exact_created` 随即因 CID 文件未满足其预期 `0600` 模式
+而拒绝；证据未保存该文件的实际模式，不能据此推断为 `0644` 或认定产品权限缺陷。
+尚未等待并释放原期限后的暂停点，没有 release/after-start 记录；注入信号日志为空，
+另两个死亡窗口未执行。没有形成迟到启动、原期限执行或重启恢复的通过证据。
+
+失败清理先尝试正常关闭，未正常完成；服务最终被清理强杀（exit -9），不计作预定
+故障注入。救援 inspect 确认精确归属 CID
+`e6468e8e4ff55cd8a731ca4b1e40e4bbe6763f6afc172ceaa6ccc66991470c35`
+仍为 created、未启动；精确 `rm --force` exit0，随后 exists1 证实容器不存在。
+`rescue_cleanup_used=true`，正常关闭错误保留，外层 `cleanup_failure=null` 只表示
+救援未再报错。前后数据库快照相同，目标行仍 starting/resource_held=1、所属 run
+仍 running；不能把容器删除写成持久责任已核销或资源占用归零。
+
+原始证据保留在当前工作区，不随普通克隆提供：
+
+- 外层 `.verification/linux-l1-faultwindows-20261027T053547Z-1ca3fb09.json` SHA-256：`e9a44ac1dfc36b38c38015e432987731bd4b192a7c8d31b1bacac5e2b2b13ba5`；同名目录 `result.json`：`44a9ea35d2d5a655e555805b7631a08482f7070a7a506afc1800561fe62c3268`。22 份下载附件共 605,611 字节逐项核验，无传输错误；取回前后核验全部 1072 个候选源码文件。
+- 本批归档 `.verification/l1-faultwindows-source.tar`：`edabb1f2549a7af56c28dd59b157a3d0af3de5f7f1a701bfade3f3f0ede5fd24`；source manifest：`5558a29fa749cae3066d3c4c2628f7e670159579b006e36f25181e1c94cfc43f`。
+- checkpoint patch：`5dd10b334e7167586c2b7d75c632e16387cf3ab7e7b33dbfb70372438222e5c9`；checkpoint proof：`951dfdd1a69119fa68bfdaaa1a5e68343c7e83ead769436625a4beab76c47617`；harness：`68f0939945b72d2851d107c45b6c83558833d37ee5846d182940db4f11fb3bb6`；完整冻结清单 `.verification/l1-faultwindows-frozen-manifest.json`：`e84faa916d1caec6dff8c12c953d1137e877cb5b83db961b7e3ed560261a46de`。
+
+本次按收口要求保留失败，不修复或重跑。此前三个正常/取消/恢复候选用例及四个
+故障用例的独立接受范围不变。迟到/过期启动与 create/start 死亡窗口仍在剩余矩阵中；
+主分支允许集仍为空，公开子任务、无人值守、公共 L1、M1 整体及 L2/L3 均未因此验收。

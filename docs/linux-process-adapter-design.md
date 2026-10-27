@@ -301,3 +301,29 @@ v1 日志 PermissionError 失败及 v2 远端成功后 SSH 下载失败的外层
 网络/secret/socket、runtime 消失、foreign marker/安装身份/租约丢失、持续 fork
 及阻塞输出等仍须分别验收。主分支允许集为空，公开 child、无人值守和公共 L1 尚未
 开放；不将本批当作 M1 完成，也不与其他重叠测试批次相加。
+
+## 启动窗口候选的未通过记录
+
+2026-10-27 的三个新窗口候选（迟到启动、create 返回后服务死亡、start 返回后服务
+死亡）真实 Linux 执行 exit1，**均未验收**。该批在 `70870b4`/1072 文件候选的独立
+staging 上显式增加三个 observer 调用点及有界暂停，属于带观测补丁的源码；不将其
+称为此前接受候选的相同字节。归档 SHA-256 为
+`edabb1f2549a7af56c28dd59b157a3d0af3de5f7f1a701bfade3f3f0ede5fd24`，
+manifest 为 `5558a29fa749cae3066d3c4c2628f7e670159579b006e36f25181e1c94cfc43f`，
+checkpoint patch 为 `5dd10b334e7167586c2b7d75c632e16387cf3ab7e7b33dbfb70372438222e5c9`。
+
+仅首项到达真实 create 返回后的 intent 和 start 前的 starting 暂停点。harness 随后
+因 CID 文件不满足其预期 `0600` 模式失败，实际模式未记录，不能推断具体权限或
+产品缺陷。没有期限后的 release/after-start 记录，注入信号日志为空，另两项未执行。
+失败后正常关闭未完成，服务被清理强杀；精确归属的未启动 created CID 经救援删除
+并核实不存在。数据库前后仍为 starting/resource_held=1、run running；外层
+`cleanup_failure=null` 不等于正常关闭、持久核销或资源释放成功。救援使用使本批
+保持失败，未修复或重跑，也不改变此前三个及后续四个候选用例的既有接受范围。
+
+外层 `.verification/linux-l1-faultwindows-20261027T053547Z-1ca3fb09.json` SHA-256
+`e9a44ac1dfc36b38c38015e432987731bd4b192a7c8d31b1bacac5e2b2b13ba5`；同名目录
+`result.json` 为 `44a9ea35d2d5a655e555805b7631a08482f7070a7a506afc1800561fe62c3268`。
+22 份附件共 605,611 字节已核验，取回前后全部 1072 个源码文件一致，无传输错误。
+完整输入/补丁/清理证据见[运行实测](linux-runtime-readiness.md#三个启动窗口候选用例的失败收口)。
+迟到/过期启动、create/start 死亡窗口及上述其他剩余故障仍待独立验收；主分支允许
+集为空，公开 child、无人值守、公共 L1 和 M1 整体的未验收状态不变。
