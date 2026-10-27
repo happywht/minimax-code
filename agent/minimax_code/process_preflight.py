@@ -15,8 +15,25 @@ from .process_types import ExecutionOwner, ExecutionTargetSpec, ProcessBoundaryE
 PROBE_KIND = "pid1-clock-v1"
 PROBE_SOURCE = '''import json,os,sys,time
 from pathlib import Path
+probe=Path("/workspace/.minimax-l1-preflight")
+fd=os.open(probe,os.O_CREAT|os.O_EXCL|os.O_RDWR|os.O_NOFOLLOW,0o600)
+try:
+ data=b"minimax-l1-workspace-readback-v1"
+ if os.write(fd,data)!=len(data): raise RuntimeError("Incomplete workspace write")
+ os.lseek(fd,0,os.SEEK_SET)
+ if os.read(fd,len(data)+1)!=data: raise RuntimeError("Workspace readback differs")
+ written=os.fstat(fd)
+finally:
+ os.close(fd)
+probe.unlink()
+directory=Path("/workspace").stat()
 print(json.dumps({"python":sys.executable,"version":list(sys.version_info[:3]),
 "pid":os.getpid(),"ppid":os.getppid(),
+"uid":os.getuid(),"gid":os.getgid(),
+"uid_map":Path("/proc/self/uid_map").read_text(encoding="ascii"),
+"gid_map":Path("/proc/self/gid_map").read_text(encoding="ascii"),
+"workspace":{"readback":"minimax-l1-workspace-readback-v1","uid":written.st_uid,
+"gid":written.st_gid,"directory_uid":directory.st_uid,"directory_gid":directory.st_gid},
 "boot_id":Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip(),
 "boottime_ns":time.clock_gettime_ns(time.CLOCK_BOOTTIME),
 "time_namespace":os.readlink("/proc/self/ns/time")},sort_keys=True,separators=(",",":")))
@@ -57,13 +74,17 @@ class RuntimeAttestation:
     boot_id: str
     time_namespace: str
     probe_hash: str
+    runtime_fingerprint: str
+    mapping_fingerprint: str
 
-    def assert_current(self, target, installation_id):
+    def assert_current(self, target, installation_id, runtime, mapping_fingerprint):
         from .process_deadline import read_clock
         boot_id, _ = read_clock()
         if (self.target_hash != canonical_hash(target) or self.installation_id != installation_id
                 or self.boot_id != boot_id or self.probe_hash != probe_argv_hash()
-                or self.time_namespace != time_namespace()):
+                or self.time_namespace != time_namespace()
+                or self.runtime_fingerprint != canonical_hash(runtime)
+                or self.mapping_fingerprint != mapping_fingerprint):
             raise ProcessBoundaryError("Runtime attestation differs from current boot, assets or installation")
 
 
@@ -148,13 +169,23 @@ async def run_preflight(catalog, server):
         finally:
             _probe_owner.reset(token)
         boot_after, after = read_clock()
+        # Preserve bounded raw evidence even when a new platform fails the
+        # checks below. A failed proof never grants runtime readiness.
+        job.result = {"execution_id": handle.execution_id, "raw_stdout": output.stdout.decode("utf-8", errors="replace"),
+            "raw_stderr": output.stderr.decode("utf-8", errors="replace"),
+            "raw_stdout_hex": output.stdout.hex(), "raw_stderr_hex": output.stderr.hex(),
+            "stdout_truncated": output.stdout_truncated, "stderr_truncated": output.stderr_truncated,
+            "returncode": handle.returncode, "runtime": manager._runtime_evidence,
+            "host_boot_id": boot_before, "host_after_boot_id": boot_after,
+            "host_before_boottime_ns": before, "host_after_boottime_ns": after,
+            "host_time_namespace": namespace}
         if handle.returncode != 0 or output.stdout_truncated or output.stderr_truncated or output.stderr:
             raise ProcessBoundaryError("Private runtime preflight did not produce a complete successful attestation")
         try:
             attested = json.loads(output.stdout.decode("utf-8", errors="strict"))
             from .pid1_guard import PYTHON_PATH
             if (not isinstance(attested, dict) or set(attested) != {"python", "version", "pid", "ppid",
-                    "boot_id", "boottime_ns", "time_namespace"}
+                    "boot_id", "boottime_ns", "time_namespace", "uid", "gid", "uid_map", "gid_map", "workspace"}
                     or attested["python"] != PYTHON_PATH
                     or not isinstance(attested["version"], list) or len(attested["version"]) != 3
                     or any(type(item) is not int for item in attested["version"])
@@ -170,12 +201,23 @@ async def run_preflight(catalog, server):
         process = await manager.dao.get(handle.execution_id)
         if process["state"] != "removed" or process["resource_held"]:
             raise ProcessBoundaryError("Preflight container responsibility is not released")
+        events = await manager.dao.events(handle.execution_id)
+        created = [json.loads(event["evidence"]) for event in events if event["to_state"] == "created"]
+        if len(created) != 1 or created[0].get("runtime") != manager._runtime_evidence:
+            raise ProcessBoundaryError("Preflight persisted runtime evidence is incompatible")
+        mapping = created[0]["mapping"]
+        job.result["mapping"] = mapping
+        _verify_mapping_attestation(attested, mapping, manager._runtime_evidence)
+        manager._mapping_fingerprint = mapping["fingerprint"]
         proof = {"probe_kind": PROBE_KIND, "probe_argv_hash": probe_argv_hash(),
             "execution_id": handle.execution_id, "execution_target": target,
             "execution_target_hash": canonical_hash(target), "installation_id": catalog.installation_id,
             "host_boot_id": boot_before, "host_before_boottime_ns": before,
             "host_after_boottime_ns": after, "host_time_namespace": namespace,
             "attestation": attested, "raw_stdout": output.stdout.decode("utf-8"),
+            "runtime": manager._runtime_evidence, "mapping": mapping,
+            "runtime_fingerprint": canonical_hash(manager._runtime_evidence),
+            "mapping_fingerprint": mapping["fingerprint"],
             "container_absent": True, "model_calls": 0}
         job.result = proof
 
@@ -187,7 +229,8 @@ async def run_preflight(catalog, server):
         if error is not None:
             await dao.terminate_run(job.run_id,
                 status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
-                error=type(error).__name__, result={"preflight": "failed", "model_calls": 0})
+                error=type(error).__name__, result={"preflight": "failed", "model_calls": 0,
+                    "validation_error": type(error).__name__, "evidence": job.result})
         else:
             await dao.update_run_status(job.run_id, status="completed", result=job.result)
 
@@ -236,4 +279,32 @@ async def run_preflight(catalog, server):
     if run["status"] != "completed" or not (result or {}).get("container_absent"):
         raise ProcessBoundaryError("Preflight durable completion is unconfirmed")
     return RuntimeAttestation(job.run_id, result["execution_id"], result["execution_target_hash"],
-        result["installation_id"], result["host_boot_id"], result["host_time_namespace"], result["probe_argv_hash"])
+        result["installation_id"], result["host_boot_id"], result["host_time_namespace"], result["probe_argv_hash"],
+        result["runtime_fingerprint"], result["mapping_fingerprint"])
+
+
+def _verify_mapping_attestation(attested, mapping, runtime):
+    from .process_runtime import compose_maps, map_id, proc_map
+
+    for label in ("uid", "gid"):
+        actual = attested[label]
+        if type(actual) is not int or actual != runtime["host_" + label]:
+            raise ProcessBoundaryError("Private probe UID/GID differs from the service owner")
+        # Reading /proc/self/*_map from its own namespace reports IDs in
+        # the parent namespace, not initial-host IDs. Compare the inner map
+        # first, then independently compose the observed outer rootless map.
+        inner = proc_map(attested[label + "_map"])
+        composed = compose_maps(inner, runtime[label + "_map"])
+        if (inner != mapping[label + "_map"] or composed != mapping[label + "_host_map"]
+                or map_id(composed, actual) != actual or map_id(composed, 0) == 0):
+            raise ProcessBoundaryError("Private probe kernel mapping differs from inspect/info")
+    workspace = attested["workspace"]
+    if (type(workspace) is not dict or set(workspace) != {
+            "readback", "uid", "gid", "directory_uid", "directory_gid"}
+            or workspace["readback"] != "minimax-l1-workspace-readback-v1"
+            or any(type(workspace[key]) is not int or workspace[key] != runtime["host_" + label]
+                for label in ("uid", "gid") for key in (label, "directory_" + label))):
+        raise ProcessBoundaryError("Private probe owned workspace readback is incompatible")
+    if mapping.get("fingerprint") != canonical_hash({key: value for key, value in mapping.items()
+                                                    if key != "fingerprint"}):
+        raise ProcessBoundaryError("Private probe namespace fingerprint differs")

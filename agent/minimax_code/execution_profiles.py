@@ -153,7 +153,8 @@ class ExecutionProfileCatalog:
         if target is None:
             return False, "执行配置已停用"
         try:
-            self._governor.assert_current(target, self.installation_id)
+            self._governor.assert_current(target, self.installation_id,
+                self._manager._runtime_evidence, self._manager._mapping_fingerprint)
         except (OSError, ProcessBoundaryError):
             return False, "deadline 运行时证明已失效"
         governor = target["governor"]

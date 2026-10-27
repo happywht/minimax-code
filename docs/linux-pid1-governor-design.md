@@ -62,6 +62,11 @@ restart=no、固定 seccomp path 和原有资源限制，保存相关原始 insp
 
 当前真实平台的 schema 支持固定为 Podman 4.9.3：保存 info 中版本、kernel、arch、
 cgroup/runtime 和 rootless 映射证据，未知版本不能套用本节的省略或显示规则。
+本批兼容表仅包含实际已测组合：Linux 6.8.0-101-generic、amd64、systemd/cgroup v2、
+rootless Podman 4.9.3、`/usr/bin/crun`，OCI version 第一行精确为
+`crun version 1.14.1`；完整 OCI version 仍保存并逐生命周期核对。未知组合拒绝，
+后续平台须显式扩展版本化兼容表并实测。这是兼容性证据，不增加 installation/store
+身份或认领依据，也不能替代产品 guard/policy 允许集验收。
 Entrypoint 只接受精确字符串或精确单元素字符串数组，完整 Path/Args/Cmd 继续逐项
 核对，不进行 shell split 或类型强转。
 
@@ -75,13 +80,19 @@ Entrypoint 只接受精确字符串或精确单元素字符串数组，完整 Pa
 核实目标 UID/GID、container root 不映射 host root。区间须严格解析、无重叠/溢出，
 覆盖需要核验的 ID；缺失或不兼容即拒绝。固定 preflight 输出自身内核 uid_map/gid_map、
 实际 UID/GID，与 inspect/info 及 owned 工作区可访问性交叉核验并固定映射 fingerprint。
+同 namespace 读取 `/proc/self/*_map` 时第二列是 parent namespace ID，先与 inspect
+中间映射比较，再与 info 外层映射复合；不能直接将 self-map 当成 initial-host 映射。
+固定 probe 对 owned 工作区独占创建文件、写入并读回固定内容后删除，保存实际文件及
+目录 UID/GID；该可写性证据不能替代映射核验。失败 probe 的有界原输出、截断状态、
+退出码和失败类型同样持久保存，失败运行不授予 readiness。
 读取宿主 `/proc/<PID>` 时另需核对精确活跃 PID/starttime，不能读取复用 PID 补造证据。
 
 该版本 `LogConfig.Size` 来自 `HumanSize`，是四位有效数字 SI 显示，不能解析为精确
 配置字节。允许把实际请求 cap 降为 `min(5000000,max(1,floor(profile_limit*0.95)))`，
 不扩大 profile 上限。仅在已验证不超过 1 GiB 的正整数字节域和 B/kB/MB/GB 格式内，
 以保守显示上界核验：非字节单位可取 `ceil(display_bytes*1.001)+1`；小于 1000 B 的
-整数显示为精确字节。默认 5 MiB profile 请求 5000000 B，显示 5 MB 的上界 5005001 B
+整数显示为精确字节。默认 5 MiB profile 按上述公式请求 4980736 B，显示 `4.981MB`
+的上界 4985982 B
 仍在限额内。未知格式/版本/范围或上界超限均拒绝。保存原显示、算法版本、请求 cap
 和推导上界；CreateCommand 仅作审计，不能证明实际限额。格式实现见
 [固定版本依赖源码](https://raw.githubusercontent.com/containers/podman/v4.9.3/vendor/github.com/docker/go-units/size.go)。

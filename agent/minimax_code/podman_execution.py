@@ -15,9 +15,15 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from decimal import Decimal
 from pathlib import Path
 
+from .process_runtime import (
+    SCHEMA,
+    container_mapping,
+    log_bound,
+    runtime_evidence,
+    runtime_log_request,
+)
 from .process_types import (
     ExecutionOwner,
     ExecutionTargetSpec,
@@ -82,19 +88,6 @@ def _owned_reference(value):
     return value
 
 
-def _byte_quantity(value):
-    """Podman inspect formats log size using human-readable binary units."""
-    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(B|KiB|MiB|GiB|kB|MB|GB)?", str(value))
-    if match is None:
-        raise ProcessBoundaryError("Unrecognized Podman resource quantity")
-    units = {None: 1, "B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3,
-             "kB": 1000, "MB": 1000**2, "GB": 1000**3}
-    quantity = Decimal(match[1]) * units[match[2]]
-    if quantity != int(quantity):
-        raise ProcessBoundaryError("Inexact Podman resource quantity")
-    return int(quantity)
-
-
 def _labels(row):
     return {_LABEL_PREFIX + "install": row["install_id"],
             _LABEL_PREFIX + "product": "minimax-code",
@@ -154,10 +147,7 @@ class _PodmanController:
         if code != 0:
             raise ProcessBoundaryError("Podman runtime information is unavailable")
         data = json.loads(stdout)
-        host = data.get("host") or {}
-        if (not (host.get("security") or {}).get("rootless")
-                or host.get("cgroupVersion") != "v2" or os.getuid() == 0):
-            raise ProcessBoundaryError("Restricted execution requires rootless Podman and cgroup v2")
+        evidence = runtime_evidence(data, uid=os.getuid(), gid=os.getgid())
         store = data.get("store") or {}
         root = Path(store["graphRoot"]).resolve(strict=True)
         graph_stat = root.stat()
@@ -170,7 +160,7 @@ class _PodmanController:
                 "store_fingerprint": canonical_hash({"graph_root": str(root),
                     "device": str(graph_stat.st_dev), "inode": str(graph_stat.st_ino),
                     "driver": store["graphDriverName"], "uid": os.getuid(), "host": host_fingerprint}),
-                "graph_root": str(root),
+                "graph_root": str(root), "runtime_evidence": evidence,
                 "protected_roots": (str(root), str(run_root)), "run_root": str(run_root)}
 
     async def image(self, image_id):
@@ -208,7 +198,7 @@ class _PodmanController:
             "--userns=keep-id", f"--user={uid}:{gid}", "--pid=private", "--ipc=none",
             "--uts=private", "--cgroupns=private", "--systemd=false", "--http-proxy=false",
             "--unsetenv-all", "--health-cmd=none", "--restart=no", "--image-volume=ignore",
-            "--log-driver=k8s-file", f"--log-opt=max-size={target.output_limit}",
+            "--log-driver=k8s-file", f"--log-opt=max-size={runtime_log_request(target.output_limit)}",
             f"--memory={target.memory_bytes}", f"--memory-swap={target.memory_bytes}",
             f"--cpus={target.cpus_millis / 1000:.3f}", f"--pids-limit={target.pids_limit}",
             f"--timeout={target.timeout_seconds}", "--stop-timeout=1", "--tty=false",
@@ -309,6 +299,8 @@ class PodmanSupervisor:
         self._closed = False
         self._ready = False
         self._error = None
+        self._runtime_evidence = None
+        self._mapping_fingerprint = None
         self._cid_dir = self.data_dir / "process-cids"
         self._cid_dir.mkdir(mode=0o700, exist_ok=True)
         from .process_installation import require_private_directory
@@ -339,6 +331,12 @@ class PodmanSupervisor:
         if any(runtime.get(key) != getattr(self.identity, key)
                for key in ("uid", "host_fingerprint", "store_fingerprint")):
             raise ProcessBoundaryError("Runtime identity changed; container ownership is unconfirmed")
+        evidence = runtime.get("runtime_evidence")
+        if type(evidence) is not dict or evidence.get("schema") != SCHEMA:
+            raise ProcessBoundaryError("Verified Podman runtime schema evidence is missing")
+        if self._runtime_evidence is not None and evidence != self._runtime_evidence:
+            raise ProcessBoundaryError("Podman platform or namespace mapping changed")
+        self._runtime_evidence = evidence
         try:
             marker = read_installation_marker(self.data_dir, uid=self.identity.uid)
         except (OSError, ValueError) as exc:
@@ -428,7 +426,7 @@ class PodmanSupervisor:
             self._assert_cid_directory()
             await self._controller.create(row, argv, stdin=stdin,
                 cid_file=self._cid_dir / (exec_id + ".cid"), uid=self.identity.uid,
-                gid=os.getgid() if hasattr(os, "getgid") else self.identity.uid)
+                gid=self._runtime_evidence["host_gid"])
             inspected = await self._controller.inspect(row["container_name"])
             cid = self._verify_container(row, inspected, full=True)
             cid_path = self._cid_dir / (exec_id + ".cid")
@@ -436,7 +434,11 @@ class PodmanSupervisor:
             if cid_path.exists() and cid_path.read_text().strip() != cid:
                 raise ProcessBoundaryError("CID file differs from the inspected container")
             row = await self.dao.transition(exec_id, row["revision"], "created",
-                evidence={"container_id": cid, "configuration_verified": True}, container_id=cid)
+                evidence={"container_id": cid, "configuration_verified": True,
+                    "runtime": self._runtime_evidence,
+                    "mapping": container_mapping(inspected["HostConfig"], self._runtime_evidence),
+                    "runtime_log": log_bound(inspected["HostConfig"]["LogConfig"]["Size"], target.output_limit)},
+                container_id=cid)
             self._check_start_allowed(cancelled)
             from .process_deadline import remaining_seconds
             if remaining_seconds(row) <= 0:
@@ -510,25 +512,38 @@ class PodmanSupervisor:
                 or config.get("Cmd") != expected_argv[1:]):
             raise ProcessBoundaryError("Container guard entrypoint or payload configuration mismatch")
         host = inspected.get("HostConfig") or {}
+        if type(host) is not dict:
+            raise ProcessBoundaryError("Container HostConfig schema is incompatible")
         mounts = inspected.get("Mounts") or []
         expected_env = [key + "=" + value for key, value in _CONTAINER_ENV.items()]
         env = config.get("Env") or []
         if (len(env) != len(expected_env) or set(env) != set(expected_env)
                 or config.get("WorkingDir") != row["container_cwd"]
                 or config.get("Tty") is not False
-                or str(config.get("User", "")).split(":")[0] != str(self.identity.uid)):
+                or config.get("User") != f"{self.identity.uid}:{self._runtime_evidence['host_gid']}"):
             raise ProcessBoundaryError("Container payload/environment configuration mismatch")
         if (len(mounts) != 1 or mounts[0].get("Type") != "bind"
                 or mounts[0].get("Source") != row["workspace"]
                 or mounts[0].get("Destination") != "/workspace" or mounts[0].get("RW") is not True):
             raise ProcessBoundaryError("Container mounts differ from the one owned workspace")
-        cpus = host.get("NanoCpus", 0) or (host.get("CpuQuota", 0) * 1_000_000_000 // (host.get("CpuPeriod", 0) or 1))
+        numeric = ("Memory", "MemorySwap", "PidsLimit", "NanoCpus", "CpuQuota", "CpuPeriod")
+        if any(type(host.get(key)) is not int for key in numeric) or type(config.get("Timeout")) is not int:
+            raise ProcessBoundaryError("Container resource quantities must be exact integers")
+        nanos, quota, period = (host[key] for key in ("NanoCpus", "CpuQuota", "CpuPeriod"))
+        if (nanos < 0 or quota <= 0 or period <= 0
+                or quota * 1_000_000_000 != target.cpus_millis * 1_000_000 * period):
+            raise ProcessBoundaryError("Container CPU resource configuration mismatch")
+        cpus = nanos or quota * 1_000_000_000 // period
+        annotations = config.get("Annotations", {})
+        if type(annotations) is not dict or ("io.podman.annotations.init" in annotations
+                and annotations["io.podman.annotations.init"] != "false"):
+            raise ProcessBoundaryError("Container init annotation is incompatible")
         if (host.get("Privileged") is not False or host.get("ReadonlyRootfs") is not True
                 or host.get("NetworkMode") != "none" or host.get("PidMode") != "private"
-                or host.get("IpcMode") != "none" or host.get("UsernsMode") != "keep-id"
+                or host.get("IpcMode") != "none" or host.get("UsernsMode") != "private"
                 or host.get("UTSMode") != "private" or host.get("CgroupMode") != "private"
                 or host.get("CapAdd") or host.get("Devices") or host.get("VolumesFrom")
-                or host.get("Init") is not False
+                or ("Init" in host and host["Init"] is not False)
                 or host.get("AutoRemove") is not False
                 or host.get("Memory") != target.memory_bytes
                 or host.get("MemorySwap") != target.memory_bytes
@@ -546,9 +561,12 @@ class PodmanSupervisor:
                 or not {"noexec", "nosuid", "nodev"}.issubset(tmp_options)):
             raise ProcessBoundaryError("Container writable temporary storage is unconfirmed")
         logging = host.get("LogConfig") or {}
-        if (logging.get("Type") != "k8s-file"
-                or not 0 < _byte_quantity(logging.get("Size", "0B")) <= target.output_limit):
+        if logging.get("Type") != "k8s-file":
             raise ProcessBoundaryError("Container bounded runtime logging is unconfirmed")
+        log_bound(logging.get("Size"), target.output_limit)
+        mapping = container_mapping(host, self._runtime_evidence)
+        if self._mapping_fingerprint is not None and mapping["fingerprint"] != self._mapping_fingerprint:
+            raise ProcessBoundaryError("Container namespace mapping differs from the private preflight")
         health = config.get("Healthcheck") or {}
         if health.get("Test") not in (None, [], ["NONE"]):
             raise ProcessBoundaryError("Container image health subprocesses are not disabled")

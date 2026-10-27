@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from test_process_ownership import TARGET
 from test_process_ownership import ownership as ownership
-from test_process_supervisor import FakeProcess
+from test_process_supervisor import RUNTIME, RUNTIME_FIXTURE, FakeProcess
 from test_process_supervisor import supervisor as supervisor
 
 from minimax_code import process_preflight as module
@@ -44,6 +44,11 @@ def probe_setup(supervisor, tmp_path, monkeypatch):
         self.stdout, self.stderr = asyncio.StreamReader(), asyncio.StreamReader()
         self.stdout.feed_data(json.dumps({"python": PYTHON_PATH, "version": [3, 12, 0],
             "pid": 2, "ppid": 1, "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "uid": RUNTIME["host_uid"], "gid": RUNTIME["host_gid"],
+            "uid_map": "\n".join(row.replace(":", " ") for row in RUNTIME_FIXTURE["HostConfig"]["IDMappings"]["UidMap"]),
+            "gid_map": "\n".join(row.replace(":", " ") for row in RUNTIME_FIXTURE["HostConfig"]["IDMappings"]["GidMap"]),
+            "workspace": {"readback": "minimax-l1-workspace-readback-v1", "uid": RUNTIME["host_uid"],
+                "gid": RUNTIME["host_gid"], "directory_uid": RUNTIME["host_uid"], "directory_gid": RUNTIME["host_gid"]},
             "boottime_ns": time.monotonic_ns(), "time_namespace": "time:[unit-test]"}).encode())
         self.stdout.feed_eof()
         self.stderr.feed_eof()
@@ -72,6 +77,10 @@ async def test_private_preflight_owns_real_run_family_and_releases_exact_contain
     assert run["status"] == "completed" and result["model_calls"] == 0
     assert result["container_absent"] is True
     assert result["raw_stdout"]
+    assert result["runtime"] == RUNTIME
+    assert result["mapping_fingerprint"] == proof.mapping_fingerprint == catalog.supervisor._mapping_fingerprint
+    assert result["runtime_fingerprint"] == proof.runtime_fingerprint
+    assert result["attestation"]["uid"] == RUNTIME["host_uid"]
     assert binding.owner.run_id == binding.owner.family_root_run_id == proof.run_id
     assert run["metadata"]["process_execution_owner"]["version"] == 2
     assert process["state"] == "removed" and process["resource_held"] == 0
@@ -118,3 +127,40 @@ def test_private_probe_metadata_alone_cannot_authorize_start():
         "probe_argv_hash": module.probe_argv_hash()}
     with pytest.raises(ProcessBoundaryError, match="Only the private fixed"):
         module.assert_private_probe("forged-run", snapshot, module.probe_argv_hash())
+
+@pytest.mark.parametrize("field", ["uid", "gid", "uid_map", "gid_map", "workspace"])
+async def test_preflight_rejects_incompatible_kernel_or_workspace_evidence(probe_setup, monkeypatch, field):
+    catalog, server, paths = probe_setup
+    original = FakeProcess.__init__
+
+    def altered(self, controller):
+        original(self, controller)
+        data = json.loads(bytes(self.stdout._buffer))
+        data[field] = {"uid": 0, "gid": True, "uid_map": "0 100000 65537",
+            "gid_map": "0 1 1001\n1001 0 1\n1002 1002 64534", "workspace": {"readback": True}}[field]
+        self.stdout = asyncio.StreamReader()
+        self.stdout.feed_data(json.dumps(data).encode())
+        self.stdout.feed_eof()
+
+    monkeypatch.setattr(FakeProcess, "__init__", altered)
+    with pytest.raises(ProcessBoundaryError, match="Private probe|Rootless outer mapping"):
+        await module.run_preflight(catalog, server)
+    assert not await catalog.supervisor.dao.active()
+    assert catalog.supervisor._mapping_fingerprint is None
+    runs = await AgentRunsDAO(catalog._db).list_runs()
+    failed = next(run for run in runs if run["metadata"].get("origin") == "runtime_preflight")
+    result = await AgentRunsDAO(catalog._db).result_payload(failed["id"])
+    assert result["preflight"] == "failed" and result["model_calls"] == 0
+    assert json.loads(result["evidence"]["raw_stdout"])[field] is not None
+    assert result["evidence"]["mapping"]["fingerprint"]
+    assert all(not path.exists() for path in paths)
+    assert not module.ACCEPTED_GOVERNORS
+
+
+def test_probe_is_fixed_and_requires_kernel_maps_and_workspace_readback():
+    assert "/proc/self/uid_map" in module.PROBE_SOURCE
+    assert "/proc/self/gid_map" in module.PROBE_SOURCE
+    assert "os.O_EXCL" in module.PROBE_SOURCE and "os.O_NOFOLLOW" in module.PROBE_SOURCE
+    assert "probe.unlink()" in module.PROBE_SOURCE
+    assert "sleep" not in module.PROBE_SOURCE
+    assert "input(" not in module.PROBE_SOURCE

@@ -46,11 +46,12 @@ def proven_catalog(tmp_path):
     catalog = ExecutionProfileCatalog(data_dir=tmp_path)
     catalog._load()
     catalog._manager = SimpleNamespace(identity=SimpleNamespace(install_id="installation"),
-        _ready=True, _error=None)
+        _ready=True, _error=None, _runtime_evidence={"runtime": "fixture"}, _mapping_fingerprint="mapping")
     catalog._podman_reason = None
     from minimax_code.process_preflight import RuntimeAttestation, probe_argv_hash
     catalog._governor = RuntimeAttestation("preflight-run", "execution", canonical_hash(
-        catalog._targets["linux-podman-l1"]), "installation", "boot", "namespace", probe_argv_hash())
+        catalog._targets["linux-podman-l1"]), "installation", "boot", "namespace", probe_argv_hash(),
+        canonical_hash(catalog._manager._runtime_evidence), "mapping")
     return catalog
 
 
@@ -171,3 +172,10 @@ async def test_invalid_profile_crud_does_not_erase_saved_config(async_db, invali
     await handlers["agent.update"]({"name": "profile-worker", "execution_profile_id": invalid}, ctx)
     ctx.reply_error.assert_awaited_once()
     assert (await dao.get("profile-worker"))["execution_profile_id"] == "linux-podman-l1"
+
+@pytest.mark.parametrize("field", ["_runtime_evidence", "_mapping_fingerprint"])
+def test_runtime_or_mapping_drift_invalidates_private_attestation(tmp_path, field):
+    catalog = proven_catalog(tmp_path)
+    setattr(catalog._manager, field, {"changed": "runtime"} if field == "_runtime_evidence" else "changed")
+    with pytest.raises(ProcessBoundaryError, match="运行时证明已失效"):
+        catalog.resolve("linux-podman-l1")

@@ -22,12 +22,15 @@ from minimax_code.podman_execution import (
     _labels,
     _PodmanController,
 )
+from minimax_code.process_runtime import runtime_evidence
 from minimax_code.process_types import ProcessBoundaryError
 from minimax_code.runtime.service_lease import acquire_service_lease
 
 ownership = _ownership_fixture
 
 CID = "c" * 64
+RUNTIME_FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "podman-4.9.3-runtime.json").read_text(encoding="utf-8"))
+RUNTIME = runtime_evidence(RUNTIME_FIXTURE["podman_info"], uid=IDENTITY.uid, gid=1001)
 
 
 class FakeProcess:
@@ -72,7 +75,7 @@ class Controller:
 
     async def info(self):
         await self.checkpoint("info")
-        return {"graph_root": "/runtime/graph-root", **{key: getattr(IDENTITY, key)
+        return {"graph_root": "/runtime/graph-root", "runtime_evidence": copy.deepcopy(RUNTIME), **{key: getattr(IDENTITY, key)
             for key in ("uid", "host_fingerprint", "store_fingerprint")}}
 
     async def image(self, image):
@@ -92,15 +95,17 @@ class Controller:
             "Config": {"Labels": _labels(row), "Env": [k + "=" + v for k, v in _CONTAINER_ENV.items()],
                 "WorkingDir": row["container_cwd"], "Tty": False,
                 "Entrypoint": list(guarded[:1]), "Cmd": list(guarded[1:]),
-                "User": f"{IDENTITY.uid}:{IDENTITY.uid}", "Timeout": 60},
+                "User": f"{IDENTITY.uid}:1001", "Timeout": 60},
             "HostConfig": {"Privileged": False, "ReadonlyRootfs": True, "NetworkMode": "none",
-                "PidMode": "private", "IpcMode": "none", "UsernsMode": "keep-id", "AutoRemove": False,
+                "PidMode": "private", "IpcMode": "none", "UsernsMode": "private", "AutoRemove": False,
+                "IDMappings": copy.deepcopy(RUNTIME_FIXTURE["HostConfig"]["IDMappings"]),
                 "UTSMode": "private", "CgroupMode": "private", "Init": False,
                 "Memory": TARGET.memory_bytes, "MemorySwap": TARGET.memory_bytes,
                 "PidsLimit": TARGET.pids_limit, "NanoCpus": TARGET.cpus_millis * 1_000_000,
+                "CpuQuota": TARGET.cpus_millis * 100, "CpuPeriod": 100000,
                 "SecurityOpt": ["no-new-privileges", "seccomp=" + str(self.seccomp_path)], "RestartPolicy": {"Name": "no"},
                 "Tmpfs": {"/tmp": f"rw,noexec,nosuid,nodev,size={TARGET.tmpfs_bytes}"},
-                "LogConfig": {"Type": "k8s-file", "Size": str(TARGET.output_limit)}},
+                "LogConfig": {"Type": "k8s-file", "Size": "4.981MB"}},
             "Mounts": [{"Type": "bind", "Source": row["workspace"], "Destination": "/workspace", "RW": True}],
             "State": {"Running": False, "Pid": 0, "ExitCode": 0, "OOMKilled": False,
                 "Status": "created", "StartedAt": "0001-01-01T00:00:00Z",
@@ -584,3 +589,118 @@ async def test_cid_directory_alias_is_rejected_before_any_runtime_control(superv
     finally:
         original.unlink()
         moved.rename(original)
+
+@pytest.mark.parametrize("init", [None, 0, 1, "false", "true", True, [], {}])
+async def test_init_must_be_absent_or_exact_false(supervisor, monkeypatch, init):
+    manager, controller, dao, owner = supervisor
+    create = controller.create
+
+    async def mutate(*args, **kwargs):
+        await create(*args, **kwargs)
+        controller.containers[CID]["HostConfig"]["Init"] = init
+
+    monkeypatch.setattr(controller, "create", mutate)
+    with pytest.raises(ProcessBoundaryError, match="security/resource"):
+        await manager.spawn(("true",), target=TARGET, owner=owner)
+    assert "start" not in controller.calls
+    assert not await dao.active() and not controller.containers
+
+
+async def test_actual_omitempty_init_and_runtime_evidence_are_persisted(supervisor, monkeypatch):
+    manager, controller, dao, owner = supervisor
+    create = controller.create
+
+    async def mutate(*args, **kwargs):
+        await create(*args, **kwargs)
+        del controller.containers[CID]["HostConfig"]["Init"]
+
+    monkeypatch.setattr(controller, "create", mutate)
+    handle = await manager.spawn(("true",), target=TARGET, owner=owner)
+    assert await handle.wait() == 42
+    event = next(event for event in await dao.events(handle.execution_id) if event["to_state"] == "created")
+    proof = json.loads(event["evidence"])
+    assert proof["runtime"] == RUNTIME
+    assert proof["mapping"]["uid_host_map"][1] == [1000, 1000, 1]
+    assert proof["mapping"]["gid_host_map"][1] == [1001, 1001, 1]
+    assert proof["runtime_log"] == {"display": "4.981MB", "upper_bytes": 4985982,
+        "algorithm": "human-size-4sig-si-upper-v1", "requested_bytes": 4980736,
+        "profile_limit": TARGET.output_limit}
+
+
+@pytest.mark.parametrize("field", ["Memory", "MemorySwap", "PidsLimit", "NanoCpus", "CpuQuota", "CpuPeriod", "Timeout"])
+@pytest.mark.parametrize("kind", ["float", "bool", "null", "str"])
+async def test_resource_quantities_are_strict_json_integers(supervisor, monkeypatch, field, kind):
+    manager, controller, dao, owner = supervisor
+    create = controller.create
+
+    async def mutate(*args, **kwargs):
+        await create(*args, **kwargs)
+        section = controller.containers[CID]["Config" if field == "Timeout" else "HostConfig"]
+        old = section[field]
+        section[field] = {"float": float(old), "bool": True, "null": None, "str": str(old)}[kind]
+
+    monkeypatch.setattr(controller, "create", mutate)
+    with pytest.raises(ProcessBoundaryError, match="exact integers"):
+        await manager.spawn(("true",), target=TARGET, owner=owner)
+    assert "start" not in controller.calls
+    assert not await dao.active() and not controller.containers
+
+
+@pytest.mark.parametrize("annotation", ["true", True, None, "1", "unknown"])
+async def test_init_annotation_cannot_enable_a_helper(supervisor, monkeypatch, annotation):
+    manager, controller, dao, owner = supervisor
+    create = controller.create
+
+    async def mutate(*args, **kwargs):
+        await create(*args, **kwargs)
+        controller.containers[CID]["Config"]["Annotations"] = {"io.podman.annotations.init": annotation}
+
+    monkeypatch.setattr(controller, "create", mutate)
+    with pytest.raises(ProcessBoundaryError, match="init annotation"):
+        await manager.spawn(("true",), target=TARGET, owner=owner)
+    assert "start" not in controller.calls and not await dao.active()
+
+
+async def test_platform_drift_revokes_spawn_before_create(supervisor, monkeypatch):
+    manager, controller, dao, owner = supervisor
+    original = controller.info
+
+    async def changed():
+        data = await original()
+        data["runtime_evidence"]["oci_version"] += " changed"
+        return data
+
+    monkeypatch.setattr(controller, "info", changed)
+    with pytest.raises(ProcessBoundaryError, match="platform or namespace"):
+        await manager.spawn(("true",), target=TARGET, owner=owner)
+    assert "create" not in controller.calls and not await dao.active()
+
+
+async def test_preflight_map_fingerprint_is_required_before_start(supervisor):
+    manager, controller, dao, owner = supervisor
+    manager._mapping_fingerprint = "different"
+    with pytest.raises(ProcessBoundaryError, match="differs from the private preflight"):
+        await manager.spawn(("true",), target=TARGET, owner=owner)
+    assert "start" not in controller.calls and not await dao.active()
+
+
+async def test_controller_requests_log_headroom_without_expanding_profile(supervisor, monkeypatch):
+    manager, controller, dao, owner = supervisor
+    handle = await manager.spawn(("true",), target=TARGET, owner=owner)
+    await handle.wait()
+    row = await dao.get(handle.execution_id)
+    controller = object.__new__(_PodmanController)
+    controller._hooks_dir = Path("/private/hooks")
+    controller.seccomp_path = Path("/private/seccomp-policy.json")
+    monkeypatch.setattr(controller, "_assert_assets", lambda: TARGET.to_dict()["governor"])
+    calls = []
+
+    async def capture(argv):
+        calls.append(argv)
+        return 0, b"", b""
+
+    monkeypatch.setattr(controller, "_capture", capture)
+    await controller.create(row, ("true",), stdin=False, cid_file=Path("/private/cid"), uid=1000, gid=1001)
+    assert "--log-opt=max-size=4980736" in calls[0]
+    assert "--user=1000:1001" in calls[0]
+    assert TARGET.output_limit == 5 * 1024**2
