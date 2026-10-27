@@ -25,11 +25,12 @@ v1/v2 恢复维持 legacy-host，不自动升级。Python/TS/typed/mock/设置�
 字段接线，host Native/技能/副本兼容测试已通过。配置 ID 仅作选择，RPC 不接受镜像、
 资源、env 或任意 controller 命令。
 
-这些是局部基础，尚未完成：可信 restricted child 支持链及其 legacy overlay 分离、
-terminal/runner 会话绑定与私有子归属、无人值守全部准入/派发门槛、included 同设备 bind
-mount/alias 复制准入的专测和收口、UI/IPC 最终组合，以及真实公开 Native → 容器修改 →
-容器验证 → durable receipt 和服务死亡/截止故障验收。未审计工具实际类仍拒绝，不能用
-这些未完成入口获取 host fallback。基础 review 和受控 controller 测试不构成 L1 验收。
+terminal/runner 已按执行 session 的持久历史限制宿主执行；本批受限 copy 的同设备
+bind/mount alias 准入也已有下文的定向实机证据。仍须验收可信 restricted child 支持链
+及其 legacy overlay 分离的最终组合、私有子归属、无人值守全部准入/派发门槛、UI/IPC
+组合，以及真实公开 Native → 容器修改 → 容器验证 → durable receipt 和服务死亡/截止
+故障矩阵。未审计工具实际类仍拒绝，不能用未完成入口获取 host fallback。基础 review、
+受控 controller 测试或下文的纯 validator bind probe 均不构成公共 L1 验收。
 
 本批源清单与命令/原始输出记录在 `.verification/linux-l1-source-checkpoint-20261026-home-fixed.json`
 及关联日志；这份清单记录局部冻结范围，不替代后续实际 Linux 产品证据。迁移和回退须
@@ -46,7 +47,8 @@ mount/alias 复制准入的专测和收口、UI/IPC 最终组合，以及真实�
 - `process_binding.py`、`process_installation.py`：唯一 admitted authority 和私有安装身份。
 - `execution_profiles.py`、`process_preflight.py`：启动冻结 catalog、扩展污染 latch 与私有证明。
 - `process_deadline.py`、`process_assets.py`、`pid1_guard.py` 及固定 Linux assets：期限与加固治理。
-- `process_workspace.py`：source/copy/mount 的敏感路径和物理身份准入；完整支持链仍按上文收口。
+- `process_mounts.py`、`process_workspace.py`：有界 mountinfo 快照、敏感 backing alias
+  与 source/copy/mount 物理身份准入；完整支持链仍按上文收口。
 
 保留 `execution.py` 的 spawn_exec/spawn_shell、communicate_bounded、capture_output、
 terminate_tree 调用形状。容器 handle 提供流、returncode、wait、execution_id 与
@@ -108,6 +110,33 @@ store/socket 根双向重叠均拒绝。HOME 自身及包含 HOME 的祖先拒�
 可用；敏感树物理别名仍须拒绝。不能先复制秘密再声称没有直接挂载。Git worktree 外部 `.git`
 不可通过额外挂载源仓库或服务数据修复。容器 cwd 从 owned root 相对映射到 /workspace，
 拒绝越界或身份变化，不无声重写任意宿主绝对参数。
+
+## 受限副本的 mountinfo 准入
+
+Linux restricted copy 在首次 source 扫描之前、开始复制时的 source/owned root，以及
+最终 source/owned 重扫分别读取新 `/proc/self/mountinfo` 快照。保持原 device、nlink、
+symlink 和保护根检查；host/Windows 默认行为保持兼容。Linux 读取失败、空表、截断或
+超限均拒绝，不降级为仅依赖 st_dev。快照最多 4 MiB、16384 条、每条
+65536 字节，严格解析唯一 ` - ` 分隔、字段、正 ID、major:minor、绝对规范 POSIX 路径；
+kernel `\040`/`\011`/`\012`/`\134` 仅单遍解码，未知或截断 escape 拒绝，不二次解码。
+mountpoint 按路径组件比较，不 resolve 跟随别名，也不从 display-only source 字段或
+`bind` option 猜测 bind 来源。
+
+ID 必须全局唯一，所有可见 parent 链无环。非 `/` 记录的 parent 必须存在，且位于
+同点或最近严格祖先挂载点，不能跳过更近挂载；最近祖先叠挂时允许其中任一合法 ID。
+`/` 可引用 namespace 外 parent。同点叠挂全部标为歧义，不根据记录顺序推断 topmost。
+对 workspace、HOME、data、凭据和 runtime 保护路径，只要自身或任一祖先是歧义点就
+拒绝，即使其下还有唯一更深挂载。无关系统叠挂可以保留；省略子树内的叠挂也不应
+全局阻断正常项目。畸形 parent、环和重复 ID 仍使整个表失败。
+
+对唯一可解释路径，取最深 covering mount，得到 backing 坐标
+`(major:minor, filesystem, mount.root + relative(path, mountpoint))`。在相同 device/
+filesystem 下，workspace 包含或等于 HOME 的 backing 拒绝，HOME 内正常 project
+可以使用；data、凭据与 runtime 保护根任一方向 backing 重叠均拒绝。合法 project
+根挂载可以作为基座，但不能绕过敏感 alias 检查。根的严格后代中，所有 included 文件
+或目录挂载均拒绝，包含同设备 bind；只有 `_included` 明确排除的路径及其后代可跳过，
+且不读取内容。相似前缀兄弟路径不构成后代。上述分阶段快照缩小检查窗口，不能承诺
+消除全部宿主文件/挂载 TOCTOU，也不提供完整 Native OS 沙盒或磁盘 quota。
 
 ## 生命周期与真实入口接线
 
@@ -173,5 +202,35 @@ process intent 执行固定私有 probe：run completed、process removed、资�
 首次失败来自 Windows Git 归档的 LF→CRLF 改写，固定策略 hash 检查正确拒绝；
 修复归档器并保留原失败证据后，私有 probe 才通过。精确 `.gitattributes -text`
 规则与真实 Git commit/fresh checkout/archive 回归保护 policy 原始字节，不改变策略
-或授权。公共允许集仍为空，公开 Native 与子任务、copy/mount 完整性及服务故障矩阵
-尚未验收；该私有通过不能宣称公共 L1 或完整 Native OS 沙盒已可用。
+或授权。后续 mount/copy 专项见下节；公共允许集仍为空，公开 Native 与子任务整链、
+服务故障矩阵尚未验收，该私有通过不能宣称公共 L1 或完整 Native OS 沙盒已可用。
+
+## mount/copy 冻结版本的实机证据
+
+2026-10-27，`cfaf895` 基线加冻结 mount 修复的 1070 文件快照，在同一真实 Linux /
+rootless Podman 环境逐项核对。归档 SHA-256 为
+`375f0511144250ac0260a7d86f72c7ffebeef3898ed1ce610175f6dfe234fc54`；该快照排除
+后续 restricted child/legacy overlay 与 chat 会话准入改动。
+
+八模块回归 **184 通过、无跳过**（7.90 秒，exit 0、stderr 为空），含真实 procfs 解析、
+受限 copy、既有 child/workspace、preflight、profiles 与 policy 打包。产品固定私有
+preflight 再次通过：run completed、process removed、resource_held=0、容器 absent，
+关闭后 active 为空，保留映射、时钟与工作区读回回执，零模型调用。
+
+另在 rootless user namespace 内建立与宿主不同且 propagation private 的 mount
+namespace，对真实产品 mount validator 做 **7 个实际同设备 bind case**：included
+目录/文件拒绝，omitted restricted `_scan` 零 canary 打开，相似前缀兄弟与合法 project
+根挂载允许，合成保护目录和合成 HOME 根别名拒绝。所有挂载源与目标均为自有合成
+canary；精确逆序 umount 后核实宿主无 nonce 挂载、源内容和物理身份不变，
+`host_cleanup_verified=true`。omitted 项使用未初始化的实际 catalog 和仅提供合成保护根
+的 fixture manager，HOME 项显式传入合成 HOME；没有启动产品进程准入或改变公共允许集。
+这接受纯 validator/scan 的 bind 专项，不能替代公开 Native 或 RunService 整链验收。
+
+首次 private preflight 暴露无关 `/proc/sys/fs/binfmt_misc` 合法 autofs 叠挂被全局
+拒绝；保留失败并改为上述相关路径歧义拒绝后才通过。bind driver 初次因自有输入可被
+组写而拒绝，收紧相应文件模式、保持 hash 不变后重跑；没有放宽输入检查。原始证据、
+失败记录和校验值见 [运行环境实测](linux-runtime-readiness.md#受限副本的-mountinfo-与真实-bind-验证)，
+包括 `.verification/linux-mount-regression.*`、`linux-l1-private-preflight-mount-pass.*`
+和 `linux-mount-bind.*`。184 项、7 case 与私有 probe 分别记账，不与既有重叠回归相加。
+公共允许集仍为空，`linux-podman-l1` 仍 unavailable；完整故障矩阵、正式 40 项三轮、
+安装恢复与完整 Native 进程支持仍各自待验收。

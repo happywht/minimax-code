@@ -161,6 +161,59 @@ policy hash 均正确。保留失败归档和
 新 checkout 与二进制 tar 内容。policy 原字节及 SHA
 `41353e75c367b32482d0367ba5632ea6f27fba0b390b68418401549ab8cd545f` 不变。
 
-以上只接受产品适配器的固定私有 schema/时钟/映射核验，公共 guard/policy 允许集
-仍为空，`linux-podman-l1` 仍 unavailable。公开 Native/子任务入口、受限 copy/mount
-完整性、服务故障与恢复矩阵、L2/L3、正式 40 项三轮及安装恢复仍须各自验收。
+以上只接受产品适配器的固定私有 schema/时钟/映射核验；后续 copy/mount 专项证据见
+下节。公共 guard/policy 允许集仍为空，`linux-podman-l1` 仍 unavailable。公开
+Native/子任务整链、服务故障与恢复矩阵、L2/L3、正式 40 项三轮及安装恢复仍须各自验收。
+
+## 受限副本的 mountinfo 与真实 bind 验证
+
+2026-10-27，在同一 Linux 主机对 `cfaf895` 基线加冻结 mount 修复的 **1070 文件**
+快照逐项核验后，完成以下三组独立验证。源码归档 SHA-256 为
+`375f0511144250ac0260a7d86f72c7ffebeef3898ed1ce610175f6dfe234fc54`，
+manifest SHA-256 为
+`0fdba0ab72add694605e18c82f004e2715d2237da425a3d974c87855c9409e50`。
+该快照不包含之后的 restricted child/legacy overlay 和 chat 会话准入改动，不将这些
+后续改动计入本轮实机通过范围。
+
+| 验证 | 结果与范围 |
+|---|---|
+| Linux 八模块回归 | **184 通过、无跳过**，7.90 秒，exit 0、stderr 为空；覆盖真实 `/proc/self/mountinfo` 解析、受限副本、既有 child/workspace、preflight、profiles 与 policy 打包 |
+| 固定私有产品 preflight | `run_9141a245e35a4298adebdb2342c377e5` completed，process removed、resource_held=0、容器 absent，关闭后 active 为空；工作区读回、映射和时钟证明保留，零模型调用 |
+| 真实合成 bind 专项 | **7 项通过**，exit 0；同设备 included 目录和文件拒绝、omitted 路径排除且零 canary 打开尝试、相似前缀兄弟路径允许、合法 project 根挂载允许、合成保护目录别名和合成 HOME 别名拒绝 |
+
+bind 验证使用 `podman unshare` 后新建私有 mount namespace，先证明与宿主 namespace
+不同，再执行 `mount --make-rprivate /` 并核对无 shared/master/propagate_from，才创建
+挂载。所有 source/target 都在 nonce 自有合成目录内；未绑定真实 HOME、凭据或服务
+数据，没有 sudo、镜像拉取或 systemd 变更。七个目标逐个逆序精确 umount；退出后
+`host_cleanup_verified=true`、宿主无 nonce 挂载，源 canary 的内容和物理身份保持原样。
+合成目录保留为证据。omitted 项使用真实 restricted `_scan`、未初始化的实际 catalog
+和仅提供合成保护根的 fixture manager；HOME 项显式传入合成 HOME。它们验证纯副本
+validator，不经过 RunService/公开进程准入，也不把 user namespace 内 UID 0 当作
+产品 rootless 准入已通过。
+
+本批 mount 规则对语法、唯一 ID 和所有可见 parent 链保持严格校验；读取失败、空表、
+截断、超限、未知 escape、非法 parent 或环均拒绝。合法同点叠挂保留为歧义点，不猜
+topmost；工作区、HOME 或保护路径自身及任一祖先涉及歧义就拒绝，唯一更深挂载也不能
+绕过。与这些路径无关的系统叠挂不再全局阻断；included 严格后代的文件/目录挂载仍
+拒绝，明确 omitted 的子树不读取内容。敏感别名按 device、filesystem 和 mount root
+推导 backing 坐标，不能仅凭相同 st_dev 或 mount source 文本放行。详细规则见
+[实施规格](linux-process-adapter-design.md#受限副本的-mountinfo-准入)。
+
+首次私有 preflight 因 `/proc/sys/fs/binfmt_misc` 的合法 autofs/binfmt 同点叠挂被全局
+拒绝，止于工作区校验阶段，关闭后无 active 责任；原失败及 diagnostic 日志保留。修复为
+上述相关路径歧义拒绝后才取得本节通过结果。bind driver 首次也因输入文件可被组写而
+拒绝；仅将自有归档、manifest 和 stage owner 文件收紧为 0600，字节 hash 不变后重跑，
+未放宽 driver 的输入检查。失败不计入通过数。
+
+原始证据（均为当前工作区附件，不随普通克隆提供）：
+
+- `.verification/linux-mount-regression.{json,stdout,stderr,exit}`；JSON SHA-256：`e9a713d8c9b6916a6755ba7cee26636b709fb03d959f840fd2d7f71fee906f38`。
+- `.verification/linux-l1-private-preflight-mount-pass.{json,stdout,stderr,exit}`；JSON SHA-256：`fd7cda6df2ebf3cb3a22158b3ae7d51d06f6f3085c7c3ce2e8381332c8113405`。
+- `.verification/linux-mount-bind.{json,stdout,stderr,exit}`；JSON SHA-256：`d1821c02ff10102327e32a0440bb2cb71a324cb7c9ae1170e901f1a82a9bb433`；实际 driver `verify_mounts_remote.py` SHA-256：`f70691106a4fdfacb5c00c023664d29fb27b58be02d10bf236c8b905d6bdda58`。
+- 原失败：`.verification/linux-l1-private-preflight-mount-{initial,diagnostic}-failure.*`、`.verification/linux-mount-bind-input-mode-failure.*`；修复冻结清单：`.verification/restricted-copy-mounts-source-checkpoint-20261027-scoped-ambiguity.json`。
+
+184 项、7 个 bind case 和私有 probe 分别记账，不与早期 430 项等有重叠的批次相加。
+这些证据接受上述冻结版本的 mount/copy 专项及私有 preflight；公开允许集仍为空，
+`linux-podman-l1` 仍 unavailable。分阶段重新读取 mount 表保留原 device/nlink/symlink
+限制，但不能消除全部宿主文件或挂载 TOCTOU；未证明完整 Native OS 沙盒、公开 Native/
+子任务整链、服务故障与恢复矩阵或正式 40 项三轮就绪。
