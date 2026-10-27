@@ -641,6 +641,16 @@ restricted 子任务、完整故障矩阵、L2/L3、正式任务集、安装恢�
 类型、ESLint、Ruff 检查通过。各批有重叠，不能相加；清单和日志在
 `.verification/m6-text-artifacts-source-checkpoint-20261027.json` 与 `m6-text-artifacts-*`。
 
+同一已提交 `196d84b` 的 `agent/` 与 `.gitattributes` 归档共 1079 个文件，在真实 Linux
+临时私有目录完成离线复验：文本成果、认证 HTTP、项目、存储及迁移五模块 **88 项通过、
+1 项跳过（仅 Windows 路径测试）**，pytest 13.43 秒。34 项文本成果测试无跳过，实际
+导入的冻结源码走 POSIX 安全打开分支；运行前后全部源文件哈希一致。该批不含 IPC 文档
+对账、浏览器、付费模型或容器执行，不构成公共 L1 或完整 M6 验收。
+归档 SHA256 为 `eceff7dff0ee1d69040b91fc36a459a11dc11c989e76dc57e463ce6ccb0f5017`；
+报告 `.verification/linux-m6-artifacts-regression-20261027T040423Z-44f2319b.json`
+（SHA256 `86b2d8f9c728da8458acff178168aaf0cf3b77733e936eb2b6824f0b4a974f42`）
+记录原始 stdout、stderr、JUnit 日志及各自校验值，三份下载日志均已核验。
+
 列表暂限最新 200 条；删除项目保留 vault 字节，但 API 要求项目仍存在。JSON 导出只有
 元数据，恢复须配套数据库和 `text-artifact-vault`，未实现 M7 完整备份包。附件摄入、
 PDF/Office 解析与渲染、来源研究、官方 MCP SDK 互操作、报告/表格完整工作流及质量验收
