@@ -1,6 +1,6 @@
 # Linux 受限运行环境实测
 
-2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选用例已按文末范围验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
+2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选用例及后续四个故障用例已按文末范围验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
 
 ## 安装与主机状态
 
@@ -267,3 +267,42 @@ advisory 和三个用例进程，不能当作九项独立验收或与既有测�
 本节仅接受这三个固定候选用例。主分支 `ACCEPTED_GOVERNORS` 仍为空，公共 L1 未发布；
 公开 restricted 子任务的实际工具类/委派归属仍待审计。完整故障矩阵、L2 文件边界、
 L3 长驻/隧道、正式 40 项三轮、安装/升级/完整备份恢复及 14 天真实使用均未完成。
+
+## 公开 Native 候选的四个实际故障用例
+
+2026-10-27，同一 `70870b4` 候选及上述唯一 guard/policy 配对，在独立 stage 中经过
+完整 stdio CLI、公开 RPC 和实际 SDK 的 loopback SSE 链路，**四个故障用例通过并经
+独立复核接受**。源码仍为上述 1072 文件归档，不包含后续 M6 或当前文档改动；运行
+前后完整 source manifest 一致，没有替换 runtime、生命周期或准入逻辑。
+
+两项 deadline 用例使用持久化的原始 **60 秒 CLOCK_BOOTTIME 绝对期限**；payload 的
+独立 180 秒上限只作清理保护，不能代替期限通过条件。预先固定停止容差 5 秒、观测
+容差 10 秒，服务离线期间保留原 PID/startticks、完整 CID、心跳和时钟原始采样。
+
+| 用例 | 实际通过范围 |
+|---|---|
+| 服务死亡后的心跳后代 | 确认 payload/后代运行后仅 SIGKILL 自有服务；重启前容器已停止且心跳稳定停止，首次观察原 PID 均停止于原 deadline 后 0.201 秒；重启前后 SDK 请求数 1→1，无旧 payload 重放 |
+| 双流 flood、服务及 attach 丢失 | 服务 SIGKILL 后，已记录精确身份的 attach CLI 自行消失，未再向 attach 发 SIGKILL；其消失后容器仍 Running、心跳继续。首次观察原 PID 均停止于原 deadline 后 0.211 秒，重启前后 SDK 请求数 2→2。非阻塞 stdout/stderr 各写入 9,486,336 字节，实际 runtime log 为 82,450 字节，低于预定单文件及总量限制 |
+| leader 退出后的后代清理 | leader 启动有界心跳孙进程后正常退出；PID1 teardown 停止后代，容器删除、资源释放，持久 payload exit 为 0 |
+| 重复公开取消 | 后代已运行后调用三次 `run.cancel`，包含终态后的重试；终态 cancelled，未新增执行，后代停止、容器删除、资源释放 |
+
+0.201/0.211 秒是轮询得到的**首次停止观测上界**，不是精确死亡时刻；完整心跳、
+BOOTTIME 和 inspect 记录保留。两项 deadline 的 raw controller exit 为 124，持久
+outcome 保持 unknown，不当作 payload 成功。全批共 **5 次受控 SDK 请求、0 次付费
+调用**；前两个服务为预定 SIGKILL（-9），最后服务正常关闭 exit 0、无关闭错误，
+无外部 rescue cleanup，已核对清理责任和资源释放。本批与此前三个用例分别记账。
+
+原始证据与取回记录（当前工作区附件，不随普通克隆提供）：
+
+- 实际 v2 harness `verify_l1_fault_matrix_remote_v2.py` SHA-256：`00591c6cae9fb66b234b891479dfeac28341527b83585920ac60948462b07161`；冻结清单 `.verification/l1-fault-matrix-v2-frozen-manifest.json`：`7e56acabc4a86e340c919520f3d8e77d15eee8f60f74968d2257272a40dfd6b8`。
+- `.verification/linux-l1-fault-matrix-fetch-20261027T050057Z-d1b5e90f/result.json` SHA-256：`7ff0f23447528cacd8862ddf6bc357beec673d779f1f82873c8446e8e11e8d65`；对应 `receipt.json`：`75c3257fea2bc7f592769aac3a5ab3708f71918be6f6c6b2c14d9e3b3178fc22`。35 份原始附件共 11,832,710 字节逐项核对；只读取回复用 9 份已核验副本、取回其余 26 份，零重连，前后重新核验 1072 个源码文件及原始执行身份。
+- v1 `.verification/linux-l1-fault-matrix-20261027T042746Z-571a0a7e.json` SHA-256：`c6631ba00b8d16b8f26cdabf9724d98bf09901513363f5d6ee67cd467f103900`，保留 runtime log 的 PermissionError 和 rescue 事实，仍是失败。v2 将证据读取改为严格校验 UID/GID 映射、精确已停止 CID/安装/store 和文件身份的固定 `podman unshare` 只读 reader，没有放宽期限或日志限制。
+- v2 外层 `.verification/linux-l1-fault-matrix-20261027T044414Z-7b6b2773.json` SHA-256：`18ce434c9462f1b21c98d4f41ed2eb82ab006ff826bec894a16e689e31d576fa`。远端 harness 已 exit 0（186.508 秒），SSH 仅在随后下载附件时断开；该外层记录仍保留 exit 1，由上述独立只读 fetch receipt 绑定同一次执行，没有重跑或追改失败记录。
+
+本批 flood 使用非阻塞写，未证明阻塞写或 D-state IO 下的截止；attach 自行消失也不
+记作本轮额外注入 SIGKILL 已执行。完成后的附件下载断线不构成运行中 SSH 断开、
+任务续跑或 L3 重连证明。剩余矩阵包括迟到/过期启动、create/start 登记窗口服务死亡、
+产品整链 OOM/pids/CPU、网络/secret/socket 边界、runtime 消失、foreign marker/
+安装身份及租约丢失、持续 fork 与真正阻塞输出故障。公开子任务、无人值守全部准入、
+公共允许集发布、正式 40 项三轮及 L2/L3 仍各自待验收；不据四个 case 宣称 M1 或
+公共 L1 整体完成。

@@ -2,14 +2,15 @@
 
 本文件细化 [Linux 执行链](linux-execution-plan.md) 的 L1，是实现与验收约束，
 不是公共 L1 已发布的声明。基础模块及默认 host 接线已实现；真实 `agent.invoke`
-的正常完成、取消和服务死亡后审查恢复三个隔离候选用例已于 2026-10-27 验收，
-`agent.spawn_subagent` 及完整故障矩阵仍待验收。主分支允许集保持为空。
+的正常完成、取消和服务死亡后审查恢复三个隔离候选用例，以及后续四个故障用例
+已于 2026-10-27 验收；`agent.spawn_subagent` 及剩余故障矩阵仍待验收。
+主分支允许集保持为空。
 复用同一个 RunService、持久 run/预算家族和服务目录租约，不增加第二个调度循环。
 
 profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
-[接线契约](linux-execution-profile-contract.md)。其中严格绝对截止尚缺产品整链验收；
-加固 PID1 的实现与 helper 验证由单独批次接受，不能将 conmon 相对运行期限或 helper
-成功视为 L1 门槛已满足。
+[接线契约](linux-execution-profile-contract.md)。产品整链已接受服务死亡后的原绝对期限
+及非阻塞双流 flood 用例，迟到启动、登记窗口及阻塞 IO 等仍待验收；加固 PID1 的实现
+与 helper 验证单独记账，不能将 conmon 相对期限或 helper 成功视为 L1 门槛已满足。
 
 ## 当前实现与未完成范围
 
@@ -31,7 +32,7 @@ bind/mount alias 准入已有下文定向实机证据。restricted child 与 leg
 显式 overlay 请求在副作用前拒绝，受限内部子链使用 owned directory copy，并清空、
 恢复继承的 overlay context。该内部链测试不扩大公开工具允许类，公开
 `SpawnSubagentTool` 仍拒绝，实际类/委派归属审计、无人值守全部门槛和 UI/IPC 组合待验收。
-文末三个公开 Native 候选用例不覆盖完整服务死亡/绝对截止故障矩阵；未审计入口不能
+文末三个公开 Native 候选用例及四个故障用例不覆盖完整故障矩阵；未审计入口不能
 获取 host fallback。基础 review、受控 controller 测试或纯 validator bind probe
 单独均不构成公共 L1 验收。
 
@@ -150,7 +151,8 @@ filesystem 下，workspace 包含或等于 HOME 的 backing 拒绝，HOME 内正
    成功才进入 created。先提交 starting，再 start attach，不能 CAS 失败后仍启动。
 4. stdin 在 create/start 一致启用，默认关闭；禁 TTY/detach keys，分离 stdout/stderr。
    输出和运行时日志都限额；固定 PID1/BOOTTIME 治理负责绝对期限，conmon timeout
-   仅作相对运行上限。服务 SIGKILL、迟到启动与阻塞 IO 仍需产品故障验收。
+   仅作相对运行上限。服务 SIGKILL 后的原期限已有文末两个受限用例，迟到启动、
+   create/start 窗口及阻塞 IO 仍需产品故障验收。
    已超过绝对 deadline 不再启动，控制命令也有有限超时。
 5. stop 后核实 Running=false/Pid0；只有 exited 和有效非零 StartedAt/FinishedAt 才读
    raw exit，created 的 0 不算成功。未知结果不重放。提交 stopped/removing，按完整 CID
@@ -267,3 +269,35 @@ Git 校验通过。无旧 wait.py/process.py 重放。最终正常关闭 exit0�
 
 接受范围仅限上述三个候选 case；公共允许集发布、公开 restricted 子任务、剩余故障
 矩阵、L2/L3、正式 40 项三轮、安装恢复和 14 天试用仍是独立门槛。
+
+## 四个公开故障候选用例的接受范围
+
+同一 `70870b4`/1072 文件、唯一 guard/policy 配对的独立候选，经过真实完整 stdio CLI、
+公开 RPC、实际 SDK 和固定 loopback SSE，于 2026-10-27 完成并独立接受四个 case：
+服务死亡后的心跳后代绝对截止；非阻塞双流 flood 下服务与 attach 丢失后的同一期限；
+leader 正常退出后 PID1 停止孙进程；运行中及终态后三次公开取消的幂等清理。
+候选不包含后续 M6 或当前文档，源码前后核验一致；没有替换产品 runtime/准入链。
+
+deadline 两项固定原持久 BOOTTIME 期限 60 秒、停止容差 5 秒和观测容差 10 秒，
+payload 的独立 180 秒界限不计为截止证据。服务离线且重启前，首次观察原 PID 均停止
+分别在 deadline 后 0.201/0.211 秒，这是观测上界而非精确死亡时刻。容器已停止、
+心跳稳定停止，重启 SDK 计数分别保持 1→1/2→2；raw controller exit124 的 outcome
+保持 unknown，不记 payload 成功。flood 的 attach CLI 实际自行消失，未额外发
+SIGKILL；已核对其消失后容器仍 Running、心跳继续。两路各写 9,486,336 字节，
+runtime log 实读 82,450 字节，在预定限额内。
+
+全批 5 次受控 SDK 请求、零付费调用；预定杀死前两个服务后，最后服务正常 exit0，
+无关闭错误、无 rescue，后代及容器清理和资源释放已核对。35 份附件共 11,832,710
+字节逐项核验。结果 `linux-l1-fault-matrix-fetch-20261027T050057Z-d1b5e90f/result.json`
+SHA-256 `7ff0f23447528cacd8862ddf6bc357beec673d779f1f82873c8446e8e11e8d65`；
+同目录只读取回 `receipt.json` SHA-256
+`75c3257fea2bc7f592769aac3a5ab3708f71918be6f6c6b2c14d9e3b3178fc22`。
+v1 日志 PermissionError 失败及 v2 远端成功后 SSH 下载失败的外层 exit1 均原样保留，
+没有重跑来替代原执行；完整源/harness hash、失败与取回证据见
+[运行实测](linux-runtime-readiness.md#公开-native-候选的四个实际故障用例)。
+
+非阻塞 flood 不证明阻塞写/D-state IO；附件下载断线不证明运行中 SSH 断开或 L3
+任务续跑/重连。迟到/过期启动、create/start 服务死亡窗口、整链 OOM/pids/CPU、
+网络/secret/socket、runtime 消失、foreign marker/安装身份/租约丢失、持续 fork
+及阻塞输出等仍须分别验收。主分支允许集为空，公开 child、无人值守和公共 L1 尚未
+开放；不将本批当作 M1 完成，也不与其他重叠测试批次相加。
