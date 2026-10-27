@@ -28,6 +28,20 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class ArtifactListParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: str = Field(min_length=1, max_length=128)
+
+
+class ArtifactRegisterParams(ArtifactListParams):
+    source_path: str = Field(min_length=1, max_length=1024)
+    run_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class ArtifactGetParams(ArtifactListParams):
+    artifact_id: str = Field(pattern=r"^art_[0-9a-f]{32}$")
+
+
 class SendMessageParams(_Base):
     """Additive task mode; plan is enforced by execution/tool policy."""
 

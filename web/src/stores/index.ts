@@ -52,6 +52,7 @@ export {
   type SubAgentState,
 } from "./subAgent";
 export { useGitStore, type GitState } from "./git";
+export { useArtifactStore } from "./artifactStore";
 export {
   usePatchPreviewStore,
   type PatchPreviewScope,

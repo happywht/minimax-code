@@ -1546,6 +1546,44 @@ document the migration in this file.
 | `agent.invoke` | 直接调用一个子 Agent |
 | `agent.cancel_subagent` | 取消正在运行的子 Agent |
 
+### artifact.* — 显式登记文本成果（Schema041）
+
+| 方法 | 参数 | 返回 |
+|------|------|------|
+| `artifact.register` | `{project_id, source_path, run_id?}` | `{artifact}`，成功登记一个新的不可变版本 |
+| `artifact.list` | `{project_id}` | `{artifacts, service_id}`，最近 200 项 |
+| `artifact.get` | `{project_id, artifact_id}` | `{artifact, preview_text}`，经过 vault 大小/hash 核对的纯文本 |
+
+参数均严格拒绝未知字段；host、绝对文件路径、内容及验证结论不能由调用者传入。
+`project_id` 必须对应存在且设置明确绝对 root_path 的当前服务项目；`source_path` 使用
+规范 POSIX 相对路径，拒绝绝对路径、`..`、反斜杠、ADS、symlink/reparse 与 hardlink，
+只支持 TXT/MD/CSV、最大 2 MiB、严格 UTF-8（原有 BOM/CRLF 字节保留）。可选 run 必须
+存在且其会话属于该项目，会话显式 workspace 必须等于项目 root，提交时再次核对
+项目/run 绑定。源文件不修改；读句柄前后
+fstat、路径身份和第二遍 hash 检查拒绝读取期间的替换/变更。POSIX 使用 no-follow
+目录描述符，Windows 保留非 reparse 祖先句柄并限制写入/删除；不承诺完整 OS 沙盒。
+
+每次成功登记（即使内容未变）都产生新的 project/source_path version 和 snapshot_id，
+完成私有 vault 文件的独占原子发布后才写 DB。返回 artifact 包含 id、project_id、run_id、
+服务生成并持久保存的 service_id、source_path、snapshot_id、mime_type、size_bytes、
+SHA-256、version、created_at、parse_status=`parseable`、verification_status=`unverified`。
+这些状态只代表已登记且可解析，不代表内容质量、任务验证通过或交付完成；run 关联
+也不证明文件由该 run 生成。Markdown 在 UI 中转义为纯文本，CSV 仅解析、不计算公式。
+
+原始字节下载为 `GET /artifacts/{artifact_id}/content?project_id=...`，复用主应用
+Host/Origin 与 bearer/cookie 认证，不接受 URL token 或其它参数。响应始终为
+application/octet-stream attachment，no-store、nosniff，并带 X-Artifact-Service-Id 和
+X-Artifact-SHA256；服务先核对 vault 原始字节，不渲染 HTML，不回读 source 作为 fallback。
+vault 缺失/损坏显式失败（HTTP 409 / RPC -32000），存储故障为 HTTP 503 / RPC -32603，
+参数结构错误为 -32602。浏览器按 project、服务 endpoint 和 service_id 丢弃过期响应；
+项目切换/面板关闭取消下载，认证只经现有 header/cookie transport。
+
+项目删除保留历史 project/run ID、元数据和 vault 文件，无 filesystem cascade；正常
+list/get/content 仍要求项目存在，因此删除后不从原项目 UI 访问。DB 失败可能留下尚无
+元数据引用的完整快照，保留待显式恢复，不做无界自动删除。SQLite 备份或 JSON 导出
+不能替代 vault 字节备份。本片不包括 Office/OCR、MCP、模型自动登记或质量验证。
+Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
+
 ### audit.* — 审计
 
 | 方法 | 说明 |

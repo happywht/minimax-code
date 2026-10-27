@@ -3,7 +3,9 @@
 > **Owner:** `storage-layer` task. **Status:** Phase 1 (T0). **Source of truth:** `agent/minimax_code/storage/`.
 > This document is the contract between the storage layer and the rest of the agent. If you change a column, an index, or a constraint, update this doc and add a migration.
 
-The Python sidecar persists all agent state in a single SQLite database file. The file lives at:
+The Python sidecar persists structured agent state in a single SQLite database file;
+registered text artifact originals live in the separate managed vault described in Schema041.
+The database file lives at:
 
 | OS      | Path                                                                |
 |---------|---------------------------------------------------------------------|
@@ -529,3 +531,29 @@ UID/store/dataDir、同安装 orphan 或 inventory 未知均不能自动认领�
 删表、删 marker、改 run 状态或释放资源来凑回退。保存升级后 DB、marker、owned copies
 及完整 CID 证据，再恢复匹配旧程序的完整升级前备份。没有 039/040 down-migration，
 也不承诺旧二进制直接打开升级后 DB 或跨安装恢复。L1 整体及灾难恢复仍须独立验收。
+
+### Schema041：显式文本成果与私有 vault
+
+新增 `artifact_service(singleton=1, service_id)` 保存服务生成的持久 vault 身份；新增
+`text_artifacts` 保存不可变登记元数据：id、project_id、可空 run_id、service_id、
+source_path、唯一 snapshot_id、mime_type、size_bytes（0–2097152）、sha256、正整数
+version、parse_status、verification_status、created_at。
+`UNIQUE(project_id, source_path, version)` 在同一 SQLite IMMEDIATE 事务中递增版本，
+并复核 live project root 与 run/session 项目归属；同字节重复登记也增加版本。
+当前 parse_status 仅 `parseable`，verification_status 仅 `unverified`，没有质量通过/
+已交付状态。三种 MIME 只描述 TXT/MD/CSV，文件内容始终保存原始 UTF-8 字节。
+
+项目/run ID 是历史引用，有意不设置会级联删除历史的 FK；项目删除保留行及磁盘证据，
+正常 API 仍要求项目存在。没有自动 filesystem cascade。完整、fsync 后的文件以
+非覆盖原子发布到服务 dataDir 下 `text-artifact-vault/<snapshot_id>` 后才插入元数据；
+POSIX vault 0700/文件 0600，Windows 受服务账户目录 ACL 与锁定句柄保护。不得据此
+宣称能隔离已被攻陷的同一 OS 账户。DB 失败或进程在发布与提交间退出可能保留 orphan，
+不将其视为登记成功，也不扫描删除任意历史文件。
+
+读取只使用受约束的 snapshot ID，核对 vault 原字节长度和 SHA-256，缺失或损坏失败，
+不回退读取 source。源文件不修改；替换 source 后历史版本仍从 vault 下载。备份/恢复
+必须一起保全 SQLite 与匹配 `text-artifact-vault`。`data.export` 的 JSON 仅含本片元数据，
+SQLite online backup 也不含这些外部字节；恢复数据库而没有 vault 原字节时下载返回
+missing/corrupt，不回读 source。M7 再集成完整备份包，本片不扩大现有备份实现。
+迁移仅向前，回退应恢复匹配旧程序的完整 DB/文件备份，不删除 vault 猜测
+回收。本片只支持显式 TXT/MD/CSV 登记；RPC/下载契约见 ipc-contract.md 的 artifact 节。

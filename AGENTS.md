@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (192 methods: 36 dotted namespaces + 3 standalone methods)
+  |- IPCServer (195 methods: 37 dotted namespaces + 3 standalone methods)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (built-in tools + skill/MCP bridges)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -169,12 +169,13 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **192 个注册方法、36 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **195 个注册方法、37 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
 | `agent.*` | 12 | 消息发送、子 agent 管理 | `builtins.py`, `handlers_agents.py` |
 | `audit.*` | 3 | 审计日志查询 | `handlers_audit.py` |
+| `artifact.*` | 3 | 项目文本成果登记、列表与预览 | `handlers_artifacts.py` |
 | `budget.*` | 2 | 共享预算账本与责任核定 | `handlers_budget.py` |
 | `checkpoint.*` | 5 | 上下文检查点 | `handlers_checkpoint.py` |
 | `codebase.*` | 4 | 代码库索引/检索 | `handlers_codebase.py` |

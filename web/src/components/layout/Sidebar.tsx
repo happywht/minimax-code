@@ -46,9 +46,9 @@ export interface SidebarProps {
   testId?: string;
   onMobileClick?: () => void;
   /** Current top-level view — drives which NavItem is highlighted. */
-  view?: "chat" | "skills" | "settings" | "scheduled" | "agents" | "preview";
+  view?: "chat" | "skills" | "settings" | "scheduled" | "agents" | "preview" | "artifacts";
   /** Toggle between top-level views. */
-  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "agents" | "preview") => void;
+  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "agents" | "preview" | "artifacts") => void;
 }
 
 type PrimaryNavId = SessionFilter | "skills" | "agents" | "chat";
@@ -561,6 +561,7 @@ export function Sidebar({
 
       {/* Primary nav */}
       <nav className="space-y-0.5 px-2" data-testid="sidebar-nav">
+        {onViewChange && <NavItem icon={<Folder size={14} />} label="文本成果" selected={view === "artifacts"} onClick={() => onViewChange("artifacts")} testId="sidebar-nav-artifacts" />}
         {NAV_ITEMS.filter((n) => n.group === "primary").map((n) => (
           <NavItem
             key={n.id}

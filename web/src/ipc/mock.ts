@@ -8,6 +8,7 @@
  */
 
 import { StreamEvent } from "../types/ipc";
+import { artifactMock } from "./artifactMock";
 import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../lib/defaultTitles";
 import type { BackendPermissionRule } from "./typed";
 import type {
@@ -489,6 +490,12 @@ function mockHandle(
       } satisfies SessionExportResult;
     }
 
+    case "artifact.register":
+    case "artifact.list":
+    case "artifact.get": {
+      const p = (params ?? {}) as Record<string, unknown>;
+      return artifactMock(method, p, mockProjects.has(String(p.project_id)));
+    }
     case "project.list": {
       const p = params as { archived?: boolean } | undefined;
       const projects = Array.from(mockProjects.values())

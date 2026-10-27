@@ -8,6 +8,31 @@
 
 export type JsonRpcId = string | number | null;
 
+export interface TextArtifact {
+  id: string;
+  project_id: string;
+  run_id: string | null;
+  service_id: string;
+  source_path: string;
+  snapshot_id: string;
+  mime_type: "text/plain" | "text/markdown" | "text/csv";
+  size_bytes: number;
+  sha256: string;
+  version: number;
+  parse_status: "parseable";
+  verification_status: "unverified";
+  created_at: string;
+}
+
+export interface ArtifactRegisterParams {
+  project_id: string;
+  source_path: string;
+  run_id?: string;
+}
+
+export interface ArtifactListResult { artifacts: TextArtifact[]; service_id: string }
+export interface ArtifactGetResult { artifact: TextArtifact; preview_text: string }
+
 /** SSH credentials are referenced by identity-file path, never embedded. */
 export interface HostConfig {
   name: string;

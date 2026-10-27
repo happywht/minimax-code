@@ -806,6 +806,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
         handle_agent_send_message,
     )
     from .ipc.handlers_agents import register_agent_handlers
+    from .ipc.handlers_artifacts import register_artifact_handlers
     from .ipc.handlers_audit import register_audit_handlers
     from .ipc.handlers_checkpoint import register_checkpoint_handlers
     from .ipc.handlers_codebase import register_codebase_handlers
@@ -888,6 +889,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # to skip the lazy path.
     register_session_handlers(server)
     register_project_handlers(server)
+    register_artifact_handlers(server)
     register_workspace_handlers(server)
     # The checkpoint handlers expose ``checkpoint.*`` — the workspace snapshot
     # layer (R310): create/list/restore/diff/delete over git-stash refs plus

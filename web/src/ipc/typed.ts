@@ -126,6 +126,9 @@ import type { IPCClient } from "./client";
 
 export interface TypedIPC {
   ping(): Promise<boolean>;
+  registerArtifact(params: import("../types/ipc").ArtifactRegisterParams): Promise<{ artifact: import("../types/ipc").TextArtifact }>;
+  listArtifacts(projectId: string): Promise<import("../types/ipc").ArtifactListResult>;
+  getArtifact(projectId: string, artifactId: string): Promise<import("../types/ipc").ArtifactGetResult>;
 
   // Remote host registry and file transfer. Pre-record transfer_id before push
   // when recovery after a lost HTTP response or cancellation is required.
@@ -594,6 +597,9 @@ export function backendRuleToFrontend(r: BackendPermissionRule): PermissionRule 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
   return {
     ping: () => client.ping(),
+    registerArtifact: (params) => client.request("artifact.register", params),
+    listArtifacts: (projectId) => client.request("artifact.list", { project_id: projectId }),
+    getArtifact: (projectId, artifactId) => client.request("artifact.get", { project_id: projectId, artifact_id: artifactId }),
 
     createHost: (params) => client.request("host.create", params),
     listHosts: (params) => client.request("host.list", params ?? {}),

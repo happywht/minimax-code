@@ -513,6 +513,7 @@ def build_app(
         allow_credentials=True,
         allow_methods=CORS_ALLOW_METHODS,
         allow_headers=CORS_ALLOW_HEADERS,
+        expose_headers=["X-Artifact-Service-Id", "X-Artifact-SHA256"],
     )
 
     # Stash the WS manager on the app state so tests / future
@@ -723,6 +724,9 @@ def build_app(
 
     from .agent.completion_routes import register_completion_routes
     register_completion_routes(app, server)
+
+    from .artifact_http import register_artifact_routes
+    register_artifact_routes(app)
 
     from .preview.server import register_preview_routes
 
