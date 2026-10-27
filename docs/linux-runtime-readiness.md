@@ -1,6 +1,6 @@
 # Linux 受限运行环境实测
 
-2026-10-26 在用户指定的 Ubuntu 24.04 执行主机上完成了 rootless Podman 安装与合成任务验证。该记录只证明运行环境就绪，不代表 MiniMax Code 的远程任务、长驻服务或 M5 整体已验收。
+2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选用例已按文末范围验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
 
 ## 安装与主机状态
 
@@ -63,8 +63,8 @@ manifest 及日志 SHA 均匹配。暖到健康样本 2010.7 / 1959.0 毫秒，�
 
 在同一 Linux 6.8.0-101-generic / rootless Podman 4.9.3 环境，固定本地镜像
 `sha256:f4b7b8044a873fcc0f348549a19b9075cd77bd56ead7177192cfec38d85bce4a`
-运行产品 `pid1_guard.py` 中的固定源码，**18 项通过，exit 0**。这验证 helper，
-尚未验证公开 Native/子任务产品接线，公共 L1 profile 仍不可用。
+运行产品 `pid1_guard.py` 中的固定源码，**18 项通过，exit 0**。该批只验证 helper，
+不覆盖公开 Native/子任务接线；后续候选用例见文末，主分支公共 L1 profile 仍不可用。
 
 覆盖正常/非零及 payload124/125、缺执行文件、信号退出、二进制独立双流、
 已过期及迟到启动零 canary、boot 不符、FD 关闭、leader 退出清理孙进程、
@@ -119,7 +119,9 @@ Linux 6.8.0-101-generic、Podman 4.9.3 的上述事实不能自动推广到其�
 候选需补充可信治理执行流及调度防护，具体约束见
 [profile 契约](linux-execution-profile-contract.md)；验收前 profile 保持不可用。
 
-M5 仍须将受限执行适配器接入真实 RunService，校验明确的挂载、网络和资源配置，容器不可用时暂停无人值守任务。还需完成版本化安装、systemd 用户服务、受认证 SSH 隧道、Windows 断开后任务继续、重连恢复及文件交付。当前单次容器实测不能替代这些验收。
+上述环境与攻击探测本身不覆盖产品 RunService；后续私有及公开候选接线见下文。
+M5 仍需完成无人值守全部准入、版本化安装、systemd 用户服务、受认证 SSH 隧道、
+Windows 断开后任务继续、重连恢复及文件交付，单次容器或三个候选用例不能替代这些验收。
 
 参考：[Podman 安装](https://podman.io/docs/installation)、[Ubuntu 24.04 Podman run 手册](https://manpages.ubuntu.com/manpages/noble/man1/podman-run.1.html)。实现与部署应使用实际安装版本支持的参数。
 
@@ -161,9 +163,10 @@ policy hash 均正确。保留失败归档和
 新 checkout 与二进制 tar 内容。policy 原字节及 SHA
 `41353e75c367b32482d0367ba5632ea6f27fba0b390b68418401549ab8cd545f` 不变。
 
-以上只接受产品适配器的固定私有 schema/时钟/映射核验；后续 copy/mount 专项证据见
-下节。公共 guard/policy 允许集仍为空，`linux-podman-l1` 仍 unavailable。公开
-Native/子任务整链、服务故障与恢复矩阵、L2/L3、正式 40 项三轮及安装恢复仍须各自验收。
+以上只接受产品适配器的固定私有 schema/时钟/映射核验；后续 copy/mount 专项和公开
+Native 候选用例分别见下节及文末。主分支公共 guard/policy 允许集仍为空，
+`linux-podman-l1` 仍 unavailable。公开子任务链、剩余服务故障矩阵、L2/L3、正式
+40 项三轮及安装恢复仍须各自验收。
 
 ## 受限副本的 mountinfo 与真实 bind 验证
 
@@ -213,7 +216,54 @@ topmost；工作区、HOME 或保护路径自身及任一祖先涉及歧义就�
 - 原失败：`.verification/linux-l1-private-preflight-mount-{initial,diagnostic}-failure.*`、`.verification/linux-mount-bind-input-mode-failure.*`；修复冻结清单：`.verification/restricted-copy-mounts-source-checkpoint-20261027-scoped-ambiguity.json`。
 
 184 项、7 个 bind case 和私有 probe 分别记账，不与早期 430 项等有重叠的批次相加。
-这些证据接受上述冻结版本的 mount/copy 专项及私有 preflight；公开允许集仍为空，
+这些证据接受上述冻结版本的 mount/copy 专项及私有 preflight；主分支公开允许集仍空，
 `linux-podman-l1` 仍 unavailable。分阶段重新读取 mount 表保留原 device/nlink/symlink
-限制，但不能消除全部宿主文件或挂载 TOCTOU；未证明完整 Native OS 沙盒、公开 Native/
-子任务整链、服务故障与恢复矩阵或正式 40 项三轮就绪。
+限制，但不能消除全部宿主文件或挂载 TOCTOU；本节单独不证明完整 Native OS 沙盒、
+公开 Native/子任务整链、服务故障矩阵或正式 40 项三轮就绪。
+
+## 公开 Native 候选的三个实际用例
+
+2026-10-27，冻结提交 `70870b4` 的 **1072 个源码文件**在同一受支持 Linux 平台逐项
+核对后，以真实 `python -m minimax_code --stdio` 启动完整服务，经过租约、迁移、
+安装核对和私有 preflight，再通过公开 JSON-RPC 接单。该候选只在独立 staging 的
+`process_preflight.py` 将空允许集替换为上述唯一 guard/policy 精确配对，保存补丁前后
+SHA 和完整源码 manifest；没有修改主分支允许集，也没有注入 readiness、admission、
+runtime、模型客户端或 transport。候选不包含后续 `196d84b` 的 M6 文本成果功能。
+
+模型链使用实际 OpenAI SDK、`mock=false` 和只绑定 `127.0.0.1` 随机端口的固定 SSE
+回放，凭据仅为专用 dummy keyring 的假密钥。共 **7 次 SDK 请求、0 次付费调用**，
+不评价真实模型质量。三个用例 exit 0，并经过独立证据复核：
+
+| 用例 | 实际通过范围 |
+|---|---|
+| 正常完成与幂等 | 公开 `agent.invoke`，固定 read/write/exec 工具实际写、读和容器执行，再返回最终答案；4 次 SDK 请求，v3 非 mock profile、预算事件和持久回执一致；payload 使用自有副本，合成源文件不变，重提交不增加 SDK 或进程 |
+| 运行中取消 | 精确 `wait.py` argv hash、实际副本 nonce 和完整 CID Running 共同证明 payload 已启动；公开 `run.cancel` 后持久 cancelled/partial 回执成立，容器 absent、resource_held=0，无额外 SDK 请求 |
+| 服务死亡、重启和审查恢复 | 仅杀死本轮服务进程，重开相同数据/源目录后旧容器核对清除，旧 run 为 interrupted，无自动公开 payload/SDK 重放；仅新增一个固定零模型私有 preflight。公开 `run.resume(reviewed=true)` 保留原 spec/session/target/预算家族，新增 1 次 SDK 请求，未重新执行旧 wait.py/process.py |
+
+审查恢复会按产品既有逻辑新建一次固定 Git advisory probe：
+`git --no-pager -c core.fsmonitor=false rev-parse --git-dir`。仅接受新 resumed run 下
+这一条精确 argv/hash，且家族/root、工作区 inode、target/install/location 均匹配，
+原 process 行不变。该镜像返回 **125、outcome unknown，advisory unavailable**，
+不记作 Git 校验通过；新增行的配置/删除回执、实际 CID absent 和资源释放均核对。
+
+最后正常关闭服务 exit 0，无 shutdown RPC 错误、无强杀；最终 **9 个 process 行均
+removed、resource_held=0，9 个 CID 均 absent**。它们包括初次及重启私有 probe、
+advisory 和三个用例进程，不能当作九项独立验收或与既有测试数相加。
+
+冻结与证据（当前工作区附件，不随普通源码克隆提供）：
+
+- 源码归档 SHA-256：`0ecf77ac46ba3c199b43795c9fc0eef664e9720345bb19b0a770006905f47d0c`；manifest：`7972518aad4d8450c5fedf68168674702148d42f1880ced31a1a49819ad52ebe`。
+- 实际 harness `verify_l1_public_native_remote.py`：56,681 字节，SHA-256 `82cf68caef835897d94d0527b3291a648de78cb4480435846193ef69e0c92366`。
+- `.verification/linux-l1-public-native-result.json`：SHA-256 `96e3ac67a363c6af35821e5e841875a17927b7c16bd1126c4dcb8e691b434b63`；外层 `.verification/linux-l1-public-native.json`：`f96ca781941d595efdf9a53a744ed6b05fe054f30177122a6385adc0206840f6`。
+- `.verification/linux-l1-public-native-success-raw/`：13 份原始 RPC、SSE、服务 stdout/stderr 和数据库快照，共 2,184,602 字节；逐份 hash 与结果中的清单一致。
+
+失败证据保留在 `linux-l1-public-native-startup-wait-failure*` 和
+`linux-l1-public-native-resume-count-failure*`：前者误把短时 baseline 进程当等待 payload，
+后者漏计审查恢复合法 advisory；修正的是 harness 断言，未据此声称修复产品缺陷。
+另有 upload 文件模式拒绝及结果 fetch 的 SFTP nlink 元数据不支持，分别保留
+`linux-l1-public-native-upload-mode-failure*`、`linux-l1-public-native-result-fetch-failure.json`；
+收紧自有上传权限、改用远端只读核验后取回证据，没有放宽产品边界。
+
+本节仅接受这三个固定候选用例。主分支 `ACCEPTED_GOVERNORS` 仍为空，公共 L1 未发布；
+公开 restricted 子任务的实际工具类/委派归属仍待审计。完整故障矩阵、L2 文件边界、
+L3 长驻/隧道、正式 40 项三轮、安装/升级/完整备份恢复及 14 天真实使用均未完成。

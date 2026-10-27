@@ -1,8 +1,9 @@
 # Linux L1 实施规格
 
 本文件细化 [Linux 执行链](linux-execution-plan.md) 的 L1，是实现与验收约束，
-不是 L1 已通过的声明。基础模块及默认 host 接线已实现并做局部验证；真实
-`agent.invoke` / `agent.spawn_subagent` 容器整链仍待验收。
+不是公共 L1 已发布的声明。基础模块及默认 host 接线已实现；真实 `agent.invoke`
+的正常完成、取消和服务死亡后审查恢复三个隔离候选用例已于 2026-10-27 验收，
+`agent.spawn_subagent` 及完整故障矩阵仍待验收。主分支允许集保持为空。
 复用同一个 RunService、持久 run/预算家族和服务目录租约，不增加第二个调度循环。
 
 profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
@@ -18,19 +19,21 @@ intent、唯一 run snapshot 归属、完整 CID/config 核验、CAS 与 event �
 资产及打包，以及同一 RunService 内的私有零模型 preflight。preflight 生成自己的真实
 run/family 与 v2 internal owner，保存解释器/boot/time namespace/时钟区间及原始 stdout，
 确认容器 absent、释放责任和持久回执后才产生运行时证明。该证明仍须匹配已接受资产；
-当前 `ACCEPTED_GOVERNORS` 为空，Linux L1 能力卡始终 unavailable。
+主分支 `ACCEPTED_GOVERNORS` 为空，Linux L1 能力卡保持 unavailable。
 
 公共 Agent 新接单保存 v3 的实际 target/hash/install，默认 null 配置继续 native-host；
 v1/v2 恢复维持 legacy-host，不自动升级。Python/TS/typed/mock/设置选择器与结果展示已有
 字段接线，host Native/技能/副本兼容测试已通过。配置 ID 仅作选择，RPC 不接受镜像、
 资源、env 或任意 controller 命令。
 
-terminal/runner 已按执行 session 的持久历史限制宿主执行；本批受限 copy 的同设备
-bind/mount alias 准入也已有下文的定向实机证据。仍须验收可信 restricted child 支持链
-及其 legacy overlay 分离的最终组合、私有子归属、无人值守全部准入/派发门槛、UI/IPC
-组合，以及真实公开 Native → 容器修改 → 容器验证 → durable receipt 和服务死亡/截止
-故障矩阵。未审计工具实际类仍拒绝，不能用未完成入口获取 host fallback。基础 review、
-受控 controller 测试或下文的纯 validator bind probe 均不构成公共 L1 验收。
+terminal/runner 已按执行 session 的持久历史限制宿主执行；受限 copy 的同设备
+bind/mount alias 准入已有下文定向实机证据。restricted child 与 legacy overlay 已分离：
+显式 overlay 请求在副作用前拒绝，受限内部子链使用 owned directory copy，并清空、
+恢复继承的 overlay context。该内部链测试不扩大公开工具允许类，公开
+`SpawnSubagentTool` 仍拒绝，实际类/委派归属审计、无人值守全部门槛和 UI/IPC 组合待验收。
+文末三个公开 Native 候选用例不覆盖完整服务死亡/绝对截止故障矩阵；未审计入口不能
+获取 host fallback。基础 review、受控 controller 测试或纯 validator bind probe
+单独均不构成公共 L1 验收。
 
 本批源清单与命令/原始输出记录在 `.verification/linux-l1-source-checkpoint-20261026-home-fixed.json`
 及关联日志；这份清单记录局部冻结范围，不替代后续实际 Linux 产品证据。迁移和回退须
@@ -202,8 +205,9 @@ process intent 执行固定私有 probe：run completed、process removed、资�
 首次失败来自 Windows Git 归档的 LF→CRLF 改写，固定策略 hash 检查正确拒绝；
 修复归档器并保留原失败证据后，私有 probe 才通过。精确 `.gitattributes -text`
 规则与真实 Git commit/fresh checkout/archive 回归保护 policy 原始字节，不改变策略
-或授权。后续 mount/copy 专项见下节；公共允许集仍为空，公开 Native 与子任务整链、
-服务故障矩阵尚未验收，该私有通过不能宣称公共 L1 或完整 Native OS 沙盒已可用。
+或授权。后续 mount/copy 专项和三个公开 Native 候选用例分别见下节及文末；主分支
+公共允许集仍为空，公开子任务及剩余故障矩阵未验收，该私有通过不能宣称公共 L1
+或完整 Native OS 沙盒已可用。
 
 ## mount/copy 冻结版本的实机证据
 
@@ -234,3 +238,32 @@ canary；精确逆序 umount 后核实宿主无 nonce 挂载、源内容和物�
 和 `linux-mount-bind.*`。184 项、7 case 与私有 probe 分别记账，不与既有重叠回归相加。
 公共允许集仍为空，`linux-podman-l1` 仍 unavailable；完整故障矩阵、正式 40 项三轮、
 安装恢复与完整 Native 进程支持仍各自待验收。
+
+## 三个公开 Native 候选用例的接受范围
+
+冻结 `70870b4` 的 1072 个输入文件在真实 Linux 受支持组合逐项核对，仅在独立 staging
+将 `process_preflight.py` 空允许集替换为当前唯一精确 guard/policy 配对。完整服务经
+真实 stdio CLI、租约、迁移、安装核对及私有 preflight，以公开 RPC 和实际 SDK 执行
+固定 loopback SSE，profile 为 `mock=false`；没有 monkeypatch readiness/admission/
+runtime/client/transport。主分支允许集没有改变，候选排除后续 M6 文本成果提交。
+
+独立复核接受：正常写→读→容器执行→最终回执及幂等重提；实际 wait.py nonce/CID
+Running 后公开取消并清理；杀死自有服务进程、重启核对旧责任且不自动重放公开 payload，
+再经 `run.resume(reviewed=true)` 保留原 spec/session/target/预算家族完成恢复。
+共 7 次实际 SDK 请求、0 次付费模型调用；不评价真实模型质量。
+
+重启仅允许新增固定零模型 preflight。审查恢复仅另允许新 resumed run 的一次精确
+Git advisory，匹配原家族/root、工作区 inode、target/install/location，旧 process
+行保持不变；其 exit125/outcome unknown 明确记录为 advisory unavailable，不记为
+Git 校验通过。无旧 wait.py/process.py 重放。最终正常关闭 exit0、无强杀或关闭错误，
+9 个 process 行均 removed/资源零、9 个 CID 实际 absent。
+
+源码归档 SHA `0ecf77ac46ba3c199b43795c9fc0eef664e9720345bb19b0a770006905f47d0c`；
+实际 harness SHA `82cf68caef835897d94d0527b3291a648de78cb4480435846193ef69e0c92366`。
+结果 `.verification/linux-l1-public-native-result.json` SHA
+`96e3ac67a363c6af35821e5e841875a17927b7c16bd1126c4dcb8e691b434b63`，13 份原始附件
+共 2,184,602 字节。原 harness 的 baseline 误判/恢复计数失败及上传/fetch 元数据问题
+均保留，范围与完整校验值见 [运行实测](linux-runtime-readiness.md#公开-native-候选的三个实际用例)。
+
+接受范围仅限上述三个候选 case；公共允许集发布、公开 restricted 子任务、剩余故障
+矩阵、L2/L3、正式 40 项三轮、安装恢复和 14 天试用仍是独立门槛。
