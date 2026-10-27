@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 
 import pytest
+from test_run_service import native as native
 
 from minimax_code.agent.core import AgentCore
 from minimax_code.agent.llm import MiniMaxClient, StreamChunk
@@ -226,65 +226,40 @@ class TestAgentCoreMetadataOnFinalChunk:
 
 @pytest.fixture
 async def isolated_chat_runtime(
+    native,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> AsyncIterator[None]:
-    monkeypatch.setattr("minimax_code.secrets.get_api_key", lambda: None)
-    monkeypatch.setenv("MINIMAX_CODE_DATA_DIR", str(tmp_path))
-    yield
+) -> AsyncIterator[Any]:
+    from minimax_code import agent, app
 
-    import minimax_code.app as app_module
-    from minimax_code.app import (
-        get_db,
-        set_progress_tracker,
-        set_runtime,
-        set_sessions_dao,
-        set_subagent_llm,
-    )
-
-    db = get_db()
-    if db is not None:
-        await db.close()
-    app_module._DB_SINGLETON = None
-    app_module._PROVIDER_DAO_SINGLETON = None
-    set_runtime(None)
-    set_progress_tracker(None)
-    set_sessions_dao(None)
-    set_subagent_llm(None)
+    # Reuse isolated real SQLite/admission, but exercise the real core and
+    # deterministic mock LLM rather than the fixture's content-capture core.
+    llm = MiniMaxClient(api_key="", mock=True)
+    monkeypatch.setattr(agent, "AgentCore", AgentCore)
+    monkeypatch.setattr(app, "get_subagent_llm", lambda: llm)
+    try:
+        yield native
+    finally:
+        await llm.close()
 
 
 class TestAgentSendMessageMetadata:
     """Drive ``agent.send_message`` via the in-process :class:`IPCClient`
     and assert the streamed events carry a non-zero
-    ``metadata.thinking_count``.
-
-    Skipped when the storage layer can't open (the chat handler
-    hits a FOREIGN KEY error if ``init_runtime`` failed in this
-    process). The skip mirrors what the existing
-    :func:`test_ipc.test_agent_send_message_streams_hello` does —
-    both rely on the same database file, and an older broken
-    database lock is the most common cause.
+    ``metadata.thinking_count`` through real isolated SQLite admission.
     """
 
     @pytest.mark.asyncio
     async def test_message_chunk_has_metadata(
         self,
-        isolated_chat_runtime: None,
+        isolated_chat_runtime: Any,
     ) -> None:
         client = IPCClient()
 
-        try:
-            reply = await client.request(
-                "agent.send_message",
-                {"content": "hi from thinking_count test", "session_id": None},
-                timeout=15.0,
-            )
-        except Exception:
-            # init_runtime may have failed in the test process (e.g.
-            # a stale data.db from a prior test). Skip rather than
-            # fail — the AgentCore-level tests above already pin
-            # the metadata propagation.
-            pytest.skip("agent.send_message init_runtime unavailable in this env")
+        reply = await client.request(
+            "agent.send_message",
+            {"content": "hi from thinking_count test", "session_id": "one"},
+            timeout=15.0,
+        )
 
         events = await client.collect_events(50, timeout=0.2)
         # The mock LLM's canned reply starts with the [mock]
@@ -294,9 +269,13 @@ class TestAgentSendMessageMetadata:
         chunks = [e for e in events if e.get("event") == "agent.message_chunk"]
         assert chunks, "no agent.message_chunk events observed"
 
-        # At least one chunk in the stream carries a non-null
-        # ``metadata`` envelope with thinking_count >= 1.
-        meta_chunks = [c for c in chunks if c.get("data", {}).get("metadata")]
+        # Partial chunks carry run identity. Usage and thinking counts arrive
+        # on the trailing done=True chunk, not the first metadata envelope.
+        partial = [c["data"] for c in chunks if not c["data"]["done"]]
+        assert partial
+        assert all(c["metadata"]["run_id"] == reply["run_id"] for c in partial)
+        assert all("thinking_count" not in c["metadata"] for c in partial)
+        meta_chunks = [c for c in chunks if c["data"]["done"]]
         assert meta_chunks, (
             "no agent.message_chunk event carried metadata — "
             f"saw {len(chunks)} chunks"
@@ -309,6 +288,10 @@ class TestAgentSendMessageMetadata:
         assert isinstance(first_meta.get("tokens_out"), int)
         assert first_meta["tokens_in"] >= 0
         assert first_meta["tokens_out"] >= 0
+        assert first_meta["run_id"] == reply["run_id"]
+        run = await isolated_chat_runtime.dao.get_run(reply["run_id"])
+        assert run["status"] == "completed"
+        assert run["metadata"]["budget_family_id"]
 
 
 # ---------------------------------------------------------------------------
