@@ -107,9 +107,9 @@ def current_sandbox() -> Path | None:
     return _current_sandbox.get()
 
 
-def set_sandbox(root: Path) -> Token[Path | None]:
+def set_sandbox(root: Path | None) -> Token[Path | None]:
     """Publish *root* as the active sandbox; returns the reset token."""
-    return _current_sandbox.set(Path(root).resolve())
+    return _current_sandbox.set(Path(root).resolve() if root is not None else None)
 
 
 def reset_sandbox(token: Token[Path | None]) -> None:

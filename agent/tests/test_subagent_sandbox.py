@@ -299,7 +299,7 @@ def test_prompt_appends_sandbox_protocol_last() -> None:
         "+ REPORT_PROTOCOL_PROMPT"
     )
     assert src.index("+ REPORT_PROTOCOL_PROMPT") < src.index(
-        "+ (SANDBOX_PROTOCOL_PROMPT if sandbox else \"\")"
+        "+ (SANDBOX_PROTOCOL_PROMPT if overlay else \"\")"
     )
     # And the constants themselves are distinct, non-empty teachings.
     assert SANDBOX_PROTOCOL_PROMPT.strip()

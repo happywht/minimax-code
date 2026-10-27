@@ -49,8 +49,67 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — only for type hints
     from ..agent.llm import MiniMaxClient
+    from ..workspace.child import ChildWorkspace
 
 logger = logging.getLogger(__name__)
+
+
+async def _assert_restricted_child_parent(
+    target: dict[str, Any],
+    installation_id: str | None,
+    *,
+    child_run_id: str | None = None,
+    session_id: str | None = None,
+    child_workspace: ChildWorkspace | None = None,
+) -> None:
+    """Require the live admitted parent before child file or process effects."""
+    from ..app import get_db, get_execution_profiles
+    from ..budget_ledger import current_handle
+    from ..process_context import current_process_target
+    from ..process_types import ProcessBoundaryError
+    from ..run_ownership import owned_runtime
+    from ..storage.dao.process_executions import ProcessExecutionsDAO
+    from ..storage.dao.runs import AgentRunsDAO
+    from ..workspace_ctx import current_root
+
+    required, budget, context, db = current_process_target(), current_handle(), owned_runtime.get(), get_db()
+    if (required is None or required.owner is None or budget is None or context is None or db is None
+            or required.target.to_dict() != target or context.get("execution_target") != target
+            or context.get("execution_installation_id") != installation_id
+            or required.owner.family_id != budget.family_id
+            or budget.run_id not in {required.owner.run_id, child_run_id}):
+        raise ProcessBoundaryError("Restricted child has no current durable parent authority")
+    root, _ = required.owner.verify_workspace()
+    expected_root = child_workspace.root if child_workspace is not None else root
+    if current_root() != expected_root or (child_workspace is not None and child_workspace.parent != root):
+        raise ProcessBoundaryError("Restricted child workspace differs from its bound parent")
+    catalog = get_execution_profiles()
+    if catalog is None:
+        raise ProcessBoundaryError("Restricted child profile service is unavailable")
+    catalog.assert_compatible(target, installation_id)
+    runs, processes = AgentRunsDAO(db), ProcessExecutionsDAO(db)
+    parent = await runs.get_run(required.owner.run_id)
+    binding = await processes.binding_for_run(required.owner.run_id)
+    if (parent is None or parent["status"] not in {"running", "planning"}
+            or (parent.get("metadata") or {}).get("budget_family_id") != budget.family_id
+            or binding is None or binding.owner != required.owner or binding.target != target
+            or binding.installation_id != installation_id):
+        raise ProcessBoundaryError("Restricted child durable parent is inactive or changed")
+    if child_run_id is not None:
+        child = await runs.get_run(child_run_id)
+        child_binding = await processes.binding_for_run(child_run_id)
+        if (child is None or child["status"] not in {"running", "planning"}
+                or child["session_id"] != session_id
+                or (child.get("metadata") or {}).get("budget_family_id") != budget.family_id
+                or child_binding is None or child_binding.target != target
+                or child_binding.installation_id != installation_id
+                or child_binding.parent_run_id != required.owner.run_id):
+            raise ProcessBoundaryError("Restricted child admitted run authority changed")
+        if child_workspace is not None:
+            if (child_binding.owner is None
+                    or child_binding.owner.family_root_run_id != required.owner.family_root_run_id
+                    or child_binding.owner.verify_workspace()[0] != child_workspace.root):
+                raise ProcessBoundaryError("Restricted child prepared copy authority changed")
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +602,10 @@ class SubAgentRuntime:
         # that haven't yet wired an LLM (legacy unit tests, docs
         # examples, the no-API-key CI lane).
         if self._llm is None:
+            from ..process_context import current_process_target
+            from ..process_types import ProcessBoundaryError
+            if current_process_target() is not None or (handle.execution_target or {}).get("mode") == "podman":
+                raise ProcessBoundaryError("Restricted children require a configured runtime; stub completion is unavailable")
             return {
                 "agent": handle.config.name,
                 "request": request,
@@ -576,6 +639,8 @@ class SubAgentRuntime:
             current_run_id,
             current_sandbox,
             env_or_cwd_root,
+            reset_sandbox,
+            set_sandbox,
         )
 
         # All real execution paths (tool, RPC and team) cross this boundary.
@@ -584,7 +649,7 @@ class SubAgentRuntime:
         require_write_access()
         from ..process_children import child_target, prepare_child_owner
         target, installation_id = child_target(handle.config.execution_profile_id)
-        if handle.execution_target is not None and (target != handle.execution_target
+        if (target["mode"] == "podman" or handle.execution_target is not None) and (target != handle.execution_target
                 or installation_id != handle.execution_installation_id):
             raise RunPersistenceError("Child execution profile changed after construction")
         restricted = target["mode"] == "podman"
@@ -628,6 +693,9 @@ class SubAgentRuntime:
                 raise RunPersistenceError("Owned child tool capability was revoked")
             if tool_identity(core.registry.list()) != profile["tool_identity"]:
                 raise RunPersistenceError("Owned child tool identity changed")
+        if restricted:
+            await _assert_restricted_child_parent(target, installation_id,
+                child_run_id=durable_owner, session_id=session_id)
         child = None
         if restricted or current_sandbox() is None:
             run_id = (current_run_id() if not active_child() else None) or f"run_{uuid.uuid4().hex[:12]}"
@@ -651,6 +719,8 @@ class SubAgentRuntime:
             descendant = inherited.descendant(budget_owner or inherited.run_id) if inherited else None
             from contextlib import ExitStack
             with ExitStack() as scopes:
+                if restricted:
+                    scopes.callback(reset_sandbox, set_sandbox(None))
                 scopes.enter_context(budget_scope(descendant))
                 if child is not None:
                     scopes.enter_context(child.scope())
@@ -658,6 +728,8 @@ class SubAgentRuntime:
                     from ..process_context import registered_child_target_scope
                     binding = await prepare_child_owner(db, durable_owner, child,
                         target=target, installation_id=installation_id)
+                    await _assert_restricted_child_parent(target, installation_id,
+                        child_run_id=durable_owner, session_id=session_id, child_workspace=child)
                     scopes.enter_context(registered_child_target_scope(binding.owner,
                         parent_run_id=binding.parent_run_id))
                 owner_token = owned_runtime.set({**owned_runtime.get(), "registry": core.registry,

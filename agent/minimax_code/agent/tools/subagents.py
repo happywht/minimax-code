@@ -358,6 +358,26 @@ async def _drive_run(
     flag the run partial).
     """
     from ...orchestrator.subagent import get_background_run, subagent_wall_clock_s
+    from ...process_children import child_target
+    from ...process_types import ProcessBoundaryError
+
+    try:
+        target, installation_id = child_target(handle.config.execution_profile_id)
+        restricted = target["mode"] == "podman"
+        if (restricted or handle.execution_target is not None) and (target != handle.execution_target
+                or installation_id != handle.execution_installation_id):
+            raise ProcessBoundaryError("Queued child execution profile changed")
+        overlay = bool(run_metadata.get("sandbox"))
+        if restricted:
+            if run_metadata.get("sandbox") is not False:
+                raise ProcessBoundaryError("Restricted children cannot use the legacy file overlay")
+            from ...orchestrator.subagent import _assert_restricted_child_parent
+            await _assert_restricted_child_parent(target, installation_id,
+                child_run_id=run_id, session_id=sub_session)
+    except ProcessBoundaryError as exc:
+        if run_dao is not None:
+            await run_dao.update_run_status(run_id, status="failed", error=str(exc))
+        raise
 
     # P0-4 — satisfy DAG deps first. Skip when the run has no pending
     # deps (the spawn flow calls ``set_background_deps`` with [] which
@@ -422,7 +442,10 @@ async def _drive_run(
     # (overlay reads + redirected writes). Reset in the finally below
     # so nothing leaks into sibling runs on the caller's side.
     sandbox_token = None
-    if run_metadata.get("sandbox"):
+    if restricted:
+        from ...workspace_ctx import set_sandbox
+        sandbox_token = set_sandbox(None)
+    elif overlay:
         from ...workspace_ctx import set_sandbox
         from .sandbox import sandbox_root_for
 
@@ -561,7 +584,7 @@ async def _drive_run(
     # away; the main agent merges it with collect_subagent. Fail-open:
     # an I/O hiccup downgrades to an absent key, never a failed run.
     files_written: list[str] | None = result.get("files_written")
-    if run_metadata.get("sandbox"):
+    if overlay:
         try:
             from .sandbox import sandbox_files_written
 
@@ -682,6 +705,7 @@ class SpawnSubagentTool(Tool):
         "Delegate a focused piece of work to a named sub-agent and return its final result. "
         "Real runs use independent working copies by default; use collect_subagent to merge "
         "their completed edits. sandbox=true selects the legacy file-only overlay instead. "
+        "Restricted targets cannot select that overlay; its environment default applies to host runs only. "
         "Use this for specialist review, parallel research, or focused analysis that should "
         "not distract the main conversation. Set wait=false to run in the background and "
         "collect later with check_subagent / wait_subagent. "
@@ -726,7 +750,7 @@ class SpawnSubagentTool(Tool):
                     "writes are redirected to a private sandbox directory "
                     "and merged back afterwards with collect_subagent(run_id). "
                     "Use true when parallel sub-agents may touch the same "
-                    "files."
+                    "files on a host target. Restricted targets require independent copies and reject true."
                 ),
                 "default": False,
             },
@@ -760,13 +784,8 @@ class SpawnSubagentTool(Tool):
         sandbox: bool | None = None,
         depends_on: list[str] | None = None,
     ) -> ToolResult:
-        # v1.5.2 — explicit arg wins, else the env default, else false.
-        # ``None`` (the LLM omitting the key) is indistinguishable from
-        # "leave it to policy", which is exactly the contract the env
-        # knob needs.
-        if sandbox is None:
-            sandbox = _sandbox_default()
-
+        if sandbox is not None and type(sandbox) is not bool:
+            return ToolResult.fail("sandbox must be a boolean or omitted")
         # P0-4 v1.5.3 — depends_on validation. A DAG branch only makes
         # sense when the run is in the background (the caller can't wait
         # on a foreground run that's itself waiting on another run).
@@ -816,27 +835,12 @@ class SpawnSubagentTool(Tool):
         # v1.4.0 — the run id is minted before the config so the
         # report_completion tool injected below can bind to it.
         run_id = f"run_{uuid.uuid4().hex[:12]}"
-
-        # v1.5.0 — sandbox fail-closed guard. A sandbox the caller
-        # explicitly asked for is a safety contract, not a nicety: if
-        # the directory cannot be created (or no root resolves), fail
-        # the spawn rather than silently running unsandboxed against
-        # the shared workspace. This is deliberately stricter than the
-        # fail-open artifacts/emit family elsewhere in this file.
-        if sandbox:
-            from .sandbox import sandbox_root_for
-
-            sb_dir = sandbox_root_for(run_id)
-            if sb_dir is None:  # pragma: no cover — env_or_cwd_root always yields
-                return ToolResult.fail(
-                    "sandbox requested but no workspace root could be resolved"
-                )
-            try:
-                sb_dir.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                return ToolResult.fail(
-                    f"sandbox requested but directory creation failed: {exc}"
-                )
+        from ...process_children import child_target
+        target, installation_id = child_target(row.get("execution_profile_id"))
+        restricted = target["mode"] == "podman"
+        if restricted and sandbox is True:
+            return ToolResult.fail("Restricted children require an owned directory copy; sandbox=true selects an incompatible legacy overlay")
+        overlay = False if restricted else (_sandbox_default() if sandbox is None else sandbox)
 
         # P0-3 v1.6.1: the row's budget is passed through verbatim.
         # Legacy rows carrying the old default (8) were lifted to 100
@@ -893,7 +897,7 @@ class SpawnSubagentTool(Tool):
             # left") so adding it to every spawn is zero-cost when the
             # budget isn't tight and pays off when it is.
             + SOFT_COMPLETION_NUDGE_PROMPT
-            + (SANDBOX_PROTOCOL_PROMPT if sandbox else "")
+            + (SANDBOX_PROTOCOL_PROMPT if overlay else "")
         )
         runtime = get_subagent_runtime() or SubAgentRuntime()
         handle = runtime.build(
@@ -902,6 +906,21 @@ class SpawnSubagentTool(Tool):
                 run_id, row["name"], agent_id=row.get("id")
             ),
         )
+        if (handle.execution_target != target or handle.execution_installation_id != installation_id):
+            return ToolResult.fail("Child execution profile changed during construction")
+        if restricted:
+            from ...orchestrator.subagent import _assert_restricted_child_parent
+            await _assert_restricted_child_parent(target, installation_id)
+        # No overlay, brief, session or run side effects precede validation.
+        if overlay:
+            from .sandbox import sandbox_root_for
+            sb_dir = sandbox_root_for(run_id)
+            if sb_dir is None:
+                return ToolResult.fail("sandbox requested but no workspace root could be resolved")
+            try:
+                sb_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return ToolResult.fail(f"sandbox requested but directory creation failed: {exc}")
 
         # ---------------------------------------------------------------
         # v1.4.0 — lifecycle: run row + progress events + cancel channel.
@@ -946,7 +965,7 @@ class SpawnSubagentTool(Tool):
             # v1.5.0 — rides the JSON metadata column (no migration):
             # _drive_run reads it to publish the sandbox ContextVar and
             # the collect path reads it after restarts.
-            "sandbox": bool(sandbox),
+            "sandbox": overlay,
         }
         run_dao: Any = None
         from ...run_ownership import owned_runtime
@@ -1070,7 +1089,7 @@ class SpawnSubagentTool(Tool):
                 "wait": False,
                 # v1.5.0 — tell the caller this run writes are
                 # isolated and a collect step is expected.
-                "sandbox": bool(sandbox),
+                "sandbox": overlay,
                 # P0-4 — surface the dep set on the spawn envelope so
                 # the caller can sanity-check the DAG.
                 "depends_on": deps,
@@ -1103,7 +1122,7 @@ class SpawnSubagentTool(Tool):
             "reported": bool(result.get("reported", False)),
             # v1.5.0 — mirrors the spawn flag; a sandboxed run's files
             # live under .minimax/sandboxes/<run_id>/ until collected.
-            "sandbox": bool(sandbox),
+            "sandbox": overlay,
             # v1.5.0 — sandbox manifest for the follow-up collect call.
             **({"workspace": result["workspace"]} if "workspace" in result else {}),
             **(
