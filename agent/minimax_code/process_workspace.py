@@ -18,7 +18,7 @@ def _identity(path):
         return None
 
 
-def validate_process_workspace(root: Path, *, data_dir: Path, protected_roots=()):
+def validate_process_workspace(root: Path, *, data_dir: Path, protected_roots=(), included=None):
     root = root.resolve(strict=True)
     if not root.is_dir():
         raise ProcessBoundaryError("Restricted workspace must be a directory")
@@ -38,6 +38,14 @@ def validate_process_workspace(root: Path, *, data_dir: Path, protected_roots=()
                 or (identity is not None and identity in ancestors)
                 or root_identity in {_identity(p) for p in _ancestors(path)}):
             raise ProcessBoundaryError("Restricted workspace overlaps a protected service or credentials tree")
+    from .process_mounts import read_mount_table
+
+    mounts = read_mount_table()
+    if mounts is not None:
+        mounts.reject_sensitive_aliases(root, home=home,
+                                       protected_roots=tuple(path.resolve() for path in excluded))
+        if included is not None:
+            mounts.reject_included_mounts(root, included)
     if any(char in str(root) for char in (",", "\n", "\r")):
         raise ProcessBoundaryError("Restricted workspace cannot use fixed mount syntax")
     git = root / ".git"

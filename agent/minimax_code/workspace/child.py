@@ -27,6 +27,7 @@ from ..execution import (
 )
 from ..file_mutations import atomic_copy_file, atomic_write_text
 from ..managed_paths import managed_child
+from ..process_types import ProcessBoundaryError
 from ..workspace_ctx import (
     require_directory,
     reset_current_root,
@@ -94,6 +95,8 @@ def _raise_walk_error(error: OSError) -> None:
 
 def _scan(root: Path, *, restricted=False) -> dict[str, str]:
     root = require_directory(root)
+    if restricted:
+        _validate_restricted_mounts(root)
     result: dict[str, str] = {}
     total = 0
     device = root.stat().st_dev
@@ -122,6 +125,18 @@ def _scan(root: Path, *, restricted=False) -> dict[str, str]:
             if digest is not None:
                 result[relative] = digest
     return result
+
+
+def _validate_restricted_mounts(root: Path) -> None:
+    from ..app import get_execution_profiles
+    from ..process_workspace import validate_process_workspace
+
+    catalog = get_execution_profiles()
+    if catalog is None or catalog.supervisor is None:
+        raise ValueError("Restricted workspace service is unavailable")
+    catalog.assert_extension_boundary()
+    validate_process_workspace(root, data_dir=catalog.data_dir,
+        protected_roots=catalog.supervisor._protected_roots, included=_included)
 
 
 async def _git(root: Path, *args: str) -> str:
@@ -185,7 +200,7 @@ class ChildWorkspace:
             baseline = self.record["baseline"]
             self.record["changes"] = sorted(p for p in baseline.keys() | final.keys()
                                              if baseline.get(p) != final.get(p))
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, ProcessBoundaryError) as exc:
             self.record["state"] = "needs_review"
             self.record["error"] = str(exc)
             raise
@@ -240,14 +255,6 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
     require_write_access()
     parent = require_directory(parent)
     if restricted:
-        from ..app import get_execution_profiles
-        from ..process_workspace import validate_process_workspace
-        catalog = get_execution_profiles()
-        if catalog is None or catalog.supervisor is None:
-            raise ValueError("Restricted workspace service is unavailable")
-        catalog.assert_extension_boundary()
-        validate_process_workspace(parent, data_dir=catalog.data_dir,
-            protected_roots=catalog.supervisor._protected_roots)
         source_snapshot = _scan(parent, restricted=True)
         source_identity = parent.stat().st_dev, parent.stat().st_ino
     base = _base(parent, run_id)
@@ -272,6 +279,9 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
         else:
             child.root.mkdir()
             relative_files = sorted(source_snapshot if restricted else _scan(parent))
+        if restricted:
+            _validate_restricted_mounts(parent)
+            _validate_restricted_mounts(child.root)
         total = 0
         baseline = child.record["baseline"]
         for relative in relative_files:
@@ -303,8 +313,6 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
                     or _scan(parent, restricted=True) != source_snapshot
                     or _scan(child.root, restricted=True) != source_snapshot):
                 raise ValueError("Restricted source changed during preparation")
-            validate_process_workspace(child.root, data_dir=catalog.data_dir,
-                protected_roots=catalog.supervisor._protected_roots)
         child.record["state"] = "running"
         child.save()
         return child
