@@ -21,6 +21,7 @@ from typing import Any
 from ..execution import spawn_shell, terminate_tree
 from ..workspace_ctx import WorkspaceUnavailableError, require_directory, resolve_root_for_session
 from .handler_utils import HandlerError, ensure_cwd_within_root, project_root_from_params
+from .host_session_gate import require_host_session
 from .protocol import INVALID_PARAMS
 from .server import Context
 
@@ -362,7 +363,9 @@ async def _run_session(
     try:
         if session.status == "cancelled":
             return
+        await require_host_session(session.chat_session_id)
         await _create_run_tracking(session, emit)
+        await require_host_session(session.chat_session_id)
         process = await spawn_shell(
             session.command,
             cwd=session.cwd,
@@ -406,7 +409,11 @@ async def _run_session(
         raise
     except Exception as exc:
         session.status = "failed"
-        session.error = str(exc)
+        session.error = (
+            f"{exc.message}: {exc.data['reason']}"
+            if isinstance(exc, HandlerError) and isinstance(exc.data, dict) and "reason" in exc.data
+            else str(exc)
+        )
         session.completed_at = time.time()
         session.updated_at = session.completed_at
     finally:
@@ -432,6 +439,7 @@ async def start_terminal_command(
     emit: Callable[[str, dict[str, Any]], Awaitable[None]],
 ) -> TerminalSession:
     """Start a lightweight command session and return its in-memory row."""
+    await require_host_session(chat_session_id)
     session = TerminalSession(
         id=f"term_{uuid.uuid4().hex[:10]}",
         command=command,
@@ -463,9 +471,10 @@ def register_terminal_handlers(server: Any) -> None:
         try:
             p = _require_params(params)
             command = _command_from_params(p)
+            chat_session_id = _chat_session_id_from_params(p)
+            await require_host_session(chat_session_id)
             cwd = await _cwd_from_params(p)
             timeout_s = _timeout_from_params(p)
-            chat_session_id = _chat_session_id_from_params(p)
             session = await start_terminal_command(
                 command=command,
                 cwd=cwd,

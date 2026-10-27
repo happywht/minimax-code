@@ -18,6 +18,7 @@ from typing import Any
 from ..execution import capture_output, spawn_exec, spawn_shell
 from .handler_utils import HandlerError
 from .handlers_terminal import default_working_directory, start_terminal_command
+from .host_session_gate import require_host_session
 from .protocol import INVALID_PARAMS
 from .server import Context
 
@@ -39,8 +40,11 @@ def _shell_command(args: list[str]) -> str:
     return shlex.join(args)
 
 
-async def _run_probe(path: str, args: list[str]) -> tuple[bool, str | None, str | None]:
+async def _run_probe(
+    path: str, args: list[str], *, chat_session_id: str | None = None,
+) -> tuple[bool, str | None, str | None]:
     command = [path, *args]
+    await require_host_session(chat_session_id)
     try:
         is_cmd = Path(path).suffix.lower() in {".cmd", ".bat"}
         streams = {"stdout": asyncio.subprocess.PIPE, "stderr": asyncio.subprocess.PIPE}
@@ -65,6 +69,7 @@ async def _runner_entry(
     command_name: str | None,
     version_args: list[str] | None,
     supports_prompt: bool,
+    chat_session_id: str | None = None,
 ) -> dict[str, Any]:
     if command_name is None:
         return {
@@ -91,7 +96,9 @@ async def _runner_entry(
             "supports_prompt": supports_prompt,
             "supports_terminal": True,
         }
-    ok, version, reason = await _run_probe(path, version_args or ["--version"])
+    ok, version, reason = await _run_probe(
+        path, version_args or ["--version"], chat_session_id=chat_session_id,
+    )
     return {
         "id": id,
         "label": label,
@@ -105,7 +112,7 @@ async def _runner_entry(
     }
 
 
-async def _runner_catalog() -> list[dict[str, Any]]:
+async def _runner_catalog(*, chat_session_id: str | None = None) -> list[dict[str, Any]]:
     return list(await asyncio.gather(
         _runner_entry(
             id="native",
@@ -120,6 +127,7 @@ async def _runner_catalog() -> list[dict[str, Any]]:
             command_name="codex",
             version_args=["--version"],
             supports_prompt=True,
+            chat_session_id=chat_session_id,
         ),
         _runner_entry(
             id="claude-code-cli",
@@ -127,6 +135,7 @@ async def _runner_catalog() -> list[dict[str, Any]]:
             command_name="claude",
             version_args=["--version"],
             supports_prompt=True,
+            chat_session_id=chat_session_id,
         ),
     ))
 
@@ -252,7 +261,11 @@ def register_runner_handlers(server: Any) -> None:
 
     async def handle_list(params: Any, ctx: Context) -> None:
         try:
+            if params is not None and (not isinstance(params, dict) or params):
+                raise HandlerError(INVALID_PARAMS, "runner.list accepts no parameters")
             await ctx.reply({"runners": await _runner_catalog()})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
             await ctx.reply_error(_RUNNER_ERROR, "runner.list failed", {"error": str(exc)})
 
@@ -260,11 +273,14 @@ def register_runner_handlers(server: Any) -> None:
         try:
             p = _require_params(params)
             runner_id = _runner_id_from_params(p)
+            chat_session_id = _chat_session_id_from_params(p)
+            await require_host_session(chat_session_id)
             if runner_id == "native":
                 runner = await _runner_entry(id="native", label="Native shell", command_name=None,
                                              version_args=None, supports_prompt=False)
             else:
-                runner = next(item for item in await _runner_catalog() if item["id"] == runner_id)
+                runner = next(item for item in await _runner_catalog(chat_session_id=chat_session_id)
+                              if item["id"] == runner_id)
             if runner_id != "native" and not runner["available"]:
                 raise HandlerError(
                     _RUNNER_ERROR,
@@ -281,7 +297,7 @@ def register_runner_handlers(server: Any) -> None:
                 command=terminal_command,
                 cwd=_cwd_from_params(p),
                 timeout_s=_timeout_from_params(p),
-                chat_session_id=_chat_session_id_from_params(p),
+                chat_session_id=chat_session_id,
                 emit=ctx.emit,
             )
             await ctx.reply({"runner": runner, "session": session.to_wire()})

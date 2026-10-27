@@ -11,11 +11,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from minimax_code import app
 from minimax_code.config import Config
 from minimax_code.ipc import handlers_runner, handlers_terminal
 from minimax_code.ipc.handlers_runner import register_runner_handlers
 from minimax_code.ipc.handlers_terminal import register_terminal_handlers
 from minimax_code.ipc.server import IPCServer
+from minimax_code.storage.db import AsyncDatabase
 
 
 class _CapturingContext:
@@ -35,9 +37,17 @@ class _CapturingContext:
 
 
 @pytest.fixture(autouse=True)
-def _clear_sessions(monkeypatch) -> None:
+async def _clear_sessions(monkeypatch, tmp_path):
+    db = AsyncDatabase(tmp_path / "runners.db")
+    await db.connect()
+    await db.migrate()
+    monkeypatch.setattr(app, "_DB_SINGLETON", db)
     handlers_terminal._SESSIONS.clear()  # type: ignore[attr-defined]
     monkeypatch.setattr(handlers_runner, "_run_probe", AsyncMock(return_value=(True, "fixture version", None)))
+    try:
+        yield
+    finally:
+        await db.close()
 
 
 def _make_handler(
