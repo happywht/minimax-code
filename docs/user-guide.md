@@ -185,7 +185,33 @@ Agent 执行敏感工具（写文件、运行命令等）前会弹出**权限请
 文本成果的 JSON 导出只包含登记元数据，不包含文件内容；「立即备份」也只生成数据库
 快照。保留或恢复文本成果时，须同时保存匹配的数据库与 Agent 数据目录中的
 `text-artifact-vault` 文件夹。只导入 JSON 或只恢复 SQLite 文件不会补回缺失的原始
-版本字节。自动打包这些文件的完整备份/恢复流程仍属后续 M7 范围。
+版本字节。
+
+### 14.1 离线保存数据库与已登记文本成果
+
+停止使用源数据目录的 Agent 后，可在已安装依赖的 `agent/` 目录执行：
+
+```bash
+uv run python -m minimax_code.bundle create --data-dir /absolute/stopped-data --output /absolute/backups/data-vault.zip
+uv run python -m minimax_code.bundle verify --bundle /absolute/backups/data-vault.zip
+uv run python -m minimax_code.bundle restore --bundle /absolute/backups/data-vault.zip --new-data-dir /absolute/fresh-data
+```
+
+将示例路径换成实际路径（Windows 也支持，空格须加引号）。父目录须已存在，输出包
+位于源数据目录外，恢复目录必须全新且不存在。正在占用目录的服务、链接/损坏/超限
+文件或不支持的格式会使操作失败；不会覆盖已有目标。该包保存一致 SQLite 快照和
+全部已登记历史文本版本，孤儿/待发布文件只计数、不收取。
+
+这是 **data-only 副本，不能直接作为可运行实例启动**。数据库中的原主机路径、凭据、
+定时任务及执行/安装身份保持原值，后续运营前须另行显式安全重新绑定。命令不启动
+服务、调度、插件或模型。项目树、`.minimax`、外部附件/配置/技能/插件文件、SSH、
+钥匙串及容器/镜像不包含在内；包中的数据库本身仍可能含敏感字段。Windows 尚未验证
+目录项断电持久性。这不替代完整应用备份或安装恢复演练；范围和限制见
+[离线数据包说明](data-vault-bundle.md)。
+
+本批同字节候选的 Windows bundle 回归 50 项通过；真实 Linux 的 bundle/成果/存储/
+生命周期等相关回归 152 项通过、1 项仅 Windows 用例跳过，其中 bundle 50 项无跳过。
+这些离线检查不代表完整应用运营恢复已验收，原始证据与精确范围见上述说明。
 
 ## 15. 权限与审计
 
