@@ -10,12 +10,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from test_m3_isolation import Context, native  # noqa: F401
+
 from minimax_code.execution import ExecutionPolicy, execution_scope, spawn_exec, terminate_tree
 from minimax_code.ipc import builtins
 from minimax_code.storage.dao.checkpoints import CheckpointDAO
 from minimax_code.workspace.checkpoint import CheckpointManager
 from minimax_code.workspace_ctx import WorkspaceUnavailableError
-from test_m3_isolation import Context, native  # noqa: F401
 
 PYTHON = getattr(sys, "_base_executable", None) or sys.executable
 

@@ -22,15 +22,52 @@ from minimax_code.podman_execution import (
     _labels,
     _PodmanController,
 )
-from minimax_code.process_runtime import runtime_evidence
+from minimax_code.process_runtime import container_mapping, runtime_evidence
 from minimax_code.process_types import ProcessBoundaryError
 from minimax_code.runtime.service_lease import acquire_service_lease
 
 ownership = _ownership_fixture
 
 CID = "c" * 64
-RUNTIME_FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "podman-4.9.3-runtime.json").read_text(encoding="utf-8"))
+RECORDED_RUNTIME_FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "podman-4.9.3-runtime.json").read_text(encoding="utf-8"))
+
+
+def runtime_fixture_for_uid(uid):
+    # The recording belongs to UID 1000; the real filesystem-backed test
+    # installation belongs to the runner. Model keep-id for that owner without
+    # changing the captured evidence or relaxing production namespace checks.
+    fixture = copy.deepcopy(RECORDED_RUNTIME_FIXTURE)
+    fixture["uid"] = uid
+    fixture["podman_info"]["host"]["idMappings"]["uidmap"][0]["host_id"] = uid
+    fixture["HostConfig"]["IDMappings"]["UidMap"] = [
+        f"0:1:{uid}", f"{uid}:0:1", f"{uid + 1}:{uid + 1}:{65536 - uid}"]
+    return fixture
+
+
+RUNTIME_FIXTURE = runtime_fixture_for_uid(IDENTITY.uid)
 RUNTIME = runtime_evidence(RUNTIME_FIXTURE["podman_info"], uid=IDENTITY.uid, gid=1001)
+
+
+@pytest.mark.parametrize("uid", [1000, 1001, 12345])
+def test_offline_runtime_fixture_preserves_runner_uid(uid):
+    fixture = runtime_fixture_for_uid(uid)
+    evidence = runtime_evidence(fixture["podman_info"], uid=uid, gid=1001)
+    mapping = container_mapping(fixture["HostConfig"], evidence)
+    assert evidence["host_uid"] == uid
+    assert mapping["uid_host_map"][1] == [uid, uid, 1]
+    assert mapping["gid_host_map"][1] == [1001, 1001, 1]
+    assert RECORDED_RUNTIME_FIXTURE["uid"] == 1000
+    assert RECORDED_RUNTIME_FIXTURE["podman_info"]["host"]["idMappings"]["uidmap"][0]["host_id"] == 1000
+
+
+@pytest.mark.parametrize("uid", [1001, 12345])
+def test_offline_runtime_fixture_rejects_foreign_service_uid(uid):
+    fixture = runtime_fixture_for_uid(uid)
+    with pytest.raises(ProcessBoundaryError, match="does not belong to the service UID/GID"):
+        runtime_evidence(fixture["podman_info"], uid=uid + 1, gid=1001)
+    evidence = runtime_evidence(fixture["podman_info"], uid=uid, gid=1001)
+    with pytest.raises(ProcessBoundaryError, match="does not preserve the rootless owner"):
+        container_mapping(RECORDED_RUNTIME_FIXTURE["HostConfig"], evidence)
 
 
 class FakeProcess:
@@ -620,7 +657,7 @@ async def test_actual_omitempty_init_and_runtime_evidence_are_persisted(supervis
     event = next(event for event in await dao.events(handle.execution_id) if event["to_state"] == "created")
     proof = json.loads(event["evidence"])
     assert proof["runtime"] == RUNTIME
-    assert proof["mapping"]["uid_host_map"][1] == [1000, 1000, 1]
+    assert proof["mapping"]["uid_host_map"][1] == [IDENTITY.uid, IDENTITY.uid, 1]
     assert proof["mapping"]["gid_host_map"][1] == [1001, 1001, 1]
     assert proof["runtime_log"] == {"display": "4.981MB", "upper_bytes": 4985982,
         "algorithm": "human-size-4sig-si-upper-v1", "requested_bytes": 4980736,
