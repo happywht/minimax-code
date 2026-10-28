@@ -621,7 +621,12 @@ def test_migration_036_disables_populated_legacy_preserving_payload(tmp_path, mo
             "INSERT INTO scheduled_jobs(id,name,cron_expr,payload,enabled,created_at) VALUES('legacy','legacy','* * * * *','{\"command\":\"unsafe\"}',1,'now')"
         )
         monkeypatch.setattr(module, "discover_migrations", discover)
-        assert db.migrate() == [36, 37, 38]
+        applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
+        pending = [version for version, _ in discover(applied)]
+        assert pending and pending[0] == 36
+        assert db.migrate() == pending
+        assert {row[0] for row in conn.execute("SELECT version FROM schema_migrations")} == applied | set(pending)
+        assert db.migrate() == []
         row = conn.execute(
             "SELECT enabled,payload,binding_state,revision FROM scheduled_jobs WHERE id='legacy'"
         ).fetchone()

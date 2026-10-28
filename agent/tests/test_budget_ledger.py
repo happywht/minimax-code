@@ -120,11 +120,17 @@ async def test_midnight_keeps_settlement_on_reservation_day(ledger):
 
 
 async def test_prior_day_unknown_holds_family_but_not_fresh_future_day(ledger):
-    _, dao, _ = ledger
+    db, dao, _ = ledger
+    # Both modeled days are covered, independently of the actual test date.
+    await db.execute("UPDATE budget_coverage SET started_at='2026-10-25T00:00:00+08:00' WHERE id=1")
     aid = await reserve(dao, day="2026-10-25")
     await dao.sent(aid)
     await dao.settle(aid, {}, complete=False)
-    with pytest.raises(BudgetExhausted):
+    state = await dao.snapshot("family", day="2026-10-26")
+    assert state["family"]["pause_reason"] == "unresolved_attempt"
+    assert state["day"]["accounting_resolved"] and state["day"]["usage_complete"]
+    assert (await dao.snapshot(day="2026-10-25"))["day"]["unknown_attempts"] == 1
+    with pytest.raises(BudgetExhausted, match="unresolved_attempt"):
         await reserve(dao, day="2026-10-26", daily_limit=1000)
     assert await reserve(dao, family="other", day="2026-10-26", daily_limit=1000)
 

@@ -418,63 +418,54 @@ async def test_rpc_accepts_normal_body():
 
 
 @pytest.mark.asyncio
-async def test_send_message_reuses_subagent_llm(bind_test_sessions):
-    """agent.send_message must use get_subagent_llm() singleton,
-    NOT create a fresh MiniMaxClient() per request."""
-    from unittest.mock import MagicMock, patch
+async def test_send_message_reuses_subagent_llm(tmp_path):
+    """Admission creates a durable budget family and uses the exact LLM singleton."""
+    from minimax_code.agent.core import AgentRunResult
+    from minimax_code.ipc.builtins import handle_agent_send_message
+    from minimax_code.runs import get_run_service
+    from minimax_code.storage.dao.runs import AgentRunsDAO
+    from minimax_code.storage.dao.sessions import SessionsDAO
+    from minimax_code.storage.db import AsyncDatabase
 
-    bind_test_sessions("ses_test123")
-
-    fake_llm = MagicMock()
-    fake_llm.mock = True
-
-    with patch("minimax_code.app.get_subagent_llm", return_value=fake_llm):
-        from minimax_code.ipc.builtins import handle_agent_send_message
-
-        server = IPCServer(Config())
-        ctx = _CapturedReply(server=server)
-
-        # Patch AgentCore so we don't need a full conversation loop
-        mock_core = MagicMock()
-        mock_result = MagicMock()
-        mock_result.final_text = "test response"
-        mock_result.iterations = 1
-        mock_result.usage = {}
-        mock_core.run = AsyncMock(return_value=mock_result)
-        mock_core.on_chunk = None
-        mock_core.on_status = None
-        mock_core.on_tool_call = None
-        mock_core.on_tool_result = None
-
+    db = AsyncDatabase(tmp_path / "singleton.db")
+    await db.connect()
+    await db.migrate()
+    sessions = SessionsDAO(db)
+    await sessions.create(id="ses_test123", workspace_path=str(tmp_path))
+    fake_llm = MagicMock(mock=True, default_model="MiniMax-M2.5", provider_id="offline",
+                         protocol="anthropic", configuration_error=None)
+    mock_core = MagicMock()
+    mock_core.run = AsyncMock(return_value=AgentRunResult(final_text="test response", iterations=1))
+    server = IPCServer(Config())
+    ctx = _CapturedReply(server=server)
+    try:
         with (
-            # All lazy imports in builtins.py use ``from ..app import ...``
-            # so we patch at the source module.
-            patch("minimax_code.app.init_runtime", return_value=MagicMock()),
-            patch("minimax_code.app.get_db", return_value=_make_fake_db()),
-            patch(
-                "minimax_code.storage.dao.runs.AgentRunsDAO",
-                return_value=_make_fake_runs_dao(),
-            ),
-            patch("minimax_code.agent.AgentCore", return_value=mock_core),
-            patch(
-                "minimax_code.ipc.builtins._build_system_prompt_extra",
-                return_value=None,
-            ),
+            patch("minimax_code.app.get_subagent_llm", return_value=fake_llm) as get_llm,
+            patch("minimax_code.app.init_runtime", new=AsyncMock()),
+            patch("minimax_code.app.get_db", return_value=db),
+            patch("minimax_code.app.get_sessions_dao", return_value=sessions),
+            patch("minimax_code.agent.AgentCore", return_value=mock_core) as core_factory,
+            patch("minimax_code.ipc.builtins._build_system_prompt_extra", new=AsyncMock(return_value=None)),
             patch("minimax_code.perm_consent.PermissionGater", return_value=MagicMock()),
-            patch(
-                "minimax_code.ipc.handlers_permissions._ensure_permission_store",
-                return_value=None,
-            ),
+            patch("minimax_code.ipc.handlers_permissions._ensure_permission_store", return_value=None),
         ):
             await handle_agent_send_message(
-                {"content": "hello", "session_id": "ses_test123"},
-                ctx,
-            )
-
-    # The handler should succeed (not error out)
-    assert ctx.error_value is None, f"unexpected error: {ctx.error_value}"
-    assert ctx.reply_value is not None
-    assert ctx.reply_value["session_id"] == "ses_test123"
+                {"content": "hello", "session_id": "ses_test123"}, ctx)
+        assert ctx.error_value is None, f"unexpected error: {ctx.error_value}"
+        assert ctx.reply_value["session_id"] == "ses_test123"
+        assert ctx.reply_value["text"] == "test response"
+        get_llm.assert_called_once_with()
+        core_factory.assert_called_once()
+        assert core_factory.call_args.kwargs["llm"] is fake_llm
+        mock_core.run.assert_awaited_once()
+        run = await AgentRunsDAO(db).get_run(ctx.reply_value["run_id"])
+        assert run["status"] == "completed"
+        family_id = run["metadata"]["budget_family_id"]
+        family = await db.fetchone("SELECT root_run_id FROM budget_families WHERE id=?", (family_id,))
+        assert family["root_run_id"] == run["id"]
+    finally:
+        await get_run_service(server).shutdown()
+        await db.close()
 
 
 @pytest.mark.asyncio

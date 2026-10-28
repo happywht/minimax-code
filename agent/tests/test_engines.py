@@ -23,6 +23,7 @@ import pytest
 
 from minimax_code.config import Config
 from minimax_code.engines import list_engines
+from minimax_code.engines.base import EngineInfo
 from minimax_code.engines.codex import AppServerConnection
 from minimax_code.ipc.handlers_engines import register_engine_handlers
 from minimax_code.ipc.handlers_runs import register_run_handlers
@@ -38,6 +39,15 @@ class Ctx:
         self.server = server
         self.reply = AsyncMock()
         self.reply_error = AsyncMock()
+
+
+@pytest.fixture(autouse=True)
+def offline_codex_probe(monkeypatch):
+    # Registry tests must not depend on or launch a developer's installed CLI.
+    probe = AsyncMock(return_value=EngineInfo(id="codex", name="Codex", available=False,
+                                            unavailable_reason="Offline test: no CLI selected"))
+    monkeypatch.setattr("minimax_code.engines.codex._probe_codex_async", probe)
+    return probe
 
 
 @pytest.fixture
@@ -90,7 +100,7 @@ async def test_engine_status_reports_reason_for_unavailable(server, monkeypatch)
 
 @pytest.mark.parametrize("terminal_status", ["completed", "failed", "interrupted", "missing-usage"])
 async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tmp_path,
-                                                       terminal_status) -> None:
+                                                       terminal_status, offline_codex_probe) -> None:
     """engine=codex admits durably and drives through the App Server.
 
     The driver is pointed at a scripted fake codex; the run completes
@@ -101,6 +111,10 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
     from minimax_code.storage.dao.sessions import SessionsDAO
     from minimax_code.storage.db import AsyncDatabase
 
+    # Admission probes capabilities separately from the driver command override.
+    # Select the scripted fake explicitly without requiring any installed CLI.
+    offline_codex_probe.return_value = EngineInfo(id="codex", name="Scripted fake Codex",
+        available=True, version="codex-cli 0.163.0")
     db = AsyncDatabase(tmp_path / "codex.db")
     await db.connect()
     await db.migrate()
@@ -128,6 +142,7 @@ async def test_run_start_codex_admits_and_names_failures(server, monkeypatch, tm
         pytest.fail(f'run.start failed: {ctx.reply_error.await_args_list}')
     created = ctx.reply.await_args.args[0]
     assert created["created"] is True
+    offline_codex_probe.assert_awaited()
     run_id = created["run"]["id"]
     row = {"status": "queued"}
     for _ in range(300):

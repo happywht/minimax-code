@@ -264,13 +264,16 @@ async def test_heartbeat_does_not_pollute_final_text() -> None:
     )
     chunks = await _drain(stream)
 
-    # All heartbeat chunks have empty delta — they are invisible to
-    # downstream assembly.
-    for c in chunks:
-        if c.delta == "" and not c.tool_call_deltas and not c.finish_reason:
-            # Confirm it is structurally a heartbeat, not a real chunk.
-            assert c.usage == {}
-            assert c.finish_reason is None
+    assert "".join(c.delta for c in chunks if c.delta) == "hello world!"
+    # message_start also emits an empty-delta chunk, carrying real usage.
+    usage_chunks = [c for c in chunks if c.usage and not c.finish_reason]
+    assert len(usage_chunks) == 1
+    assert usage_chunks[0].usage == {
+        "prompt_tokens": 0, "cached_tokens": None, "cache_creation_tokens": None}
+    heartbeats = [c for c in chunks
+        if c.delta == "" and not c.tool_call_deltas and not c.finish_reason and not c.usage]
+    assert len(heartbeats) == 1  # The single thinking block above.
+    assert heartbeats[0].usage == {} and heartbeats[0].finish_reason is None
 
 
 @pytest.mark.asyncio

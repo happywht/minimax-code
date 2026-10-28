@@ -21,7 +21,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import anthropic
 import pytest
 
 from minimax_code.agent import reasoning as R
@@ -319,10 +318,10 @@ async def test_openai_transport_none_variant_emits_nothing(openai_transport):
 #
 # * XHIGH surfaces as ``"max"`` (kept — Anthropic accepts ``max``), whereas the
 #   OpenAI seam degrades XHIGH → ``"high"``.
-# * MINIMAL is dropped (``NOT_GIVEN``), whereas the OpenAI seam keeps it as
+# * MINIMAL is omitted from SDK kwargs, whereas the OpenAI seam keeps it as
 #   ``"minimal"``.
 #
-# The default (None) leaves ``output_config`` at ``NOT_GIVEN`` — zero regression
+# The default (None) omits ``output_config`` from SDK kwargs — zero regression
 # vs the pre-R57 request body.
 
 
@@ -393,7 +392,7 @@ def anthropic_transport(
 
 
 async def test_anthropic_transport_default_emits_no_output_config(anthropic_transport):
-    """Zero regression: no effort ⇒ ``output_config`` is ``NOT_GIVEN``.
+    """Zero regression: no effort omits ``output_config`` from SDK kwargs.
 
     The AgentConfig default (None) flows coerce → None → emit-seam None, so the
     request body is byte-identical to the pre-R57 path (no ``output_config``
@@ -402,7 +401,7 @@ async def test_anthropic_transport_default_emits_no_output_config(anthropic_tran
     transport, fake = anthropic_transport
     _ = [c async for c in transport.stream_chat(_MSGS, model="m")]
     assert fake.captured_kwargs is not None
-    assert fake.captured_kwargs["output_config"] is anthropic.NOT_GIVEN
+    assert "output_config" not in fake.captured_kwargs
 
 
 async def test_anthropic_transport_high_emits_high_effort(anthropic_transport):
@@ -425,7 +424,7 @@ async def test_anthropic_transport_xhigh_emits_max_unlike_openai(anthropic_trans
 
 
 async def test_anthropic_transport_minimal_omitted_unlike_openai(anthropic_transport):
-    """MINIMAL → ``NOT_GIVEN`` (dropped; Anthropic has no ``minimal`` tier).
+    """MINIMAL omits ``output_config`` (Anthropic has no ``minimal`` tier).
 
     The other key divergence from the OpenAI seam (R56), where MINIMAL is kept
     as ``"minimal"``: Anthropic's ``OutputConfigParam.effort`` Literal has no
@@ -434,11 +433,11 @@ async def test_anthropic_transport_minimal_omitted_unlike_openai(anthropic_trans
     """
     transport, fake = anthropic_transport
     _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="minimal")]
-    assert fake.captured_kwargs["output_config"] is anthropic.NOT_GIVEN
+    assert "output_config" not in fake.captured_kwargs
 
 
 async def test_anthropic_transport_none_variant_emits_nothing(anthropic_transport):
-    """The NONE variant → ``NOT_GIVEN`` (Anthropic has no ``none`` tier)."""
+    """The NONE variant omits ``output_config`` (Anthropic has no ``none`` tier)."""
     transport, fake = anthropic_transport
     _ = [c async for c in transport.stream_chat(_MSGS, model="m", reasoning_effort="none")]
-    assert fake.captured_kwargs["output_config"] is anthropic.NOT_GIVEN
+    assert "output_config" not in fake.captured_kwargs
