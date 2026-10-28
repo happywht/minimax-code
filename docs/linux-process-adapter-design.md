@@ -474,3 +474,18 @@ runtime失败响应的准入及持久责任；后者不代表实际宿主runtime
 坚持不接管foreign CID、未获精确absence证据不释放责任；尚未实测。持续fork、
 阻塞IO、公开child、无人值守准入及公共发布门槛不变；该process case不覆盖L2
 宿主文件工具，也不代表完整L1、M1整体或L2/L3完成。旧失败与此前各批范围原样保留。
+
+## 两条有限所有权链的接受范围（2026-10-28）
+
+ownership v2 以 `6eec107` 的1103个原始 Git blob、私有 guard/policy 配对及875字节
+显式服务 observer 完成真实 CLI/RPC/SDK 两条链；源码前后不变，完整字节/AST逆变换
+固定补丁范围。duplicate B 因实际租约争用 exit1，A及payload健康；missing/mismatched
+marker 不再生、不改安装身份，保留 resource1，只读 runtime 查询，无生命周期变更。
+harness 显式恢复原 marker inode/字节后 reconcile，不把恢复动作归为产品自动初始化。
+另一链仅对已登记精确 CID 的 inspect/exists 注入合成125：cleanup_pending/resource1、
+exit=null、真实容器仍 running；撤除合成响应后凭真实精确 absence 核销。三次新增
+restricted 准入拒绝、规范化表不变、无重放；这不代表实际宿主 runtime 停机或活跃租约撤销。
+两链在原 deadline 前清理停止，不能作为新增到期驱动证明。最终7行 removed/resource0、
+7个 CID absent，2次受控 SDK/0付费；2次计划内服务-9、duplicate1、3次正常0，无 forced kill/rescue。
+v1 重用日志 ordinal 的失败保留，v2 仅修复单调编号；完整证据见[运行实测](linux-runtime-readiness.md#两条有限所有权候选的实机验收2026-10-28)。
+下一有限缺口为持续fork/真正阻塞输出及经审计公开入口；公共允许集仍空，完整L1、L2、公开child、无人值守及M1发布门槛不变，旧范围不合并改写。

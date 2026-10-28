@@ -883,3 +883,39 @@ Linux实际证据分开，不把process行、旧失败或重叠回归相加为�
 持续fork、真正阻塞输出、公开restricted子任务、无人值守准入及公共允许集发布仍待
 完成。L2宿主文件工具、M1整体、完整L1、L2/L3、正式40项三轮、完整安装/升级/恢复
 及14天真实使用均未因此验收，能力卡仍unavailable。
+
+### 2026-10-28：M1 两条有限所有权链实机验收
+
+ownership v2 基于 `6eec107` 的1103个原始 Git blob、私有配对与875字节显式 observer，
+真实 CLI/RPC/SDK 两条链56.426秒、exit0并经独立复核接受；源码前后不变。duplicate B
+实际租约拒绝且 A/payload 健康；missing/mismatched marker 保留身份/resource1，原文件
+由 harness 显式恢复。合成精确 CID inspect/exists125 保持 cleanup_pending/resource1、
+拒绝新增 restricted 准入，撤除合成响应后凭真实精确 absence 恢复，无 SDK/payload 重放。
+这是重复启动争用及合成控制响应，不代表活跃租约撤销/宿主 runtime 停机；原 PID 在
+deadline前清理停止，不新增到期驱动证明。2次受控SDK/0付费，7行removed/resource0、
+7个CID absent；2次计划服务-9、duplicate1、3次正常0，无 forced kill/关闭错误/rescue。
+v1 日志 ordinal 重用失败保留，v2 单调编号修复及完整冻结/回执见
+[运行实测](linux-runtime-readiness.md#两条有限所有权候选的实机验收2026-10-28)。
+下一有限工作为持续fork/真正阻塞输出及经审计公开入口；公共允许集仍空，完整L1、L2、
+公开child、无人值守、M1整体和既有发布门槛未完成，旧失败及各批接受范围不变。
+
+### 2026-10-28：Coding Plan 实际 pilot 尚未通过
+
+v1 在隔离的固定 `9e57210` 源码上执行真实 `task1-fix-total`，第二次调用在预算准入前
+进入 `budget_paused`，未完成任务或外部验收。cap为60,000；首次估算57,501，已知报告
+用量60；第二次所需 reservation 超过剩余59,940，精确值未记录。仅2次 `read_file`，
+无文件写入，未进入归档/重试。实际 provider 用量与成本未独立核验，不宣称零成本。
+原报告为工作区附件 `.verification/codingplan-pilot-v1/privatepilot-fccdbf709f8d4232a97f2202a249614a/report-20261028-174838.md`。
+v2 仅计划固定输出上限4096，仍为离线准备/待实际运行；不据此宣称 pilot 已通过。
+
+### 2026-10-28：Coding Plan v2 完成执行，发现流式用量漏计
+
+v2 固定输出上限4096、累计限额仍60000，在隔离的同一 `9e57210` 源码上实际运行一次，
+9次推理、30.5秒，外部验收10项通过；产品仍因2次失败命令保留 requires_review/failed，
+完整交付0/1，不据模型完成文字或外部测试将其改为正式通过。
+新增的有界标量证据显示：message_start 输入为0，而 message_delta 返回累计输入与
+缓存读取；当前适配器漏掉后两项，账本只登记输出1031。9次实际 SDK delta 的可见字段
+合计为输入11413、缓存读取73136、输出1031，共85580；这不是独立账单或货币核算。
+已停止追加真实调用，先修复逐字段累计用量合并并离线回放验证，不增大限额、不重写旧账本。
+原报告及标量审查记录保留在工作区 `.verification/codingplan-pilot-v2/` 和
+`.verification/codingplan-pilot-v2-root-acceptance.json`；v1预算暂停及v2完整交付失败记录均保留。

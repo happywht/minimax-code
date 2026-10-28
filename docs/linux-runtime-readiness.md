@@ -507,3 +507,52 @@ service正常exit0，无强杀、关闭错误或rescue。准备阶段39项离线
 CID；未确认精确CID absent前不能释放责任。它们尚未实测，持续fork、真正阻塞输出、
 公开restricted子任务和无人值守全部准入仍有缺口。公共允许集仍空、能力卡unavailable；
 不据本例宣称完整L1、广泛网络/IPC隔离、L2宿主文件工具、M1整体或L2/L3完成。
+
+## 两条有限所有权候选的实机验收（2026-10-28）
+
+ownership v2 经真实完整 stdio CLI、公开 RPC 和实际 SDK 固定 loopback SSE，
+**重复启动/安装 marker 与合成 runtime 控制失败两条链通过，并经独立复核接受**。
+基底为 `6eec10740400e8ef2734b50b096de23f4e3e5eb8` 的1103个原始 Git blob，
+包含已接受的三项 CI 测试修复；运行前后源码 hash 一致。私有 staging 仅允许原
+guard/policy 配对，并加875字节的显式服务 observer 补丁；完整字节及 AST 逆变换
+还原原源码，产品 checkout、guard/资产与公共空允许集未改变。
+
+v1 在服务 A 尚活跃、尚未进入已完成服务列表时，用列表长度给 B 重用 ordinal1，
+独占创建 `service-1.stdout` 抛出 FileExistsError，**重复 CLI 尚未 spawn，验收失败**。
+17.157秒、18份附件889,475字节、1次受控 SDK；A 正常 exit0，无强杀/关闭错误。
+失败路径 rescue=true、外部删除0；另核验3行 removed/resource0、3个精确 CID absent。
+v2 用同一单调 allocator 覆盖正常 start 和 duplicate 创建，保留独占日志、不覆盖旧证据；
+52项离线检查含真实日志构造的 A/B/重启序列、模型化 OS 与只读 SQLite 条件，另有
+helper Ruff/CLI 检查；这些准备结果不替代两条 Linux 实测，也不改写 v1 失败。
+
+| 链 | 实际接受范围 |
+|---|---|
+| 重复启动与 marker | B 实际 CLI 因租约争用 exit1；A 仍响应，heartbeat 在0.353秒内18→22，原 marker/startup marker 与相关规范化表不变。显式杀死自有 A 后，missing/mismatched marker 启动保持原安装身份及 resource1；只记录 info/list/inspect，无 create/start/stop/kill/rm 等生命周期变更。marker 不再生、不接管错误身份；恢复后 reconcile 原执行，无 SDK 重放 |
+| 合成控制失败与恢复 | 真实容器已 running，服务内仅对 nonce/phase/已登记 exec/install/full CID 绑定的 inspect、exists 各1次返回明确标注的 synthetic125；125不是 absent。公开取消后 cleanup_pending/resource1、exit_code=null，独立外部真实 inspect 仍见 running。该 unknown 观测窗口内故障 CID 无真实 stop/kill/rm；同时记录其他 CID 的6次真实变更尝试。显式杀死自有服务、撤除合成响应后，真实 runtime reconcile 确认精确 absence 才核销责任 |
+
+missing、mismatched 与 synthetic-unknown 三次新增 restricted 准入均拒绝，能力
+unavailable，相关规范化 DB 表前后相同、SDK 不增加，没有 host fallback 或成功假报。
+原安装 marker 由 harness 显式 `renameat2(NOREPLACE)` 保存/恢复原 dev/inode579798
+及字节，SHA-256 为 `f84f53b7f4557e58b8846b2edba74e4c36d81802f91dd2f62398d74d817b1e9e`。
+这是原文件恢复，不是产品重新初始化；rename 改变 ctime，不宣称全部元数据相同。
+
+沿用原60秒 BOOTTIME deadline 和既有资源上限，无期限延长。两链原 PID 首次观测
+停止分别在原 deadline **前约43.526秒/52.421秒**，处于清理链，随后 heartbeat 稳定。
+这些是观测上界，本批没有走到到期，**不新增 deadline 驱动停止的验收证明**。
+实际56.426秒、exit0；每链仅1个 payload，共2次受控 SDK、0次付费调用，无重放。
+最终7行全部 removed/resource_held=0、7个精确 CID absent：3个私有 preflight exit0、
+2个 Git advisory125/unknown、2个 payload137/interrupted，分别记账，不把137当 OOM。
+服务退出为2次计划内 SIGKILL/-9、duplicate B exit1、3次正常 exit0；最后服务正常0，
+全批无 forced kill、关闭错误或 rescue，不将计划故障杀死写成正常退出。
+
+冻结及原始附件（当前工作区提供，不随普通克隆）：
+
+- v1 `.verification/linux-l1-ownership-v1-20261028T094441Z-a2663f62.json`：`7705130feea5d9067143419405106c5cfd50f0ba6b867374414c4cd2e26fbb69`；失败分类保留。
+- v2 `.verification/l1-ownership-v2-frozen-manifest.json`：`3f046b9c38469afcecc987bf9fb2e4c0ece82644e05b4bc976c457f47b901c82`；源码归档：`978bd3344f75a345fbc7f83cbcc86f8ee02dc6cfe9d4074f7268cb6f5abf4ffc`。
+- v2 `.verification/linux-l1-ownership-v2-20261028T095205Z-11a32dc9.json`：`8e7b5637cd55ad141dc9f494b50d1d600b274736185c8e625e17b52bc8cd4e8e`；同名目录 result：`b0bd96a3a93accb36fdc88db2ef3ee563419cae463cf21b59d06a9e32dbfcf76`；**35份附件、4,014,303字节**逐项核验。
+
+此前所有失败与各批接受范围保留，上一节“尚未实测”的计划由本节这两条有限链更新。
+本批覆盖重复启动租约争用及真实容器周围的合成控制响应，不代表活跃租约撤销或
+实际宿主 runtime 停机。下一有限工作为持续 fork/真正阻塞输出及经审计的公开入口范围；
+公共允许集仍空、能力卡 unavailable，完整 L1、L2、公开 child、无人值守、M1整体、
+正式40项三轮、完整安装/升级/恢复与14天真实使用门槛均未因此完成。

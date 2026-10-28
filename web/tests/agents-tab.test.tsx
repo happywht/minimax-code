@@ -14,6 +14,7 @@ vi.mock("../src/stores", () => {
   return {
     useAgentStore: ms({
       agents: [],
+      executionProfiles: [],
       loading: false,
       refresh: vi.fn(),
       create: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock("../src/components/layout/ErrorBoundary", () => ({
 
 import { AgentsTab } from "../src/components/settings/AgentsTab";
 import { useAgentStore } from "../src/stores";
+import type { ExecutionProfileCapability } from "../src/types/ipc";
 
 const AGENT = {
   id: "agent_1",
@@ -49,8 +51,9 @@ const store = useAgentStore as unknown as ReturnType<typeof vi.fn> & {
 describe("AgentsTab edit & toggle (P1-3)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    const state = store() as { agents: unknown[] };
+    const state = store() as { agents: unknown[]; executionProfiles: ExecutionProfileCapability[] };
     state.agents = [AGENT];
+    state.executionProfiles = [];
   });
 
   it("toggles an agent's enabled state via the row button", () => {
@@ -89,6 +92,7 @@ describe("AgentsTab edit & toggle (P1-3)", () => {
       system_prompt: "你是一个安全审查员",
       model: "abab6.5s-chat",
       skills: [],
+      execution_profile_id: null,
     });
   });
 
@@ -110,6 +114,7 @@ describe("AgentsTab edit & toggle (P1-3)", () => {
       system_prompt: "你是一个代码审查员",
       model: undefined,
       skills: [],
+      execution_profile_id: null,
     });
   });
   it("edits ordered skill IDs and explicitly clears the dependency list", async () => {
@@ -126,7 +131,10 @@ describe("AgentsTab edit & toggle (P1-3)", () => {
     fireEvent.click(screen.getByTestId("settings-agent-edit-submit-code-reviewer"));
     expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ skills:[] }));
   });
-  it("creates an Agent with ordered skill dependencies", async () => {
+  it.each([
+    { profile: "", expected: null, label: "default inherited scope" },
+    { profile: "native-host", expected: "native-host", label: "explicit host scope" },
+  ])("creates an Agent with ordered skills and $label", async ({ profile, expected }) => {
     const state = store() as { create: ReturnType<typeof vi.fn> };
     state.create.mockResolvedValue(AGENT);
     render(<AgentsTab />);
@@ -134,7 +142,39 @@ describe("AgentsTab edit & toggle (P1-3)", () => {
     fireEvent.change(screen.getByTestId("settings-agent-form-name"), { target:{value:"with-skills"} });
     fireEvent.change(screen.getByTestId("settings-agent-form-prompt"), { target:{value:"Agent"} });
     fireEvent.change(screen.getByTestId("settings-agent-form-skills"), { target:{value:"pack:one, pack:two"} });
+    const selector = screen.getByLabelText("执行环境");
+    expect(selector).toHaveValue("");
+    expect(screen.getByRole("option", { name: "默认（根任务使用宿主，子任务继承父级）" })).toBeEnabled();
+    expect(screen.getByRole("option", { name: "Native 宿主" })).toBeEnabled();
+    if (profile) fireEvent.change(selector, { target: { value: profile } });
     fireEvent.click(screen.getByTestId("settings-agent-form-submit"));
-    await waitFor(() => expect(state.create).toHaveBeenCalledWith({name:"with-skills",system_prompt:"Agent",skills:["pack:one","pack:two"]}));
+    await waitFor(() => expect(state.create).toHaveBeenCalledWith({
+      name: "with-skills", system_prompt: "Agent", skills: ["pack:one", "pack:two"],
+      execution_profile_id: expected,
+    }));
+  });
+  it("preserves a saved unavailable execution profile when editing the prompt", async () => {
+    const state = store() as {
+      agents: unknown[]; executionProfiles: ExecutionProfileCapability[]; update: ReturnType<typeof vi.fn>;
+    };
+    state.agents = [{ ...AGENT, execution_profile_id: "linux-podman-l1" }];
+    state.executionProfiles = [{
+      id: "linux-podman-l1", label: "Linux Podman L1", mode: "podman", available: false,
+      reason: "Linux runtime unavailable", unattended_supported: false,
+      boundary_summary: "Rootless container boundary",
+    }];
+    render(<AgentsTab />);
+    fireEvent.click(screen.getByTestId("settings-agent-edit-code-reviewer"));
+    expect(screen.getByLabelText("执行环境")).toHaveValue("linux-podman-l1");
+    expect(screen.getByRole("option", { name: "Linux Podman L1（不可用）" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Linux runtime unavailable");
+    fireEvent.change(screen.getByTestId("settings-agent-edit-prompt-code-reviewer"), {
+      target: { value: "Updated prompt" },
+    });
+    fireEvent.click(screen.getByTestId("settings-agent-edit-submit-code-reviewer"));
+    await waitFor(() => expect(state.update).toHaveBeenCalledWith({
+      name: "code-reviewer", system_prompt: "Updated prompt", model: "abab6.5s-chat",
+      skills: [], execution_profile_id: "linux-podman-l1",
+    }));
   });
 });

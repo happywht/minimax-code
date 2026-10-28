@@ -21,7 +21,7 @@ vi.mock("../../../stores", () => {
     useScheduleStore: ms({ jobs: [], refresh: vi.fn(), create: vi.fn(), remove: vi.fn(), setEnabled: vi.fn(), runNow: vi.fn(), loading: false }),
     useTaskStore: ms({ tasks: {} }),
     useSecretStore: ms({ status: { source: "none", configured: false }, loading: false, refresh: vi.fn(), setKey: vi.fn(), clear: vi.fn() }),
-    useAgentStore: ms({ agents: [], loading: false, refresh: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn() }),
+    useAgentStore: ms({ agents: [], executionProfiles: [], loading: false, refresh: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn() }),
     useTeamStore: ms({ teams: [], loading: false, refresh: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), enable: vi.fn(), disable: vi.fn() }),
     useTeamRunStore: ms({ runs: [], spawn: vi.fn(), prune: vi.fn(), remove: vi.fn() }),
     useSessionStore: ms({ currentSessionId: null, projects: [] }),
@@ -93,6 +93,7 @@ describe("Settings tab split (P0#3)", () => {
     fireEvent.click(screen.getByTestId("settings-agent-create"));
     expect(screen.getByLabelText("Agent 名称")).toHaveAttribute("name", "agent-name");
     expect(screen.getByLabelText("系统提示词")).toHaveAttribute("name", "agent-system-prompt");
+    expect(screen.getByLabelText("执行环境")).toHaveValue("");
     agents.unmount();
 
     const teams = render(<TeamsTab />);
