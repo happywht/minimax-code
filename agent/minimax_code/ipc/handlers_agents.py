@@ -296,6 +296,12 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             runs, service = AgentRunsDAO(db), get_run_service(ctx.server)
             existing = await runs.find_agent_root(parsed.session_id, parsed.idempotency_key, intent)
             if existing is not None:
+                snapshot = (existing.get("metadata") or {}).get("agent_execution") or {}
+                target = snapshot.get("execution_target") or {}
+                if method != "agent.invoke" and target.get("mode") == "podman":
+                    raise ValueError("L1 public roots require agent.invoke")
+                if existing["status"] not in {"completed", "failed", "cancelled", "interrupted", "budget_paused"}:
+                    AgentExecutionSpec(snapshot)
                 await _reply_for_run(ctx, runs, service, existing,
                     await service.job_for_run(existing["id"]), created=False, wait=not parsed.admission_only)
                 return
@@ -311,6 +317,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                 row = await agent_dao.get_by_name_or_id(parsed.agent_id)
             if row is None:
                 raise ValueError("Agent is unavailable")
+            if method != "agent.invoke":
+                from ..app import ensure_execution_profiles
+                catalog = await ensure_execution_profiles(db)
+                if catalog.resolve(row.get("execution_profile_id"))["mode"] == "podman":
+                    raise ValueError("L1 public roots require agent.invoke")
             session_id, workspace_id = f"ses_{uuid.uuid4().hex}", f"agent_{uuid.uuid4().hex[:16]}"
             spec, model = await AgentExecutionSpec.capture(row, db, ctx.server, values, intent,
                 workspace, source["project_id"], session_id, workspace_id)

@@ -94,6 +94,9 @@ def load_execution_binding(run: dict, *, family_root_run_id: str | None = None) 
         elif not isinstance(parent_run_id, str) or not parent_run_id or parent_run_id == run["id"]:
             raise ProcessBoundaryError("Internal process owner requires its real parent run")
     target = validate_target(snapshot.get("execution_target"))
+    if public is not None:
+        from .process_boundary import assert_restricted_agent_snapshot
+        assert_restricted_agent_snapshot(snapshot)
     digest = canonical_hash(target)
     if snapshot.get("execution_target_hash") != digest:
         raise ProcessBoundaryError("Saved execution target hash is incompatible")

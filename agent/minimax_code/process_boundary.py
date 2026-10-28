@@ -1,33 +1,58 @@
-"""Explicit supported L1 tool classes and textual skill admission."""
+"""The supervised L1 tool surface is the exact built-in exec implementation."""
 from __future__ import annotations
 
 from .process_types import ProcessBoundaryError
 
 
 def assert_text_skills(runtime, values):
-    from .skill_bindings import resolve_skills
-    for skill in resolve_skills(runtime, values):
-        if runtime.has_tool_provider(skill.skill_id) or skill.tools:
-            raise ProcessBoundaryError("L1 仅支持没有可执行 provider 的文本技能")
+    from .skill_bindings import skill_ids
+    if skill_ids(values):
+        raise ProcessBoundaryError("L1 does not support skills, including text-only skills")
 
 
 def assert_supported_tools(tools):
     # Exact classes, not module/name strings: a plugin cannot impersonate a
     # reviewed tool by choosing its public name or subclassing it.
-    from .agent.tools.artifacts import ReadArtifactTool, ReportCompletionTool, ReportProgressTool
-    from .agent.tools.ask_user import AskUserTool
-    from .agent.tools.edit import EditFileTool
-    from .agent.tools.file_ops import AppendFileTool, ListDirectoryTool, ReadFileTool, WriteFileTool
-    from .agent.tools.glob import GlobFindTool
-    from .agent.tools.search import SearchFilesTool
     from .agent.tools.terminal import ExecCommandTool
+    from .skill_bindings import tool_identity
 
-    supported = {ReadArtifactTool, ReportCompletionTool, ReportProgressTool, AskUserTool,
-        EditFileTool, AppendFileTool, ListDirectoryTool, ReadFileTool, WriteFileTool,
-        GlobFindTool, SearchFilesTool, ExecCommandTool}
+    if len(tools) != 1:
+        raise ProcessBoundaryError("L1 requires exactly one exec_command tool")
     for tool in tools:
-        if type(tool) not in supported:
+        if type(tool) is not ExecCommandTool:
             raise ProcessBoundaryError(f"L1 尚未审计工具实际类: {tool.name}")
+    if tool_identity(tools) != tool_identity([ExecCommandTool()]):
+        raise ProcessBoundaryError("L1 requires the unchanged exec_command implementation")
+
+
+def assert_restricted_agent_snapshot(data):
+    """Pure public-podman authority check, shared by restore and owner loading.
+
+    Old broader snapshots are rejected rather than silently narrowed. Internal
+    process_execution_owner snapshots have their own authority and are not agents.
+    """
+    from .agent.tools.terminal import ExecCommandTool
+    from .skill_bindings import check_bindings, tool_identity
+
+    target = data.get("execution_target")
+    if not isinstance(target, dict) or target.get("mode") != "podman":
+        return
+    bindings = data.get("skill_bindings")
+    try:
+        check_bindings(bindings)
+        assert_text_skills(None, data.get("skills"))
+    except ValueError as exc:
+        raise ProcessBoundaryError("Saved L1 skill bindings are incompatible") from exc
+    if bindings["skills"]:
+        raise ProcessBoundaryError("Saved L1 agent cannot contain skills")
+    if (data.get("allowlist") != [ExecCommandTool.name]
+            or data.get("tool_identity") != tool_identity([ExecCommandTool()])):
+        raise ProcessBoundaryError("Saved L1 agent requires the exact exec_command implementation only")
+    if not isinstance(data.get("intent"), dict) or data["intent"].get("method") != "agent.invoke":
+        raise ProcessBoundaryError("L1 public roots require agent.invoke")
+    if (data.get("hooks_policy") != "disabled" or type(data.get("permission_policy_version")) is not int
+            or data["permission_policy_version"] != 1):
+        raise ProcessBoundaryError("Saved L1 permission or Hooks policy is incompatible")
 
 
 def assert_restricted_dispatch(tool):

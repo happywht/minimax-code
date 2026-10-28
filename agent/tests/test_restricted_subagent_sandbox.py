@@ -1,8 +1,9 @@
 """Trusted restricted child copies never inherit legacy file overlays.
 
 The controller and mount boundary are controlled offline seams. Real SQLite,
-copy manifests, file tools and process owner admission remain in this path;
-this suite does not enable the public restricted subagent tool class.
+copy manifests and process owner admission remain in this path. A controlled
+process controller simulates payload writes; Native file tools and the public
+restricted subagent tool chain are explicitly rejected.
 """
 from __future__ import annotations
 
@@ -20,10 +21,8 @@ from test_process_supervisor import supervisor as supervisor
 from minimax_code import app
 from minimax_code.agent.core import AgentCore, AgentRunResult
 from minimax_code.agent.tools.base import ToolRegistry
-from minimax_code.agent.tools.file_ops import ReadFileTool, WriteFileTool
 from minimax_code.agent.tools.sandbox import CollectSubagentTool
 from minimax_code.agent.tools.subagents import (
-    SANDBOX_PROTOCOL_PROMPT,
     SpawnSubagentTool,
     _drive_run,
 )
@@ -62,8 +61,7 @@ async def restricted_child(supervisor, monkeypatch, tmp_path):
     overlay = tmp_path / "inherited-overlay"
     overlay.mkdir()
     registry = ToolRegistry()
-    for tool in (ReadFileTool(), WriteFileTool(), ExecCommandTool()):
-        registry.register(tool)
+    registry.register(ExecCommandTool())
     agents = AgentDAO(db)
     row = await agents.upsert(name="copy-worker", tool_allowlist=list(registry.names()),
         execution_profile_id="linux-podman-l1")
@@ -103,6 +101,14 @@ async def restricted_child(supervisor, monkeypatch, tmp_path):
 
     monkeypatch.setattr("minimax_code.workspace.child._validate_restricted_mounts", workspace_boundary)
     monkeypatch.setattr(manager, "_validate_workspace", workspace_boundary)
+    create = controller.create
+
+    async def payload_create(row, argv, **kwargs):
+        if argv == ("controlled-create",):
+            (Path(row["workspace"]) / "created.txt").write_text("child")
+        await create(row, argv, **kwargs)
+
+    monkeypatch.setattr(controller, "create", payload_create)
     runtime = SubAgentRuntime(llm=SimpleNamespace())
     build = runtime.build
 
@@ -121,8 +127,9 @@ async def restricted_child(supervisor, monkeypatch, tmp_path):
         assert current_process_target().owner.run_id != owner.run_id
         if state.behavior is not None:
             return await state.behavior(core)
-        result = await core.registry.dispatch("write_file", {"path": "created.txt", "content": "child"})
-        assert result.success, result.error
+        assert core.registry.names() == ["exec_command"]
+        process = await spawn_exec("controlled-create")
+        assert await process.wait() == 42
         return AgentRunResult("done", 1)
 
     monkeypatch.setattr(AgentCore, "run", core_run)
@@ -188,44 +195,42 @@ async def test_explicit_overlay_is_rejected_before_any_spawn_effect(restricted_c
 
 
 @pytest.mark.parametrize("sandbox", [None, False])
-async def test_restricted_env_default_uses_actual_copy_manifest(restricted_child, monkeypatch, sandbox):
+async def test_public_spawn_chain_rejects_before_any_copy_or_run_effects(restricted_child, monkeypatch, sandbox):
     state = restricted_child
     monkeypatch.setenv("MINIMAX_CODE_SANDBOX_DEFAULT", "true")
-    result = await SpawnSubagentTool().run("copy-worker", "write", sandbox=sandbox)
-    assert result.success, result.error
-    output = result.output
-    assert output["sandbox"] is False
-    assert SANDBOX_PROTOCOL_PROMPT not in state.handles[0].config.system_prompt
-    child = load_child(state.root, output["workspace"]["run_id"])
-    assert child.record["restricted"] is True and child.record["kind"] == "directory"
-    assert output["workspace"]["collection_required"] is True
-    assert output["files_written"] == output["workspace"]["files_written"] == child.record["changes"] == ["created.txt"]
-    assert (child.root / "created.txt").read_text() == "child"
-    assert not (state.root / "created.txt").exists()
+    before_runs = await AgentRunsDAO(state.db).list_runs()
+    before_sessions = await state.db.fetchall("SELECT id FROM sessions")
+    with pytest.raises(ProcessBoundaryError):
+        await SpawnSubagentTool().run("copy-worker", "write", sandbox=sandbox)
+    assert not state.entered.is_set() and not state.handles
+    assert await AgentRunsDAO(state.db).list_runs() == before_runs
+    assert await state.db.fetchall("SELECT id FROM sessions") == before_sessions
+    assert not (state.root / ".minimax").exists()
     assert not (state.root / ".minimax" / "sandboxes").exists()
     assert not list(state.overlay.iterdir())
-    saved = await AgentRunsDAO(state.db).get_run(output["run_id"])
-    assert saved["metadata"]["sandbox"] is False
-    assert saved["metadata"]["files_written"] == child.record["changes"]
-    assert saved["metadata"]["process_execution_owner"]["copy_binding"]["kind"] == "directory"
     assert current_sandbox() == state.overlay
 
 
 async def test_collection_uses_the_owned_copy_when_overlay_flag_is_false(restricted_child):
     state = restricted_child
-    spawned = await SpawnSubagentTool().run("copy-worker", "write", sandbox=False)
-    assert spawned.success and spawned.output["sandbox"] is False
+    runtime, handle = await direct_handle(state)
+    token = set_current_run_id("direct-child")
+    try:
+        spawned = await runtime.invoke(handle, session_id="session", request="write")
+    finally:
+        reset_current_run_id(token)
+    assert spawned["workspace"]["kind"] == "directory"
     # Collection is a parent workspace operation, never an overlay operation.
     token = set_sandbox(None)
     try:
-        collected = await CollectSubagentTool().run(run_id=spawned.output["run_id"])
+        collected = await CollectSubagentTool().run(run_id="direct-child")
     finally:
         reset_sandbox(token)
     assert collected.success, collected.error
     assert collected.output["complete"] is True
     assert [item["path"] for item in collected.output["merged"]] == ["created.txt"]
     assert (state.root / "created.txt").read_text() == "child"
-    child = load_child(state.root, spawned.output["workspace"]["run_id"])
+    child = load_child(state.root, "direct-child")
     assert child.record["state"] == "collected"
     assert not (state.root / ".minimax" / "sandboxes").exists()
 
@@ -271,7 +276,7 @@ async def test_direct_runtime_clears_inherited_overlay_and_always_restores(restr
         reset_current_run_id(token)
 
 
-async def test_file_tool_and_process_owner_use_the_same_independent_copy(restricted_child, monkeypatch):
+async def test_exec_process_owner_uses_independent_copy_without_native_file_tools(restricted_child, monkeypatch):
     state = restricted_child
     observed = []
     create = state.controller.create
@@ -279,7 +284,7 @@ async def test_file_tool_and_process_owner_use_the_same_independent_copy(restric
     async def process_create(row, argv, **kwargs):
         root = Path(row["workspace"])
         assert root == current_root() and root != state.root
-        assert (root / "from-file-tool.txt").read_text() == "visible to process"
+        assert not (root / "from-file-tool.txt").exists()
         assert current_sandbox() is None
         (root / "from-process.txt").write_text("process result")
         observed.append((row["run_id"], str(root)))
@@ -288,17 +293,22 @@ async def test_file_tool_and_process_owner_use_the_same_independent_copy(restric
     monkeypatch.setattr(state.controller, "create", process_create)
 
     async def behavior(core):
-        result = await core.registry.dispatch("write_file", {"path": "from-file-tool.txt", "content": "visible to process"})
-        assert result.success, result.error
+        assert core.registry.names() == ["exec_command"]
+        result = await core.registry.dispatch("write_file", {"path": "from-file-tool.txt", "content": "blocked"})
+        assert not result.success
         process = await spawn_exec("controlled-process")
         assert await process.wait() == 42
         return AgentRunResult("verified", 1)
 
     state.behavior = behavior
-    result = await SpawnSubagentTool().run("copy-worker", "write and verify", sandbox=False)
-    assert result.success, result.error
-    assert observed == [(result.output["run_id"], result.output["workspace"]["path"])]
-    assert result.output["files_written"] == ["from-file-tool.txt", "from-process.txt"]
+    runtime, handle = await direct_handle(state)
+    token = set_current_run_id("direct-child")
+    try:
+        result = await runtime.invoke(handle, session_id="session", request="write and verify")
+    finally:
+        reset_current_run_id(token)
+    assert observed == [("direct-child", result["workspace"]["path"])]
+    assert result["files_written"] == ["from-process.txt"]
     assert not await state.manager.dao.active()
     assert not list(state.overlay.iterdir())
 
@@ -396,6 +406,13 @@ async def test_drive_run_scope_clears_and_resets_inherited_overlay(restricted_ch
     else:
         result = await _drive_run(**args)
         assert result["files_written"] == ["created.txt"]
+        child = load_child(state.root, "direct-child")
+        assert child.record["restricted"] is True and child.record["kind"] == "directory"
+        assert child.record["changes"] == ["created.txt"]
+        assert (child.root / "created.txt").read_text() == "child"
+        assert not (state.root / "created.txt").exists()
+        saved = await dao.get_run("direct-child")
+        assert saved["metadata"]["process_execution_owner"]["copy_binding"]["kind"] == "directory"
     assert current_sandbox() == state.overlay and current_root() == state.root
 
 

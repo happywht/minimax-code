@@ -78,6 +78,8 @@ async def intent(dao, owner, *, exec_id="execution", capacity=None, target=TARGE
 
 
 async def save_profile(db, owner, *, parent_run_id=None, source=None):
+    from minimax_code.agent.tools.terminal import ExecCommandTool
+    from minimax_code.skill_bindings import SkillBindings, tool_identity
     from minimax_code.skill_execution import _digest
 
     source = Path(source) if source else Path(owner.workspace).parent / "source"
@@ -90,6 +92,11 @@ async def save_profile(db, owner, *, parent_run_id=None, source=None):
         "execution_target_hash": TARGET.fingerprint, "execution_installation_id": IDENTITY.install_id,
         "prepared": True, "copy_binding": copy, **{k: copy[k] for k in (
             "workspace_id", "workspace", "source_workspace", "source_identity", "directory_identity")}}
+    if parent_run_id is None:
+        # This fixture is a supported public authority, not a legacy broad spec.
+        profile.update(allowlist=[ExecCommandTool.name], tool_identity=tool_identity([ExecCommandTool()]),
+            skill_bindings=SkillBindings.capture(None, None).data, intent={"method": "agent.invoke"},
+            hooks_policy="disabled", permission_policy_version=1)
     profile["digest"] = _digest(profile)
     authority = "agent_execution"
     if parent_run_id:

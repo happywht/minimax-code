@@ -54,6 +54,12 @@ class AgentExecutionSpec:
                     or (target["mode"] == "host" and self.data["execution_installation_id"] is not None)
                     or (target["mode"] == "podman" and not isinstance(self.data["execution_installation_id"], str))):
                 raise ValueError("Saved execution target binding is incompatible")
+            from .process_boundary import assert_restricted_agent_snapshot
+            from .process_types import ProcessBoundaryError
+            try:
+                assert_restricted_agent_snapshot(self.data)
+            except ProcessBoundaryError as exc:
+                raise ValueError(str(exc)) from exc
         elif any(key in self.data for key in ("execution_target", "execution_target_hash", "execution_installation_id")):
             raise ValueError("Legacy agent profile cannot carry a new execution target")
 
@@ -78,16 +84,21 @@ class AgentExecutionSpec:
         catalog = await ensure_execution_profiles(db)
         await catalog.prepare_service(server)
         execution_target = catalog.resolve(row.get("execution_profile_id"))
-        runtime = await init_runtime()
         if execution_target["mode"] == "podman":
             from .process_workspace import validate_process_workspace
             from .schedule_context import scheduled_runtime
             if scheduled_runtime.get() is not None:
                 raise ValueError("L1 不支持无人值守任务")
+            if intent.get("method") != "agent.invoke":
+                raise ValueError("L1 public roots require agent.invoke")
             catalog.assert_compatible(execution_target, catalog.installation_id)
-            assert_text_skills(runtime, row.get("skills"))
+            assert_text_skills(None, row.get("skills"))
+            from .agent.tools.terminal import ExecCommandTool
+            if row.get("tool_allowlist") != [ExecCommandTool.name]:
+                raise ValueError("L1 requires an explicit exec_command-only allowlist")
             validate_process_workspace(Path(workspace), data_dir=catalog.data_dir,
                 protected_roots=catalog.supervisor._protected_roots)
+        runtime = await init_runtime()
         bindings = SkillBindings.capture(runtime, row.get("skills"))
         tools = bindings.candidates(get_default_registry(), row.get("tool_allowlist"))
         if execution_target["mode"] == "podman":
