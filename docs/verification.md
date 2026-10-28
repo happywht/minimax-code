@@ -63,3 +63,28 @@ M0 不改数据库 schema、RPC 协议或生产执行策略。回退时只撤销
 ## 可信任务结果定向验证
 
 `agent/tests/test_task_outcomes.py` 使用真实 RunService、SQLite 和受控 Native core，验证 shell 写入且无 FsBus 时的 chat/execute 校验、校验故障和取消、持久化失败、真实调度/取消与重开历史、035 已有数据迁移。`web/tests/task-outcomes.test.tsx` 检查任务与聊天的状态/证据、部分输出和取消确认竞态。日志 `.verification/task-outcome-*.log` 属于离线局部回归；底层进程树边界同时复验，不能据此宣称真实模型质量、调度 occurrence 幂等或共享硬预算完成。
+
+## 2026-10-28：连接恢复与测试资源归属修复
+
+最后一个 WebSocket 客户端断开后，HTTP app 继续持有唯一事件监听器，使断线期间
+事件进入原有 512 条内存历史；app 关闭时注销监听器，并等待其 sender/heartbeat
+任务结束。heartbeat 自身发起断开时不会等待或取消自己，重连后旧循环也不能接管
+新循环。此改动不提供跨进程重启的 WebSocket 历史持久化。
+
+HTTP 入口向 asyncio SIGTERM 注册提供正确的 signal/frame 参数；Windows fallback
+与 asyncio 两条注册路径的测试均断言等待共享 runtime teardown。HTTP/背压/信号/
+关闭定向集 50 项通过，最终 heartbeat/断线两项回归与其重叠；四个真实浏览器 spec
+共 9 项通过，原 `smoke-ws-resume` 未改动。三个旧 E2E 夹具分别改为核对 v3 实际
+host target/hash、定位用户消息气泡、显式选择独立 Native 源会话与子 Agent 面板；
+子任务断言收紧为完成，不接受失败作为通过。
+
+全量退出挂起另定位到 IPC 测试复用携带旧数据库的索引器。该 fixture 现在隔离
+两处索引器缓存，并在关闭自有 SQLite 前取消、等待自己创建的延迟/实际索引任务；
+真实聊天与索引回归断言不重新打开旧连接。IPC/相邻 43 项和 host/chat gate 167 项
+分别自然退出 0、无残留线程。gate 夹具满足当前 Exec-only 契约；八个篡改反例仍
+保留，并核对 gate 的原拒绝原因。没有放宽产品准入、关闭自动索引或强制退出测试。
+
+证据在 `.verification/ci-baseline-repair-{e2e-final,ws-signals-heartbeat-python}.log`
+及 `ci-baseline-repair-threads-{ipc-adjacent-final,gates-accepted-final}.log`。
+这些是定向修复证据，完整双平台 CI 与同提交三轮仍须由新作业确认。本批不改
+schema；回退用对应提交的普通代码回退，不做数据库逆向迁移。

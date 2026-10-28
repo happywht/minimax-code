@@ -22,8 +22,8 @@ Coverage
 - ``GET  /ws`` — receives ``agent.ready`` on connect, and a handler
   that calls ``ctx.emit`` produces a real WS frame in the spec's
   ``{method, params}`` shape.
-- ``GET  /ws`` — listener is unregistered when the last client
-  disconnects (no leak across tests).
+- ``GET  /ws`` — events survive gaps with no connected clients;
+  the app releases its listener and transport tasks on shutdown.
 
 A fixture clears any listeners the previous test may have left
 behind on the shared :class:`IPCServer` instance, so a
@@ -49,7 +49,7 @@ from httpx import ASGITransport
 
 from minimax_code.app import register_app_handlers
 from minimax_code.config import Config
-from minimax_code.http_server import MAX_RPC_BODY_BYTES, build_app
+from minimax_code.http_server import MAX_RPC_BODY_BYTES, _WSManager, build_app
 from minimax_code.ipc.protocol import (
     METHOD_NOT_FOUND,
     PARSE_ERROR,
@@ -479,39 +479,97 @@ def test_ws_fans_out_handler_emits(
             assert "data" not in evt
 
 
-@pytest.mark.asyncio
-async def test_ws_listener_unregistered_after_last_disconnect(
+def test_ws_replays_after_last_disconnect_and_cleans_up_on_shutdown(
     app_with_handlers: FastAPI,
     ipc_server: IPCServer,
 ) -> None:
-    """The server must not leak listeners when WS clients drop.
-
-    We open and close one socket, then assert the server's
-    listener list is empty. The next test that opens a socket
-    would otherwise see double deliveries.
-    """
+    """Record disconnected events once, then release app-owned resources."""
     assert ipc_server.listeners == []
+    manager = app_with_handlers.state.ws_manager
+    tasks = []
 
-    # ``TestClient.websocket_connect`` is a sync context
-    # manager. We run it on the running event loop via
-    # ``asyncio.to_thread`` so the rest of the test can stay
-    # async and we can poll the listener list afterward.
-    def open_and_close() -> None:
-        with TestClient(app_with_handlers, headers={"Authorization": f"Bearer {app_with_handlers.state.auth.token}"}) as c:
-            with c.websocket_connect("/ws") as ws:
-                ws.send_text("ping")
-                ready = ws.receive_json()
-                assert ready["method"] == "agent.ready"
-                # While the socket is open a listener is registered.
-                assert len(ipc_server.listeners) == 1
+    async def wait_for_disconnect() -> None:
+        for _ in range(100):
+            if not manager.has_clients:
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail("WebSocket did not finish disconnecting")
 
-    await asyncio.to_thread(open_and_close)
+    with TestClient(app_with_handlers, headers={"Authorization": f"Bearer {app_with_handlers.state.auth.token}"}) as c:
+        with c.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["method"] == "agent.ready"
+            tasks.extend(manager._sender_tasks.values())
+            tasks.append(manager._ping_task)
+            c.portal.call(ipc_server.notify, {"method": "agent.test_event", "params": {"n": 1}})
+            cursor = ws.receive_json()["seq"]
+        c.portal.call(wait_for_disconnect)
+        assert len(ipc_server.listeners) == 1
+        assert all(task.done() for task in tasks)
+        assert manager._sender_tasks == {}
+        assert manager._ping_task is None
 
-    # Give the server a tick to run its ``finally`` block.
-    for _ in range(40):
-        if not ipc_server.listeners:
-            break
-        await asyncio.sleep(0.05)
+        # The last real socket is gone; notify through the actual IPCServer.
+        for number in (2, 3):
+            c.portal.call(ipc_server.notify, {
+                "method": "agent.test_event", "params": {"n": number},
+            })
+        with c.websocket_connect(f"/ws?since={cursor}") as ws:
+            ready = ws.receive_json()
+            assert ready["method"] == "agent.ready"
+            assert "seq" not in ready
+            replayed = [ws.receive_json(), ws.receive_json()]
+            assert [event["params"] for event in replayed] == [{"n": 2}, {"n": 3}]
+            assert [event["seq"] for event in replayed] == [cursor + 1, cursor + 2]
+            assert len(ipc_server.listeners) == 1
+            tasks.extend(manager._sender_tasks.values())
+            tasks.append(manager._ping_task)
+
+    assert ipc_server.listeners == []
+    assert manager._sender_tasks == {}
+    assert manager._send_queues == {}
+    assert manager._ping_task is None
+    assert all(task.done() for task in tasks)
+
+
+@pytest.mark.asyncio
+async def test_failed_heartbeat_drops_last_client_without_awaiting_itself(
+    ipc_server: IPCServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FailedHeartbeatSocket:
+        query_params = {}
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, payload):
+            if payload["method"] == "agent.ping":
+                raise ConnectionError("client disconnected")
+
+    original_sleep = asyncio.sleep
+
+    async def heartbeat_tick(delay):
+        await original_sleep(0 if delay == 30 else delay)
+
+    monkeypatch.setattr(asyncio, "sleep", heartbeat_tick)
+    manager = _WSManager(ipc_server, "heartbeat-test")
+    try:
+        await manager.on_connect(FailedHeartbeatSocket())
+        heartbeat = manager._ping_task
+        sender = next(iter(manager._sender_tasks.values()))
+        await asyncio.wait_for(heartbeat, timeout=1)
+        assert heartbeat.done() and not heartbeat.cancelled()
+        assert heartbeat.cancelling() == 0
+        assert heartbeat.exception() is None
+        assert sender.done()
+        assert not manager.has_clients
+        assert manager._sender_tasks == {}
+        assert manager._send_queues == {}
+        assert manager._ping_task is None
+        assert len(ipc_server.listeners) == 1
+        ipc_server.notify({"method": "agent.test_event", "params": {"missed": True}})
+        assert manager._history[-1][1]["params"] == {"missed": True}
+    finally:
+        await manager.shutdown()
     assert ipc_server.listeners == []
 
 

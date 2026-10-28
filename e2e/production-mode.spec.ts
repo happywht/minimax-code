@@ -77,9 +77,9 @@ test.describe("production single-process mode", () => {
     await input.press("Enter");
 
     // The user bubble appears immediately; the mock LLM then streams a
-    // canned reply mentioning the prompt — proving the same-origin
+    // canned reply — proving the same-origin
     // fetch (/rpc) and WebSocket (message_chunk) paths both work.
-    await expect(page.getByText(prompt).first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("message-user").filter({hasText:prompt})).toBeVisible({ timeout: 5_000 });
     await expect(page.getByTestId("message-assistant").first()).toBeVisible({
       timeout: 15_000,
     });

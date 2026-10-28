@@ -8,7 +8,9 @@
  * so the result card is expected to surface within the 15s budget.
  */
 import { test, expect } from "@playwright/test";
-import { AGENT_BASE } from "./runtime-config";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { AGENT_BASE, AGENT_PORT } from "./runtime-config";
 
 test("sub-agent: @-picker spawns a sub-agent and a result card appears", async ({
   page,
@@ -37,11 +39,23 @@ test("sub-agent: @-picker spawns a sub-agent and a result card appears", async (
   const generalId = seedJson.result?.agent?.id;
   expect(generalId).toBeTruthy();
 
+  const sourcePath = resolve("e2e/.runtime", String(AGENT_PORT), "workspace", "subagent-source");
+  mkdirSync(sourcePath, {recursive:true});
+  writeFileSync(join(sourcePath, "source.txt"), "isolated subagent source");
+  const sourceResp = await page.request.post(`${AGENT_BASE}/rpc`, {
+    data: {jsonrpc:"2.0",id:"source-general",method:"session.create",
+      params:{title:"Subagent source",engine:"native",workspace_path:sourcePath}},
+  });
+  const sourceJson = await sourceResp.json();
+  expect(sourceJson.error).toBeUndefined();
+  const sourceId = sourceJson.result.session.id;
+
   await page.goto("/");
 
   // The composer should be visible.
   const input = page.getByPlaceholder(/问 MiniMax 任何问题/);
   await expect(input).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId(`sidebar-session-${sourceId}`).click();
 
   // Type "@" to open the picker; the agent picker should show "general".
   await input.click();
@@ -56,6 +70,7 @@ test("sub-agent: @-picker spawns a sub-agent and a result card appears", async (
   // Click the agent to spawn. The right-rail SubAgentPanel should render
   // at least one row while the isolated backend handles the run.
   await generalItem.click();
+  await page.getByTestId("right-panel-tab-subagents").click();
   await expect(
     page.getByTestId("right-panel-sub-panel-list"),
     "SubAgentPanel should render at least one row after the spawn",
@@ -67,5 +82,5 @@ test("sub-agent: @-picker spawns a sub-agent and a result card appears", async (
   await expect(resultCard).toBeVisible({ timeout: 15_000 });
   await expect(
     page.getByTestId("sub-agent-result-status"),
-  ).toHaveText(/已完成|失败/);
+  ).toHaveText("已完成");
 });

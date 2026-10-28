@@ -147,10 +147,9 @@ class _WSManager:
     """Owns the open WebSocket set and the single IPCServer listener.
 
     The listener is registered on the server lazily: the first
-    connecting client triggers the registration; when the last
-    client disconnects, the listener is unregistered. This keeps
-    stdio-only runs (and any future no-WS transport) free of dead
-    listener callbacks.
+    connecting client triggers registration. It stays registered
+    through disconnected gaps so events remain available for resume,
+    and is unregistered when the HTTP app shuts down.
 
     The listener must be cheap — it is invoked on the hot path of
     every handler that calls ``ctx.emit`` / ``ctx.notify``. Each
@@ -290,21 +289,47 @@ class _WSManager:
         await self._cleanup_disconnect(ws)
 
     async def _cleanup_disconnect(self, ws: WebSocket) -> None:
+        tasks = []
         async with self._lock:
             self._clients.discard(ws)
             # Stop per-client sender queue
+            sender = self._sender_tasks.get(id(ws))
+            if sender is not None:
+                tasks.append(sender)
             self._stop_sender(ws)
             # Remove any device_id mapping pointing to this ws
             to_remove = [did for did, s in self._device_connections.items() if s is ws]
             for did in to_remove:
                 del self._device_connections[did]
-            if not self._clients and self._listener is not None:
-                self._server.unregister_listener(self._listener)
-                self._listener = None
             # Stop heartbeat when last client disconnects
             if not self._clients and self._ping_task is not None:
-                self._ping_task.cancel()
+                heartbeat = self._ping_task
                 self._ping_task = None
+                if heartbeat is not asyncio.current_task():
+                    heartbeat.cancel()
+                    tasks.append(heartbeat)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        """Release the app-owned history listener and all transport tasks."""
+        async with self._lock:
+            if self._listener is not None:
+                self._server.unregister_listener(self._listener)
+                self._listener = None
+            tasks = list(self._sender_tasks.values())
+            if self._ping_task is not None:
+                tasks.append(self._ping_task)
+                self._ping_task = None
+            tasks = [task for task in tasks if task is not asyncio.current_task()]
+            for task in tasks:
+                task.cancel()
+            self._sender_tasks.clear()
+            self._send_queues.clear()
+            self._clients.clear()
+            self._device_connections.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _heartbeat_loop(self) -> None:
         """Periodically send WS protocol-level pings to detect dead clients.
@@ -329,6 +354,8 @@ class _WSManager:
                 for ws in dead:
                     logger.warning("heartbeat ping failed; dropping client")
                     await self._cleanup_disconnect(ws)
+                if not self._clients or self._ping_task is not asyncio.current_task():
+                    return
         except asyncio.CancelledError:
             pass  # Normal shutdown
         except Exception:
@@ -493,6 +520,10 @@ def build_app(
                     await ws.close()
                 except BaseException as exc:
                     failures.append(exc)
+            try:
+                await ws_manager.shutdown()
+            except BaseException as exc:
+                failures.append(exc)
             if failures:
                 error = ShutdownIncomplete("HTTP transport/runtime teardown was not confirmed")
                 server._transport_shutdown_error = error

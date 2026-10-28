@@ -150,7 +150,7 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
 
     try:
         loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGTERM, _sigterm_handler)
+        loop.add_signal_handler(signal.SIGTERM, _sigterm_handler, signal.SIGTERM, None)
     except (NotImplementedError, OSError):
         # Windows doesn't support add_signal_handler; fall back
         # to signal.signal which works but is less precise.

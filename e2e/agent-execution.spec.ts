@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { AGENT_BASE, AGENT_PORT } from "./runtime-config";
 
@@ -48,7 +49,13 @@ test("configured Agent skills use selected source, one durable copy and reloadab
   const {run,result} = await rpc("run.get", {run_id:saved.run_id});
   expect(run.session_id).not.toBe(sources[0].id);
   expect(run.metadata.agent_execution.source_workspace).toBe(sources[0].workspace_path);
-  expect(run.metadata.agent_execution.version).toBe(2);
+  expect(run.metadata.agent_execution.version).toBe(3);
+  const target = {mode:"host",policy_version:1,profile_id:"native-host",version:1};
+  expect(run.metadata.agent_execution.execution_target).toEqual(target);
+  expect(run.metadata.agent_execution.execution_target_hash).toBe(
+    createHash("sha256").update(JSON.stringify(target)).digest("hex"),
+  );
+  expect(run.metadata.agent_execution.execution_installation_id).toBeNull();
   expect(run.metadata.agent_execution.skill_bindings.skills.map((binding:any) => binding.id)).toEqual([dependency.id]);
   expect(run.metadata.agent_execution.instructions).toContain(dependency.name);
   expect(run.metadata.agent_execution.allowlist).toContain("get_git_diff");
