@@ -1,6 +1,6 @@
 # Linux 受限运行环境实测
 
-2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选用例及后续四个故障用例、2026-10-28 的三个启动窗口及三个有界资源候选用例已按文末各自源码范围验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
+2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选及四个故障用例、2026-10-28 的三个启动窗口、三个有界资源及一个进程边界候选用例已按文末各自源码范围验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
 
 ## 安装与主机状态
 
@@ -458,3 +458,52 @@ probe/advisory 单独记账，不把 Git unavailable、guard 截止或七行当�
 时的责任保留仍须验收；持续 fork 和真正阻塞输出也有独立缺口。公开 restricted
 子任务、无人值守全部准入、公共允许集发布、正式40项三轮、完整安装/升级/恢复及
 14天真实使用仍未完成；能力卡仍 unavailable，不据本批宣布公共L1、M1整体或L2/L3完成。
+
+## 一个进程边界候选的实机验收（2026-10-28）
+
+独立 boundary v1 候选以 `57c3316e7c76fe1d28b5886db0bc6d02d0f3f226` 的1103个
+原始 Git blob 为基底，仅在私有 staging 允许同一唯一 guard/policy 配对。经真实
+完整 stdio CLI、公开 `agent.invoke`/RPC 和实际 SDK 固定 loopback SSE，**一个进程
+边界用例通过并经独立复核接受**，实际17.289秒、exit0。该提交相对资源批次仅改
+文档，归档内全部 agent/baseline blob 与资源v4相同；本批记录自己的HEAD与manifest，
+运行前后1103文件hash一致，没有产品 observer、runtime或guard修改。
+
+沿用同一批准镜像与128MiB/swap0/pids64/CPU500m、tmpfs32MiB/output256KiB、原
+60秒BOOTTIME deadline；180秒payload自界限只作保护。完整CID、精确argv/hash、
+执行行/复制工作区、init PID/startticks 和原期限先绑定；固定payload写出nonce证明
+后等待，由host独立核验下列实际值和原始错误，再原子发布绑定该证明canonical SHA
+的release。payload也重新计算自己的证明hash，并核对release读前/读后FD及路径的
+完整稳定元数据。持久process的exit0/exited、实际tool成功及第二次SDK完成回执共同
+确认结果，不以模型文字作为边界证明。
+
+| 边界 | 实际接受范围 |
+|---|---|
+| network namespace | host为`net:[4026531840]`，精确init与payload同为`net:[4026532238]`，两者不同于host；inspect NetworkMode=none，payload仅`lo`。连接host合成loopback listener返回ECONNREFUSED/111；固定文档地址`192.0.2.1:9`返回ENETUNREACH/101。连接各有1秒上限，原始class/errno/message/elapsed保留；这是该配置及两个固定连接探针，不证明全部互联网/IPC路径 |
+| synthetic secret | 仅给自有child service注入新nonce合成环境secret；固定payload只知道key名。inspect Env与payload均未出现该secret，报告只保留hash/absence，没有读取实际凭据或个人keyring |
+| 外部canary及pathname UNIX | 自有stage/b位于复制工作区外，0700父目录、0600/32字节/单链接canary及0600合成AF_UNIX listener身份固定。payload读canary、连接该pathname均ENOENT/2；这是路径/挂载隔离，不把AF_UNIX失败当成netns证明。host前后字节和dev/inode/owner/mode/link/size/mtime/ctime一致 |
+| listener正基线与runtime路径 | host先成功发送nonce到自有TCP和UNIX listener，各接受1次连接；payload检查后与终态后的计数仍TCP1/UNIX1，listener FD及UNIX路径身份不变，最后只关闭这些自有对象。仅lstat检查`/run/podman/podman.sock`、`/var/run/docker.sock`、`/run/user/1000/podman/podman.sock`，均ENOENT；未连接真实runtime socket，不宣称所有socket位置或所有IPC不可达 |
+
+实际inspect仅挂载该复制工作区，rootfs只读、no-new-privileges；payload UID1000/
+GID1001、CapEff0、Seccomp2。没有真实项目、凭据或runtime socket挂载，没有宿主
+压力或非自有fixture副作用。合成secret值未写入证据；host字节/监听正基线避免“fixture原本
+不存在”的负例假通过。完整原始证明、inspect和前后host快照均保存。
+
+全批**2次受控SDK请求、0次付费调用**，仅1个目标payload、无重放；最终**3行process
+全部removed/resource_held=0，3个精确CID absent**。另两行为固定私有preflight的
+exit0和Git advisory的exit125/unknown，分别记账，不视为额外用例或Git成功。最后
+service正常exit0，无强杀、关闭错误或rescue。准备阶段39项离线检查含模型化证明/
+错误、重复JSON、错误canonical hash和stage拒绝；与本次Linux实测分别记账。
+
+冻结与证据（当前工作区附件，不随普通克隆提供）：
+
+- source archive：`fd1281217d6fa37eb21b0a8d0d0ff3afc0a32aa8caadcb6ee85ede1c9dbfc458`；本批source manifest：`d30bfba9c35d5f5bdb29d5f960deddcbe2bd9226a950b9518be4681ece1d5166`。
+- `.verification/l1-boundaries-v1-frozen-manifest.json`：`09d44cc92e2b13f1c403ba477755f0e9d0a534d8a76448e6dd1d575cf2f15657`；harness：`6b55ae36cfb142f1818fd471e37c1bbff4eb2a59c73089856cd1b611c6222df3`；driver：`a1feb0ec4e815dddfe3e12e139612c832d1fdbf3d58becfc2d0e02619fcb67f9`。
+- `.verification/linux-l1-boundaries-v1-20261028T091223Z-9cec1837.json`：`911d36d9c7e68453ad8721c0623c2f5e53aff3e1a3e0f2f8c9a8b25af9d8469a`；同名目录result：`71ab6fde26f8966c229d49e6ddc13de2e42eb702676f780e16ec98a04f33ec1d`；**16份附件、982,161字节**逐项核验，1103源码文件前后不变。
+
+此前启动/资源失败与各批接受范围均不改写；上一节“下一批网络/canary/secret/socket”
+只由本节这个固定进程case更新。下一有限批次应分别冻结安装marker不匹配、重复启动
+的租约争用，以及真实容器外层合成runtime失败响应的准入/持久清理责任；后者不代表
+实际宿主runtime停机。拒绝外来身份的新启动，不接管foreign
+CID；未确认精确CID absent前不能释放责任。它们尚未实测，持续fork、真正阻塞输出、
+公开restricted子任务和无人值守全部准入仍有缺口。公共允许集仍空、能力卡unavailable；
+不据本例宣称完整L1、广泛网络/IPC隔离、L2宿主文件工具、M1整体或L2/L3完成。

@@ -20,7 +20,7 @@
 | 阶段 | 范围与交付 | 验收门槛 | 状态 |
 |---|---|---|---|
 | M0（2–3 日）可信基线 | 夹具与渲染稳定性、Windows/Linux CI、mock/回放/live 分层、凭据隔离、版本/RPC/能力文档 | 同一提交连续三次确定性回归；失败留证据；真实模型与 mock 分开报告 | Windows 同一提交三轮通过，Linux 离线实机验证已建立；以各批报告为准 |
-| M1（6–8 日）执行边界 | 项目路径失效即阻止；所有 shell/验证/Hooks/MCP 启动统一策略；认证与预览权限；环境过滤、进程树取消、原子写/CAS/备份、只读模式 | 越界/链接/失效目录/并发覆盖/遗留进程/未认证 RPC 和 WS 回归通过 | 实施中；此前三个公开 Native 容器及四个故障、`f953531`基底的三个启动窗口候选保留各自接受范围，2026-10-28另接受`e0f89e0`基底的三个有界资源候选，精确范围见[实机记录](linux-runtime-readiness.md)与[边界设计](linux-process-adapter-design.md)；主分支L1允许集仍空，下一有限批次为网络/canary/secret/socket，安装marker/租约/runtime责任、其余矩阵及L2/L3待完成 |
+| M1（6–8 日）执行边界 | 项目路径失效即阻止；所有 shell/验证/Hooks/MCP 启动统一策略；认证与预览权限；环境过滤、进程树取消、原子写/CAS/备份、只读模式 | 越界/链接/失效目录/并发覆盖/遗留进程/未认证 RPC 和 WS 回归通过 | 实施中；此前公开Native/故障、`f953531`启动窗口及`e0f89e0`有界资源候选保留各自接受范围，2026-10-28另接受`57c3316`的一个固定进程边界候选，精确范围见[实机记录](linux-runtime-readiness.md)与[边界设计](linux-process-adapter-design.md)；主分支L1允许集仍空，下一有限批次为marker/重复启动租约争用及真实容器的合成runtime失败响应责任，其余矩阵及L2/L3待完成 |
 | M2（7–10 日）运行与恢复 | RunService、幂等键、固定 ExecutionContext、每会话单写任务、持久事件/审批/结果、预算与熔断 | 重复提交不重复执行；断线补齐最终状态；重启准确标记中断和待核对写操作 | 实施中；共享预算/日账、技能和直接 Agent 持久入口已局部验收；技能配置补齐、团队与完整权限/后代入口审计待完成 |
 | M3（6–9 日）编程闭环 | 需求→计划→修改→验证→审查→交付；真实验证命令、结构化压缩、输出文件引用、rg/符号/FTS、基线撤销、worktree 合并后复验 | 固定任务集交付正确差异和验证证据；保留用户同期修改 | 部分实现；校验执行/证据已接入，完整任务集与其余闭环未验收 |
 | M4（4–6 日）CodexEngine | App Server 会话创建/续接、结构化事件、审批/取消、外部 session ID、能力探测与契约回放 | 两引擎跑同批任务；Codex 不可用明确解释，Native 独立可用 | 会话/历史/恢复离线闭环已验证；真实双引擎任务集待验收 |
@@ -843,3 +843,43 @@ absent；1个私有probe exit0与3个Git advisory125/unknown另记，不作额�
 marker/租约/runtime不可用时的责任保留、持续fork及真正阻塞输出仍待验收。公开
 restricted子任务、无人值守全部准入、公共L1允许集发布、M1整体、L2/L3、正式40项
 三轮、完整安装/升级/恢复及14天真实使用门槛均未因此完成，能力卡仍unavailable。
+
+### 2026-10-28：M1 一个固定进程边界候选实机验收
+
+独立boundary v1候选以 `57c3316e7c76fe1d28b5886db0bc6d02d0f3f226` 的1103个原始
+Git blob为基底，仅私有允许同一guard/policy配对，无产品observer/runtime/guard
+改动。相对资源v4只变文档，归档内agent blob一致；本批单独固定HEAD/manifest。
+真实完整stdio CLI、公开RPC和实际SDK固定loopback SSE，**一个process边界用例
+17.289秒、exit0并经独立复核接受**，全部源码前后hash一致，公共允许集仍空。
+
+- host netns不同于精确init/payload共同netns，inspect network-none、payload仅lo。
+  host合成loopback listener连接返回111，固定文档地址`192.0.2.1:9`不可达101，
+  均为1秒有界连接探针，不能推广成全面互联网/IPC隔离证明。
+- 仅自有child service环境的nonce合成secret在inspect/payload中均缺席，证据只存
+  hash/absence。工作区外合成canary读取、pathname AF_UNIX连接均ENOENT2；host
+  canary字节/身份不变。AF_UNIX是路径/挂载证据，不混同network namespace。
+- host TCP/UNIX listener先各成功接收nonce一次，前后仍1/1连接，FD/路径身份不变，
+  最后仅关闭自有对象。三个固定Podman/Docker路径lstat均ENOENT，不连接真实runtime
+  socket，不推断其他socket位置或abstract UNIX隔离。实际仅复制工作区bind，
+  rootfs只读/NNP，payload UID1000/GID1001、CapEff0/Seccomp2。
+
+host在payload等待时绑定argv/hash、exec/CID、init PID/startticks、工作区/期限并
+独立readback，release绑定canonical proof hash且payload自行复核，持久exit0/exited
+与实际tool结果共同判定。**2次受控SDK、0付费、1目标payload、无重放**；最终3行
+removed/resource_held=0、3个精确CID absent，私有preflight0与Git advisory125/unknown
+分别记账。service正常exit0，无强杀、关闭错误或rescue。39项模型化准备检查和本次
+Linux实际证据分开，不把process行、旧失败或重叠回归相加为独立验收。
+
+16份附件982,161字节逐项核验。回执
+`.verification/linux-l1-boundaries-v1-20261028T091223Z-9cec1837.json` SHA-256
+`911d36d9c7e68453ad8721c0623c2f5e53aff3e1a3e0f2f8c9a8b25af9d8469a`；result
+`71ab6fde26f8966c229d49e6ddc13de2e42eb702676f780e16ec98a04f33ec1d`；冻结清单
+`09d44cc92e2b13f1c403ba477755f0e9d0a534d8a76448e6dd1d575cf2f15657`。完整源与
+精确限定见[运行实测](linux-runtime-readiness.md#一个进程边界候选的实机验收2026-10-28)。
+
+此前失败、启动/资源和其他候选范围不变。本批只更新固定process boundary，下一
+有限批次为marker不匹配、重复启动的租约争用，以及围绕真实容器的合成runtime失败
+响应的准入/持久清理责任，尚未实测；后者不代表实际宿主runtime停机。
+持续fork、真正阻塞输出、公开restricted子任务、无人值守准入及公共允许集发布仍待
+完成。L2宿主文件工具、M1整体、完整L1、L2/L3、正式40项三轮、完整安装/升级/恢复
+及14天真实使用均未因此验收，能力卡仍unavailable。

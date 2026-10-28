@@ -4,7 +4,8 @@
 不是公共 L1 已发布的声明。基础模块及默认 host 接线已实现；真实 `agent.invoke`
 的正常完成、取消和服务死亡后审查恢复三个隔离候选用例，以及后续四个故障用例
 已于 2026-10-27 验收；另一个以 `f953531` 为基底的带观测补丁候选于 2026-10-28
-通过三个启动窗口用例；另以 `e0f89e0` 为基底的私有候选接受三个有界资源用例。
+通过三个启动窗口用例；另以 `e0f89e0` 为基底的私有候选接受三个有界资源用例，
+以 `57c3316` 为基底的候选接受一个固定进程边界用例。
 各批源码与接受范围分别记账；`agent.spawn_subagent` 及
 剩余故障矩阵仍待验收。
 主分支允许集保持为空。
@@ -13,8 +14,8 @@
 profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
 [接线契约](linux-execution-profile-contract.md)。产品整链已接受服务死亡后的原绝对期限
 及非阻塞双流 flood 用例，另已接受下文三个迟到启动/create/start 窗口候选用例；
-另已接受下文有界 allocator OOM、pids 耗尽取消和 CPU 饱和截止；持续 fork、阻塞 IO
-及网络/secret/socket 等仍待验收。加固 PID1 的实现
+另已接受下文有界 allocator OOM、pids 耗尽取消、CPU 饱和截止及一个network/canary/
+secret/pathname-socket进程用例；持续fork、阻塞IO及marker/重复启动租约争用/合成runtime失败责任仍待验收。加固 PID1 的实现
 与 helper 验证单独记账，不能将 conmon 相对期限或 helper 成功视为 L1 门槛已满足。
 
 ## 当前实现与未完成范围
@@ -37,7 +38,7 @@ bind/mount alias 准入已有下文定向实机证据。restricted child 与 leg
 显式 overlay 请求在副作用前拒绝，受限内部子链使用 owned directory copy，并清空、
 恢复继承的 overlay context。该内部链测试不扩大公开工具允许类，公开
 `SpawnSubagentTool` 仍拒绝，实际类/委派归属审计、无人值守全部门槛和 UI/IPC 组合待验收。
-文末三个公开 Native 候选用例、四个故障用例、三个启动窗口及三个有界资源用例不覆盖完整故障矩阵；未审计入口不能
+文末各批公开 Native、故障、启动窗口、有界资源和固定进程边界候选不覆盖完整故障矩阵；未审计入口不能
 获取 host fallback。基础 review、受控 controller 测试或纯 validator bind probe
 单独均不构成公共 L1 验收。
 
@@ -429,3 +430,47 @@ resource_held=0、7个精确CID absent；1个私有probe exit0、3个Git advisor
 当前下一有限批次为网络/canary/secret/socket；安装marker、租约及runtime不可用时
 的责任保留仍待验收，持续fork/阻塞输出缺口仍在。公开child、无人值守全部准入、
 公共L1发布、正式40项三轮及完整安装恢复/真实使用门槛不变；不宣称M1整体或L2/L3完成。
+
+## 一个固定进程边界候选的接受范围（2026-10-28）
+
+独立 boundary v1 staging 取 `57c3316e7c76fe1d28b5886db0bc6d02d0f3f226` 的1103个
+原始Git blob，仅私有允许同一guard/policy配对，没有产品observer或guard/runtime
+修改。该HEAD仅文档不同于资源v4，归档内agent blob相同，仍单独固定本批manifest。
+真实完整stdio CLI、公开RPC、实际SDK固定loopback SSE，**一个process边界用例
+17.289秒、exit0，经独立复核接受**。源码前后hash不变，公开允许集仍空。
+
+固定payload在复制工作区执行，保留nonce、原始class/errno/message/elapsed证明后
+等待；host绑定真实argv/hash、exec/CID、init PID/startticks、工作区和原60秒期限，
+独立检查inspect及外部fixture，再原子发布canonical-proofSHA绑定的release。payload
+重新计算自己的proof hash并检查release稳定FD/路径完整元数据，不以模型答复判定。
+
+- network-none且payload仅lo；host netns `4026531840` 不同于init/payload共同的
+  `4026532238`。host合成loopback listener的连接被拒111，固定`192.0.2.1:9`
+  不可达101，每次连接上限1秒。这只覆盖该配置和两个探针，不声称全面网络/IPC阻断。
+- nonce合成secret仅在自有child service显式环境，inspect及payload均不含该值，
+  证据只存hash/absence；未读取用户凭据/keyring。实际仅复制工作区bind，rootfs
+  只读、no-new-privileges，payload UID1000/GID1001、CapEff0/Seccomp2。
+- 工作区外自有canary读取及合成pathname AF_UNIX连接均ENOENT2；host字节与
+  完整dev/inode/owner/mode/link/size/mtime/ctime不变。AF_UNIX是路径/挂载边界，
+  不借此证明netns。host TCP/UNIX listener先各成功接收nonce一次，之后计数仍1/1、
+  FD/路径身份不变，最后仅关闭自有对象，排除fixture未建立造成的负例假通过。
+- 三个固定runtime路径只做lstat，均ENOENT：`/run/podman/podman.sock`、
+  `/var/run/docker.sock`、`/run/user/1000/podman/podman.sock`。没有连接真实socket，
+  不推断其他路径、abstract UNIX或全部IPC隔离。
+
+2次受控SDK、0付费、1目标payload、无重放；payload持久exit0/exited。最终3行
+removed/resource_held=0、3个精确CID absent；私有preflight0和Git advisory125/
+unknown另行记账。service正常exit0，无强杀、关闭错误或rescue。39项准备离线检查
+包含模型化证明/错误与错误canonical hash，不能代替本次真实Linux边界证据。
+
+16份附件982,161字节逐项核验；回执
+`.verification/linux-l1-boundaries-v1-20261028T091223Z-9cec1837.json` SHA-256
+`911d36d9c7e68453ad8721c0623c2f5e53aff3e1a3e0f2f8c9a8b25af9d8469a`；result
+`71ab6fde26f8966c229d49e6ddc13de2e42eb702676f780e16ec98a04f33ec1d`。完整源/freeze
+与边界限定见[运行实测](linux-runtime-readiness.md#一个进程边界候选的实机验收2026-10-28)。
+
+下一有限批次分别定义marker不匹配、重复启动的租约争用，以及围绕真实容器的合成
+runtime失败响应的准入及持久责任；后者不代表实际宿主runtime停机。
+坚持不接管foreign CID、未获精确absence证据不释放责任；尚未实测。持续fork、
+阻塞IO、公开child、无人值守准入及公共发布门槛不变；该process case不覆盖L2
+宿主文件工具，也不代表完整L1、M1整体或L2/L3完成。旧失败与此前各批范围原样保留。
