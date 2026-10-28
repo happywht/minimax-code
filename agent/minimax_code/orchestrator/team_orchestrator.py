@@ -176,10 +176,12 @@ class TeamOrchestrator:
         task_id = f"teamrun_{uuid.uuid4().hex[:10]}"
         run_session_id = session_id or task_id
 
-        # Persist run start. Fail-open: persistence problems should not
-        # kill the team run.
         runs_dao: Any | None = None
-        if self._team_dao is not None:
+
+        async def persist_start() -> None:
+            # Only admitted teams may create run/session records. Persistence
+            # remains fail-open after the complete member selection is checked.
+            nonlocal runs_dao
             try:
                 runs_dao = self._make_runs_dao()
                 await self._ensure_session(run_session_id)
@@ -201,6 +203,7 @@ class TeamOrchestrator:
             session_id=run_session_id,
             task_id=task_id,
             parent_session_id=parent_session_id,
+            on_admitted=persist_start,
         )
 
         if runs_dao is not None:
@@ -226,6 +229,7 @@ class TeamOrchestrator:
         session_id: str,
         task_id: str,
         parent_session_id: str | None,
+        on_admitted: Any | None = None,
     ) -> TeamRunResult:
         """Core orchestration logic (persistence-agnostic)."""
         if self._team_dao is None:
@@ -267,13 +271,23 @@ class TeamOrchestrator:
                 merged_text="No agents configured in team.",
             )
 
-        await self._emit_progress(
-            "started", task_id, team_name, progress=0.0,
-            agents_total=len(agent_names), agents_completed=0,
-        )
+        # Resolve every enabled member before persistence, dependency loading,
+        # workspace preparation, or any member starts (including host members).
+        from ..process_context import current_process_target
+        from ..process_types import ProcessBoundaryError
 
-        # Build SubAgentConfig for each member
-        configs = await self._resolve_agents(agent_names)
+        try:
+            if current_process_target() is not None:
+                raise ProcessBoundaryError("L1 does not support team execution")
+            configs = await self._resolve_agents(agent_names)
+        except ProcessBoundaryError as exc:
+            return TeamRunResult(
+                team_name=team_name,
+                orchestration_mode=mode,
+                task_id=task_id,
+                success=False,
+                merged_text=f"Error: {exc}",
+            )
         if not configs:
             await self._emit_progress("failed", task_id, team_name, progress=0.0)
             return TeamRunResult(
@@ -283,6 +297,13 @@ class TeamOrchestrator:
                 success=False,
                 merged_text="Error: no valid agents found for team members.",
             )
+
+        if on_admitted is not None:
+            await on_admitted()
+        await self._emit_progress(
+            "started", task_id, team_name, progress=0.0,
+            agents_total=len(configs), agents_completed=0,
+        )
 
         # Drive orchestration
         if mode == "review":
@@ -739,6 +760,15 @@ class TeamOrchestrator:
                 # spawn_subagent tool path which rejects disabled rows.
                 logger.warning("Agent %r is disabled, skipping", name)
                 continue
+            profile_id = row.get("execution_profile_id")
+            if profile_id is not None:
+                from ..app import ensure_execution_profiles
+                from ..process_types import ProcessBoundaryError
+
+                catalog = await ensure_execution_profiles(self._agent_dao._db)
+                target = catalog.resolve(profile_id)
+                if target["mode"] != "host":
+                    raise ProcessBoundaryError("L1 does not support team execution")
             configs.append(SubAgentConfig(
                 name=row["name"],
                 system_prompt=row.get("system_prompt", ""),
@@ -753,6 +783,7 @@ class TeamOrchestrator:
                 tags=row.get("tags"),
                 team_id=row.get("team_id"),
                 skills=row.get("skills"),
+                execution_profile_id=profile_id,
                 # P0-3 v1.5.3: raised default 50 → 100 to match the
                 # tool-path default in subagents.py; team blocks share
                 # the same per-row override path.

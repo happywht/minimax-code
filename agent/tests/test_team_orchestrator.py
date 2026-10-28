@@ -323,6 +323,117 @@ async def test_no_dao_returns_error() -> None:
 # ── Tests: conflict detection ────────────────────────────────────────────────
 
 
+@pytest.fixture
+def team_profile_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Use actual profile resolution without opening the product runtime gate."""
+    from minimax_code import app
+    from minimax_code.execution_profiles import ExecutionProfileCatalog
+    from minimax_code.process_types import ExecutionTargetSpec
+
+    catalog = ExecutionProfileCatalog(data_dir=tmp_path, lease=None)
+    catalog._targets["linux-podman-l1"] = ExecutionTargetSpec(
+        "linux-podman-l1", "sha256:" + "a" * 64,
+    ).to_dict()
+    monkeypatch.setattr(catalog, "_availability", lambda: (True, None))
+    databases = []
+
+    async def ensure(db):
+        databases.append(db)
+        return catalog
+
+    monkeypatch.setattr(app, "ensure_execution_profiles", ensure)
+    return catalog, databases
+
+
+@pytest.mark.parametrize("mode", ["parallel", "sequential", "round-robin", "vote", "review"])
+@pytest.mark.parametrize("restricted_first", [False, True])
+async def test_restricted_team_rejected_atomically_before_member_effects(
+    make_orchestrator, team_dao, agent_dao, async_db, emitted_events,
+    team_profile_catalog, monkeypatch, mode, restricted_first,
+):
+    from minimax_code.skill_bindings import SkillBindings
+    from minimax_code.workspace import child
+
+    await agent_dao.upsert("host", skills=["unavailable-dependency"])
+    await agent_dao.upsert("restricted", execution_profile_id="linux-podman-l1")
+    names = ["restricted", "host"] if restricted_first else ["host", "restricted"]
+    await team_dao.create(name="mixed", agents=names, orchestration_mode=mode)
+    orch = make_orchestrator()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("rejected team reached member/dependency/workspace/persistence effects")
+
+    monkeypatch.setattr(subagent_module.SubAgentRuntime, "build", forbidden)
+    monkeypatch.setattr(subagent_module.SubAgentRuntime, "invoke", forbidden)
+    monkeypatch.setattr(SkillBindings, "capture", forbidden)
+    monkeypatch.setattr(child, "prepare_child", forbidden)
+    monkeypatch.setattr(orch, "_ensure_session", forbidden)
+    before_runs = await async_db.fetchall("SELECT * FROM agent_runs")
+    before_sessions = await async_db.fetchall("SELECT * FROM sessions")
+    result = await orch.run("mixed", "must not execute")
+
+    assert not result.success and "L1 does not support team" in result.merged_text
+    assert result.agents_run == [] and emitted_events == []
+    assert await async_db.fetchall("SELECT * FROM agent_runs") == before_runs
+    assert await async_db.fetchall("SELECT * FROM sessions") == before_sessions
+    assert team_profile_catalog[1] == [async_db]
+
+
+@pytest.mark.parametrize("profile_id", ["unknown-profile", ""])
+async def test_invalid_team_profile_cannot_fall_back_to_host(
+    make_orchestrator, team_dao, agent_dao, async_db, emitted_events,
+    team_profile_catalog, monkeypatch, profile_id,
+):
+    await agent_dao.upsert("bad-profile")
+    # Exercise a corrupt saved row as well as a syntactically valid unknown ID.
+    await async_db.execute(
+        "UPDATE agents SET execution_profile_id=? WHERE name=?", (profile_id, "bad-profile"),
+    )
+    await team_dao.create(name="invalid", agents=["bad-profile"])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid profile fell back to member construction")
+
+    monkeypatch.setattr(subagent_module.SubAgentRuntime, "build", forbidden)
+    result = await make_orchestrator().run("invalid", "must not execute")
+    assert not result.success and result.agents_run == []
+    assert emitted_events == []
+    assert not await async_db.fetchall("SELECT * FROM agent_runs")
+    assert not await async_db.fetchall("SELECT * FROM sessions")
+
+
+async def test_team_member_selection_skips_missing_and_disabled_restricted_profiles(
+    make_orchestrator, team_dao, agent_dao, team_profile_catalog,
+):
+    await agent_dao.upsert("host", execution_profile_id="native-host")
+    await agent_dao.upsert("disabled-l1", enabled=False, execution_profile_id="linux-podman-l1")
+    await team_dao.create(name="selection", agents=["disabled-l1", "missing", "host"])
+    orch = make_orchestrator()
+    configs = await orch._resolve_agents(["disabled-l1", "missing", "host"])
+    assert [(config.name, config.execution_profile_id) for config in configs] == [
+        ("host", "native-host"),
+    ]
+    result = await orch.run("selection", "host member remains supported")
+    assert result.success and [member.agent_name for member in result.agents_run] == ["host"]
+
+
+async def test_inherited_restricted_target_rejects_even_default_host_team_members(
+    make_orchestrator, team_dao, agent_dao, async_db, emitted_events, team_profile_catalog,
+):
+    from minimax_code.process_context import required_target_scope
+    from minimax_code.process_types import ExecutionTargetSpec
+
+    await agent_dao.upsert("host")
+    await team_dao.create(name="nested", agents=["host"])
+    target = ExecutionTargetSpec(**team_profile_catalog[0]._targets["linux-podman-l1"])
+    with required_target_scope(target):
+        result = await make_orchestrator().run("nested", "must not execute")
+    assert not result.success and "L1 does not support team" in result.merged_text
+    assert emitted_events == []
+    assert not await async_db.fetchall("SELECT * FROM agent_runs")
+    assert not await async_db.fetchall("SELECT * FROM sessions")
+
+
 def test_detect_conflicts_concurrent_write() -> None:
     results = [
         AgentRunResult(
