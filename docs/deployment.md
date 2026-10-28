@@ -53,6 +53,30 @@ POSIX 监护启动器父进程并转发信号到 Agent 进程组，超时后停�
 工具进程组不在此监护范围内，不能据此保证整个工具树已停止；Linux 完整后代保障需
 systemd/cgroup 或受限 runner 实测。无人值守受限执行与完整安装/升级/恢复仍须单独验收。
 
+### Linux 用户服务配置生成（实验）
+
+在 Linux 上准备好固定版本、已安装依赖的虚拟环境和预构建前端后，可生成配置供审查：
+
+```bash
+python3 scripts/generate-linux-user-service.py \
+  --python "$PWD/agent/.venv/bin/python" \
+  --workspace "$PWD" \
+  --data "$HOME/.local/share/minimax-code" \
+  --web-dist "$PWD/web/dist" --port 8765
+```
+
+数据目录须已存在、属于当前用户且权限为 `0700`；所有路径必须是绝对路径。
+生成器只写标准输出，**不会安装、启用或启动服务**。它保留虚拟环境解释器的符号链接，
+固定监听 `127.0.0.1`，并明确指定数据、工作区和前端目录。不要把 API 密钥或认证
+token 放入 unit 文件或命令参数。应先检查已有同名用户服务和升级前备份，再由操作者
+将审查过的输出保存到用户 systemd 配置目录，使用 `systemctl --user daemon-reload`、
+`systemctl --user start ...` 及 `/health` 验证；启动成功不等于数据库或任务验收通过。
+
+登出后用户服务是否继续运行取决于该主机的用户管理器和 linger 配置；此生成器不更改
+linger。关闭服务时 systemd 管理该服务的控制组，但独立容器或其他控制组的生命周期
+仍由各自执行器管理；断电、异常重启、任务恢复、服务更新与回退必须单独验证。此功能
+尚未在个人 Linux 主机上安装或通过长驻验收，也不提供 SSH 隧道或自动部署。
+
 ## 工作原理
 
 ### 应用认证（M1，开发分支）
