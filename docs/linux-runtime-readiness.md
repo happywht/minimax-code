@@ -1,6 +1,6 @@
 # Linux 受限运行环境实测
 
-2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选及四个故障用例，以及2026-10-28 的启动窗口、有界资源、进程边界、两条所有权链和两个负载用例已按文末各自源码范围验收。最终 Exec-only 接线与公开 attach 背压/drain 待验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
+2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选及四个故障用例，以及2026-10-28 的启动窗口、有界资源、进程边界、两条所有权链、两个负载用例和 raw `88e0ceb` 的最终 Exec-only 三例有限接线回归已按文末各自源码范围验收。公开 attach 背压/drain 仍待验收；主分支 L1 允许集仍为空，公开 child、无人值守、L2、完整 M1/M7、远程长驻与14天真实使用均未因此完成。
 
 ## 安装与主机状态
 
@@ -598,3 +598,45 @@ removed/resource_held=0、6个精确 CID absent。另4行是2个私有 preflight
 有限缺口。下一有限工作为经审计的公开入口及最终源码范围；公开 attach 背压/drain
 仍是独立缺口。公共允许集仍空，完整L1、M1/M7整体、L2、公开child、无人值守及既有
 正式40项三轮、安装/升级/恢复、14天真实使用门槛均未因此完成。
+
+## 最终 Exec-only 三例有限接线回归（2026-10-28）
+
+exec-only-final v2 固定 `88e0ceb0bf1afcd386c98ee010cd7209fc0e56ca`（含 Schema044）
+的1108个原始 Git blob，经真实完整 stdio CLI、公开 `agent.invoke`/RPC 与实际 SDK
+固定 loopback SSE，**正常完成/幂等、公开取消、服务死亡/重启三例通过，root与独立
+复核接受**。源码前后不变，8个 guard/seccomp/构建及许可资产与已接受负载候选字节
+相同；仅私有允许原唯一 guard/policy 配对，没有产品 observer、工具或资产补丁。
+
+实际 agent 仅一个原生 `ExecCommandTool`，skills及绑定为空、Hooks禁用、权限版本1、
+intent为agent.invoke。公开 worker restore/validate及重启reconcile沿用既有流程；
+持久v3 Spec/owner的target/hash/install、预算家族及独立copy物理身份逐项核对。
+9次额外只读owner投影子进程自然exit0，仅接收已读取JSON、不开DB、不派发或resume；
+父harness只读DB连接在finally显式关闭，不把该投影当作额外实际执行。
+
+| 用例 | 实际接受范围 |
+|---|---|
+| 正常完成与同键不重放 | 1个真实payload exit0/exited，第二次SDK只在实际nonce工具结果后固定完成。完整receipt的target/hash/install/agent/run和workspace对象投影path/工作副本ID/kind/completed均对应Spec及copy binding。同服务及重启后重复相同agent.invoke键，原receipt、SDK计数、全局process行和run ID快照均不增不变 |
+| 公开取消 | 对绑定CID、原PID/startticks的运行中payload调用run.cancel；原PID首次观测均停止约1.625秒，精确CID absent约1.952秒，持久cancelled且resource0。不凭137退出码单独判定取消或OOM |
+| 服务死亡与原期限恢复 | 计划杀死精确自有service时距原deadline约55.209秒；离线心跳到deadline前约20.782毫秒。原PID首次观测均停止于deadline后约0.162秒，停止容器首次观测约0.272秒。离线resource1保留，原60秒BOOTTIME期限不重置；重启真实reconcile确认精确absence后归零，payload124/unknown、run interrupted，无SDK/payload重放 |
+
+停止/absence均为采样的**首次观测上界**，不是精确死亡时刻；没有延长期限或用
+180秒payload保护界限通过。沿用固定镜像及128MiB/swap0/pids64/CPU500m、tmpfs32MiB/
+output256KiB。本批只重验最终Exec-only准入/恢复/owner接线，没有重跑资源压力矩阵。
+全批111.569秒、exit0，**3个payload、4次受控SDK、0次付费调用**；最终8行全部
+removed/resource_held=0、8个精确CID absent，其中5行分别为3个Git advisory125/unknown
+及2个零模型私有preflight。1次明确计划内service SIGKILL/-9、最后正常0，无forced
+kill、关闭错误或rescue；各行/探针不计为额外接受用例。
+
+v1整轮仍为**失败**：正常产品执行已完成，但harness将receipt.workspace对象直接
+与Spec路径字符串比较，17.143秒、16份附件1,009,946字节；取消和service-kill未执行。
+失败收尾rescue标签true，service自然0、无外部exact removals或清理错误，另核验3个
+精确CID absent。v2以actual/offline同一纯函数严格投影对象，真实v1脱敏receipt/Spec
+正例及错path/ID/kind/state/targethash/agent-ID反例纳入60项离线检查；不追改v1回执。
+
+- v2冻结 `.verification/exec-only-final-v2-frozen-manifest.json`：`171b88940d956ec14cb838ce9cb43c779c2075c4cc251e2f7b03a8141c5f6f88`；原始源码归档：`aedaf89909a1109879e13a2b398347a8bc7177d0eda10df6eb6c191ae73386d4`。
+- v2回执 `.verification/linux-exec-only-final-v2-20261028T105832Z-1fd5aaff.json`：`460694f0b46afad9d9943790f4bf848e426ef719058e5471c315d8a2a32782f2`；同名目录result：`159f665de5a7ad3d6a19cf33e567efc9f57418aa1820c0580c061e0a8193a172`；23份附件、5,735,159字节逐项核验，仅在当前工作区提供。
+- v1失败证据保留于 `.verification/linux-exec-only-final-v1-20261028T105237Z-e2a2f38b/`，result SHA：`21593190d02a60b6f417119a8603feda95b2e18652fd04d460441fd45364969c`。
+
+本节更新最终Exec-only有限接线状态，不改写历史计划、失败或其他源码接受范围。
+公共允许集仍空、能力卡unavailable；公开attach背压/drain、child、无人值守、L2、
+完整L1/M1/M7、正式三轮任务与14天真实使用门槛均未因此完成。

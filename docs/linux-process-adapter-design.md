@@ -7,8 +7,8 @@
 通过三个启动窗口用例；另以 `e0f89e0` 为基底的私有候选接受三个有界资源用例，
 以 `57c3316` 为基底的候选接受一个固定进程边界用例；`6eec107` 与 `934c9fc`
 候选又分别接受两条有限所有权链和两个有限负载用例。
-各批源码与接受范围分别记账；最终 Exec-only 接线的 Linux 回归和公开 attach
-背压/drain 仍待验收。Podman 的 `agent.spawn_subagent` 别名已明确拒绝。
+各批源码与接受范围分别记账；raw `88e0ceb` 的最终 Exec-only 三例有限接线回归
+已验收，公开 attach 背压/drain 仍待验收。Podman 的 `agent.spawn_subagent` 别名已明确拒绝。
 主分支允许集保持为空。
 复用同一个 RunService、持久 run/预算家族和服务目录租约，不增加第二个调度循环。
 
@@ -116,8 +116,8 @@ preflight 可能先于新技能/工具拒绝发生；用户模型、工作区和
 130项定向、244项相邻及27项最终 scope 回归均有完整退出0日志，最后27项与定向
 集合重叠，不相加为独立用例数；Ruff 通过。源码及有限入口审计记录位于工作区
 `.verification/linux-public-entry-audit-20261028.md` 与
-`.verification/linux-public-exec-only-*.log`。这些是离线检查，最终源码的 Linux
-公开接线实测尚待完成；`ACCEPTED_GOVERNORS` 保持为空，不据此前私有配对候选开放能力。
+`.verification/linux-public-exec-only-*.log`。这些离线检查与文末raw `88e0ceb`、1108文件
+的最终Exec-only三例Linux接线实测分别记账；`ACCEPTED_GOVERNORS` 保持为空，不据私有配对候选开放能力。
 
 ## 控制面与容器边界
 
@@ -522,3 +522,15 @@ parent/host正向内核证据绑定同一 writer；计划服务-9后阻塞保留
 最新 `writer-observation.json` 未下载，仅保留近截止正向证明；不宣称两份原始文件均留存。
 完整冻结、回执与限定见[运行实测](linux-runtime-readiness.md#两个有限负载候选的实机验收2026-10-28)。
 本批不证明公开attach背压/drain或exec-only入口审计；公共允许集仍空，旧失败/范围及完整L1、M1/M7、L2、child、无人值守门槛不变。
+
+## 最终 Exec-only 有限接线接受范围（2026-10-28）
+
+raw `88e0ceb`（Schema044）1108文件、唯一真实ExecCommandTool/空skills及绑定、禁用
+Hooks/权限1/agent.invoke的三例v2实机回归111.569秒，经root与独立复核接受；源码和8个安全资产不变。
+正常receipt的workspace对象严格投影到Spec/copy binding；同服务及重启同键不增SDK/process/run。
+公开取消后PID停止/CID absent首次观测约1.625/1.952秒，持久cancelled；计划service-9后
+原deadline不重置，PID停止首次观测约deadline+0.162秒，离线resource1经真实absence才归零，124/unknown/interrupted无重放。
+9次只读owner投影自然0，核对target/install/预算家族/物理copy；4次受控SDK/0付费、3payload，最终8行removed/resource0、8CID absent。
+v1 workspace对象/路径字符串比较的夹具失败保留；v2 actual/offline共用纯函数，60项离线检查另记。
+冻结/23份附件及精确范围见[运行实测](linux-runtime-readiness.md#最终-exec-only-三例有限接线回归2026-10-28)。
+公共允许集仍空，无forced kill/rescue；公开attach背压/drain、child、无人值守、L2及完整L1/M1/M7仍未验收。
