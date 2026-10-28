@@ -705,3 +705,17 @@ cgroup 无执行进程且责任仍被持有，恢复后再确认容器终态和�
 `.verification/linux-public-attach-v4-20261028T144404Z-66cc8dec.json` SHA
 `e2d087ad729fef16abc0c5ecc940da207db87ff4e1e18dac0b72c9804df12aab`，
 20份附件共2,266,698字节已核验。旧 v3 结果不变，公共允许集仍为空。
+
+## 独立在途关停实测（2026-10-28）
+
+C-only 沿用相同1116文件候选和私有 pair：stdout 实际管道取得两次背压样本；
+恢复后双流各写完6 MiB，heartbeat 34→37、容器仍运行且责任为1时请求公开关停。
+关停开始距原期限54.382秒，2.379秒后服务自然退出0，无强杀或救援清理。
+原 run 标记 cancelled，process 经 stopped→removing→removed，精确 CID absent、
+责任0、原 attach 不存在。只用1次受控 SDK，无付费调用或重放。整批23.923秒、
+1116份源码验后不变；原始 attach CLI 返回码未观察到。
+
+回执 `.verification/linux-public-attach-c1-20261028T145732Z-7ecf936a.json` SHA
+`d033befb08eea1c6cbcf40c183f25ba783484a2925eccde80d24d95302b5692d`，
+19份附件共1,338,966字节经独立复核。此结果仅接受该候选的在途正常关停，
+不改变 v3/v4 整批失败、期限场景未通过和公共允许集关闭的状态。
