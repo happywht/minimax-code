@@ -818,6 +818,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_mcp import register_mcp_handlers
     from .ipc.handlers_memory import register_memory_handlers
     from .ipc.handlers_model import register_model_handlers
+    from .ipc.handlers_office import register_office_handlers
     from .ipc.handlers_patch import register_patch_handlers
     from .ipc.handlers_permissions import register_permission_handlers
     from .ipc.handlers_plugins import register_plugin_handlers
@@ -892,6 +893,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     register_project_handlers(server)
     register_artifact_handlers(server)
     register_attachment_handlers(server)
+    register_office_handlers(server)
     register_workspace_handlers(server)
     # The checkpoint handlers expose ``checkpoint.*`` — the workspace snapshot
     # layer (R310): create/list/restore/diff/delete over git-stash refs plus

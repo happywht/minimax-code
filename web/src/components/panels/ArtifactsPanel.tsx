@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ipc } from "../../ipc";
 import { useArtifactStore, useSessionStore } from "../../stores";
 import { Button, Input } from "../../ui";
+import { OfficeDeliveryPanel } from "./OfficeDeliveryPanel";
 
 export function ArtifactsPanel({ onClose }: { onClose: () => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
@@ -10,16 +11,18 @@ export function ArtifactsPanel({ onClose }: { onClose: () => void }): JSX.Elemen
   const host = ipc.agentBaseUrl;
   const scoped = state.projectId === projectId && state.host === host;
   const [path, setPath] = useState("");
+  const [office, setOffice] = useState(false);
   useEffect(() => {
     setPath("");
     void useArtifactStore.getState().activate(projectId);
     return () => useArtifactStore.getState().clear();
   }, [projectId, host]);
+  if (office) return <OfficeDeliveryPanel onClose={onClose} onText={() => setOffice(false)} />;
   return (
     <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目文本成果">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">文本成果 · {project?.name ?? "选择项目"}</h2>
-        <Button variant="ghost" onClick={onClose}>关闭</Button>
+        <div className="flex gap-2"><Button variant="secondary" onClick={() => setOffice(true)}>办公成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div>
       </div>
       <p className="text-sm text-ink-1">TXT / MD / CSV，UTF-8，最大 2 MiB。每次登记创建新版本，原文件保持不变。</p>
       <p className="text-sm text-ink-1">登记和可解析状态不代表质量验证或交付完成。Markdown 按纯文本显示；CSV 不计算公式。</p>

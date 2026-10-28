@@ -132,6 +132,9 @@ export interface TypedIPC {
   getArtifact(projectId: string, artifactId: string): Promise<import("../types/ipc").ArtifactGetResult>;
   listAttachments(projectId: string): Promise<import("../types/ipc").AttachmentListResult>;
   getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
+  generateOfficeXlsx(params: import("../types/ipc").OfficeGenerateParams): Promise<import("../types/ipc").OfficeGetResult>;
+  listOfficeDeliveries(projectId: string): Promise<import("../types/ipc").OfficeListResult>;
+  getOfficeDelivery(projectId: string, deliveryId: string): Promise<import("../types/ipc").OfficeGetResult>;
 
   // Remote host registry and file transfer. Pre-record transfer_id before push
   // when recovery after a lost HTTP response or cancellation is required.
@@ -606,6 +609,9 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     listAttachments: (projectId) => client.request("attachment.list", { project_id: projectId }),
     // Preview results retain versioned parser scope/reason independently of quality.
     getAttachment: (projectId, attachmentId) => client.request("attachment.get", { project_id: projectId, attachment_id: attachmentId }),
+    generateOfficeXlsx: (params) => client.request("office.generate_xlsx", params),
+    listOfficeDeliveries: (projectId) => client.request("office.list", { project_id: projectId }),
+    getOfficeDelivery: (projectId, deliveryId) => client.request("office.get", { project_id: projectId, delivery_id: deliveryId }),
 
     createHost: (params) => client.request("host.create", params),
     listHosts: (params) => client.request("host.list", params ?? {}),

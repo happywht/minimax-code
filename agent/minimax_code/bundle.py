@@ -42,6 +42,8 @@ from .attachments import (
 from .attachments import (
     VAULT as ATTACHMENT_VAULT,
 )
+from .office_metadata import RECORD_KEYS as OFFICE_RECORD_KEYS
+from .office_metadata import validate_record as validate_office_record
 from .runtime.service_lease import ServiceLeaseError, acquire_service_lease
 from .text_artifacts import (
     MAX_BYTES,
@@ -54,9 +56,9 @@ from .text_artifacts import (
 )
 
 FORMAT = "minimax-code-data-vault"
-FORMAT_VERSION = 5
-SCHEMA_VERSION = 45
-SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45}
+FORMAT_VERSION = 6
+SCHEMA_VERSION = 46
+SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46}
 MAX_FILES = 10_000
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 MAX_WAL_BYTES = MAX_DATABASE_BYTES
@@ -278,6 +280,9 @@ def _inventory(path):
         attachment_table = conn.execute("SELECT type,sql FROM sqlite_schema WHERE name='attachments'").fetchone()
         if schema_version == 41:
             _require(attachment_table is None, "Schema041 must not contain attachment metadata")
+        if schema_version < 46:
+            _require(conn.execute("SELECT 1 FROM sqlite_schema WHERE name='office_deliveries'")
+                     .fetchone() is None, "Historical schema must not contain Office metadata")
         columns = [row[1] for row in conn.execute("PRAGMA table_info(text_artifacts)")]
         _require(
             columns
@@ -381,6 +386,8 @@ def _inventory(path):
             "service_id": service_id,
             "artifacts": artifacts,
             **({"attachments": attachments} if schema_version >= 42 else {}),
+            **({"office_deliveries": _office_inventory(conn, service_id)}
+               if schema_version == 46 else {}),
         }
 
 
@@ -392,11 +399,11 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
     _require(columns == ["id", "project_id", "service_id", "snapshot_id", "original_name",
                          "declared_type", "recognized_type", "size_bytes", "sha256", "version",
                          "parser_status", "parser_version", "preview_text", "preview_truncated",
-                         "quality_status", "created_at"] + (["parser_reason", "parser_scope"] if schema_version in {43, 44, 45} else []), "Unsupported attachment schema")
+                         "quality_status", "created_at"] + (["parser_reason", "parser_scope"] if schema_version in {43, 44, 45, 46} else []), "Unsupported attachment schema")
     rows = conn.execute("SELECT id,snapshot_id,size_bytes,sha256,version,service_id,original_name,"
                         "declared_type,recognized_type,parser_status,parser_version,preview_text,"
                         "preview_truncated,quality_status,"
-                        + ("parser_reason,parser_scope" if schema_version in {43, 44, 45} else "'legacy_v1','legacy_v1'")
+                        + ("parser_reason,parser_scope" if schema_version in {43, 44, 45, 46} else "'legacy_v1','legacy_v1'")
                         + " FROM attachments ORDER BY snapshot_id LIMIT ?",
                         (MAX_FILES + 1,)).fetchall()
     _require(len(rows) + artifact_count <= MAX_FILES, "Too many registered vault files")
@@ -411,7 +418,7 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
                  and declared in DECLARED_TYPES and recognized in RECOGNIZED_TYPES
                  and status in STATUSES and type(parser) is int
                  and (parser == 1 and reason == scope == "legacy_v1"
-                      or schema_version in {43, 44, 45} and parser == 2 and reason in REASONS
+                      or schema_version in {43, 44, 45, 46} and parser == 2 and reason in REASONS
                       and scope in {"inert_text", "docx_body_paragraphs_tables", "original_only"})
                  and isinstance(preview, str) and len(preview.encode("utf-8")) <= MAX_PREVIEW_BYTES
                  and len(preview.splitlines()) <= MAX_PREVIEW_LINES and truncated in (0, 1)
@@ -441,6 +448,42 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
         snapshots.add(snapshot)
         result.append({"attachment_id": attachment, "snapshot_id": snapshot, "size_bytes": size,
                        "sha256": digest, "version": version})
+    return result
+
+
+def _office_inventory(conn, service_id):
+    table = conn.execute("SELECT type,sql FROM sqlite_schema WHERE name='office_deliveries'")\
+        .fetchone()
+    _require(table is not None and table[0] == "table"
+             and table[1].lstrip().upper().startswith("CREATE TABLE"),
+             "Schema046 requires an ordinary Office deliveries table")
+    _require([row[1] for row in conn.execute("PRAGMA table_xinfo(office_deliveries)")]
+             == list(OFFICE_RECORD_KEYS), "Unsupported Office deliveries schema")
+    columns = "id,project_id,service_id,sha256,size_bytes,declared_type,recognized_type"
+    attachments = {
+        row[0]: dict(zip(columns.split(","), row, strict=True))
+        for row in conn.execute(f"SELECT {columns} FROM attachments LIMIT ?", (MAX_FILES + 1,))
+    }
+    rows = conn.execute("SELECT * FROM office_deliveries ORDER BY id LIMIT ?", (MAX_FILES + 1,))\
+        .fetchall()
+    _require(len(rows) <= len(attachments), "Invalid Office delivery count")
+    result, ids, references, requests = [], set(), set(), set()
+    for values in rows:
+        try:
+            row = dict(zip(OFFICE_RECORD_KEYS, values, strict=True))
+            attachment = attachments.get(row["attachment_id"])
+            _require(attachment is not None, "Missing Office attachment reference")
+            row = validate_office_record(row, attachment)
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise BundleError("Invalid Office delivery metadata in SQLite") from exc
+        request = (row["project_id"], row["request_key"])
+        _require(row["service_id"] == service_id and row["id"] not in ids
+                 and row["attachment_id"] not in references and request not in requests,
+                 "Invalid or duplicate Office reference")
+        ids.add(row["id"])
+        references.add(row["attachment_id"])
+        requests.add(request)
+        result.append(row)
     return result
 
 
@@ -555,6 +598,8 @@ def _report(manifest, operation):
         "schema_version": manifest["schema_version"],
         "artifact_count": len(manifest["artifacts"]),
         "attachment_count": len(manifest.get("attachments", [])),
+        **({"office_delivery_count": len(manifest["office_deliveries"])}
+           if manifest["format_version"] == 6 else {}),
         "excluded_vault_entries": manifest["excluded_vault_entries"],
         **({"excluded_attachment_entries": manifest["excluded_attachment_entries"]}
            if manifest["format_version"] >= 2 else {}),
@@ -605,7 +650,7 @@ def create_bundle(data_dir, output):
             _snapshot(root, stage, lease)
             inventory = _inventory(stage.path / "data.db")
             _require(inventory["schema_version"] == SCHEMA_VERSION,
-                     "Create requires known Schema045; old v1/041, v2/042, v3/043 and v4/044 are verify/restore only")
+                     "Create requires known Schema046; old v1/041 through v5/045 are verify/restore only")
             database = _file_meta(stage.path / "data.db", MAX_DATABASE_BYTES)
             excluded = _collect_vault(root, stage, VAULT, inventory["artifacts"], MAX_BYTES)
             excluded_attachments = _collect_vault(root, stage, ATTACHMENT_VAULT,
@@ -698,6 +743,8 @@ def _manifest(payload):
     _require(type(version) is int and version in SUPPORTED_SCHEMAS, "Unsupported bundle format")
     if version >= 2:
         keys |= {"attachments", "excluded_attachment_entries"}
+    if version == 6:
+        keys.add("office_deliveries")
     _require(set(value) == keys, "Invalid manifest fields")
     _require(
         value["format"] == FORMAT
@@ -772,6 +819,8 @@ def _manifest(payload):
             attachment_ids.add(row["attachment_id"])
             attachment_snapshots.add(row["snapshot_id"])
             total += row["size_bytes"]
+    if version == 6:
+        _office_manifest(value["office_deliveries"], value["service_id"], value["attachments"])
     _require(total <= MAX_TOTAL_BYTES, "Bundle exceeds shared total size limit")
     for key in ["excluded_vault_entries", *(["excluded_attachment_entries"] if version >= 2 else [])]:
         counts = value[key]
@@ -779,6 +828,33 @@ def _manifest(payload):
                  and all(type(count) is int and count >= 0 for count in counts.values()),
                  "Invalid excluded entry counts")
     return value
+
+
+def _office_manifest(rows, service_id, attachments):
+    _require(type(rows) is list and len(rows) <= len(attachments), "Invalid Office delivery count")
+    by_id = {row["attachment_id"]: row for row in attachments}
+    ids, references, requests = set(), set(), set()
+    for raw in rows:
+        _require(type(raw) is dict and set(raw) == set(OFFICE_RECORD_KEYS),
+                 "Invalid Office manifest fields")
+        try:
+            row = validate_office_record({
+                **raw, "validation_report": json.dumps(raw["validation_report"],
+                                                       ensure_ascii=False, allow_nan=False),
+            })
+        except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+            raise BundleError("Invalid Office manifest metadata") from exc
+        attachment = by_id.get(row["attachment_id"])
+        report = row["validation_report"]
+        request = (row["project_id"], row["request_key"])
+        _require(attachment is not None and row["service_id"] == service_id
+                 and attachment["sha256"] == report["file_sha256"]
+                 and attachment["size_bytes"] == report["size_bytes"]
+                 and row["id"] not in ids and row["attachment_id"] not in references
+                 and request not in requests, "Invalid or duplicate Office manifest reference")
+        ids.add(row["id"])
+        references.add(row["attachment_id"])
+        requests.add(request)
 
 
 def _metadata(value, limit):

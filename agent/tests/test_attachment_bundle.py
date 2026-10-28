@@ -122,6 +122,31 @@ def legacy_v4_pdf_writer():
     return module
 
 
+def legacy_v5_writer():
+    """Baseline8541f43 CRLF bytes, with its own parser metadata/constants."""
+    import minimax_code
+
+    name = "minimax_code._frozen_v5"
+    package = types.ModuleType(name)
+    package.__path__ = [str(Path(minimax_code.__file__).parent)]
+    package.__version__ = minimax_code.__version__
+    sys.modules[name] = package
+    for suffix, label, digest in (
+        ("attachment_metadata", "metadata", "31342060c38a48b4319012a8bb6911dacbd5fe39264c180e4bdacb820dcd2eaf"),
+        ("attachments", "attachments", "db5960aa95e12af6e7be0bd360ba8c7b4fa7c8cb2221ed91954a81ddd186a99e"),
+        ("bundle", "writer", "049ae241aa4c5166760b9aff8a3ec7750f88cd9f819be3755c2f5e7662dd178e"),
+    ):
+        path = FIXTURES / f"bundle-v5-{label}.py.txt"
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        loader = importlib.machinery.SourceFileLoader(name + "." + suffix, str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[loader.name] = module
+        loader.exec_module(module)
+    assert module.FORMAT_VERSION == 5 and module.SCHEMA_VERSION == 45
+    return module
+
+
 async def test_pdf_v2_raw_bundle4_reader_verify_restore_and_new_strict_branch(tmp_path, monkeypatch):
     pytest.importorskip("pypdf")
     from pdf_fixture import pdf_bytes
@@ -181,8 +206,8 @@ async def test_pdf_v2_raw_bundle4_reader_verify_restore_and_new_strict_branch(tm
     await db.connect()
     await db.migrate()
     await db.close()
-    current = tmp_path / "current-pdf-v5.zip"
-    assert bundle.create_bundle(data, current)["schema_version"] == 45
+    current = tmp_path / "current-pdf-v6.zip"
+    assert bundle.create_bundle(data, current)["schema_version"] == 46
     with pytest.raises(ValueError):
         frozen.verify_bundle(current)
     for status, reason, preview, truncated in [
@@ -274,8 +299,8 @@ async def test_xlsx_exact_metadata_and_frozen_raw_bundle4_roundtrip_without_repa
     await db.connect()
     await db.migrate()
     await db.close()
-    current = tmp_path / "current-xlsx-v5.zip"
-    assert bundle.create_bundle(data, current)["schema_version"] == 45
+    current = tmp_path / "current-xlsx-v6.zip"
+    assert bundle.create_bundle(data, current)["schema_version"] == 46
     with pytest.raises(ValueError):
         frozen.verify_bundle(current)
     for status, reason, preview in [("empty", "no_extracted_body_text_no_ocr", ""),
@@ -311,7 +336,7 @@ async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_al
     db = AsyncDatabase(target / "data.db")
     await db.connect()
     try:
-        assert await db.migrate() == [43, 44, 45]
+        assert await db.migrate() == [43, 44, 45, 46]
         after = await db.fetchone("SELECT * FROM attachments")
         assert tuple(after)[:-2] == before
         assert after["parser_version"] == 1 and after["parser_reason"] == after["parser_scope"] == "legacy_v1"
@@ -320,11 +345,11 @@ async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_al
         assert row["service_id"] == meta["attachment"]["service_id"]
     finally:
         await db.close()
-    new = tmp_path / "v5.zip"
-    assert bundle.create_bundle(target, new)["schema_version"] == 45
+    new = tmp_path / "v6.zip"
+    assert bundle.create_bundle(target, new)["schema_version"] == 46
     with pytest.raises(ValueError):
         legacy_v2_writer().verify_bundle(new)
-    assert bundle.verify_bundle(new)["format_version"] == 5
+    assert bundle.verify_bundle(new)["format_version"] == 6
 
 
 async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_path, monkeypatch):
@@ -397,13 +422,13 @@ async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_p
         assert dict(conn.execute("SELECT * FROM attachments").fetchone()) == before_attachment
         assert conn.execute("SELECT root_path FROM projects WHERE id='v3'").fetchone()[0] == str(project)
     conn.close()
-    with pytest.raises(bundle.BundleError, match="Create requires known Schema045"):
+    with pytest.raises(bundle.BundleError, match="Create requires known Schema046"):
         bundle.create_bundle(target, tmp_path / "must-not-upgrade.zip")
     assert hashlib.sha256((target / "data.db").read_bytes()).hexdigest() == database_digest
     db = AsyncDatabase(target / "data.db")
     await db.connect()
     try:
-        assert await db.migrate() == [44, 45]
+        assert await db.migrate() == [44, 45, 46]
         after = dict(await db.fetchone("SELECT * FROM budget_attempts WHERE id=?", (aid,)))
         assert after["state"] == "unknown" and after["reason"].startswith("migration 044:")
         assert {key: value for key, value in after.items() if key not in {"state", "reason"}} == {
@@ -411,9 +436,9 @@ async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_p
         assert dict(await db.fetchone("SELECT * FROM attachments")) == before_attachment
     finally:
         await db.close()
-    current = tmp_path / "current-v5.zip"
-    assert bundle.create_bundle(target, current)["format_version"] == 5
-    assert bundle.verify_bundle(current)["schema_version"] == 45
+    current = tmp_path / "current-v6.zip"
+    assert bundle.create_bundle(target, current)["format_version"] == 6
+    assert bundle.verify_bundle(current)["schema_version"] == 46
     with pytest.raises(ValueError):
         old_writer.verify_bundle(current)
 
@@ -491,7 +516,7 @@ async def test_forward_schema041_upgrade_preserves_registered_text_bytes_and_ser
     try:
         before = dict(await db.fetchone("SELECT * FROM text_artifacts"))
         service = dict(await db.fetchone("SELECT * FROM artifact_service"))
-        assert await db.migrate() == [42, 43, 44, 45]
+        assert await db.migrate() == [42, 43, 44, 45, 46]
         assert dict(await db.fetchone("SELECT * FROM text_artifacts")) == before
         assert dict(await db.fetchone("SELECT * FROM artifact_service")) == service
         assert not await db.fetchall("SELECT * FROM attachments")
@@ -507,7 +532,7 @@ async def test_v2_restores_all_registered_originals_and_public_authenticated_dow
     archive = tmp_path / "v2.zip"
     report = cli("create", "--data-dir", data, "--output", archive)
     assert not list(tmp_path.glob(".bundle-pending-*"))
-    assert report["format_version"] == 5 and report["schema_version"] == 45
+    assert report["format_version"] == 6 and report["schema_version"] == 46
     assert report["artifact_count"] == 1 and report["attachment_count"] == 2
     assert report["excluded_attachment_entries"] == {"orphan": 1, "pending": 1}
     assert cli("verify", "--bundle", archive)["attachment_count"] == 2
@@ -578,7 +603,7 @@ async def test_v2_version_reference_member_rules_fail_closed(both_vaults, tmp_pa
         members = [(item.filename, archive.read(item)) for item in archive.infolist()]
     manifest = json.loads(members[0][1])
     if change == "unknown-version":
-        manifest["format_version"] = 6
+        manifest["format_version"] = 7
     elif change == "schema-format-mismatch":
         manifest["schema_version"] = 41
     elif change == "attachment-path":

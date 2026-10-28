@@ -1,9 +1,9 @@
 # SQLite、文本成果与附件原件的离线数据包
 
 此命令保存 **SQLite 数据库、已登记文本成果版本及附件原件**。当前新建包使用
-v5/Schema045；仍可校验、恢复旧 v1/Schema041、v2/Schema042、v3/Schema043、v4/Schema044，且不迁移或重新绑定旧库。
+v6/Schema046；仍可校验、恢复旧 v1/Schema041、v2/Schema042、v3/Schema043、v4/Schema044、v5/Schema045，且不迁移或重新绑定旧库。
 它生成 data-only 数据副本，不代表 M7 完整应用备份或可直接启动的迁移。
-PDF/XLSX 预览沿用既有元数据；本次045/v5仅为MCP显式Streamable HTTP配置扩展。
+PDF/XLSX预览沿用既有元数据；046/v6新增办公成果持久校验回执，文件仍复用附件vault。
 早期PDF切片沿用v2/inert_text和原因枚举，未改变其当时的Schema044/bundle4。
 精确v2+declared=recognized=pdf+inert_text行额外校验状态/原因/预览一致性；
 历史TXT类型错配、DOCX及v1分支不变，旧行不重解析。冻结旧raw bundle4 writer/枚举验证合法新PDF行的
@@ -39,9 +39,9 @@ JSON。校验或 I/O 失败时返回非零退出码，不将失败当作备份�
 v1 数据包固定 Schema041，只允许版本化 `manifest.json`、SQLite backup API 产生的
 `data.db` 和数据库所有历史记录引用的 `text-artifact-vault/<snapshot_id>`。
 v2 固定 Schema042，额外纳入所有注册 `attachment-vault/<snapshot_id>` 原件，
-包括无法解析、类型异常、空文件和历史版本。v3 固定 Schema043，新增解析范围和稳定原因字段，保留历史v1元数据。v4 固定 Schema044，记录历史流式用量可信度迁移，不改变附件字段。v5固定Schema045，扩展MCP transport检查以保留显式streamable_http。当前工具只从045创建v5；历史v4工具只从044创建v4，旧v1/v2/v3工具拒绝v4，v1至v4工具均拒绝v5；
+包括无法解析、类型异常、空文件和历史版本。v3固定Schema043，新增解析范围和稳定原因字段，保留历史v1元数据。v4固定Schema044，记录历史流式用量可信度迁移，不改变附件字段。v5固定Schema045，扩展MCP transport检查以保留显式streamable_http。v6固定Schema046，新增office_deliveries回执清单。当前工具只从046创建v6；冻结历史writer分别只从原041–045创建v1–5，均拒绝新v6/046；
 未知版本、格式/schema组合或表结构拒绝。Schema041升级前可用旧工具先保全v1；
-本工具验证/恢复旧包不会调用迁移。没有042/043/044/045降级迁移，回退须使用匹配旧程序的升级前备份。
+本工具验证/恢复旧包不会调用迁移。没有042/043/044/045/046降级迁移，回退须使用匹配旧程序的升级前备份。
 它不受成果列表最新 200 条的显示限制。清单记录应用/格式/schema 版本、服务身份、
 schema 哈希及各文件的字节数、SHA-256、成果 ID 和版本。
 
@@ -171,3 +171,29 @@ SHA-256 为 `6787414419eb71f3405fe767b675d9a56bcea8130464f3c62bc772bdd7b58ed2`�
 恢复旧包不会调用045；从旧schema恢复后，当前创建命令会拒绝输出直到操作者显式完成升级。
 回退使用匹配旧程序与升级前DB+vault全量备份，不能把45表直接交给旧程序，也没有逆向迁移。
 MCP配置中的秘密保留在SQLite中，数据包仍应按敏感文件处理；恢复不会连接任何MCP服务或触发模型。
+
+## 办公成果回执与v6/Schema046
+
+046仅新增12列的`office_deliveries`表及项目/创建时间/ID索引，不重建旧表。
+表保存服务、项目、附件、可选历史run、幂等请求身份、输入hash和严格有界JSON回执。
+完整行及报告合同见[存储契约](storage-schema.md#schema046已登记的办公成果)。
+结构范围固定`xlsx_plain_cells_v1`，报告保留`business_quality=unverified`、
+`render_status=not_attempted`。已有附件预览独立保存，不把预览解析成功当全文件验证。
+
+v6清单必须包含`office_deliveries`列表（空库也为[]），其中每项为精确的12字段行，
+`validation_report`为解码后的JSON对象。校验检查严格列/行/报告字段、固定writer与validator
+版本、hash/计数/大小、唯一交付ID/附件引用/项目请求key，并核对附件的project/service、
+声明与识别类型均为xlsx及报告中的实际hash/大小。不存在第三份文件或第三个vault；
+Office引用仍由attachments清单统一计数，DB+两个vault的总量上限不双算办公文件。
+旧v1–5清单拒绝office_deliveries字段，历史schema不接受office_deliveries表。
+
+restore保持DB和每份原文件的精确字节，不调用迁移、XLSX生成器、Office全值校验器、
+附件解析器、模型或MCP服务。它核对已存回执合同与引用及文件hash；没有原始规范化输入时，
+不能重新证明每格等于用户当时输入，也不完成Office渲染或业务内容核验。
+冻结v5 writer/attachments/metadata来自8541f43基线checkout的原CRLF字节，
+使用独立命名空间运行；v1–4夹具原字节保留。
+
+升级046前先停服务，用匹配v5/045工具保存升级前完整DB+vault备份；046迁移失败则新增
+DDL与版本一起回滚。回退旧程序须还原该备份到新数据目录，不能删新表、手工将版本号
+改回45，或把v6数据库直接交给旧writer。本节说明合同；最终Windows/Linux执行证据由
+本批验收记录提供，不将历史v1–5测试回执冒用为v6结果。

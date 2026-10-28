@@ -39,23 +39,28 @@ class AttachmentDAO:
 
     async def insert(self, fields, *, expected_project):
         async with self.db.transaction() as conn:
-            cursor = await conn.execute("SELECT id,root_path,created_at FROM projects WHERE id=?",
-                                        (fields["project_id"],))
-            project = await cursor.fetchone()
-            if project is None or dict(project) != expected_project:
-                raise ValueError("Attachment project binding changed during upload")
-            cursor = await conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1")
-            service = await cursor.fetchone()
-            if service is None or service[0] != fields["service_id"]:
-                raise ValueError("Attachment service identity changed during upload")
-            cursor = await conn.execute("SELECT COALESCE(MAX(version),0)+1 FROM attachments "
-                                        "WHERE project_id=? AND original_name=?",
-                                        (fields["project_id"], fields["original_name"]))
-            row = {**fields, "version": (await cursor.fetchone())[0], "created_at": now_iso()}
-            keys = tuple(row)
-            await conn.execute(f"INSERT INTO attachments ({','.join(keys)}) "
-                               f"VALUES ({','.join('?' for _ in keys)})", tuple(row.values()))
+            row = await self.insert_in_transaction(conn, fields, expected_project=expected_project)
         return metadata(row)
+
+    async def insert_in_transaction(self, conn, fields, *, expected_project):
+        """Shared atomic insert for uploads and generated-office associations."""
+        cursor = await conn.execute("SELECT id,root_path,created_at FROM projects WHERE id=?",
+                                    (fields["project_id"],))
+        project = await cursor.fetchone()
+        if project is None or dict(project) != expected_project:
+            raise ValueError("Attachment project binding changed during upload")
+        cursor = await conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1")
+        service = await cursor.fetchone()
+        if service is None or service[0] != fields["service_id"]:
+            raise ValueError("Attachment service identity changed during upload")
+        cursor = await conn.execute("SELECT COALESCE(MAX(version),0)+1 FROM attachments "
+                                    "WHERE project_id=? AND original_name=?",
+                                    (fields["project_id"], fields["original_name"]))
+        row = {**fields, "version": (await cursor.fetchone())[0], "created_at": now_iso()}
+        keys = tuple(row)
+        await conn.execute(f"INSERT INTO attachments ({','.join(keys)}) "
+                           f"VALUES ({','.join('?' for _ in keys)})", tuple(row.values()))
+        return row
 
     async def list(self, project_id):
         return [metadata(row) for row in await self.db.fetchall(

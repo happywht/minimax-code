@@ -104,3 +104,4 @@ export {
   type MemoryEntryItem,
   type MemoryState,
 } from "./memoryStore";
+export { useOfficeDeliveryStore } from "./officeDeliveryStore";

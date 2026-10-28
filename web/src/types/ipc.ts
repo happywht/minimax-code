@@ -59,6 +59,56 @@ export interface AttachmentOriginal {
 export interface AttachmentListResult { attachments: AttachmentOriginal[]; service_id: string }
 export interface AttachmentGetResult { attachment: AttachmentOriginal; preview_text: string }
 
+export interface OfficeTableSpec {
+  sheet_name: string;
+  columns: { name: string; kind: "text" | "number" | "boolean" }[];
+  rows: (string | number | boolean | null)[][];
+}
+export interface OfficeReport {
+  version: 1;
+  scope: "xlsx_plain_cells_v1";
+  input_sha256: string;
+  file_sha256: string;
+  size_bytes: number;
+  sheet_name: string;
+  data_rows: number;
+  column_count: number;
+  cell_count: number;
+  formula_count: 0;
+  external_relationship_count: 0;
+  macro_count: 0;
+  structure_status: "passed";
+  business_quality: "unverified";
+  render_status: "not_attempted";
+  writer: { name: "openpyxl"; version: "3.1.5" };
+  validator_version: 1;
+}
+export interface OfficeDelivery {
+  id: string;
+  project_id: string;
+  service_id: string;
+  attachment_id: string;
+  run_id: string | null;
+  request_key: string;
+  request_hash: string;
+  input_sha256: string;
+  writer_version: "3.1.5";
+  validator_version: 1;
+  validation_report: OfficeReport;
+  created_at: string;
+}
+export interface OfficeEntry { delivery: OfficeDelivery; attachment: AttachmentOriginal }
+export interface OfficeGetResult extends OfficeEntry { preview_text: string }
+export interface OfficeListResult { deliveries: OfficeEntry[]; service_id: string }
+export interface OfficeGenerateParams {
+  project_id: string;
+  expected_service_id: string;
+  request_key: string;
+  filename: string;
+  run_id?: string | null;
+  spec: OfficeTableSpec;
+}
+
 /** SSH credentials are referenced by identity-file path, never embedded. */
 export interface HostConfig {
   name: string;

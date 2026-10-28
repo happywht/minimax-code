@@ -754,3 +754,22 @@ service自然退出0，无强杀或救援，整批80.213秒。原 attach CLI 返
 原 Exec-only、无 skills、禁 Hooks 和执行入口限制不变。定向477项及 Ruff 通过；
 测试运行于共享工作树，不能代替无私有补丁的正式源码实机验收。当前待验证正式
 安装、公开调用与拒绝路径；这不是完整 L1、child、无人值守、L2 或生产验收通过。
+
+正式源码独立环境验收前两次失败记录：v1 因远端没有现成 uv 在启动服务前失败，
+并发现取证路径白名单错误；6份证据后来通过只读 SFTP 核对取回。v2 使用固定哈希
+的 uv 私有离线安装器完成依赖安装并执行公开任务，但测试夹具写出的证明缺少
+`case` 字段；本地取证另错误沿用了旧源码文件数。30份证据已只读取回并核对，
+服务自然退出0，三条容器记录均 removed/resource0；救援标志 true，整批仍为失败。
+两个回执分别保存在 `.verification/linux-public-l1-release-v1-20261028T163920Z-b9c9c07e.json`
+和 `.verification/linux-public-l1-release-v2-20261028T164424Z-9378f1f0.json`。
+
+第三次使用相同 raw `78276c2` 源码及私有离线依赖环境，补齐夹具证明字段和1129份
+源码数量校验后，公开 preflight、`agent.invoke` 与同键不重放通过；skills、文件、
+宽工具、MCP、子任务工具及 alias 六种配置均被预期策略拒绝，未新增运行或 SDK 调用。
+实际任务 exit0，容器 removed/resource0；服务自然退出0，无强杀或救援。两次受控 SDK
+请求、零付费模型调用；源码前后1129份一致。29份附件共1,348,244字节已逐项核对。
+回执 `.verification/linux-public-l1-release-v3-20261028T164828Z-4856d202.json` SHA
+`a3fabc9019a817a1f16531f9df53455f302a8fe70493c1cfaaa88dda6a4271af`。
+复核模型因账号可用性错误未启动，本次由主代理执行 Git 源码、文件哈希和关键结果
+的确定性核对。该批使用源码运行，非发行 wheel 安装；scheduled、扩展 latch、重启
+旧快照、长期 systemd 与跨主机生产仍待单独验收，不据此认定完整 L1 或 M7 完成。

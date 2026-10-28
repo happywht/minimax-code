@@ -503,6 +503,14 @@ function mockHandle(
       const p = (params ?? {}) as Record<string, unknown>;
       return attachmentMock(method, p, mockProjects.has(String(p.project_id)));
     }
+    case "office.list": {
+      const p = (params ?? {}) as { project_id?: string };
+      if (!p.project_id || !mockProjects.has(p.project_id)) throw new Error("An existing project is required");
+      return { deliveries: [], service_id: "mock-office-unavailable" };
+    }
+    case "office.generate_xlsx":
+    case "office.get":
+      throw new Error("Office generation and verification require the real backend; unavailable in mock mode");
     case "project.list": {
       const p = params as { archived?: boolean } | undefined;
       const projects = Array.from(mockProjects.values())

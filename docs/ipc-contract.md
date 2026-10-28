@@ -1606,8 +1606,56 @@ mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可�
 核对大小/hash/身份，缺失/损坏拒绝，没有 source fallback。返回 application/octet-stream、
 attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）、no-store、nosniff、sandbox CSP、
 上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
-原件和解析元数据从Schema043/bundle v3起纳入离线包；当前Schema045/bundle v5仅扩展MCP传输检查、不改变附件字段，PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
-旧v1/041、v2/042、v3/043仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
+原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，当前Schema046/bundle v6新增办公成果关联表，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
+旧v1/041至v5/045仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
+
+### office.* — 手动生成纯数据 XLSX（Schema046）
+
+| 方法 | 参数 | 返回 |
+|------|------|------|
+| `office.generate_xlsx` | `{project_id, expected_service_id, request_key, filename, spec, run_id?}` | `{delivery, attachment, preview_text}` |
+| `office.list` | `{project_id}` | `{deliveries:[{delivery,attachment}], service_id}`，最近 200 条 |
+| `office.get` | `{project_id, delivery_id}` | `{delivery, attachment, preview_text}`，重新检查 vault 原件大小/hash |
+
+全部参数严格拒绝额外字段。HTTP 入口共用认证、Host/Origin 检查；stdio RPC 为已有受信本地入口。
+不注册为模型工具，不发起模型、run admission/resume 或业务完成状态。
+生成要求允许写入的执行上下文、当前持久服务身份及存在的显式绝对项目根。
+`expected_service_id` 为 `svc_` 加 32 位小写十六进制，`delivery_id` 为 `off_` 加同样后缀；
+project/run ID 最长 128 字符，`request_key` 为 1–128 个 ASCII 字母数字、下划线或连字符。
+filename 仅为安全 `.xlsx` 显示名，长度 6–120，不作为路径；拒绝目录、控制字符及 Windows 设备名。
+
+`spec={sheet_name,columns:[{name,kind}],rows:[[value,...],...]}`；kind 只支持 `text|number|boolean`，
+严格匹配值类型或 null；不接受公式、格式、命令、主机或文件路径。
+1–20 列、0–1000 数据行，连表头最多 5000 格、规范 JSON 输入最多 1 MiB，生成文件最多 2 MiB。
+表名 1–31 字符、列名 1–80（大小写折叠后唯一），每行宽度必须匹配；text 最长 4096 字符、
+拒绝非法 XML 字符，空串规范化为 null。number 必须有限、绝对值不超过 999999999999999、
+最多 15 个有效数字，非零绝对值至少 1e-12；拒绝负零，长编号应使用 text。
+以 `=`/`+`/`-`/`@` 开头及 URL、错误标记均按文本保存，不写入公式/超链接。
+
+固定受限子进程使用 openpyxl 3.1.5 新建文件，独立 ZIP/XML 校验比较全部已保存单元格与规范输入，
+包括超出文本预览窗口的数据；禁止宏、外部关系、额外部件、公式或额外单元格。
+沿用 512 MiB 内存、10 CPU 秒资源门，生成 wall 15 秒、排队 5 秒、服务总期限 40 秒；
+stdout 3 MiB/stderr 16 KiB，取消及重复取消等待进程/文件线程回收，不把异常内容或凭据带出 worker。
+只往私有 attachment-vault 独占原子发布；attachment 与 office 记录同事务提交，原项目文件不覆盖。
+同项目+request_key+相同规范请求重放同一记录，不同内容返回冲突；新 key 才创建同名新版本。
+提交边界丢失响应/取消后可刷新或以同 key 重试；发布后 DB 失败可能留下不可访问的完整私有 orphan，
+不返回成功记录。无隐式孤儿重扫、补录或旧版数据库迁移。
+
+可选 run 仅为来源引用：必须是同项目、同显式 workspace 的普通 native host 非 plan run，
+会话历史包含 admission/internal 执行元数据、其他引擎/隔离配置、损坏或重复键元数据时拒绝；
+生成前及事务提交时重复核对，绝不借用该 run 的工具权限或改变其状态。
+检查完整会话历史最多 256 条，每条 metadata 最多 64 KiB，超限/嵌套过深/非严格 JSON 拒绝，不抽样放行。
+请求指纹还绑定项目的 id/root_path/created_at；项目根变更后不能用旧 key 静默重放为新目标。
+已经登记的历史来源被删除后仍可读取该不可变版本。
+
+delivery 为 office_deliveries 的 12 列记录，其中 validation_report 在 RPC 解码为对象：
+`version:1,scope:xlsx_plain_cells_v1,input_sha256,file_sha256,size_bytes,sheet_name,data_rows,column_count,cell_count,`
+`formula_count:0,external_relationship_count:0,macro_count:0,structure_status:passed,business_quality:unverified,`
+`render_status:not_attempted,writer:{name:openpyxl,version:3.1.5},validator_version:1`。
+attachment 沿用原附件类型、版本、SHA-256 与 v2/inert_text 预览，不把普通上传转换为 office 记录。
+下载复用认证 attachment content HTTP，前端再次比较实际字节大小/hash、项目/主机/服务 epoch。
+报告不是数字签名；不保证渲染、重算、OCR、打印分页或业务验收。独立复验命令及 bundle6/46 边界见
+[办公成果](office-delivery.md)；mock 明确不生成文件，不构造已验证记录。
 
 ### artifact.* — 显式登记文本成果（Schema041）
 

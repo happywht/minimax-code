@@ -23,6 +23,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..office_xlsx import XlsxSpec
+from ..office_xlsx import filename as office_filename
+
 
 class _Base(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
@@ -62,6 +65,23 @@ class AttachmentListParams(ArtifactListParams):
 
 class AttachmentGetParams(AttachmentListParams):
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
+
+
+class OfficeGenerateParams(ArtifactListParams):
+    expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
+    request_key: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    filename: str = Field(min_length=6, max_length=120)
+    spec: XlsxSpec
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value):
+        return office_filename(value)
+
+
+class OfficeGetParams(ArtifactListParams):
+    delivery_id: str = Field(pattern=r"^off_[0-9a-f]{32}$")
 
 
 class AttachmentParserMetadata(BaseModel):

@@ -11,19 +11,29 @@ from test_attachment_bundle import (
     legacy_v2_writer,
     legacy_v3_writer,
     legacy_v4_pdf_writer,
+    legacy_v5_writer,
     legacy_writer,
 )
 
-from minimax_code import bundle
 from minimax_code.storage import db as db_module
 from minimax_code.storage.db import AsyncDatabase, Database
 
 migration = importlib.import_module("minimax_code.storage.migrations.045_mcp_streamable_http")
+# These are historical045/format5 tests. Current046/format6 interop is covered
+# separately; keep045 failure/rollback evidence pinned to its actual writer.
+bundle = legacy_v5_writer()
 STAMP = "2026-10-28T10:00:00+00:00"
 COLUMNS = (
     "id,name,transport,command,url,env,enabled,created_at,updated_at,bearer_token,headers,"
     "oauth_client_id,oauth_client_secret,oauth_scopes,oauth_callback_port,tool_states"
 )
+
+
+@pytest.fixture(autouse=True)
+def schema045_only(monkeypatch):
+    discover = db_module.discover_migrations
+    monkeypatch.setattr(db_module, "discover_migrations", lambda applied: [
+        (version, run) for version, run in discover(applied) if version <= 45])
 
 
 def seed(db):

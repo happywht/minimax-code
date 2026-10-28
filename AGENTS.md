@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (197 methods: 38 dotted namespaces + 3 standalone methods)
+  |- IPCServer (200 methods: 39 dotted namespaces + 3 standalone methods)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (built-in tools + skill/MCP bridges)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -169,7 +169,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **197 个注册方法、38 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **200 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -192,6 +192,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `mobile.*` | 7 | 设备配对/推送 | `handlers_mobile.py` |
 | `model.*` | 4 | 模型列表/切换 | `handlers_model.py` |
 | `notification.*` | 5 | 通知中心 | `handlers_notifications.py` |
+| `office.*` | 3 | 手动生成、登记、列表与核对单表纯数据 XLSX | `handlers_office.py` |
 | `patch.*` | 8 | Patch Studio 应用/回退/快照 | `handlers_patch.py` |
 | `permission.*` | 6 | 权限规则管理/解析 | `handlers_permissions.py` |
 | `plugins.*` | 5 | 插件启用/禁用 | `handlers_plugins.py` |
@@ -242,6 +243,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `docs/architecture.md` | 系统架构总览、技术栈、目录结构、数据流 |
 | `docs/ipc-contract.md` | JSON-RPC 2.0 协议详述、方法列表、事件列表、Appendix A 方法总表 |
 | `docs/storage-schema.md` | SQLite 表结构 ER 图、索引策略、迁移机制 |
+| `docs/office-delivery.md` | 手动生成纯数据 XLSX、完整值验证、不可变原件、独立复验与回退 |
 | `docs/agent-core.md` | AgentCore 对话循环、工具目录、错误处理矩阵 |
 | `docs/skills.md` | SKILL.md 格式、工具绑定规则、生命周期 |
 | `docs/user-guide.md` | 面向最终用户的完整操作手册 |

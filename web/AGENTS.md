@@ -6,6 +6,12 @@ Agent-focused guidance for the `web/` package of MiniMax Code.
 
 A React 18 single-page app served by Vite.
 
+The existing artifacts sidebar opens text artifacts; its “办公成果” button opens
+`OfficeDeliveryPanel` and `officeDeliveryStore`. The authenticated manual flow generates
+single-sheet plain-data XLSX through three typed Office RPCs. The mock backend lists no
+Office results and refuses generation/download. Keep project/host/service epochs, bounded
+escaped previews, verified attachment downloads and “业务未验证” labels intact.
+
 | Concern | Tech |
 |---------|------|
 | Language | TypeScript 5.6 (strict mode) |

@@ -6,6 +6,7 @@
 The Python sidecar persists structured agent state in a single SQLite database file;
 registered text artifact originals live in the separate managed vault described in Schema041.
 Uploaded attachment originals use a second managed vault described in Schema042.
+Schema046 Office delivery receipts reference that same attachment vault; there is no third vault.
 The database file lives at:
 
 | OS      | Path                                                                |
@@ -612,7 +613,7 @@ Anthropic 及无法确认协议者由 settled 改为 unknown，追加原因和 b
 日期边界隔离，不能用覆盖起点或删除历史释放责任。
 
 Schema044 引入 v4 数据包；v1/041、v2/042、v3/043 仍只校验/原样恢复，不自动迁移。
-当前创建版本见下方 Schema045。
+当前创建版本见下方 Schema046。
 升级前停服务，用对应旧工具保存匹配的 DB+vault；回退恢复旧程序及升级前完整备份，
 不直接让旧程序读取044，不做逆向迁移。该数据包仍不包含运营恢复所需的全部配置/所有权。
 
@@ -629,7 +630,51 @@ WITHOUT ROWID 或 STRICT 不同的外部表定义均拒绝，不静默抹掉已�
 此处使用精确正式 SQL 对比，连语义等价的外部格式改写也会拒绝；自定义索引/触发器作为
 独立 schema 对象保留，不被该表定义限制排除。
 
-新离线数据包仅创建 v5/Schema045；精确兼容映射为 v1/041、v2/042、v3/043、v4/044、v5/045。
+045对应历史 v5/Schema045；当前创建版本见下方 Schema046。
 旧包继续校验/原样恢复 SQLite 字节，恢复不运行迁移。旧版工具拒绝 v5/045；未知格式、
 未来 schema 及格式/schema 不匹配均拒绝。回退须恢复对应旧程序和升级前完整 DB+vault 备份，
 没有045逆向迁移；数据包仍为 data-only。
+
+### Schema046：已登记的办公成果
+
+046只新建普通表 `office_deliveries` 及其索引，不重建或改写任何旧表。精确12列如下：
+
+| 列 | 持久化合同 |
+| --- | --- |
+| `id` | TEXT PRIMARY KEY，`off_`加32位小写hex |
+| `project_id` | TEXT NOT NULL，历史项目引用 |
+| `service_id` | TEXT NOT NULL，`svc_`加32位小写hex，与附件及artifact_service一致 |
+| `attachment_id` | TEXT NOT NULL UNIQUE，引用既有附件；字节只存在attachment-vault |
+| `run_id` | 可空TEXT，历史run引用，不赋予运行权限 |
+| `request_key` | TEXT NOT NULL，与project_id构成UNIQUE幂等身份 |
+| `request_hash` | TEXT NOT NULL，规范化请求与目标关联的SHA-256 |
+| `input_sha256` | TEXT NOT NULL，规范化表格输入的SHA-256 |
+| `writer_version` | TEXT NOT NULL，当前固定`3.1.5` |
+| `validator_version` | INTEGER NOT NULL，CHECK固定为1 |
+| `validation_report` | TEXT NOT NULL，严格JSON报告，UTF-8至多64KiB |
+| `created_at` | TEXT NOT NULL |
+
+索引 `idx_office_deliveries_project(project_id,created_at,id)` 支持稳定列表顺序。
+project/run/attachment为保留历史的逻辑引用，不设级联删除；服务访问仍须验证当前项目存在。
+只记录已完成登记的成果。来源、格式和检查范围由固定报告合同表达，不增加重复状态列、
+pending/run恢复状态或第三个vault。附件与交付记录由服务在同一DB事务提交。
+
+`office_metadata.py`用纯stdlib验证持久行、解码报告并核对附件，不加载办公生成器。
+行必须精确包含上述列；ID和hash格式严格，project/run为1–128字符，request_key匹配`[A-Za-z0-9_-]{1,128}`，
+writer/validator版本与报告一致。报告严格字段为：`version=1`、
+`scope=xlsx_plain_cells_v1`、`input_sha256`、`file_sha256`、`size_bytes`（1–2097152）、
+`sheet_name`（1–31字符，拒绝Excel非法字符、控制符、首尾单引号及纯空白）、`data_rows`（0–1000）、`column_count`（1–20）、
+`cell_count=(data_rows+1)*column_count`（至多5000）、`formula_count=0`、
+`external_relationship_count=0`、`macro_count=0`、`structure_status=passed`、
+`business_quality=unverified`、`render_status=not_attempted`、
+`writer={name:openpyxl,version:3.1.5}`、`validator_version=1`。
+整数不接受bool/float；拒绝未知/缺失字段、JSON重复key、非有限值及未来版本。
+报告不含preview字段；预览沿用附件元数据。报告文件hash/大小必须与同project/service的
+`declared_type=recognized_type=xlsx`附件一致。报告合同验证不等于重新校验XLSX字节、渲染或业务验收。
+
+新writer仅创建 v6/Schema046。精确读取映射为v1/041、v2/042、v3/043、v4/044、
+v5/045、v6/046；旧包保持原schema和全部DB/vault字节，restore不执行迁移、生成或Office解析。
+v6清单新增`office_deliveries`，即使没有记录也必须为[]；v1–5不接受该清单字段。
+成果引用的附件仍只计一次文件数和字节数。未知格式、未来schema或版本错配均拒绝。
+046失败使新表、索引及版本记录一起回滚；无逆向迁移。回退须使用匹配旧程序与升级前
+DB+vault备份恢复到新目录，不能删表或手动改写版本号。

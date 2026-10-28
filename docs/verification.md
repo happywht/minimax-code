@@ -184,3 +184,5 @@ Python 3.11 两平台各169项通过。原件与独立统计在 `.verification/c
 修正预期后保留旧项目数据、成果表及再次迁移为空的断言，单例先红后绿；相邻五模块
 72项通过，Schema045/bundle专项35项通过，均自然退出0。原失败及新日志见
 `.verification/ci-a2832e9-failure-review/`；不将原CI改判为通过，修复提交须另跑CI。
+同一轮 Windows 后端全量为12704通过、20跳过、1失败，唯一失败与 Ubuntu 相同；
+两平台 baseline 均成功。Windows 原件和独立统计见同目录的 `windows-full-review.json`。
