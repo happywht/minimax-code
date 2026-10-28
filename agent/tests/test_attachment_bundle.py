@@ -22,7 +22,11 @@ from minimax_code.attachments import AttachmentService
 from minimax_code.config import Config
 from minimax_code.http_server import build_app
 from minimax_code.ipc.server import IPCServer
+from minimax_code.storage import db as db_module
+from minimax_code.storage.dao.budgets import BudgetsDAO
 from minimax_code.storage.dao.projects import ProjectsDAO
+from minimax_code.storage.dao.runs import AgentRunsDAO
+from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase
 from minimax_code.text_artifacts import ArtifactService
 
@@ -71,6 +75,18 @@ def legacy_v2_writer():
     return module
 
 
+def legacy_v3_writer():
+    # Raw e7f7e22 writer, independent of the current writer/version constants.
+    path = FIXTURES / "bundle-v3-writer.py.txt"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == "6787414419eb71f3405fe767b675d9a56bcea8130464f3c62bc772bdd7b58ed2"
+    loader = importlib.machinery.SourceFileLoader("minimax_code._frozen_v3_writer", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    assert module.FORMAT_VERSION == 3 and module.SCHEMA_VERSION == 43
+    return module
+
+
 async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_all_v1_values(tmp_path):
     meta = json.loads((FIXTURES / "bundle-v2-schema042.json").read_bytes())
     compressed = (FIXTURES / "bundle-v2-schema042.zip.gz").read_bytes()
@@ -92,7 +108,7 @@ async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_al
     db = AsyncDatabase(target / "data.db")
     await db.connect()
     try:
-        assert await db.migrate() == [43]
+        assert await db.migrate() == [43, 44]
         after = await db.fetchone("SELECT * FROM attachments")
         assert tuple(after)[:-2] == before
         assert after["parser_version"] == 1 and after["parser_reason"] == after["parser_scope"] == "legacy_v1"
@@ -101,11 +117,102 @@ async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_al
         assert row["service_id"] == meta["attachment"]["service_id"]
     finally:
         await db.close()
-    new = tmp_path / "v3.zip"
-    assert bundle.create_bundle(target, new)["schema_version"] == 43
+    new = tmp_path / "v4.zip"
+    assert bundle.create_bundle(target, new)["schema_version"] == 44
     with pytest.raises(ValueError):
         legacy_v2_writer().verify_bundle(new)
-    assert bundle.verify_bundle(new)["format_version"] == 3
+    assert bundle.verify_bundle(new)["format_version"] == 4
+
+
+async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_path, monkeypatch):
+    import docx
+
+    source = tmp_path / "schema043"
+    db = AsyncDatabase(source / "data.db")
+    await db.connect()
+    discover = db_module.discover_migrations
+    with monkeypatch.context() as patch:
+        patch.setattr(db_module, "discover_migrations", lambda applied: [
+            (version, run) for version, run in discover(applied) if version <= 43])
+        assert (await db.migrate())[-1] == 43
+    project = tmp_path / "original-project"
+    project.mkdir()
+    await ProjectsDAO(db).create(id="v3", name="original", root_path=str(project))
+    text = b"\xef\xbb\xbfFrozen v3 original\r\n"
+    (project / "original.txt").write_bytes(text)
+    artifact = await ArtifactService(db, source).register("v3", "original.txt")
+    document = docx.Document()
+    document.add_paragraph("Frozen schema043 DOCX body")
+    document.add_table(rows=1, cols=1).cell(0, 0).text = "Frozen table"
+    buffer = io.BytesIO()
+    document.save(buffer)
+    original_docx = buffer.getvalue()
+    attachments = AttachmentService(db, source)
+    identity = (await attachments.list("v3"))["service_id"]
+    attachment = await attachments.upload("v3", "original.docx", identity, stream(original_docx))
+    assert attachment["parser_version"] == 2
+    await SessionsDAO(db).create(id="v3-session")
+    run, _ = await AgentRunsDAO(db).admit_run(
+        session_id="v3-session", request={"content": "offline fixture"}, title="fixture",
+        metadata={"budget": {"limit_tokens": 60000}, "model_snapshot": {
+            "engine": "native", "protocol": "anthropic", "provider_id": "builtin-minimax",
+            "model": "MiniMax-M3"}})
+    family = run["metadata"]["budget_family_id"]
+    dao = BudgetsDAO(db)
+    aid = await dao.reserve(family_id=family, run_id=run["id"], provider="builtin-minimax",
+                            model="MiniMax-M3", estimate=100)
+    await dao.sent(aid)
+    await dao.settle(aid, {"prompt_tokens": 0, "completion_tokens": 10, "total_tokens": 10})
+    await AgentRunsDAO(db).update_run_status(run["id"], status="completed")
+    before_attempt = dict(await db.fetchone("SELECT * FROM budget_attempts WHERE id=?", (aid,)))
+    before_attachment = dict(await db.fetchone("SELECT * FROM attachments"))
+    await db.close()
+    archive = tmp_path / "actual-v3.zip"
+    old_writer = legacy_v3_writer()
+    assert old_writer.create_bundle(source, archive)["format_version"] == 3
+    assert old_writer.verify_bundle(archive)["schema_version"] == 43
+    assert bundle.verify_bundle(archive)["format_version"] == 3
+    with zipfile.ZipFile(archive) as exported:
+        frozen_database = exported.read("data.db")
+    database_digest = hashlib.sha256(frozen_database).hexdigest()
+
+    async def never_migrate(*args):
+        raise AssertionError("Verify/restore must not migrate historical data")
+
+    target = tmp_path / "restored043"
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncDatabase, "migrate", never_migrate)
+        bundle.restore_bundle(archive, target)
+        assert bundle.verify_bundle(archive)["schema_version"] == 43
+    assert hashlib.sha256((target / "data.db").read_bytes()).hexdigest() == database_digest
+    assert (target / bundle.VAULT / artifact["snapshot_id"]).read_bytes() == text
+    assert (target / bundle.ATTACHMENT_VAULT / attachment["snapshot_id"]).read_bytes() == original_docx
+    with sqlite3.connect(target / "data.db") as conn:
+        conn.row_factory = sqlite3.Row
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
+        assert dict(conn.execute("SELECT * FROM budget_attempts WHERE id=?", (aid,)).fetchone()) == before_attempt
+        assert dict(conn.execute("SELECT * FROM attachments").fetchone()) == before_attachment
+        assert conn.execute("SELECT root_path FROM projects WHERE id='v3'").fetchone()[0] == str(project)
+    conn.close()
+    with pytest.raises(bundle.BundleError, match="Create requires known Schema044"):
+        bundle.create_bundle(target, tmp_path / "must-not-upgrade.zip")
+    assert hashlib.sha256((target / "data.db").read_bytes()).hexdigest() == database_digest
+    db = AsyncDatabase(target / "data.db")
+    await db.connect()
+    try:
+        assert await db.migrate() == [44]
+        after = dict(await db.fetchone("SELECT * FROM budget_attempts WHERE id=?", (aid,)))
+        assert after["state"] == "unknown" and after["reason"].startswith("migration 044:")
+        assert {key: value for key, value in after.items() if key not in {"state", "reason"}} == {
+            key: value for key, value in before_attempt.items() if key not in {"state", "reason"}}
+        assert dict(await db.fetchone("SELECT * FROM attachments")) == before_attachment
+    finally:
+        await db.close()
+    current = tmp_path / "current-v4.zip"
+    assert bundle.create_bundle(target, current)["format_version"] == 4
+    assert bundle.verify_bundle(current)["schema_version"] == 44
+    with pytest.raises(ValueError):
+        old_writer.verify_bundle(current)
 
 
 async def stream(data):
@@ -181,7 +288,7 @@ async def test_forward_schema041_upgrade_preserves_registered_text_bytes_and_ser
     try:
         before = dict(await db.fetchone("SELECT * FROM text_artifacts"))
         service = dict(await db.fetchone("SELECT * FROM artifact_service"))
-        assert await db.migrate() == [42, 43]
+        assert await db.migrate() == [42, 43, 44]
         assert dict(await db.fetchone("SELECT * FROM text_artifacts")) == before
         assert dict(await db.fetchone("SELECT * FROM artifact_service")) == service
         assert not await db.fetchall("SELECT * FROM attachments")
@@ -197,7 +304,7 @@ async def test_v2_restores_all_registered_originals_and_public_authenticated_dow
     archive = tmp_path / "v2.zip"
     report = cli("create", "--data-dir", data, "--output", archive)
     assert not list(tmp_path.glob(".bundle-pending-*"))
-    assert report["format_version"] == 3 and report["schema_version"] == 43
+    assert report["format_version"] == 4 and report["schema_version"] == 44
     assert report["artifact_count"] == 1 and report["attachment_count"] == 2
     assert report["excluded_attachment_entries"] == {"orphan": 1, "pending": 1}
     assert cli("verify", "--bundle", archive)["attachment_count"] == 2
@@ -207,6 +314,8 @@ async def test_v2_restores_all_registered_originals_and_public_authenticated_dow
         legacy_writer().verify_bundle(archive)  # Actual old reader fails closed on v2.
     with pytest.raises(ValueError):
         legacy_v2_writer().verify_bundle(archive)
+    with pytest.raises(ValueError):
+        legacy_v3_writer().verify_bundle(archive)
     target = tmp_path / "restored"
     assert cli("restore", "--bundle", archive, "--new-data-dir", target)["attachment_count"] == 2
     db = AsyncDatabase(target / "data.db")
@@ -266,7 +375,7 @@ async def test_v2_version_reference_member_rules_fail_closed(both_vaults, tmp_pa
         members = [(item.filename, archive.read(item)) for item in archive.infolist()]
     manifest = json.loads(members[0][1])
     if change == "unknown-version":
-        manifest["format_version"] = 4
+        manifest["format_version"] = 5
     elif change == "schema-format-mismatch":
         manifest["schema_version"] = 41
     elif change == "attachment-path":
