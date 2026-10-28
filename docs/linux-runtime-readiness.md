@@ -1,6 +1,6 @@
 # Linux 受限运行环境实测
 
-2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选用例及后续四个故障用例已按文末范围验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
+2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选用例及后续四个故障用例、2026-10-28 的三个启动窗口及三个有界资源候选用例已按文末各自源码范围验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
 
 ## 安装与主机状态
 
@@ -397,3 +397,64 @@ OOM/pids/CPU，网络/secret/socket、runtime 消失、foreign marker/安装身�
 公共允许集发布、正式 40 项三轮、安装/升级/完整恢复及 14 天真实使用仍未完成。
 `ACCEPTED_GOVERNORS` 仍为空，`linux-podman-l1` 仍 unavailable；本批不代表公共 L1、
 M1 整体或 L2/L3 完成。
+
+## 三个有界资源候选的修复与实机验收（2026-10-28）
+
+保留此前全部失败和接受范围后，独立资源 v4 候选经真实完整 stdio CLI、公开 RPC、
+实际 SDK 的固定 loopback SSE 完成 **OOM 分配子进程、pids 耗尽取消、CPU 饱和截止
+三个用例，并经独立复核接受**。本批基底为 `e0f89e01677530ecda0561a807139a420f4f1bdf`
+的 **1103 个原始 Git blob 文件**，仅在私有 staging 改唯一 guard/policy 允许配对；
+没有产品 observer 补丁或产品/guard 资产变更。运行前后全部源码 hash 一致，主分支
+`ACCEPTED_GOVERNORS` 仍为空。本批不沿用此前 `70870b4` 或 `f953531` 的源码身份。
+
+始终顺序执行一个压力容器，沿用同一已批准镜像，固定 memory128MiB、swap0、
+pids64、CPU500m、tmpfs32MiB、output256KiB 和原 **60 秒 CLOCK_BOOTTIME 绝对期限**。
+payload 的独立 180 秒界限仅作保护，停止容差 5 秒、观测容差 10 秒不变。每次压力
+释放前，先固定完整 CID、init PID/startticks、精确 cgroup scope 与其字面 `container`
+子目录，以及 no-follow 打开的有界祖先链设备/inode/身份，再保存原始值并校验实际
+继承资源限制；release token 绑定 nonce/case/exec_id/CID/目录身份和已校验采样。
+没有宿主压力、cgroup 写入、泛搜归属或额外 runtime。
+
+实际布局是 inspect 指向 scope，init 位于其 `container` 叶；scope 无直接进程且只有
+该子目录，叶无更深子目录，两层 pids.current 相等。实测 scope 的 memory128MiB、
+swap=max、pids2265、CPU500m，与叶的 memory128MiB、swap0、pids64、CPU500m 同时
+保留；按固定祖先链检查有效最小限制，不能将 scope 的宽松 swap/pids 值冒充叶限制。
+OOM 用 scope 的层级 `memory.events` 加叶的 `memory.events.local`，CPU 用 scope
+的 `cpu.stat`；Linux 6.8 的 `pids_can_fork` 在发起 fork 的叶记录本地事件，因此 PID
+耗尽用精确 64 限制叶的 `pids.events`，不要求 scope 的本地事件增加。两层未合并原始
+值均保留，依据见 [Linux v6.8 pids.c](https://github.com/torvalds/linux/blob/v6.8/kernel/cgroup/pids.c#L222-L240)。
+
+| 用例 | 实际接受范围 |
+|---|---|
+| 分配子进程 OOM | group-kill 为0；精确 allocator PID3138947/namespace PID3 与父进程、guard 同属已固定叶。内核事件前后 scope 层级与叶 local 的 oom_kill 均0→1，原成员3→2，waitpid status9 明确 SIGKILL，父进程和 guard 存活；父进程随后按夹具 exit86，持久 outcome exited、oom_killed=0。这证明分配子进程的 memcg OOM，不证明 guard OOM，也不证明产品自动 OOM 分类 |
+| pids 耗尽后取消 | 63次有界 fork 尝试产生62个最小子进程，EAGAIN/errno11；64个精确成员、pids.current64，叶 pids.events:max 0→1、scope 仍0，无 OOM；公开接口仍响应。公开取消后原 PID 首次观察均停止约1.961秒，CID 首次观察 absent 约2.071秒，持久 cancelled、责任核销 |
+| CPU 饱和到原截止 | guard/leader/两个 worker 的4个成员身份稳定，取得5个压力采样；包含逐文件证据保存的实际采样跨度为28.141440424秒，不能写成固定5秒墙钟。scope 的 usage_usec 增加12,369,405，nr_throttled 增加240，throttled_usec 增加14,350,783；最后一项是 throttling 计数时长，不是 CPU 使用时间，也无吞吐量门槛。原 PID 首次观察均停止于原 deadline 后约0.094秒，CID absent 约0.847秒；exit124/outcome unknown，不能计作 payload 成功 |
+
+停止/absence 时间均为采样得到的**首次观测上界**，不是精确死亡时刻。OOM 后保留
+有界父进程只为取得同一 cgroup 的事件与 victim/wait 证据，没有改写 guard。每项仅
+一个目标 payload、无重放；SDK 增量为 **2/1/2，共5次受控请求、0次付费调用**。
+全批 **96.943秒、exit0**；最后服务正常 exit0，无强杀、关闭错误或 rescue。最终
+**7行 process 全部 removed/resource_held=0、7个精确 CID absent**，包括1个私有
+preflight exit0、3个 Git advisory exit125/outcome unknown 和3个目标 payload。
+probe/advisory 单独记账，不把 Git unavailable、guard 截止或七行当成额外验收。
+
+修复与失败证据均保留，不以 v4 成功追改：
+
+- v1 driver 在远端已创建 stage 后，本地仍检查旧 `l1-faultwindows-` 前缀，上传前失败；原回执没有保存 stage，位置保持未知，无附件或任务执行证据。回执 `.verification/linux-l1-resources-v1-20261028T082430Z-2eb1fe3a.json`：`ea1618550914566318a34ee89d6cd59e4e20e2c3bf7c582f336204451122bf43`。v2 修正严格版本前缀，并在验证前保存实际 stage 和原始回复。
+- v2 因误将 inspect scope 与 init 的 `scope/container` 要求相等而在压力前失败；回执 `.verification/linux-l1-resources-v2-20261028T083015Z-6f93bb77.json`：`cfee0fd8fb7ffcc7e220f389df19c614ec36a000d001bc89a1cc9e0a0cf28ed6`，result：`d6763915edbfb065cf0638e29eb3f97b8eaed0dc3e4f6d6ffb130c5638e71751`；16份附件780,332字节。
+- v3 固定上述精确层级、继承限制和逐文件失败留证后，因 CPU 扩展键 `core_sched.force_idle_usec` 的点号被拒而在压力前失败；回执 `.verification/linux-l1-resources-v3-20261028T084511Z-42bd15c6.json`：`7c3fecfb119c75cd36b086494cbfe6a74535c15aac36aeed98c22cefd1f5d545`，result：`f20024b6db547cb6eecd7bb3bbd30a59cc474b0e01897e4d7bdcbddcc0151791`；16份附件802,016字节。
+- v2/v3 各仅1次受控 SDK 请求、无压力 release，服务正常exit0，无清理强杀；失败路径仍为 rescue=true，外部精确删除数为0。另核验各3行 removed/resource0、3个精确 CID absent，不能将失败归类改成正常通过。
+- v4 允许严格有界 ASCII 分段点号 counter key，保留未知合法字段，继续拒绝重复、负数、非整数和畸形数据，并在样本通过前要求既有语义字段；同时按 Linux6.8 发起叶的真实语义选择 pids.events。payload、全部 Harness 方法 AST、产品源码和 guard 均未改变。准备阶段 v1的89项、v2的58项、v3的58项与v4的50项离线检查各自冻结，不相加；v4为模型化 Windows OS 采样，含真实 v3 原始 CPU 值、scope-only PID 事件反例，不冒充真实 Linux 反例运行。helper Ruff、CLI和编译检查通过。
+
+冻结与原始附件（当前工作区提供，不随普通源码克隆）：
+
+- v4 归档 `.verification/l1-resources-v4-source.tar`：`fd1281217d6fa37eb21b0a8d0d0ff3afc0a32aa8caadcb6ee85ede1c9dbfc458`；source manifest：`56323a8805cdca054d06791140218e952f4f5477799feaefe195a25c1e465c3a`，与v1/v2/v3字节相同。
+- harness `verify_l1_resources_remote_v4.py`：`03c319a123a33604d9a9ea35e1a594ac8ba12854bf9109cd8aead3ca7ade93f6`；driver `run_l1_resources_v4.py`：`7a0901b5c4ae47c1d941fa0ef0132594d3bb9a78de8e6f4756a00e44ad8fbb7b`；冻结清单 `.verification/l1-resources-v4-frozen-manifest.json`：`a71396302d95292c5b36f9702e473db3428d48fa19407146f34c8f0bd79f7154`。
+- 实际外层 `.verification/linux-l1-resources-v4-20261028T085226Z-c947307c.json`：`be7234175c3a8841a214ef857b3920ee6f8e6d91ad79a31eac3d660e4e6e910e`；同名目录 `result.json`：`6fe56c7ab711877b561e4583b1253b3a5f2b39cf57539e01cbd3fafe872b8a53`。**18份附件、5,057,104字节**逐项核验，1103文件源码前后不变。
+
+本批仅接受上述三个有界私有资源用例，此前七个与三个启动窗口用例仍保留各自源码
+和接受范围；旧文中的“下一批 OOM/pids/CPU”是当时计划，由本节实际证据更新。
+下一有限 L1 边界批次为网络/canary/secret/socket，安装 marker/租约/runtime 不可用
+时的责任保留仍须验收；持续 fork 和真正阻塞输出也有独立缺口。公开 restricted
+子任务、无人值守全部准入、公共允许集发布、正式40项三轮、完整安装/升级/恢复及
+14天真实使用仍未完成；能力卡仍 unavailable，不据本批宣布公共L1、M1整体或L2/L3完成。

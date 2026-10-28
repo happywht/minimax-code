@@ -20,7 +20,7 @@
 | 阶段 | 范围与交付 | 验收门槛 | 状态 |
 |---|---|---|---|
 | M0（2–3 日）可信基线 | 夹具与渲染稳定性、Windows/Linux CI、mock/回放/live 分层、凭据隔离、版本/RPC/能力文档 | 同一提交连续三次确定性回归；失败留证据；真实模型与 mock 分开报告 | Windows 同一提交三轮通过，Linux 离线实机验证已建立；以各批报告为准 |
-| M1（6–8 日）执行边界 | 项目路径失效即阻止；所有 shell/验证/Hooks/MCP 启动统一策略；认证与预览权限；环境过滤、进程树取消、原子写/CAS/备份、只读模式 | 越界/链接/失效目录/并发覆盖/遗留进程/未认证 RPC 和 WS 回归通过 | 实施中；此前三个公开 Native 容器及四个故障候选用例保留各自接受范围，2026-10-28 另接受 `f953531` 基底的三个启动窗口候选，精确范围见[实机记录](linux-runtime-readiness.md)与[边界设计](linux-process-adapter-design.md)；主分支 L1 允许集仍空，下一批为 OOM/pids/CPU，完整入口审计、其余矩阵及 L2/L3 待完成 |
+| M1（6–8 日）执行边界 | 项目路径失效即阻止；所有 shell/验证/Hooks/MCP 启动统一策略；认证与预览权限；环境过滤、进程树取消、原子写/CAS/备份、只读模式 | 越界/链接/失效目录/并发覆盖/遗留进程/未认证 RPC 和 WS 回归通过 | 实施中；此前三个公开 Native 容器及四个故障、`f953531`基底的三个启动窗口候选保留各自接受范围，2026-10-28另接受`e0f89e0`基底的三个有界资源候选，精确范围见[实机记录](linux-runtime-readiness.md)与[边界设计](linux-process-adapter-design.md)；主分支L1允许集仍空，下一有限批次为网络/canary/secret/socket，安装marker/租约/runtime责任、其余矩阵及L2/L3待完成 |
 | M2（7–10 日）运行与恢复 | RunService、幂等键、固定 ExecutionContext、每会话单写任务、持久事件/审批/结果、预算与熔断 | 重复提交不重复执行；断线补齐最终状态；重启准确标记中断和待核对写操作 | 实施中；共享预算/日账、技能和直接 Agent 持久入口已局部验收；技能配置补齐、团队与完整权限/后代入口审计待完成 |
 | M3（6–9 日）编程闭环 | 需求→计划→修改→验证→审查→交付；真实验证命令、结构化压缩、输出文件引用、rg/符号/FTS、基线撤销、worktree 合并后复验 | 固定任务集交付正确差异和验证证据；保留用户同期修改 | 部分实现；校验执行/证据已接入，完整任务集与其余闭环未验收 |
 | M4（4–6 日）CodexEngine | App Server 会话创建/续接、结构化事件、审批/取消、外部 session ID、能力探测与契约回放 | 两引擎跑同批任务；Codex 不可用明确解释，Native 独立可用 | 会话/历史/恢复离线闭环已验证；真实双引擎任务集待验收 |
@@ -794,3 +794,52 @@ exit124/null/124/unknown；advisory 与 guard/未启动结果不能计作 Git/pa
 runtime/安装身份/租约、持续 fork、阻塞输出、公开 restricted 子任务及无人值守仍待
 各自验收。公共 L1 允许集仍空、能力卡仍 unavailable，M1 整体、L2/L3、正式 40 项
 三轮、完整安装/升级/恢复及 14 天真实使用门槛均未因此完成。
+
+### 2026-10-28：M1 三个有界资源候选实机验收
+
+独立资源v4 staging以 `e0f89e01677530ecda0561a807139a420f4f1bdf` 的1103个原始Git
+blob为基底，仅私有允许唯一guard/policy配对。真实完整stdio CLI、公开RPC和实际
+SDK固定loopback SSE完成三个有界case，**96.943秒、exit0并经独立复核接受**。
+源码前后hash一致，没有产品observer、产品/guard资产改动；主分支允许集仍空。
+
+同一批准镜像、一次一个容器，固定memory128MiB/swap0/pids64/CPU500m、原60秒
+BOOTTIME deadline、tmpfs32MiB/output256KiB；180秒payload保护不是通过条件。
+释放压力前固定完整CID/init PID/startticks、scope/container叶与no-follow祖先链，
+先保存原始数据再校验实际有效继承限制；没有宿主压力或cgroup写入。
+
+- 分配子进程OOM：精确PID3138947/namespace3，scope层级及叶local oom_kill0→1，
+  成员3→2、waitpid status9/SIGKILL，父进程与guard存活。父进程按夹具exit86，
+  持久exited/oom_killed=0；不声称guard OOM或产品自动OOM分类已验收。
+- pids耗尽取消：63次尝试、62子进程、EAGAIN11、64成员/current64；精确64限制叶
+  的pids.events:max0→1、scope仍0，无OOM。取消后首次观察原PID停止约1.961秒、
+  CID absent约2.071秒，责任核销。
+- CPU饱和截止：4个稳定成员、5个压力样本，实际采样跨度28.141440424秒，包含
+  逐文件取证，不能称固定5秒。usage_usec +12,369,405、nr_throttled +240、
+  throttled_usec +14,350,783；最后一项不是CPU使用时间，无吞吐量门槛。原deadline
+  后首次停止约0.094秒、CID absent约0.847秒，exit124/unknown，不作payload成功。
+
+时间均为首次观测上界，不是精确死亡时刻。SDK增量2/1/2，共5次受控请求、0次
+付费，每项1个目标payload、无重放。7行全部removed/resource_held=0、7个精确CID
+absent；1个私有probe exit0与3个Git advisory125/unknown另记，不作额外验收。
+最后服务正常exit0，无强杀、关闭错误或rescue。
+
+资源v1上传前旧stage前缀失败、v2 scope/leaf关系误判、v3 CPU点号counter拒绝的
+原记录均保留，后两次压力前失败各1次SDK、service0/失败rescue=true、零外部删除，
+另已核验各3行责任归零/CID absent。v4严格有界点号key解析保留合法未知字段、拒绝
+重复/非整数/缺少语义字段；按Linux6.8发起叶事件语义读取pids.events，父层不增
+不能误判失败、父层单独增加也不能通过。原始scope/叶值均保留。50项模型化离线
+检查、helper Ruff/CLI/编译与实际Linux三项分开记账，不累加旧检查数。
+
+18份附件5,057,104字节逐项核验。回执
+`.verification/linux-l1-resources-v4-20261028T085226Z-c947307c.json` SHA-256
+`be7234175c3a8841a214ef857b3920ee6f8e6d91ad79a31eac3d660e4e6e910e`；result
+`6fe56c7ab711877b561e4583b1253b3a5f2b39cf57539e01cbd3fafe872b8a53`；冻结清单
+`a71396302d95292c5b36f9702e473db3428d48fa19407146f34c8f0bd79f7154`。
+完整源归档、失败回执hash和计数器边界见
+[运行实测](linux-runtime-readiness.md#三个有界资源候选的修复与实机验收2026-10-28)。
+
+此前七个候选、三个启动窗口和本批三个资源case保留各自源码范围，不把process行、
+重叠回归或旧失败累加为通过。下一有限L1批次为网络/canary/secret/socket；安装
+marker/租约/runtime不可用时的责任保留、持续fork及真正阻塞输出仍待验收。公开
+restricted子任务、无人值守全部准入、公共L1允许集发布、M1整体、L2/L3、正式40项
+三轮、完整安装/升级/恢复及14天真实使用门槛均未因此完成，能力卡仍unavailable。

@@ -4,7 +4,8 @@
 不是公共 L1 已发布的声明。基础模块及默认 host 接线已实现；真实 `agent.invoke`
 的正常完成、取消和服务死亡后审查恢复三个隔离候选用例，以及后续四个故障用例
 已于 2026-10-27 验收；另一个以 `f953531` 为基底的带观测补丁候选于 2026-10-28
-通过三个启动窗口用例。各批源码与接受范围分别记账；`agent.spawn_subagent` 及
+通过三个启动窗口用例；另以 `e0f89e0` 为基底的私有候选接受三个有界资源用例。
+各批源码与接受范围分别记账；`agent.spawn_subagent` 及
 剩余故障矩阵仍待验收。
 主分支允许集保持为空。
 复用同一个 RunService、持久 run/预算家族和服务目录租约，不增加第二个调度循环。
@@ -12,7 +13,8 @@
 profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
 [接线契约](linux-execution-profile-contract.md)。产品整链已接受服务死亡后的原绝对期限
 及非阻塞双流 flood 用例，另已接受下文三个迟到启动/create/start 窗口候选用例；
-整链 OOM/pids/CPU、阻塞 IO 等仍待验收。加固 PID1 的实现
+另已接受下文有界 allocator OOM、pids 耗尽取消和 CPU 饱和截止；持续 fork、阻塞 IO
+及网络/secret/socket 等仍待验收。加固 PID1 的实现
 与 helper 验证单独记账，不能将 conmon 相对期限或 helper 成功视为 L1 门槛已满足。
 
 ## 当前实现与未完成范围
@@ -35,7 +37,7 @@ bind/mount alias 准入已有下文定向实机证据。restricted child 与 leg
 显式 overlay 请求在副作用前拒绝，受限内部子链使用 owned directory copy，并清空、
 恢复继承的 overlay context。该内部链测试不扩大公开工具允许类，公开
 `SpawnSubagentTool` 仍拒绝，实际类/委派归属审计、无人值守全部门槛和 UI/IPC 组合待验收。
-文末三个公开 Native 候选用例、四个故障用例及三个启动窗口用例不覆盖完整故障矩阵；未审计入口不能
+文末三个公开 Native 候选用例、四个故障用例、三个启动窗口及三个有界资源用例不覆盖完整故障矩阵；未审计入口不能
 获取 host fallback。基础 review、受控 controller 测试或纯 validator bind probe
 单独均不构成公共 L1 验收。
 
@@ -374,3 +376,56 @@ manifest、harness/driver hash 及本地检查边界见
 下一批为整链 OOM/pids/CPU；网络/secret/socket、runtime/安装身份/租约、持续 fork、
 阻塞输出及公开 child/无人值守仍待验收。公共允许集仍空，公共 L1、M1 整体及 L2/L3
 未完成，不把各批重叠回归或九个 process 行累加为验收数量。
+
+## 三个有界资源候选的接受范围（2026-10-28）
+
+真实完整 stdio CLI、公开 RPC 和实际 SDK 的固定 loopback SSE 在独立 v4 staging
+通过三个有界资源 case，并经独立复核接受。基底为 `e0f89e0` 的1103个原始 Git blob，
+仅在私有 staging 改唯一 guard/policy 允许配对；没有产品 observer、产品生命周期或
+guard 资产改动，源码前后 hash 一致，公共允许集仍空。此前各批与失败保留独立身份。
+
+同一批准镜像、一次一个压力容器，固定 memory128MiB/swap0/pids64/CPU500m、
+tmpfs32MiB/output256KiB、原60秒 BOOTTIME deadline、停止5秒/观测10秒容差。
+180秒 payload 自界限仅作保护。释放前固定完整 CID、init PID/startticks、scope及
+字面 `container` 叶与 no-follow 有界祖先链，保存实际值后检查继承有效限制；token
+绑定执行与目录身份。scope 无直接进程、唯一 container 子目录，叶无嵌套子目录，
+两层 PID 数相同。原始 scope 的 swap=max/pids2265 与叶 swap0/pids64 同时保留，
+不将父层值误作叶限制，也不接受 foreign/global cgroup 或推测 Conmon 例外。
+
+计数器语义固定：scope 层级 memory.events + 叶 memory.events.local 取 OOM 证据，
+scope cpu.stat 取实际 quota throttling，精确64限制叶的 pids.events 取 fork 拒绝事件。
+[Linux6.8 pids.c](https://github.com/torvalds/linux/blob/v6.8/kernel/cgroup/pids.c#L222-L240)
+在发起叶增加本地事件，不能要求父 scope 的本地 max 增加。两层原始值和失败逐文件
+证据均保留。CPU点号扩展键以严格有界 ASCII 分段解析，未知合法字段保留，重复、
+负数/非整数/畸形数据及缺少既有语义字段均拒绝。
+
+- OOM：精确 allocator PID3138947/namespace3 同叶，group0，scope 层级与叶 local
+  oom_kill 均0→1、成员3→2，waitpid status9/SIGKILL，父进程与 guard 存活。
+  父进程随后按夹具 exit86，持久 outcome exited/oom_killed=0；接受分配子进程的
+  memcg OOM 与整链回收，不接受“guard OOM”或“产品已自动分类 OOM”的推论。
+- pids：63次尝试、62个最小子进程，EAGAIN11、64成员/current64；叶 max0→1、
+  scope max仍0，无OOM。公开取消后原 PID 首次停止约1.961秒、CID absent约2.071秒，
+  均为观测上界；持久 cancelled、删除及资源归零。
+- CPU：4个稳定成员、5个压力样本的实际跨度28.141440424秒，包含逐文件保存，
+  不是固定5秒。usage_usec +12,369,405、nr_throttled +240、throttled_usec +14,350,783；
+  throttling时长不等于CPU使用时间，无吞吐量门槛。原 PID 首次停止于原deadline后
+  约0.094秒、CID absent约0.847秒，均为观测上界；exit124/outcome unknown。
+
+全批96.943秒、exit0，SDK增量2/1/2、共5次受控请求、0次付费；每项仅1个目标
+payload、无重放。最后服务正常exit0，无强杀、关闭错误或rescue。7行均removed/
+resource_held=0、7个精确CID absent；1个私有probe exit0、3个Git advisory125/unknown
+另行记账，不当作Git/payload成功或额外验收。
+
+资源v1旧前缀检查导致上传前失败且stage未记录；v2精确scope/leaf关系误判、v3 CPU
+点号键拒绝均在压力前失败，各1次SDK、服务exit0、失败rescue=true但零外部删除，
+各3行责任归零/CID absent。v4修复验证器，未改写旧回执。v4的50项模型化离线检查
+与实际Linux三项分开，含真实v3原始CPU值和父事件增加/叶不增加的拒绝反例。
+全部失败hash、源归档与freeze见[运行实测](linux-runtime-readiness.md#三个有界资源候选的修复与实机验收2026-10-28)。
+实际回执 `.verification/linux-l1-resources-v4-20261028T085226Z-c947307c.json` SHA-256
+`be7234175c3a8841a214ef857b3920ee6f8e6d91ad79a31eac3d660e4e6e910e`；result
+`6fe56c7ab711877b561e4583b1253b3a5f2b39cf57539e01cbd3fafe872b8a53`，18份附件
+5,057,104字节逐项核验。冻结清单 `a71396302d95292c5b36f9702e473db3428d48fa19407146f34c8f0bd79f7154`。
+
+当前下一有限批次为网络/canary/secret/socket；安装marker、租约及runtime不可用时
+的责任保留仍待验收，持续fork/阻塞输出缺口仍在。公开child、无人值守全部准入、
+公共L1发布、正式40项三轮及完整安装恢复/真实使用门槛不变；不宣称M1整体或L2/L3完成。
