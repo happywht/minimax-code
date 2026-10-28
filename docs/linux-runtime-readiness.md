@@ -697,3 +697,11 @@ C 未执行。本批没有 cgroup 实测，不能声称整个 scope 已空，也
 `8b3a734d1137795e4a61569b3d075d24d0df877a84b27fe43a6d8cf2c2ab2cb5`；
 24份附件共17,266,524字节逐项核验。下一次验证需在暂停时独立证明精确容器的
 cgroup 无执行进程且责任仍被持有，恢复后再确认容器终态和精确 absence；旧失败不改判。
+
+后续 v4 仍为失败：B 在原期限后读取预先绑定的 cgroup 时，身份复核发现对应
+`libpod-<CID>.scope` 路径不存在，故未取得要求的稳定全零样本，C 未执行。
+不能仅凭路径消失推断整个 scope 已空；目录生命周期和内核语义需继续核查。
+失败收尾服务自然0、无强杀，rescue 标志仍为 true。回执
+`.verification/linux-public-attach-v4-20261028T144404Z-66cc8dec.json` SHA
+`e2d087ad729fef16abc0c5ecc940da207db87ff4e1e18dac0b72c9804df12aab`，
+20份附件共2,266,698字节已核验。旧 v3 结果不变，公共允许集仍为空。
