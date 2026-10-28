@@ -626,6 +626,7 @@ class PodmanSupervisor:
             raise ProcessBoundaryError("Process ownership record is missing")
         if row["state"] == "removed":
             return row
+        control_errors = []
         try:
             await self._assert_authority()
             reference = row["container_id"] or row["container_name"]
@@ -640,13 +641,28 @@ class PodmanSupervisor:
             if state.get("Running") or state.get("Pid", 0):
                 try:
                     await self._controller.stop(cid)
-                except Exception:
+                except Exception as exc:
+                    control_errors.append({"operation": "stop", "error_type": type(exc).__name__,
+                                           "error": str(exc)[:500]})
                     # Re-prove the exact same ownership before escalating.
                     inspected = await self._controller.inspect(cid)
-                    self._verify_container(row, inspected)
-                    await self._controller.kill(cid)
+                    if self._verify_container(row, inspected) != cid:
+                        raise ProcessBoundaryError("Container identity changed during stop") from exc
+                    state = inspected.get("State") or {}
+                    if state.get("Running") or state.get("Pid", 0):
+                        try:
+                            await self._controller.kill(cid)
+                        except Exception as kill_exc:
+                            # The kill may have taken effect before its response
+                            # failed. The common inspect/terminal checks below
+                            # must independently confirm the same owned object.
+                            control_errors.append({"operation": "kill",
+                                "error_type": type(kill_exc).__name__, "error": str(kill_exc)[:500]})
+                    elif state.get("Running") is not False or state.get("Pid") != 0:
+                        raise ProcessBoundaryError("Container tree stop is unconfirmed") from exc
                 inspected = await self._controller.inspect(cid)
-                self._verify_container(row, inspected)
+                if self._verify_container(row, inspected) != cid:
+                    raise ProcessBoundaryError("Container identity changed during stop")
                 state = inspected.get("State") or {}
             if state.get("Running") is not False or state.get("Pid") != 0:
                 raise ProcessBoundaryError("Container tree stop is unconfirmed")
@@ -675,7 +691,8 @@ class PodmanSupervisor:
                               "payload_exit_ambiguous": exit_code in {124, 125},
                               "container_status": state.get("Status"),
                               "started_at": started, "finished_at": finished,
-                              "oom_killed": bool(state.get("OOMKilled"))},
+                              "oom_killed": bool(state.get("OOMKilled")),
+                              **({"control_errors": control_errors} if control_errors else {})},
                     container_id=cid, exit_code=exit_code,
                     oom_killed=int(bool(state.get("OOMKilled"))), outcome=outcome)
             if row["state"] == "stopped":
@@ -690,7 +707,8 @@ class PodmanSupervisor:
             if await self._controller.exists(cid):
                 raise ProcessBoundaryError("Container remains after removal")
             row = await self.dao.transition(exec_id, row["revision"], "removed",
-                evidence={"absent": True, "container_id": cid})
+                evidence={"absent": True, "container_id": cid,
+                          **({"control_errors": control_errors} if control_errors else {})})
             cid_path = self._cid_dir / (exec_id + ".cid")
             self._assert_cid_directory()
             cid_path.unlink(missing_ok=True)
@@ -704,7 +722,9 @@ class PodmanSupervisor:
                 latest = await self.dao.get(exec_id)
                 if latest and latest["state"] != "removed":
                     await self.dao.transition(exec_id, latest["revision"], "cleanup_pending",
-                        evidence={"error_type": type(exc).__name__}, error=str(exc)[:500], outcome=outcome)
+                        evidence={"error_type": type(exc).__name__,
+                                  **({"control_errors": control_errors} if control_errors else {})},
+                        error=str(exc)[:500], outcome=outcome)
             except BaseException:
                 pass
             raise

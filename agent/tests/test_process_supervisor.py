@@ -385,6 +385,147 @@ async def test_foreign_owner_never_stopped_or_removed(supervisor):
     assert saved["resource_held"] == 1 and saved["state"] == "cleanup_pending"
 
 
+@pytest.mark.parametrize("lost_response", ["stop", "kill"])
+async def test_cleanup_recovers_control_response_loss_only_from_owned_terminal_state(
+        supervisor, monkeypatch, lost_response):
+    manager, controller, dao, owner = supervisor
+    row = await intent(dao, owner)
+    await controller.create(row, ("true",), cid_file=manager._cid_dir / "fake.cid")
+    controller.containers[CID]["State"].update(Running=True, Pid=100,
+        Status="running", StartedAt="2026-10-26T10:00:00Z")
+    stop = controller.stop
+
+    async def lost_stop(cid):
+        if lost_response == "stop":
+            await stop(cid)
+        else:
+            await controller.checkpoint("stop")
+        raise ProcessBoundaryError("lost stop response")
+
+    async def lost_kill(cid):
+        await stop(cid)
+        await controller.checkpoint("kill")
+        raise ProcessBoundaryError("lost kill response")
+
+    monkeypatch.setattr(controller, "stop", lost_stop)
+    monkeypatch.setattr(controller, "kill", lost_kill)
+    saved = await manager.cleanup(row["exec_id"])
+    assert saved["state"] == "removed" and saved["resource_held"] == 0
+    assert saved["exit_code"] == 137 and controller.containers == {}
+    assert ("kill" in controller.calls) == (lost_response == "kill")
+    assert controller.calls[-2:] == ["remove", "exists"]
+    expected = [{"operation": operation, "error_type": "ProcessBoundaryError",
+                 "error": "lost " + operation + " response"}
+                for operation in (["stop"] if lost_response == "stop" else ["stop", "kill"])]
+    events = await dao.events(row["exec_id"])
+    for state in ("stopped", "removed"):
+        proof = json.loads(next(event["evidence"] for event in events if event["to_state"] == state))
+        assert proof["control_errors"] == expected
+
+
+@pytest.mark.parametrize("lost_response", ["stop", "kill"])
+@pytest.mark.parametrize("fault", ["running", "inspect", "absent", "owner", "cid",
+    "unknown", "status", "started", "finished", "exit", "boolean_exit"])
+async def test_control_response_loss_without_trustworthy_terminal_state_holds_resources(
+        supervisor, monkeypatch, lost_response, fault):
+    manager, controller, dao, owner = supervisor
+    row = await intent(dao, owner)
+    await controller.create(row, ("true",), cid_file=manager._cid_dir / "fake.cid")
+    controller.containers[CID]["State"].update(Running=True, Pid=100,
+        Status="running", StartedAt="2026-10-26T10:00:00Z")
+    stop, inspect = controller.stop, controller.inspect
+    fault_ready = False
+
+    async def lost_stop(cid):
+        nonlocal fault_ready
+        if lost_response == "stop":
+            await stop(cid)
+            fault_ready = True
+        else:
+            await controller.checkpoint("stop")
+        raise ProcessBoundaryError("lost stop response")
+
+    async def lost_kill(cid):
+        nonlocal fault_ready
+        await stop(cid)
+        await controller.checkpoint("kill")
+        fault_ready = True
+        raise ProcessBoundaryError("lost kill response")
+
+    async def untrusted_inspect(reference):
+        value = await inspect(reference)
+        if not fault_ready:
+            return value
+        if fault == "inspect":
+            raise ProcessBoundaryError("inspect unavailable")
+        if fault == "absent":
+            return None
+        if fault == "owner":
+            value["Config"]["Labels"][_LABEL_PREFIX + "install"] = "foreign"
+        elif fault == "cid":
+            value["Id"] = "d" * 64
+        else:
+            changes = {"running": {"Running": True, "Pid": 100},
+                "unknown": {"Running": None, "Pid": None}, "status": {"Status": "stopping"},
+                "started": {"StartedAt": "0001-01-01T00:00:00Z"},
+                "finished": {"FinishedAt": "garbage"}, "exit": {"ExitCode": None},
+                "boolean_exit": {"ExitCode": False}}
+            value["State"].update(changes[fault])
+        return value
+
+    monkeypatch.setattr(controller, "stop", lost_stop)
+    monkeypatch.setattr(controller, "kill", lost_kill)
+    monkeypatch.setattr(controller, "inspect", untrusted_inspect)
+    with pytest.raises(ProcessBoundaryError):
+        await manager.cleanup(row["exec_id"])
+    saved = await dao.get(row["exec_id"])
+    assert saved["state"] == "cleanup_pending" and saved["resource_held"] == 1
+    assert "remove" not in controller.calls and "exists" not in controller.calls
+    assert CID in controller.containers
+    proof = json.loads((await dao.events(row["exec_id"]))[-1]["evidence"])
+    assert proof["control_errors"][0]["operation"] == "stop"
+    assert [error["operation"] for error in proof["control_errors"]] == (
+        ["stop", "kill"] if "kill" in controller.calls else ["stop"])
+
+
+@pytest.mark.parametrize("cancel_at", ["stop", "kill"])
+async def test_control_cancellation_is_not_reclassified_as_response_loss(
+        supervisor, monkeypatch, cancel_at):
+    manager, controller, dao, owner = supervisor
+    original_stop, original_kill = controller.stop, controller.kill
+    row = await intent(dao, owner)
+    await controller.create(row, ("true",), cid_file=manager._cid_dir / "fake.cid")
+    controller.containers[CID]["State"].update(Running=True, Pid=100,
+        Status="running", StartedAt="2026-10-26T10:00:00Z")
+
+    async def stop(cid):
+        await controller.checkpoint("stop")
+        if cancel_at == "stop":
+            raise asyncio.CancelledError
+        raise ProcessBoundaryError("lost stop response")
+
+    async def kill(cid):
+        await controller.checkpoint("kill")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(controller, "stop", stop)
+    monkeypatch.setattr(controller, "kill", kill)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await manager.cleanup(row["exec_id"])
+    finally:
+        # Keep the fixture's later close independent of this cancellation fault.
+        monkeypatch.setattr(controller, "stop", original_stop)
+        monkeypatch.setattr(controller, "kill", original_kill)
+    saved = await dao.get(row["exec_id"])
+    assert saved["state"] == "cleanup_pending" and saved["resource_held"] == 1
+    assert "remove" not in controller.calls
+    proof = json.loads((await dao.events(row["exec_id"]))[-1]["evidence"])
+    assert proof["error_type"] == "CancelledError"
+    assert [error["operation"] for error in proof.get("control_errors", [])] == (
+        [] if cancel_at == "stop" else ["stop"])
+
+
 async def test_exists_control_failure_retains_cleanup_responsibility(supervisor):
     manager, controller, dao, owner = supervisor
     controller.fail_after.add("exists")

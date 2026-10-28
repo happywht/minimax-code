@@ -664,3 +664,20 @@ rescue标志true。本批因此不能作正常关停、取消时限或公开L1�
 `80f741b0916cfb6980cd75586e3dcc89e95b08509e6f5fc0ba002b71788f1c27`，同名目录
 19份原始附件共1,147,150字节均逐项核对hash/size；原始1115源码验后校验通过。
 一次受控SDK请求、零付费模型调用；没有重新派发此批。公共允许集继续为空。
+
+### v2 现场只读核验与停止竞态修复
+
+原失败 stage 的后续只读核验没有取得有效崩溃栈：
+`public-native-data/crashes/last-crash.json` 不存在，`last_fault.trace` 存在但为零字节。
+三个精确 CID 的 `podman container exists` 均返回1，原 service/attach 的 PID 与
+startticks 均已不存在；1115份冻结源码仍相符。此结果只确认核验时没有这些对象，
+不能倒推原关停正常，也没有解释强制退出的根因。核验没有发送信号、删除容器或重放。
+回执 `.verification/public-attach-v2-failure-audit-20261028T123541Z-441a5bf4/audit-receipt.json`
+SHA `a7da7d1a65c2e0e8e56da59709284aca0bc66d626fc14e8b80e0fa403f8df4a5`。
+
+另行代码核对确认停止竞态：stop响应报错后，即使新inspect已证明同一自有容器
+Running=false/Pid=0，旧路径仍会调用kill。修复后只在重新确认仍运行时升级kill；
+kill响应报错也必须经过同一CID/owner及完整终态检查，不能仅凭控制命令异常或成功
+释放责任。原控制错误保留在事件中；无法确认身份、停止或删除时继续持有责任。
+取消仍传播。184项定向回归通过，包含错误身份、非法状态及取消反例；该局部修复
+尚不证明原服务强制退出的原因或最新源码在途关停已通过，后续实机结果单独登记。
