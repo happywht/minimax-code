@@ -73,6 +73,7 @@
     "tests/test_mcp_sse_transport.py"
   ],
   "attachments": [
+    "tests/test_attachment_xlsx.py",
     "tests/test_attachment_pdf.py",
     "tests/test_attachment_docx.py",
     "tests/test_attachments.py",

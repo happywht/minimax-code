@@ -1584,7 +1584,13 @@ TXT/CSV 严格 UTF-8、拒绝 NUL；CSV 逐行检查语法、不建立工作簿�
 完整输入检查后最多显示 64 KiB/2000 行，保留 BOM/CRLF，UTF-8 边界截断。
 parser_status 为 `parsed`、`empty`、`truncated`、`parse_failed`、`type_mismatch`、`parser_unavailable`、`ocr_not_attempted`。
 乱码/NUL/CSV 错误保留原件为 parse_failed；扩展名和内容候选异常为 type_mismatch，不选错解析器。
-XLSX 只保存原件并标记 parser_unavailable；图片标记 ocr_not_attempted。
+图片标记 ocr_not_attempted。XLSX 可选 extra 只对 declared=recognized=xlsx 解析，沿用 v2/inert_text，
+每表 A1:T100、全局1500展示单元格，保留坐标/类型/原存储值，公式和未验证缓存分开标注，不执行或重算。
+缺失缓存、空数字缓存、存储缓存明确区分；raw存储值权威，不推断日期或保证缓存正确。
+全部实际单元格空时为 empty/ok（空预览、未截断），仅此精确XLSX分支适用；
+展示上限为 truncated/preview_limit，截断后仍完整有界预检。External关系包括超链接一律拒绝。
+32表/100000实际cells/50000共享字符串/4096样式与既有10MiB输入和worker预算不增大；
+无新单元格结构字段或IPC方法。详见[XLSX有界预览](attachment-xlsx.md)。
 PDF 可选 extra 按物理页序提取已有文字，最多200页，不渲染或OCR；使用既有算法v2/inert_text，
 范围定义为有界惰性纯文本预览，结合declared_type/recognized_type=pdf和页标签表达来源。
 全部无文字时empty/no_extracted_body_text_no_ocr；仅展示上限truncated/preview_limit；
@@ -1592,7 +1598,7 @@ PDF 可选 extra 按物理页序提取已有文字，最多200页，不渲染或
 页标签与空页提示计入64 KiB/2000行；截断后仍检查后页。详见[PDF有界解析](attachment-pdf.md)。
 DOCX 可选 extra 仅解析正文段落/表格，详见 [DOCX 有界解析](attachment-docx.md)。算法 v2 新增稳定 parser_reason 与 parser_scope，旧 v1 两字段为 legacy_v1，不自动重解析。
 empty + no_extracted_body_text_no_ocr 仅说明未提取到正文/页面文本，不代表整个文件没有内容。
-recognized_type 只是魔数/容器候选，不证明格式有效或内容已读完。Office 候选识别只检查有界 ZIP 目录；DOCX 子进程另行校验实际解压计数和全部 XML/rels，拒绝宏/嵌入对象，不执行公式或访问外链。
+recognized_type 只是魔数/容器候选，不证明格式有效或内容已读完。Office 候选识别只检查有界 ZIP 目录；DOCX/XLSX 子进程另行校验实际解压计数和全部 XML/rels，拒绝宏/嵌入对象，不执行公式或访问外链。
 quality_status 始终 unverified，保存/解析/质量/交付分别处理；不自动注入上下文，不替换输入框附件机制。
 mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可解析；PDF也不解析，不承诺持久化。
 
@@ -1600,7 +1606,7 @@ mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可�
 核对大小/hash/身份，缺失/损坏拒绝，没有 source fallback。返回 application/octet-stream、
 attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）、no-store、nosniff、sandbox CSP、
 上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
-原件和解析元数据从Schema043/bundle v3起纳入离线包；当前Schema044/bundle v4不改变附件字段，PDF沿用v2/inert_text。
+原件和解析元数据从Schema043/bundle v3起纳入离线包；当前Schema044/bundle v4不改变附件字段，PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
 旧v1/041、v2/042、v3/043仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
 
 ### artifact.* — 显式登记文本成果（Schema041）

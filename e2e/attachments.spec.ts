@@ -126,3 +126,48 @@ test("PDF physical page text, blank-page OCR boundary and original bytes survive
   expect(createHash("sha256").update(downloaded).digest("hex")).toBe(digest);
   await expect(panel.getByText(`SHA-256: ${digest}`)).toBeVisible();
 });
+
+test("XLSX stored cells keep formula caches distinct, empty is honest, original bytes survive reload", async ({ page, request }) => {
+  const response = await request.post(`${AGENT_BASE}/rpc`, { data: {
+    jsonrpc: "2.0", id: "xlsx-project", method: "project.create", params: { name: "XLSX stored cells" },
+  } });
+  const body = await response.json(); expect(body.error).toBeUndefined();
+  const projectId = body.result.project.id;
+  await page.goto("/");
+  await expect(page.getByPlaceholder(/问 MiniMax 任何问题/)).toBeVisible();
+  await page.evaluate(async (id) => {
+    // @ts-expect-error Vite source module resolves inside browser.
+    const { useSessionStore } = await import("/src/stores/sessionStore.ts");
+    await useSessionStore.getState().loadProjects(); useSessionStore.getState().setCurrentProject(id);
+  }, projectId);
+  await page.getByTestId("sidebar-nav-attachments").click();
+  const panel = page.getByRole("region", { name: "项目附件" });
+  const original = readFileSync(fileURLToPath(new URL("./fixtures/stored-cells.xlsx", import.meta.url)));
+  await panel.getByLabel("选择附件原件").setInputFiles({ name: "stored.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: original });
+  await panel.getByRole("button", { name: "上传原件" }).click();
+  const preview = panel.getByLabel("附件纯文本预览");
+  await expect(preview).toContainText('"raw":"123.400"');
+  await expect(preview).toContainText('"raw":"中文"');
+  await expect(preview).toContainText('"cached_raw":"999","cached_state":"stored"');
+  await expect(preview).toContainText('"cached_present":false,"cached_raw":null,"cached_state":"missing"');
+  await expect(preview).toContainText('"cached_present":true,"cached_raw":"","cached_state":"unknown"');
+  await expect(preview).toContainText('"kind":"string","stored_type":"inlineStr","raw":"=1+1"');
+  await expect(panel.getByText(/不执行或重算公式，缓存可能缺失或陈旧/)).toBeVisible();
+  const persisted = await preview.textContent();
+  await page.reload(); await page.getByTestId("sidebar-nav-attachments").click();
+  await panel.getByRole("button", { name: /stored.xlsx.*已解析 \/ 未验证/ }).click();
+  await expect(preview).toHaveText(persisted!);
+  const downloadEvent = page.waitForEvent("download");
+  await panel.getByRole("button", { name: "下载附件原始字节" }).click();
+  expect(readFileSync((await (await downloadEvent).path())!)).toEqual(original);
+  await expect(panel.getByText(`SHA-256: ${createHash("sha256").update(original).digest("hex")}`)).toBeVisible();
+  const empty = readFileSync(fileURLToPath(new URL("./fixtures/empty-cells.xlsx", import.meta.url)));
+  await panel.getByLabel("选择附件原件").setInputFiles({ name: "empty.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: empty });
+  await panel.getByRole("button", { name: "上传原件" }).click();
+  await expect(panel.getByRole("button", { name: /empty.xlsx.*空文本 \/ 未验证/ })).toBeVisible();
+  await expect(panel.getByText(/有界扫描未发现非空单元格/)).toBeVisible();
+  await expect(preview).toHaveText("");
+  const emptyDownload = page.waitForEvent("download");
+  await panel.getByRole("button", { name: "下载附件原始字节" }).click();
+  expect(readFileSync((await (await emptyDownload).path())!)).toEqual(empty);
+});

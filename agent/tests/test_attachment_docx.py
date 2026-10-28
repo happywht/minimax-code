@@ -233,7 +233,7 @@ async def test_native_resource_child_is_reaped_and_next_parse_healthy(monkeypatc
         monkeypatch.setattr(parser, "WALL_SECONDS", .3)
     if kind == "pid":
         # Exact PID of actual Windows worker, not the venv redirector PID.
-        monkeypatch.setattr(parser, "validate", lambda value: value)
+        monkeypatch.setattr(parser, "validate", lambda value, **kwargs: value)
     started = time.monotonic()
     result = await parser.inspect_docx(b"")
     assert len(processes) == 1 and processes[0].poll() is not None

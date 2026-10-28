@@ -12,6 +12,13 @@ function file(text: string | Uint8Array, name: string): File {
 beforeEach(() => vi.stubGlobal("crypto", webcrypto));
 afterEach(() => vi.unstubAllGlobals());
 describe("inert attachment demo contract", () => {
+  it("retains XLSX bytes without inventing a workbook parse or formula result", async () => {
+    const original = new Uint8Array([0x50, 0x4b, 3, 4, 61, 49, 43, 49]);
+    const row = await storeMockAttachment(file(original, "formula.xlsx"), "xlsx-demo", () => {});
+    expect(row).toMatchObject({ recognized_type: "zip", parser_status: "parser_unavailable", parser_reason: "missing_dependency", parser_scope: "original_only", quality_status: "unverified" });
+    expect(attachmentMock("attachment.get", { project_id: "xlsx-demo", attachment_id: row.id }, true)).toMatchObject({ preview_text: "" });
+    expect(mockAttachmentContent(row).size).toBe(original.byteLength);
+  });
   it("does not claim real PDF text parsing in the browser demo", async () => {
     const row = await storeMockAttachment(file("%PDF-1.7\nBT (visible) Tj ET", "demo.pdf"), "pdf-demo", () => {});
     expect(row.parser_status).toBe("parser_unavailable");

@@ -74,21 +74,37 @@ describe("App smoke test", () => {
 
   it("opens shortcuts with ? and closes them with Escape without stealing textarea input", async () => {
     const user = userEvent.setup();
+    useSessionStore.setState({ projects: [], loading: true });
     render(<App />);
+    await waitFor(() => {
+      expect(useSessionStore.getState().loading).toBe(false);
+      expect(useSessionStore.getState().projects.some((project) => project.id === "inbox")).toBe(true);
+    });
     const textarea = await waitFor(() =>
       screen.getByTestId("message-input-textarea"),
     );
 
+    // Start from composer focus, then explicitly choose a non-editable target.
+    await user.click(textarea);
+    expect(textarea).toHaveFocus();
+    const shortcutTarget = screen.getByTestId("app-topbar-command-palette");
+    shortcutTarget.focus();
+    expect(shortcutTarget).toHaveFocus();
+
     await user.keyboard("?");
-    expect(screen.getByTestId("shortcuts-overlay")).toBeInTheDocument();
+    expect(await screen.findByTestId("shortcuts-overlay")).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
     expect(screen.queryByTestId("shortcuts-overlay")).toBeNull();
+    expect(shortcutTarget).toHaveFocus();
+    expect(textarea).toHaveValue("");
 
     await user.click(textarea);
+    expect(textarea).toHaveFocus();
     await user.keyboard("?");
     expect(screen.queryByTestId("shortcuts-overlay")).toBeNull();
     expect(textarea).toHaveValue("?");
+    expect(textarea).toHaveFocus();
   });
 
   it("opens management views as overlays without unmounting the chat workbench", async () => {

@@ -7,7 +7,8 @@ python-docx 1.2+ 和 defusedxml 0.7.1+；手动在 agent 目录执行
 
 新上传使用算法2、Schema043；旧算法1的字段和值保留，新增范围/原因为legacy_v1，
 没有后台重解析。quality_status始终unverified，不自动加入对话上下文，不产生交付回执。
-本DOCX切片不包含PDF/XLSX与OCR；后续PDF页面文字预览见[PDF有界解析](attachment-pdf.md)。
+本DOCX切片不包含PDF/XLSX与OCR；后续独立切片见[PDF有界解析](attachment-pdf.md)与
+[XLSX存储单元格预览](attachment-xlsx.md)，不扩大DOCX提取范围。
 
 ## 提取范围
 
@@ -35,6 +36,8 @@ Windows使用专用ctypes Job（内存、CPU、活动进程1、kill-on-close）�
 直接启动base interpreter以避免venv redirector PID错误；Linux先设置RLIMIT_AS/CPU/CORE，
 再建立PR_SET_PDEATHSIG与前后PPID检查。只加入服务sysconfig的受信依赖目录，
 不处理site启动钩子或PYTHONPATH。其他平台或限制建立失败没有无界回退。
+当前共享worker由父进程传固定内部kind（docx/pdf/xlsx）并严格核对argv；不按ZIP前缀
+猜测DOCX/XLSX，也不将kind暴露为用户命令或环境入口。既有资源上限不变。
 
 这是资源/生命周期边界，不是OS文件/网络沙箱。Linux只管理固定解析器PID，
 不是任意子进程树管理器；该解析器不启动其他程序。Windows Job限制活动进程1。

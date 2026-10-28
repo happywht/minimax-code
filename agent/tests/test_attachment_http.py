@@ -51,6 +51,31 @@ async def upload(client, data, filename="original.txt", headers=None):
                              content=data, headers=headers)
 
 
+@pytest.mark.parametrize("case", ["formula", "empty", "rejected"])
+async def test_xlsx_actual_upload_persisted_preview_and_identical_download(upload_client, case):
+    pytest.importorskip("openpyxl")
+    from xlsx_fixture import OFFICE, REL, cell, worksheet, xlsx_bytes
+
+    client, _, db, _ = upload_client
+    changes = {"xl/worksheets/_rels/sheet1.xml.rels": f'<Relationships xmlns="{REL}"><Relationship Id="bad" Type="{OFFICE}/hyperlink" Target="https://invalid.example/" TargetMode="External"/></Relationships>'} if case == "rejected" else {}
+    original = xlsx_bytes([("Cells", worksheet([(1, cell("A1", "999", formula="1+1") + cell("B1", formula="NOW()"))] if case == "formula" else []), "visible")], changes=changes)
+    response = await upload(client, original, "cells.xlsx")
+    assert response.status_code == 201
+    metadata = response.json()["attachment"]
+    assert metadata["parser_status"] == {"formula": "parsed", "empty": "empty", "rejected": "parse_failed"}[case]
+    assert metadata["parser_reason"] == ("unsupported_feature" if case == "rejected" else "ok")
+    result = (await rpc(client, "attachment.get", {"project_id": "p", "attachment_id": metadata["id"]}))["result"]
+    if case == "formula":
+        assert '"cached_raw":"999"' in result["preview_text"] and '"recalculated":false' in result["preview_text"]
+        assert '"cached_present":false' in result["preview_text"]
+    else:
+        assert result["preview_text"] == ""
+    stored = await db.fetchone("SELECT preview_text,quality_status FROM attachments WHERE id=?", (metadata["id"],))
+    assert stored["preview_text"] == result["preview_text"] and stored["quality_status"] == "unverified"
+    downloaded = await client.get(f"/attachments/{metadata['id']}/content?project_id=p")
+    assert downloaded.content == original and downloaded.headers["x-attachment-sha256"] == metadata["sha256"]
+
+
 async def test_authenticated_upload_list_preview_download_inert_bytes_and_headers(upload_client):
     client, _, _, _ = upload_client
     original = b"\xef\xbb\xbf<script>not executed</script>\r\n"

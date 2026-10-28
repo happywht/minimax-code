@@ -302,6 +302,11 @@ class AttachmentService:
 
                 parsed = {"declared_type": "pdf", "recognized_type": "pdf",
                           **await inspect_pdf(original)}
+            elif declared_type(name) == "xlsx" and recognize(original) == "xlsx":
+                from .attachment_parser import inspect_xlsx
+
+                parsed = {"declared_type": "xlsx", "recognized_type": "xlsx",
+                          **await inspect_xlsx(original)}
             else:
                 parsed = await _blocking(_inspect_pending, self.vault / upload.name, name)
             await _blocking(upload.publish)

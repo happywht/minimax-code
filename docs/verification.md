@@ -117,3 +117,43 @@ finally/aclose，未吞掉预算错误。四个新回归在3.11修前均失败�
 `.verification/ci-0dd3a4f-thread-3b2158b2/` 的 `stream-context-evidence.json` 和
 `stream-fixture-python{311,312}.{json,log}`。原 `0dd3a4f` 全量诊断仍绑定未修复
 快照；不能把本批定向通过写成其全量结果。无schema变化，回退使用对应代码提交。
+
+### 2026-10-28：0659456 双平台全量自然退出与前端基线待验
+
+提交 `06594560f478680beaa490d07ac3b806dfbac3e3` 的
+[CI 40688403895](https://github.com/happywht/minimax-code/actions/runs/40688403895)
+已实际完成两平台后端全量，两个 job 均为 success。独立下载并交叉核对
+`results.json`、JUnit 每个 testcase 和正文日志，结果如下：
+
+| 平台 | 通过 | 跳过 | 失败 / 错误 | pytest 正文耗时 | runner 进程耗时 | 退出码 |
+|---|---:|---:|---:|---:|---:|---:|
+| Ubuntu | 12523 | 15 | 0 / 0 | 364.27 秒 | 370.340 秒 | 0 |
+| Windows | 12518 | 20 | 0 / 0 | 1070.66 秒 | 1076.514 秒 | 0 |
+
+两份 JUnit 均含12538个 testcase；两份结果均为 `dirty: false`、`status: passed`，
+并记录 `full-1` 退出0和结束时间。runner 只在测试子进程 `close` 后写入该条结果，
+因此此次证明自然退出，区别于旧提交正文已打印通过但进程未退出、最终被取消的情况。
+Windows 全量证据在 `.verification/ci-0659456-backend-full-windows/`，Ubuntu 在
+`.verification/ci-0659456-backend-full-ubuntu/`；独立统计与文件 SHA-256 保存在
+`.verification/ci-0659456-independent-review/full-review.json`。
+
+同轮新增的 Python 3.11 最低版本作业也在 Ubuntu、Windows 实际成功；两份 JUnit
+各169项通过、0跳过、0失败/错误。它们覆盖流式上下文、超时、取消和预算相邻模块，
+不是第二套后端全量。原件在 `.verification/ci-0659456-minimum-python-{ubuntu,windows}/`，
+交叉统计在独立 review 目录的 `minimum-review.json`。
+
+同提交 Ubuntu baseline 仍为 failure：第一轮前端898项通过、1项快捷键测试失败，
+失败点是在 `?` 后同步读取懒加载的快捷键浮层。该测试现在先等待初始化、从已聚焦的
+textarea 明确切换到既有非编辑按钮，断言焦点后使用真实键盘事件，并等待浮层加载；
+Escape关闭、textarea接收字面 `?` 和焦点不被抢走的断言均保留。未修改产品快捷键、
+可编辑元素保护或延长超时。原文件本机单跑也通过，未稳定复现CI竞争；当前源码未发现
+composer启动自动聚焦路径，不能将失败确定归因为自动聚焦。
+
+前端修复的相邻5文件34项通过（13.12秒）、一次完整前端115文件903项通过（45.29秒），
+单文件ESLint退出0；结果不能替代新提交CI验收。原失败保留于
+`.verification/ci-0659456-baseline-ubuntu/.verification/2026-10-28T12-33-47-728Z-baseline/5-web-1.log`，
+本地前后结果、精确命令和源码hash在 `.verification/ci-065-app-focus/evidence.json`。
+本记录不宣称本次双平台三轮baseline已通过，前端修复仍待新提交的CI确认。
+截至2026-10-28 13:02:42 UTC，Windows baseline仍为 `in_progress`，按pending收口；
+其最终结果与artifact待完成后另行核对。本次未取消或重跑该作业。最终作业快照保存在
+`.verification/ci-0659456-independent-review/run-final.json`。

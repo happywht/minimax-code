@@ -30,7 +30,9 @@ def _environment():
     return {key: os.environ[key] for key in ("SystemRoot", "WINDIR", "SYSTEMDRIVE") if key in os.environ}
 
 
-def _command():
+def _command(kind):
+    if kind not in {"docx", "pdf", "xlsx"}:
+        raise ValueError("Invalid fixed parser kind")
     # Windows venv python.exe is a redirector. Kill/wait must target the actual
     # parser PID, so launch the base interpreter and add only trusted venv libs
     # after its resource gate. Never process site .pth or inherit PYTHONPATH.
@@ -44,11 +46,11 @@ def _command():
     elif sys.platform == "linux":
         command.append(str(os.getpid()))
     paths = sysconfig.get_paths()
-    command.extend([paths["purelib"], paths["platlib"]])
+    command.extend([kind, paths["purelib"], paths["platlib"]])
     return command
 
 
-def _run(data, cancelled, scope=SCOPE):
+def _run(data, cancelled, scope=SCOPE, kind="docx"):
     def failed(reason, **kwargs):
         return failure(reason, scope=scope, **kwargs)
 
@@ -69,7 +71,7 @@ def _run(data, cancelled, scope=SCOPE):
         if cancelled.is_set():
             return failed("parser_crash")
         try:
-            process = subprocess.Popen(_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            process = subprocess.Popen(_command(kind), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, env=_environment(), close_fds=True,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         except (OSError, ValueError, RuntimeError):
@@ -126,7 +128,8 @@ def _run(data, cancelled, scope=SCOPE):
             return failed("parser_crash")
         try:
             result = json.loads(output)
-            return validate(result) if scope == SCOPE else validate(result, expected_scope=scope)
+            return validate(result, expected_scope=scope,
+                            expected_kind="xlsx" if kind == "xlsx" else None)
         except (ValueError, UnicodeError, TypeError):
             return failed("invalid_parser_output")
     finally:
@@ -139,16 +142,20 @@ def _run(data, cancelled, scope=SCOPE):
 
 
 async def inspect_docx(data):
-    return await _inspect(data, SCOPE)
+    return await _inspect(data, SCOPE, "docx")
 
 
 async def inspect_pdf(data):
-    return await _inspect(data, PDF_SCOPE)
+    return await _inspect(data, PDF_SCOPE, "pdf")
 
 
-async def _inspect(data, scope):
+async def inspect_xlsx(data):
+    return await _inspect(data, PDF_SCOPE, "xlsx")
+
+
+async def _inspect(data, scope, kind):
     cancelled = threading.Event()
-    task = asyncio.create_task(asyncio.to_thread(_run, data, cancelled, scope))
+    task = asyncio.create_task(asyncio.to_thread(_run, data, cancelled, scope, kind))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

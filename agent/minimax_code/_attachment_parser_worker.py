@@ -1,7 +1,7 @@
-"""Trusted stdlib-only bootstrap, invoked with -I -S; gate before input/imports.
+"""Trusted stdlib-only bootstrap, invoked with -I -B -S; gate before input/imports.
 
 Resource limits control consumption, not filesystem or network access. Only the
-fixed DOCX/PDF parsers load after the limits and service lifetime are installed.
+fixed DOCX/PDF/XLSX parsers load after limits and service lifetime are installed.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def establish_limits():
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         import ctypes
 
-        if len(sys.argv) != 4 or int(sys.argv[1]) != os.getppid():
+        if len(sys.argv) != 5 or int(sys.argv[1]) != os.getppid():
             raise RuntimeError("Parser parent changed")
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(1, 9, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG, SIGKILL
@@ -60,7 +60,7 @@ def establish_limits():
         raise ctypes.WinError(ctypes.get_last_error())
     if not kernel.AssignProcessToJobObject(job, kernel.GetCurrentProcess()):
         raise ctypes.WinError(ctypes.get_last_error())
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 6:
         raise RuntimeError("Missing parser parent identity")
     watch_parent(int(sys.argv[1]), int(sys.argv[2]))
     return job  # Sole noninherited handle is retained until process exit.
@@ -68,6 +68,8 @@ def establish_limits():
 
 def main():
     try:
+        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx"}:
+            raise RuntimeError("Invalid fixed parser kind")
         job = establish_limits()
     except Exception:
         # Static exit code, no exception details or imported application config.
@@ -82,14 +84,18 @@ def main():
     data = sys.stdin.buffer.read(10 * 1024 * 1024 + 1)
     if len(data) > 10 * 1024 * 1024:
         return 127
-    if data.startswith(b"%PDF-"):
+    if sys.argv[-3] == "pdf":
         from minimax_code.attachment_pdf import parse_pdf
 
         result = parse_pdf(data)
-    else:
+    elif sys.argv[-3] == "docx":
         from minimax_code.attachment_docx import parse_docx
 
         result = parse_docx(data)
+    else:
+        from minimax_code.attachment_xlsx import parse_xlsx
+
+        result = parse_xlsx(data)
     sys.stdout.buffer.write(json.dumps(result, ensure_ascii=True).encode("ascii"))
     sys.stdout.buffer.flush()
     return 0

@@ -38,6 +38,21 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); useAttachmentStore.getState().clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("project attachment panel and dispatch epochs", () => {
+  it.each(["parsed", "empty", "truncated"] as const)("shows XLSX %s as stored cells and unverified formula caches", async (status) => {
+    const xlsx: AttachmentOriginal = { ...row, original_name: "cells.xlsx", declared_type: "xlsx", recognized_type: "xlsx", parser_version: 2, parser_scope: "inert_text", parser_status: status,
+      parser_reason: status === "truncated" ? "preview_limit" : "ok", preview_truncated: status === "truncated" };
+    wire.request.mockImplementation(async (method: string) => method === "attachment.list"
+      ? { attachments: [xlsx], service_id: "svc_test" }
+      : { attachment: xlsx, preview_text: status === "empty" ? "" : preview });
+    render(<AttachmentsPanel onClose={() => {}} />);
+    await screen.findByRole("button", { name: /cells.xlsx/ });
+    fireEvent.click(screen.getByRole("button", { name: /cells.xlsx/ }));
+    await screen.findByText(/公式与缓存值分别标注/);
+    expect(screen.getByText(/缓存可能缺失或陈旧，未验证正确性/)).toBeTruthy();
+    if (status === "empty") expect(screen.getByText(/有界扫描未发现非空单元格/)).toBeTruthy();
+    expect(screen.getByLabelText("附件纯文本预览").textContent).toBe(status === "empty" ? "" : preview);
+    expect(document.querySelector(".attachment-script")).toBeNull();
+  });
   it.each(["empty", "truncated"] as const)("shows PDF %s boundaries and physical page provenance", async (status) => {
     const pdf: AttachmentOriginal = { ...row, original_name: "pages.pdf", declared_type: "pdf", recognized_type: "pdf", parser_version: 2, parser_scope: "inert_text", parser_status: status,
       parser_reason: status === "empty" ? "no_extracted_body_text_no_ocr" : "preview_limit", preview_truncated: status === "truncated" };

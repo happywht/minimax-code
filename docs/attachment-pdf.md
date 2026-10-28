@@ -31,7 +31,7 @@ OpenAction/AA、Launch、URI 或嵌入文件，也不跟随外部文件或网络
 复用 DOCX 固定短子进程：每服务并发 1、排队 5 秒、墙钟 15 秒、CPU 10 秒、内存 512 MiB，
 stdout 512 KiB、stderr 16 KiB；取消、重复取消、超时和超输出均回收实际子进程后释放槽。
 父进程独立校验精确 JSON 字段、v2/inert_text、状态/原因、预览大小与标志。
-入口只接收匿名 bytes，按已校验字节头路由固定解析器，不传 DB/vault 路径、文件名、
+入口只接收匿名 bytes，按服务已核对 declared/recognized 类型传固定内部 kind 路由，不传 DB/vault 路径、文件名、
 任意命令、插件、环境覆盖或安装指令。`-I -B -S`、Windows Job / Linux RLIMIT 与父进程死亡绑定
 保持原边界，详见 [DOCX 资源边界](attachment-docx.md)。这是资源/生命周期限制，
 **不是操作系统文件/网络沙箱**。
@@ -51,6 +51,8 @@ XForm invocation 256/page；显式 `jbig2dec_binary=None` 禁止外部 JBIG2 程
 以 declared_type/recognized_type 都为 pdf 及预览页标签表达来源。状态/原因枚举不增加，
 quality_status 始终 unverified；不自动进入对话上下文、不产生交付回执。
 DOCX scope 保持 docx_body_paragraphs_tables；历史 v1/v2 元数据保持原样，不自动重解析。
+XLSX 也使用 inert_text，但有独立精确类型与 empty/ok 校验分支，不改变 PDF 的空页面原因；
+详见 [XLSX 存储单元格预览](attachment-xlsx.md)。
 
 继续 Schema044 / bundle4，不新增数据库列、迁移、manifest 字段或 IPC 方法。
 bundle 对精确 `v2 + declared=recognized=pdf + inert_text` 组合收紧状态/原因/预览一致性，

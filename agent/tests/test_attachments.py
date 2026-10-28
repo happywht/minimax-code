@@ -100,9 +100,9 @@ def office_bytes(kind):
 
 
 @pytest.mark.parametrize("kind", ["docx", "xlsx"])
-async def test_office_is_only_bounded_container_candidate_no_parser_or_execution(originals, kind):
+async def test_office_candidate_is_not_proof_of_a_valid_parseable_package(originals, kind):
     row = await save(originals, office_bytes(kind), "document." + kind)
-    assert row["recognized_type"] == kind and row["parser_status"] == ("parse_failed" if kind == "docx" else "parser_unavailable")
+    assert row["recognized_type"] == kind and row["parser_status"] == "parse_failed"
     mismatch = await save(originals, office_bytes(kind), "document.txt")
     assert mismatch["parser_status"] == "type_mismatch"
 

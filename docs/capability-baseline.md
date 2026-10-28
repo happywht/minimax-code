@@ -14,7 +14,7 @@
 | 生产入口已接入 | `workspace/`、Git/patch/checkpoint handlers | 项目、worktree、差异、快照及独立子任务副本已接入；交接做冲突预检与原子收取，精确撤销及完整编程闭环仍待验收 |
 | 生产入口已接入 | `agent/skills/`、`hooks/`、`plugins/`、`mcp/` | 技能持久接单及共享进程策略已有局部验收；剩余入口审计、插件能力约束和现代 MCP HTTP 互操作待完成 |
 | 生产入口已接入 | `codebase/`、`xai_codebase_graph/`、`memory/` | FTS、符号分析与索引；默认向量为字符哈希，不是语义模型，记忆不能代替可靠任务状态 |
-| 生产入口已接入，有界预览 | `attachments.py`、`attachment_parser.py`、`attachment_docx.py`、`attachment_pdf.py` | 2026-10-28：原件保存、TXT/CSV及可选DOCX正文/PDF已有文字预览已有双平台与浏览器回执；PDF不保证版式/表格语义，不含OCR，质量仍未验证；XLSX和完整办公交付待完成 |
+| 生产入口已接入，有界预览 | `attachments.py`、`attachment_parser.py`、`attachment_docx.py`、`attachment_pdf.py`、`attachment_xlsx.py` | 2026-10-28：原件、TXT/CSV及可选DOCX正文/PDF文字/XLSX存储单元格预览已有双平台与浏览器回执；公式/缓存不重算或验证，不保证版式或表格语义，无OCR，质量仍未验证，完整办公交付待完成 |
 | 生产入口已接入，实验边界 | `orchestrator/`、`agent/subagent*`、teams/workflows handlers | 独立工作副本、交接、技能和直接子 Agent 持久入口已局部验收；Agent 非空 skills 配置、团队及其余根入口仍待补齐 |
 | 生产入口已接入，实验边界 | `scheduler/`、`agent/self_evolution/payload.py` | 定时提示词已进入 Native RunService；本地发生身份、固定上下文、会话隔离、执行/校验证据与共享家族/日账已接入；远端持久服务和真实自动化尚未验收 |
 | 生产入口已接入，实验边界 | `progress/`、`telemetry/`、`preview/`、`mobile/`、`webhooks/` | 有处理器/服务；进度不是验收结论，预览边界需统一，移动与外部通知不属于首版生产保证 |
@@ -114,3 +114,12 @@ Linux 完整产品服务或冷启动门槛验收，不代表完整 M7 安装、�
 Agent 进程均完成 health、SPA HTML 及 RPC 认证验证。上传脚本 CRLF 副本与提交内容
 归一换行一致，413 文件 manifest 核对；暖样本约 2 秒。仍非浏览器渲染、冷启动、
 容器或长驻部署，原始证据与限制见 [部署说明](deployment.md)。
+
+2026-10-28 XLSX有界预览接入真实附件入口：原存储值、坐标、类型、公式与缓存分别展示，
+缓存缺失/未知/存储值明确区分，不重算或验证。Windows六模块162项、前端27项、真实
+浏览器附件4项及构建/lint/Ruff通过；早期失败与最终全绿输出保留，计数有重叠不相加。
+Linux对raw `0659456` 加15份agent覆盖的六模块162项通过，零失败/错误/跳过，
+1119份源码不变且零额外文件，自然exit0。该批未包含同期Podman修改或额外SIGTERM探针。
+Schema044/bundle4不变；旧包原样恢复不迁移/重解析，raw旧bundle4 writer与新XLSX行互读
+只保证data-only范围。安装、缓存/外链拒绝、回退及实测回执见[XLSX说明](attachment-xlsx.md)。
+不包含OCR、样式还原、公式验算、表格处理工作流、完整办公交付或M6整体验收。

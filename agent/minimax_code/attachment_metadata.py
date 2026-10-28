@@ -16,7 +16,9 @@ def failure(reason, *, unavailable=False, scope=SCOPE):
             "preview_text": "", "preview_truncated": 0, "quality_status": "unverified"}
 
 
-def validate(result, *, expected_scope=SCOPE):
+def validate(result, *, expected_scope=SCOPE, expected_kind=None):
+    if expected_kind not in {None, "xlsx"} or expected_kind == "xlsx" and expected_scope != PDF_SCOPE:
+        raise ValueError("Invalid expected parser kind")
     if (expected_scope not in {SCOPE, PDF_SCOPE}
             or type(result) is not dict or set(result) != set(failure("parser_crash"))
             or type(result["parser_version"]) is not int or result["parser_version"] != 2
@@ -39,9 +41,11 @@ def validate(result, *, expected_scope=SCOPE):
         "parse_failed": {"invalid_package", "unsafe_package", "package_limit", "unsupported_feature",
                          "parser_timeout", "parser_crash", "output_limit", "invalid_parser_output"},
     }
+    if expected_kind == "xlsx":
+        permitted["empty"] = {"ok"}  # Successfully scanned, no populated worksheet cells.
     if result["parser_reason"] not in permitted[result["parser_status"]]:
         raise ValueError("Invalid parser status/reason")
     if (expected_scope == PDF_SCOPE and result["parser_status"] in {"parsed", "truncated"}
             and not result["preview_text"]):
-        raise ValueError("Missing PDF preview text")
+        raise ValueError("Missing inert preview text")
     return result

@@ -426,6 +426,15 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
                 }, expected_scope="inert_text")
             except (ValueError, TypeError, UnicodeError) as exc:
                 raise BundleError("Invalid PDF parser metadata in SQLite") from exc
+        if parser == 2 and declared == recognized == "xlsx" and scope == "inert_text":
+            try:
+                validate_parser_metadata({
+                    "parser_version": parser, "parser_scope": scope, "parser_reason": reason,
+                    "parser_status": status, "preview_text": preview, "preview_truncated": truncated,
+                    "quality_status": quality,
+                }, expected_scope="inert_text", expected_kind="xlsx")
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise BundleError("Invalid XLSX parser metadata in SQLite") from exc
         display_name(name)
         _require(attachment not in ids and snapshot not in snapshots, "Duplicate attachment reference")
         ids.add(attachment)

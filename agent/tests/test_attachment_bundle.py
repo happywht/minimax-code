@@ -1,6 +1,7 @@
 """Both-vault durability and real committed-v1 backwards compatibility."""
 from __future__ import annotations
 
+import builtins
 import gzip
 import hashlib
 import importlib.machinery
@@ -184,6 +185,83 @@ async def test_pdf_v2_raw_bundle4_reader_verify_restore_and_new_strict_branch(tm
         # precise new PDF branch is tightened, without changing the data format.
         with pytest.raises(bundle.BundleError, match="Invalid PDF parser metadata"):
             bundle.create_bundle(data, tmp_path / f"invalid-{status}-{reason}-{len(preview)}.zip")
+
+
+async def test_xlsx_exact_metadata_and_frozen_raw_bundle4_roundtrip_without_reparse(tmp_path, monkeypatch):
+    pytest.importorskip("openpyxl")
+    from xlsx_fixture import cell, worksheet, xlsx_bytes
+
+    from minimax_code import attachment_parser, attachment_xlsx
+
+    data = tmp_path / "xlsx-data"
+    db = AsyncDatabase(data / "data.db")
+    await db.connect()
+    try:
+        await db.migrate()
+        await ProjectsDAO(db).create(id="xlsx", name="Stored XLSX values")
+        service = AttachmentService(db, data)
+        identity = (await service.list("xlsx"))["service_id"]
+        original = xlsx_bytes([("Values", worksheet([(1, cell("A1", "999", formula="1+1"))]), "visible")])
+        actual = await service.upload("xlsx", "cells.xlsx", identity, stream(original))
+        assert actual["parser_status"] == "parsed"
+        template = dict(await db.fetchone("SELECT * FROM attachments WHERE id=?", (actual["id"],)))
+        cases = [("empty", "ok", "", 0), ("truncated", "preview_limit", '{"cell":"A1"}\n', 1)]
+        cases += [("parse_failed", reason, "", 0) for reason in (
+            "invalid_package", "unsafe_package", "package_limit", "unsupported_feature",
+            "parser_timeout", "parser_crash", "output_limit", "invalid_parser_output")]
+        cases += [("parser_unavailable", reason, "", 0) for reason in (
+            "missing_dependency", "limits_unavailable", "queue_timeout")]
+        for number, (status, reason, preview, truncated) in enumerate(cases, 1):
+            row = {**template, "id": f"att_{number:032x}", "snapshot_id": f"{number:032x}",
+                   "version": number + 1, "parser_status": status, "parser_reason": reason,
+                   "preview_text": preview, "preview_truncated": truncated}
+            (service.vault / row["snapshot_id"]).write_bytes(original)
+            keys = tuple(row)
+            await db.execute(f"INSERT INTO attachments ({','.join(keys)}) VALUES ({','.join('?' for _ in keys)})", tuple(row.values()))
+        mismatch = await service.upload("xlsx", "pretend.txt", identity, stream(original))
+        assert mismatch["parser_status"] == "type_mismatch" and mismatch["parser_scope"] == "inert_text"
+        before = [tuple(row) for row in await db.fetchall("SELECT * FROM attachments ORDER BY id")]
+    finally:
+        await db.close()
+    frozen = legacy_v4_pdf_writer()  # The three immutable raw CRLF fixtures and old enums.
+    def no_parse(*args, **kwargs):
+        pytest.fail("Data-only bundle must not reparse an attachment")
+    monkeypatch.setattr(attachment_xlsx, "parse_xlsx", no_parse)
+    monkeypatch.setattr(attachment_parser, "inspect_xlsx", no_parse)
+    original_import = builtins.__import__
+    def no_parser_import(name, *args, **kwargs):
+        if name.split(".")[0] in {"openpyxl", "defusedxml"} or name.endswith("attachment_xlsx"):
+            pytest.fail("Data-only bundle must not import the XLSX parser or its dependencies")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", no_parser_import)
+    archive = tmp_path / "new-xlsx-bundle4.zip"
+    assert bundle.create_bundle(data, archive)["format_version"] == 4
+    assert frozen.verify_bundle(archive)["schema_version"] == 44
+    restored = tmp_path / "old-reader-xlsx"
+    frozen.restore_bundle(archive, restored)
+    with zipfile.ZipFile(archive) as packed:
+        assert (restored / "data.db").read_bytes() == packed.read("data.db")
+    conn = sqlite3.connect(restored / "data.db")
+    try:
+        assert conn.execute("SELECT * FROM attachments ORDER BY id").fetchall() == before
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (44,)
+    finally:
+        conn.close()
+    assert all(path.read_bytes() == original for path in (restored / "attachment-vault").iterdir())
+    old_archive = tmp_path / "raw-v4-xlsx.zip"
+    frozen.create_bundle(data, old_archive)
+    assert bundle.verify_bundle(old_archive)["schema_version"] == 44
+    bundle.restore_bundle(old_archive, tmp_path / "current-reader-xlsx")
+    for status, reason, preview in [("empty", "no_extracted_body_text_no_ocr", ""),
+                                    ("parsed", "ok", ""), ("parse_failed", "invalid_package", "leak")]:
+        conn = sqlite3.connect(data / "data.db")
+        try:
+            conn.execute("UPDATE attachments SET parser_status=?,parser_reason=?,preview_text=?,preview_truncated=0 WHERE id=?", (status, reason, preview, actual["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        with pytest.raises(bundle.BundleError, match="Invalid XLSX parser metadata"):
+            bundle.create_bundle(data, tmp_path / f"invalid-xlsx-{status}.zip")
 
 
 async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_all_v1_values(tmp_path):

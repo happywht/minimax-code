@@ -7,6 +7,11 @@ v4/Schema044；仍可校验、恢复旧 v1/Schema041、v2/Schema042、v3/Schema0
 精确v2+declared=recognized=pdf+inert_text行额外校验状态/原因/预览一致性；
 历史TXT类型错配、DOCX及v1分支不变，旧行不重解析。冻结旧raw bundle4 writer/枚举验证合法新PDF行的
 离线校验与恢复；此保证限于数据包读取，不代表整个历史应用二进制兼容。
+XLSX有界预览同样沿用v2/inert_text，另设精确declared=recognized=xlsx分支，
+包括XLSX-only empty/ok；不把PDF校验泛化为任意MIME，不改变历史分支或格式号。
+固定旧bundle4 raw writer及metadata/attachments字节与合法新XLSX行双向校验/恢复，
+保留DB与原件字节，不调用解析器、迁移或重新计算。公式/缓存只是未验证的存储文本；
+详见[XLSX预览边界](attachment-xlsx.md)。
 现有设置页 `data.*` 导出、导入和立即备份仍是原有语义，不会自动保存独立 vault 字节。
 
 ## 操作
