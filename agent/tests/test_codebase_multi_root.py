@@ -89,10 +89,14 @@ def _clean_codebase_cache():
     """Snapshot/restore the per-root codebase cache around each test."""
     prev_buckets = dict(app_mod._CODEBASE_INDEXERS)
     prev_legacy = app_mod._CODEBASE_INDEXER
-    yield
     app_mod._CODEBASE_INDEXERS.clear()
-    app_mod._CODEBASE_INDEXERS.update(prev_buckets)
-    app_mod._CODEBASE_INDEXER = prev_legacy
+    app_mod._CODEBASE_INDEXER = None
+    try:
+        yield
+    finally:
+        app_mod._CODEBASE_INDEXERS.clear()
+        app_mod._CODEBASE_INDEXERS.update(prev_buckets)
+        app_mod._CODEBASE_INDEXER = prev_legacy
 
 
 class _FakeContext:
@@ -510,6 +514,49 @@ async def test_ensure_codebase_indexer_cache_hit_resyncs_legacy_slot(
 # ---------------------------------------------------------------------------
 # 5. Handler routing — project_id in codebase.* params
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_codebase_cache_isolates_closed_database(
+    async_db: AsyncDatabase, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A prior test's cached indexer must not reopen its closed connection."""
+    old_db = AsyncDatabase(tmp_path / "previous-test.sqlite3")
+    cache_scope = None
+    try:
+        await old_db.connect()
+        await old_db.migrate()
+        await old_db.close()
+        old_indexer = CodebaseIndexer(
+            app_mod._default_codebase_root(), CodebaseStore(old_db), root_key=""
+        )
+        default_key = str(app_mod._default_codebase_root())
+        app_mod._CODEBASE_INDEXERS[default_key] = old_indexer
+        app_mod._CODEBASE_INDEXER = old_indexer
+        monkeypatch.setattr(app_mod, "get_db", lambda: async_db)
+
+        cache_scope = _clean_codebase_cache.__wrapped__()
+        next(cache_scope)
+        indexer = ensure_codebase_indexer(None)
+        server = IPCServer(Config())
+        register_codebase_handlers(server)
+        ctx = _FakeContext()
+        await server._handlers["codebase.search"]({"query": "unicorn"}, ctx)
+
+        assert ctx.error_value is None, ctx.error_value
+        assert ctx.reply_value is not None
+        assert ctx.reply_value["total"] == 0
+        assert indexer is not old_indexer
+        assert indexer._store._db is async_db
+        assert old_db._conn is None, "search must not reopen a previous test's database"
+
+        cache_scope.close()
+        assert app_mod._CODEBASE_INDEXERS == {default_key: old_indexer}
+        assert app_mod._CODEBASE_INDEXER is old_indexer
+    finally:
+        if cache_scope is not None:
+            cache_scope.close()
+        await old_db.close()
 
 
 @pytest.mark.asyncio
