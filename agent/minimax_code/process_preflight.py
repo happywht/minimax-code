@@ -41,7 +41,10 @@ print(json.dumps({"python":sys.executable,"version":list(sys.version_info[:3]),
 _probe_owner: ContextVar[str | None] = ContextVar("private_preflight_owner", default=None)
 # A release acceptance decision pins exact accepted assets here. A runtime
 # attestation is additionally mandatory; no bool/config/RPC can grant readiness.
-ACCEPTED_GOVERNORS: frozenset[tuple[str, str]] = frozenset()
+ACCEPTED_GOVERNORS: frozenset[tuple[str, str]] = frozenset({
+    ("1fc6aeeaab3ed10c37fbee7606f5cc5859212baff908a37c8740063abceccb12",
+     "41353e75c367b32482d0367ba5632ea6f27fba0b390b68418401549ab8cd545f"),
+})
 
 
 def probe_argv():

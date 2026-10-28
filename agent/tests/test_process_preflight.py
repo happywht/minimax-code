@@ -69,6 +69,7 @@ def probe_setup(supervisor, tmp_path, monkeypatch):
 
 async def test_private_preflight_owns_real_run_family_and_releases_exact_container(probe_setup):
     catalog, server, paths = probe_setup
+    accepted_before = module.ACCEPTED_GOVERNORS
     proof = await module.run_preflight(catalog, server)
     run = await AgentRunsDAO(catalog._db).get_run(proof.run_id)
     result = await AgentRunsDAO(catalog._db).result_payload(proof.run_id)
@@ -85,7 +86,7 @@ async def test_private_preflight_owns_real_run_family_and_releases_exact_contain
     assert run["metadata"]["process_execution_owner"]["version"] == 2
     assert process["state"] == "removed" and process["resource_held"] == 0
     assert all(not path.exists() for path in paths)
-    assert not module.ACCEPTED_GOVERNORS
+    assert module.ACCEPTED_GOVERNORS == accepted_before
 
 
 @pytest.mark.parametrize("boundary", ["session", "admit"])
@@ -131,6 +132,7 @@ def test_private_probe_metadata_alone_cannot_authorize_start():
 @pytest.mark.parametrize("field", ["uid", "gid", "uid_map", "gid_map", "workspace"])
 async def test_preflight_rejects_incompatible_kernel_or_workspace_evidence(probe_setup, monkeypatch, field):
     catalog, server, paths = probe_setup
+    accepted_before = module.ACCEPTED_GOVERNORS
     original = FakeProcess.__init__
 
     def altered(self, controller):
@@ -154,7 +156,19 @@ async def test_preflight_rejects_incompatible_kernel_or_workspace_evidence(probe
     assert json.loads(result["evidence"]["raw_stdout"])[field] is not None
     assert result["evidence"]["mapping"]["fingerprint"]
     assert all(not path.exists() for path in paths)
-    assert not module.ACCEPTED_GOVERNORS
+    assert module.ACCEPTED_GOVERNORS == accepted_before
+
+
+def test_release_accepts_only_the_reviewed_governor_pair():
+    from minimax_code.process_assets import governor_identity
+
+    expected = frozenset({
+        ("1fc6aeeaab3ed10c37fbee7606f5cc5859212baff908a37c8740063abceccb12",
+         "41353e75c367b32482d0367ba5632ea6f27fba0b390b68418401549ab8cd545f"),
+    })
+    assert module.ACCEPTED_GOVERNORS == expected
+    governor = governor_identity()
+    assert (governor["guard_sha256"], governor["seccomp_sha256"]) in expected
 
 
 def test_probe_is_fixed_and_requires_kernel_maps_and_workspace_readback():

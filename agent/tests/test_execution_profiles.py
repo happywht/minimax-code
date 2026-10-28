@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -25,12 +26,8 @@ async def async_db(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def accepted_runtime_fixture(monkeypatch):
+def runtime_clock_fixture(monkeypatch):
     from minimax_code import process_preflight
-    from minimax_code.process_assets import governor_identity
-    governor = governor_identity()
-    monkeypatch.setattr(process_preflight, "ACCEPTED_GOVERNORS", frozenset({
-        (governor["guard_sha256"], governor["seccomp_sha256"])}))
     monkeypatch.setattr("minimax_code.process_deadline.read_clock", lambda: ("boot", 10))
     monkeypatch.setattr(process_preflight, "time_namespace", lambda: "namespace")
 
@@ -75,6 +72,38 @@ def test_missing_deadline_governance_cannot_be_bypassed_by_manual_profile(tmp_pa
         catalog.resolve("linux-podman-l1")
     with pytest.raises(ProcessBoundaryError, match="deadline"):
         catalog.resolve(None, parent_target=catalog._targets["linux-podman-l1"])
+
+
+@pytest.mark.parametrize("damage", ["empty", "guard", "seccomp"])
+def test_unaccepted_governor_pair_rejects_even_a_current_attestation(tmp_path, monkeypatch, damage):
+    from minimax_code import process_preflight
+
+    catalog = proven_catalog(tmp_path)
+    target = catalog.resolve("linux-podman-l1")
+    governor = target["governor"]
+    pair = [governor["guard_sha256"], governor["seccomp_sha256"]]
+    if damage != "empty":
+        pair[0 if damage == "guard" else 1] = "0" * 64
+    accepted = frozenset() if damage == "empty" else frozenset({tuple(pair)})
+    monkeypatch.setattr(process_preflight, "ACCEPTED_GOVERNORS", accepted)
+    assert not catalog.cards()[1]["available"]
+    for resolve in (lambda: catalog.resolve("linux-podman-l1"),
+                    lambda: catalog.assert_compatible(target, "installation")):
+        with pytest.raises(ProcessBoundaryError, match="尚未通过产品验收"):
+            resolve()
+    assert catalog.resolve(None) == HOST_TARGET
+
+
+@pytest.mark.parametrize("field", [
+    "target_hash", "installation_id", "boot_id", "time_namespace", "probe_hash",
+])
+def test_accepted_pair_cannot_bypass_stale_runtime_attestation(tmp_path, field):
+    catalog = proven_catalog(tmp_path)
+    target = catalog.resolve("linux-podman-l1")
+    catalog._governor = replace(catalog._governor, **{field: "stale"})
+    assert not catalog.cards()[1]["available"]
+    with pytest.raises(ProcessBoundaryError, match="运行时证明已失效"):
+        catalog.assert_compatible(target, "installation")
 
 
 def test_child_null_inherits_exact_parent_and_cannot_replace_it(tmp_path):
