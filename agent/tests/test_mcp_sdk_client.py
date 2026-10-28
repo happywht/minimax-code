@@ -101,7 +101,8 @@ async def test_real_sdk_server_unsolicited_requests_refused_without_model_or_per
             await client.close()
 
 
-async def test_modern_input_required_has_no_automatic_roundtrip(monkeypatch):
+@pytest.mark.parametrize("transport", ["sse", "streamable_http"])
+async def test_modern_input_required_has_no_automatic_roundtrip(monkeypatch, transport):
     server, _, _ = official_server()
     calls = []
 
@@ -140,8 +141,10 @@ async def test_modern_input_required_has_no_automatic_roundtrip(monkeypatch):
     monkeypatch.setattr(MiniMaxClient, "chat", forbidden)
     monkeypatch.setattr(PermissionStore, "upsert", forbidden)
     monkeypatch.setattr(ToolRegistry, "dispatch", forbidden)
-    async with loopback(server.sse_app()) as base:
-        client = SDKMCPClient(url=base + "/sse")
+    asgi = server.sse_app() if transport == "sse" else server.streamable_http_app()
+    endpoint = "/sse" if transport == "sse" else "/mcp"
+    async with loopback(asgi) as base:
+        client = SDKMCPClient(url=base + endpoint, http_transport=transport)
         try:
             await client.initialize()
             with pytest.raises(MCPClientError, match="InputRequiredRoundsExceeded"):
@@ -330,7 +333,7 @@ async def test_failed_stdio_start_settles_owner_and_hides_command_secret():
     assert client._owner.done() and pipe._proc is None
 
 
-@pytest.mark.parametrize("transport", ["streamable_http", "invalid", "", None, []])
+@pytest.mark.parametrize("transport", ["streamable_http_typo", "invalid", "", None, []])
 @pytest.mark.parametrize("enabled", [True, False])
 async def test_unknown_transport_never_executes_gate_or_spawn(transport, enabled, monkeypatch):
     from minimax_code import app

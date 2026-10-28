@@ -101,6 +101,7 @@ import type {
   WebhookConfig,
   WorkflowEntry,
   ListMcpServersResult,
+  McpTransport,
   McpServerResult,
   RemoveMcpServerResult,
   ListMcpToolsResult,
@@ -190,7 +191,7 @@ export interface TypedIPC {
   addMcpServer(opts: {
     id: string;
     name: string;
-    transport?: "stdio" | "sse";
+    transport?: McpTransport;
     command?: string[];
     url?: string;
     env?: Record<string, string>;
@@ -205,7 +206,7 @@ export interface TypedIPC {
   }): Promise<McpServerResult>;
   updateMcpServer(serverId: string, opts: {
     name?: string;
-    transport?: "stdio" | "sse";
+    transport?: McpTransport;
     command?: string[];
     url?: string;
     env?: Record<string, string>;

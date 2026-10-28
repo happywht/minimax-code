@@ -1286,7 +1286,7 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 | Method | Params | Result | Notes |
 |--------|--------|--------|-------|
 | `mcp.list_servers` | `{}` | `{servers: [{id, name, transport, command?, url?, env?, enabled, connected, bearer_token?, headers?, oauth_client_id?, oauth_client_secret?, oauth_scopes?, oauth_callback_port?, tool_states?}]}`] | Returns all persisted server configs plus live connection status. |
-| `mcp.add_server` | `{id, name, transport, command?, url?, env?, enabled?, bearer_token?, headers?, oauth_client_id?, oauth_client_secret?, oauth_scopes?, oauth_callback_port?, tool_states?}` | `{server}` | Validates `transport` is `stdio` or `sse`, persists the configuration, and immediately connects the server. `command` (argv list) is required for `stdio`; `url` is required for `sse`. |
+| `mcp.add_server` | `{id, name, transport, command?, url?, env?, enabled?, bearer_token?, headers?, oauth_client_id?, oauth_client_secret?, oauth_scopes?, oauth_callback_port?, tool_states?}` | `{server}` | Validates `transport` is `stdio`, `sse` or `streamable_http`, persists the configuration, and immediately connects the server. `command` (argv list) is required for `stdio`; `url` is required to connect `sse` or `streamable_http`; the two HTTP protocols are explicit and never auto-converted. |
 | `mcp.update_server` | `{server_id, name?, transport?, command?, url?, env?, enabled?, bearer_token?, headers?, oauth_client_id?, oauth_client_secret?, oauth_scopes?, oauth_callback_port?, tool_states?}` | `{server}` | Updates a persisted server config and re-attaches it when runtime fields change. `tool_states` is a map `{tool_name: enabled}` used to disable individual bridged tools. |
 | `mcp.remove_server` | `{server_id}` | `{ok, server_id}` | Disconnects and deletes the persisted server. |
 | `mcp.list_tools` | `{server_name}` | `{server_name, tools: [{name, description?, inputSchema?}]}` | Lists tools exposed by a single connected server. |
@@ -1606,7 +1606,7 @@ mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可�
 核对大小/hash/身份，缺失/损坏拒绝，没有 source fallback。返回 application/octet-stream、
 attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）、no-store、nosniff、sandbox CSP、
 上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
-原件和解析元数据从Schema043/bundle v3起纳入离线包；当前Schema044/bundle v4不改变附件字段，PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
+原件和解析元数据从Schema043/bundle v3起纳入离线包；当前Schema045/bundle v5仅扩展MCP传输检查、不改变附件字段，PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
 旧v1/041、v2/042、v3/043仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
 
 ### artifact.* — 显式登记文本成果（Schema041）

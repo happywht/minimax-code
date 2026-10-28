@@ -232,4 +232,33 @@ describe("McpServersTab", () => {
     expect(screen.queryByTestId("settings-mcp-edit-form-fs")).not.toBeInTheDocument();
     expect(updateMcpServer).not.toHaveBeenCalled();
   });
+  it("adds explicit Streamable HTTP and preserves its endpoint in edit", async () => {
+    const user = userEvent.setup();
+    const server = makeServer({ id: "http", name: "HTTP", transport: "streamable_http", url: "http://localhost:3001/mcp" });
+    addMcpServer.mockResolvedValue({ server });
+    updateMcpServer.mockResolvedValue({ server });
+    listMcpServers.mockResolvedValue({ servers: [server] });
+    render(<McpServersTab />);
+    await waitForLoading();
+    await user.click(screen.getByTestId("settings-mcp-add"));
+    await user.type(screen.getByTestId("settings-mcp-name"), "HTTP");
+    await user.selectOptions(screen.getByTestId("settings-mcp-transport"), "streamable_http");
+    expect(screen.getByTestId("settings-mcp-url")).toHaveAttribute("placeholder", "http://localhost:3001/mcp");
+    await user.click(screen.getByRole("button", { name: /保存/ }));
+    expect(addMcpServer).not.toHaveBeenCalled();
+    await user.type(screen.getByTestId("settings-mcp-url"), "http://localhost:3001/mcp");
+    await user.type(screen.getByTestId("settings-mcp-bearer"), "configured");
+    await user.click(screen.getByRole("button", { name: /保存/ }));
+    await waitFor(() => expect(addMcpServer).toHaveBeenCalledWith(expect.objectContaining({
+      transport: "streamable_http", url: "http://localhost:3001/mcp", bearer_token: "configured",
+    })));
+    await user.click(screen.getByTestId("settings-mcp-edit-http"));
+    expect(screen.getByTestId("settings-mcp-edit-transport")).toHaveValue("streamable_http");
+    expect(screen.getByTestId("settings-mcp-edit-url")).toHaveValue("http://localhost:3001/mcp");
+    await user.click(screen.getByRole("button", { name: /编辑配置/ }));
+    await waitFor(() => expect(updateMcpServer).toHaveBeenCalledWith("http", expect.objectContaining({
+      transport: "streamable_http", url: "http://localhost:3001/mcp",
+    })));
+  });
+
 });

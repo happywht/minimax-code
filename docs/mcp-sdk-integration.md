@@ -1,13 +1,18 @@
-# MCP SDK integration (M6-A)
+# MCP SDK integration (M6-A / M6-B)
 
-The production registry uses the official Python SDK `mcp==2.3.0` for existing
-`stdio` and legacy `sse` configurations. The SDK negotiates supported protocol
-versions, including the legacy initialize handshake and the 2026 discovery
-protocol. This does not add the Streamable HTTP transport to the product.
-`streamable_http` and every unknown transport are rejected; they are never stored
-or interpreted as `sse`. The database schema, export format 4, and existing UI
-transport choices remain unchanged. A future HTTP transport requires its own
-schema/export compatibility slice.
+The production registry uses the official Python SDK `mcp==2.3.0` for explicit
+`stdio`, legacy `sse`, and `streamable_http` configurations. The SDK negotiates
+supported protocol versions within the selected transport, including legacy
+initialize and modern discovery. Transport is never inferred from the URL or
+silently converted between SSE and Streamable HTTP; unknown values are rejected.
+Settings add/edit, typed IPC, mock backend, DAO and Schema045 preserve the same
+transport enum. Existing stdio/SSE records retain their values and behavior.
+
+Schema045 rebuilds only the MCP table inside the normal migration transaction.
+Bundle format5 creates only schema45, while mappings1/41,2/42,3/43,4/44 remain
+verify/restore only and restore exact SQLite bytes without migration. Old tools
+reject format5/schema45. See [storage schema](storage-schema.md#schema045mcp-streamable-http)
+and [data-only bundle](data-vault-bundle.md) for explicit upgrade/rollback limits.
 
 ## Ownership and execution policy
 
@@ -33,7 +38,12 @@ uses the official SDK; it does not silently fall back to the old client.
 
 ## HTTP and authority boundary
 
-SSE uses the SDK's SSE transport with an application-owned httpx2 client factory.
+SSE uses the SDK's SSE transport; Streamable HTTP uses its official connector
+with an application-owned httpx2 client entered before the SDK in the same owner
+stack. Both use the same origin/header/secret policy. Modern POST responses can
+be JSON or bounded SSE events. Legacy HTTP sessions carry their session header
+and attempt SDK DELETE termination before the HTTP client closes. Remote DELETE
+is best effort; local context closure does not assert remote server state.
 Only explicit headers or an explicit bearer token are supplied. Ambient proxies,
 netrc and other environment-derived HTTP credentials are disabled (`trust_env=False`).
 OAuth configuration metadata is retained, but OAuth discovery, browser login,
@@ -49,9 +59,11 @@ SSE POST endpoint requests and redirect follow-ups. Same-origin GET/POST redirec
 work. Cross-origin requests and HTTPS downgrades fail before sending any headers.
 This deliberately also rejects same-host redirects to a different port or scheme.
 
-The client requests identity encoding and rejects compressed responses. Only successful GET HTTP 200 SSE streams bypass the 2 MiB total body cap.
-All other response bodies are capped, including POST/error/redirect bodies
-claiming an SSE content type and chunked bodies; the
+The client requests identity encoding and rejects compressed responses. Only successful GET HTTP200 SSE streams bypass the 2 MiB total body cap in the
+legacy SSE transport. Streamable HTTP additionally permits POST200 SSE because
+its connector consumes that path through the SDK event parser. Legacy POST and
+all error/redirect/DELETE bodies remain capped regardless of an SSE MIME label,
+including chunked bodies; the
 SDK bounds individual SSE events at 1 MiB. Long-lived SSE streams are not capped
 by total bytes. SDK/httpx2/httpcore2 wire logging is suppressed at those package
 loggers, because their debug/error messages can include URL queries, headers or
@@ -63,7 +75,9 @@ filter. Those packages are currently used only by this integration; adding
 another integration must revisit this diagnostic tradeoff. SDK wire diagnostics
 are unavailable after the first connection. Attach warnings retain the fixed
 operation/leaf exception type/HTTP status, so an HTTP 401 remains distinguishable
-without its response body or URL. The project's separate httpx logging is unaffected.
+without its response body or URL. The shared HTTP hook also records fixed HTTP
+status numbers when the Streamable HTTP connector translates them into RPC
+errors, without recording remote text. The project's separate httpx logging is unaffected.
 
 No sampling, elicitation or roots callbacks are registered or advertised. Legacy
 unsolicited requests receive SDK errors, and unknown methods are refused. Modern
@@ -110,7 +124,7 @@ locked versions. Existing idna updates from 3.17 to 3.20 to satisfy resolution.
 No dependency is fetched dynamically during connection startup.
 
 From `agent/`, run `uv sync --frozen --extra attachments --extra dev`, then
-`uv run --frozen pytest -q tests/test_mcp_sdk_interop.py tests/test_mcp_sdk_client.py tests/test_mcp_http_policy.py`.
+`uv run --frozen pytest -q tests/test_mcp_sdk_interop.py tests/test_mcp_sdk_client.py tests/test_mcp_http_policy.py tests/test_mcp_streamable_http.py`.
 These are offline tests with a real official SDK server bound only to 127.0.0.1,
 plus a real supervised SDK stdio child. They require no model or credentials.
 Run all `tests/test_mcp*.py`, `tests/test_handlers_mcp.py` and

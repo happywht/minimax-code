@@ -100,17 +100,17 @@ def _validate_opt_int(value: Any, name: str) -> int | None:
 
 
 def _validate_transport_command_url(transport: str, command: Any, url: Any) -> None:
-    if not isinstance(transport, str) or transport not in {"stdio", "sse"}:
-        raise HandlerError(INVALID_PARAMS, "'transport' must be 'stdio' or 'sse'")
+    if not isinstance(transport, str) or transport not in {"stdio", "sse", "streamable_http"}:
+        raise HandlerError(INVALID_PARAMS, "'transport' must be stdio, sse or streamable_http")
     if transport == "stdio" and command is not None and (
         not isinstance(command, list) or not command or not command[0] or not all(
             isinstance(arg, str) and "\0" not in arg for arg in command
         )
     ):
         raise HandlerError(INVALID_PARAMS, "'command' must be a non-empty argv list for stdio transport")
-    if transport == "sse" and url is not None and (not isinstance(url, str) or not url):
-        raise HandlerError(INVALID_PARAMS, "'url' must be a non-empty string for sse transport")
-    if transport == "sse" and url is not None:
+    if transport in {"sse", "streamable_http"} and url is not None and (not isinstance(url, str) or not url):
+        raise HandlerError(INVALID_PARAMS, "'url' must be a non-empty string for HTTP transport")
+    if transport in {"sse", "streamable_http"} and url is not None:
         try:
             validate_url(url)
         except ValueError as exc:
@@ -118,7 +118,7 @@ def _validate_transport_command_url(transport: str, command: Any, url: Any) -> N
 
 
 def _validate_http_auth(transport: str, headers: Any, token: Any) -> None:
-    if transport == "sse":
+    if transport in {"sse", "streamable_http"}:
         try:
             validate_headers(headers, token)
         except ValueError as exc:

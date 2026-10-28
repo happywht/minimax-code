@@ -113,8 +113,8 @@ class _BoundedBody(httpx2.AsyncByteStream):
         await self._stream.aclose()
 
 
-def http_client_factory(url: str):
-    """Return the SDK SSE factory, anchored to the configured origin at every send."""
+def http_client_factory(url: str, *, streamable_http: bool = False):
+    """Endpoint-scoped SDK client factory; transport determines SSE consumer roles."""
     endpoint = httpx2.URL(validate_url(url))
     origin = endpoint.scheme, endpoint.host, endpoint.port
 
@@ -124,18 +124,26 @@ def http_client_factory(url: str):
             raise MCPHTTPPolicyError("MCP request left configured origin")
 
     async def check_response(response: httpx2.Response) -> None:
+        if response.status_code >= 400:
+            # Modern SDK transports may translate HTTP failures into RPC
+            # errors; retain the status without URL/header/body diagnostics.
+            logging.getLogger(__name__).warning("MCP HTTP response status %d", response.status_code)
         # Decompression would bypass the raw-byte bound. We request identity,
         # and refuse a server which nevertheless sends a compressed body.
         if response.headers.get("content-encoding", "identity").lower() != "identity":
             raise MCPHTTPPolicyError("Compressed MCP response is not supported")
-        media = response.headers.get("content-type", "").split(";", 1)[0].lower()
-        # Only a successful GET is consumed by the SDK SSE event parser.
-        # POST/error/redirect bodies are drained with aread(), regardless of
-        # their claimed media type, and must remain bounded.
+        media = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        # Legacy SSE parses only GET. Streamable HTTP additionally parses
+        # successful POST SSE using the same bounded SDK EventSource. No
+        # error/redirect/DELETE body is exempt, regardless of MIME claims.
         sse_stream = (
             media == "text/event-stream"
             and response.status_code == 200
-            and response.request.method == "GET"
+            and (
+                response.request.method == "GET"
+                or streamable_http
+                and response.request.method == "POST"
+            )
         )
         if not sse_stream:
             try:

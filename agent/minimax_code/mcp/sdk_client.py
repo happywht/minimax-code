@@ -16,6 +16,7 @@ import anyio
 import mcp.types as sdk_types
 from mcp import Client
 from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.message import SessionMessage
 
 from .client import MCPClientError
@@ -145,13 +146,17 @@ class SDKMCPClient:
         *,
         transport: MCPTransport | None = None,
         url: str | None = None,
+        http_transport: str = "sse",
         headers: dict[str, str] | None = None,
         bearer_token: str | None = None,
         timeout: float = 30.0,
         close_timeout: float = 5.0,
     ) -> None:
         if (transport is None) == (url is None):
-            raise ValueError("Configure one controlled stdio pipe or SSE URL")
+            raise ValueError("Configure one controlled stdio pipe or HTTP endpoint")
+        if not isinstance(http_transport, str) or http_transport not in {"sse", "streamable_http"}:
+            raise ValueError("Unknown MCP HTTP transport")
+        self._http_transport = http_transport
         self._url = validate_url(url) if url is not None else None
         self._headers = validate_headers(headers, bearer_token)
         self._transport = transport
@@ -198,17 +203,26 @@ class SDKMCPClient:
         quiet_sdk_diagnostics()
         try:
             async with AsyncExitStack() as stack:
-                transport = (
-                    controlled_transport(self._transport)
-                    if self._transport is not None
-                    else sse_client(
+                if self._transport is not None:
+                    transport = controlled_transport(self._transport)
+                elif self._http_transport == "streamable_http":
+                    # Enter the HTTP client before the SDK contexts so DELETE
+                    # session termination still has an open client on exit.
+                    http = await stack.enter_async_context(
+                        http_client_factory(
+                            self._url,
+                            streamable_http=True,
+                        )(headers=self._headers)
+                    )
+                    transport = streamable_http_client(self._url, http_client=http)
+                else:
+                    transport = sse_client(
                         self._url,
                         headers=self._headers,
                         timeout=self._timeout,
                         sse_read_timeout=300.0,
                         httpx_client_factory=http_client_factory(self._url),
                     )
-                )
                 sdk = Client(
                     _watch(transport, self._disconnected),
                     mode="auto",

@@ -141,7 +141,7 @@ export function McpServerForm({
     if (values.transport === "stdio" && parseCommand(values.command).length === 0) {
       errors.push(strings.settings.mcp.commandRequired);
     }
-    if (values.transport === "sse" && !values.url.trim()) {
+    if (values.transport !== "stdio" && !values.url.trim()) {
       errors.push(strings.settings.mcp.urlRequired);
     }
     const envParsed = parseJsonObject(values.env);
@@ -171,7 +171,7 @@ export function McpServerForm({
       name: values.name.trim(),
       transport: values.transport,
       command: values.transport === "stdio" ? parseCommand(values.command) : undefined,
-      url: values.transport === "sse" ? values.url.trim() : undefined,
+      url: values.transport !== "stdio" ? values.url.trim() : undefined,
       env: Object.keys(envObj).length > 0 ? envObj : undefined,
       bearer_token: values.bearerToken.trim() || undefined,
       headers: Object.keys(headersObj).length > 0 ? headersObj : undefined,
@@ -205,6 +205,7 @@ export function McpServerForm({
         >
           <option value="stdio">{strings.settings.mcp.transportStdio}</option>
           <option value="sse">{strings.settings.mcp.transportSse}</option>
+          <option value="streamable_http">{strings.settings.mcp.transportHttp}</option>
         </Select>
       </Field>
 
@@ -242,7 +243,7 @@ export function McpServerForm({
           <Field label={strings.settings.mcp.fieldUrl} htmlFor={fieldId("url")}>
             <Input
               id={fieldId("url")}
-              placeholder="http://localhost:3001/sse"
+              placeholder={values.transport === "streamable_http" ? "http://localhost:3001/mcp" : "http://localhost:3001/sse"}
               value={values.url}
               onChange={(e) => set("url", e.target.value)}
               data-testid={fieldId("url")}
@@ -276,6 +277,7 @@ export function McpServerForm({
 
       <div className="space-y-3 rounded-md border border-line bg-surface-0 p-3">
         <p className="text-[11px] font-medium text-ink-1">{strings.settings.mcp.oauthTitle}</p>
+        <p className="text-[11px] text-ink-2">{strings.settings.mcp.authBoundaryHint}</p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={strings.settings.mcp.clientId} htmlFor={fieldId("oauth-id")}>
             <Input

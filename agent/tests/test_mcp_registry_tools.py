@@ -129,10 +129,13 @@ def test_build_transport_stdio() -> None:
     assert isinstance(transport, StdioTransport)
 
 
-def test_build_transport_sse_requires_url() -> None:
+@pytest.mark.parametrize(
+    ("transport", "label"), [("sse", "SSE"), ("streamable_http", "Streamable HTTP")]
+)
+def test_build_transport_http_requires_url(transport: str, label: str) -> None:
     reg = MCPRegistry(ToolRegistry())
-    with pytest.raises(ValueError, match="empty SSE url"):
-        reg._build_transport(MCPServerConfig(name="x", transport="sse"))  # noqa: SLF001
+    with pytest.raises(ValueError, match=f"empty {label} url"):
+        reg._build_transport(MCPServerConfig(name="x", transport=transport))  # noqa: SLF001
 
 
 def test_build_transport_sse() -> None:

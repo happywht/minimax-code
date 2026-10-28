@@ -1870,7 +1870,7 @@ export interface PluginReloadResult {
 // v0.11.0 — MCP server integration
 // ---------------------------------------------------------------------------
 
-export type McpTransport = "stdio" | "sse";
+export type McpTransport = "stdio" | "sse" | "streamable_http";
 
 /** Persisted MCP server configuration — matches `mcp_servers` table row. */
 export interface McpServer {

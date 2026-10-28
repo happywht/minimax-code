@@ -1056,3 +1056,11 @@ Windows六模块162项、前端27项、真实后端浏览器附件4项及build/l
 各257项通过，关联进程与关停207项通过；真实 SDK 本地服务互操作、构建及 Ruff 通过。
 该批尚无 Linux 实机验收，也未新增 Streamable HTTP 配置或 OAuth 流程；SDK wire 日志
 抑制及具体诊断取舍见[MCP 接入说明](mcp-sdk-integration.md)。
+
+后续接入显式 Streamable HTTP 配置，贯通 SDK、IPC、存储及设置界面。Schema045
+迁移先核对正式旧表定义，无法安全保留的自定义表结构会拒绝升级并回滚；bundle5
+对应 Schema045，旧格式1–4保留原有验证与恢复路径。升级前应备份数据库和附件，
+回退使用对应旧版本及升级前备份，不做未经验证的逆向迁移。
+Windows Python 3.11/3.12 的 MCP/IPC 各316项、迁移和备份各173项通过；集合有重叠。
+前端9项、build 和 lint 通过；前端测试仅有结果记录，未单独保存原始日志。现代协议
+测试使用本地受控官方 SDK 服务；个人 Linux 主机、真实远端 MCP 和 OAuth 尚未验收。

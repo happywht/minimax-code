@@ -118,3 +118,16 @@ async def test_create_sse_with_auth_and_tool_states(dao: McpServersDAO, id_facto
     assert row["oauth_scopes"] == ["read"]
     assert row["oauth_callback_port"] == 8765
     assert row["tool_states"] == {"read": True, "write": False}
+
+
+async def test_explicit_streamable_http_persists_without_sse_coercion(dao):
+    created = await dao.create(id="http", name="HTTP", transport="streamable_http", url="http://localhost/mcp",
+                               headers={"X-Explicit": "configured"}, tool_states={"danger": False})
+    assert created["transport"] == "streamable_http"
+    updated = await dao.update("http", url="http://127.0.0.1/mcp")
+    assert updated["transport"] == "streamable_http"
+    assert (await dao.get("http"))["headers"] == {"X-Explicit": "configured"}
+    assert (await dao.get("http"))["tool_states"] == {"danger": False}
+    with pytest.raises(ValueError):
+        await dao.update("http", transport="http")
+    assert (await dao.get("http"))["transport"] == "streamable_http"

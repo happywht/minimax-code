@@ -76,6 +76,7 @@ import type {
   UpdateProviderResult,
   WebhookConfig,
   WorkflowEntry,
+  McpTransport,
   McpServer,
   ListMcpServersResult,
   McpServerResult,
@@ -1572,7 +1573,7 @@ function mockHandle(
       const p = params as {
         id: string;
         name: string;
-        transport?: "stdio" | "sse";
+        transport?: McpTransport;
         command?: string[];
         url?: string;
         env?: Record<string, string>;
@@ -1585,6 +1586,8 @@ function mockHandle(
         oauth_callback_port?: number;
         tool_states?: Record<string, boolean>;
       };
+      if (p.transport !== undefined && !["stdio", "sse", "streamable_http"].includes(p.transport))
+        throw new Error("Unknown MCP transport");
       const now = new Date().toISOString();
       const server: McpServer = {
         id: p.id,
@@ -1613,7 +1616,7 @@ function mockHandle(
       const p = params as {
         server_id: string;
         name?: string;
-        transport?: "stdio" | "sse";
+        transport?: McpTransport;
         command?: string[];
         url?: string;
         env?: Record<string, string>;
@@ -1628,6 +1631,8 @@ function mockHandle(
       };
       const s = mockMcpServers.get(p.server_id);
       if (!s) return { server: null as unknown as McpServer };
+      if (p.transport !== undefined && !["stdio", "sse", "streamable_http"].includes(p.transport))
+        throw new Error("Unknown MCP transport");
       if (p.name !== undefined) s.name = p.name;
       if (p.transport !== undefined) s.transport = p.transport;
       if (p.command !== undefined) s.command = p.command;

@@ -1,9 +1,10 @@
 # SQLite、文本成果与附件原件的离线数据包
 
 此命令保存 **SQLite 数据库、已登记文本成果版本及附件原件**。当前新建包使用
-v4/Schema044；仍可校验、恢复旧 v1/Schema041、v2/Schema042、v3/Schema043，且不迁移或重新绑定旧库。
+v5/Schema045；仍可校验、恢复旧 v1/Schema041、v2/Schema042、v3/Schema043、v4/Schema044，且不迁移或重新绑定旧库。
 它生成 data-only 数据副本，不代表 M7 完整应用备份或可直接启动的迁移。
-文本型PDF预览继续使用既有v2/inert_text和原因枚举，不改变Schema044/bundle4。
+PDF/XLSX 预览沿用既有元数据；本次045/v5仅为MCP显式Streamable HTTP配置扩展。
+早期PDF切片沿用v2/inert_text和原因枚举，未改变其当时的Schema044/bundle4。
 精确v2+declared=recognized=pdf+inert_text行额外校验状态/原因/预览一致性；
 历史TXT类型错配、DOCX及v1分支不变，旧行不重解析。冻结旧raw bundle4 writer/枚举验证合法新PDF行的
 离线校验与恢复；此保证限于数据包读取，不代表整个历史应用二进制兼容。
@@ -38,9 +39,9 @@ JSON。校验或 I/O 失败时返回非零退出码，不将失败当作备份�
 v1 数据包固定 Schema041，只允许版本化 `manifest.json`、SQLite backup API 产生的
 `data.db` 和数据库所有历史记录引用的 `text-artifact-vault/<snapshot_id>`。
 v2 固定 Schema042，额外纳入所有注册 `attachment-vault/<snapshot_id>` 原件，
-包括无法解析、类型异常、空文件和历史版本。v3 固定 Schema043，新增解析范围和稳定原因字段，保留历史v1元数据。v4 固定 Schema044，记录历史流式用量可信度迁移，不改变附件字段。新工具只从044创建v4，旧v1/v2/v3工具拒绝v4；
+包括无法解析、类型异常、空文件和历史版本。v3 固定 Schema043，新增解析范围和稳定原因字段，保留历史v1元数据。v4 固定 Schema044，记录历史流式用量可信度迁移，不改变附件字段。v5固定Schema045，扩展MCP transport检查以保留显式streamable_http。当前工具只从045创建v5；历史v4工具只从044创建v4，旧v1/v2/v3工具拒绝v4，v1至v4工具均拒绝v5；
 未知版本、格式/schema组合或表结构拒绝。Schema041升级前可用旧工具先保全v1；
-本工具验证/恢复旧包不会调用迁移。没有042/043/044降级迁移，回退须使用匹配旧程序的升级前备份。
+本工具验证/恢复旧包不会调用迁移。没有042/043/044/045降级迁移，回退须使用匹配旧程序的升级前备份。
 它不受成果列表最新 200 条的显示限制。清单记录应用/格式/schema 版本、服务身份、
 schema 哈希及各文件的字节数、SHA-256、成果 ID 和版本。
 
@@ -159,3 +160,14 @@ SHA-256 为 `6787414419eb71f3405fe767b675d9a56bcea8130464f3c62bc772bdd7b58ed2`�
 独立复核接受该限定兼容范围。原始完成输出见工作区
 `.verification/anthropic-usage-bundle-compatibility-verification.json`；尚无该批 Linux
 实测或完整发行/运营恢复验收，不借用前述旧v1/v2/v3实测作为v4证据。
+
+
+## MCP配置与v5/Schema045
+
+045只扩展MCP传输类型，不把旧SSE改为HTTP，也不重写URL、headers、凭据、OAuth元数据或工具开关。
+迁移事务失败则表/行/索引/触发器/版本记录一起回滚。自定义表约束不属于正式旧表形态时拒绝升级，
+不通过硬编码重建静默丢弃；用户索引和触发器仍逐项保留。详见[存储契约](storage-schema.md#schema045mcp-streamable-http)。
+
+恢复旧包不会调用045；从旧schema恢复后，当前创建命令会拒绝输出直到操作者显式完成升级。
+回退使用匹配旧程序与升级前DB+vault全量备份，不能把45表直接交给旧程序，也没有逆向迁移。
+MCP配置中的秘密保留在SQLite中，数据包仍应按敏感文件处理；恢复不会连接任何MCP服务或触发模型。

@@ -69,11 +69,11 @@ class MCPServerConfig:
         Short human-friendly id used as the tool namespace. Sanitised
         before use, so spaces/cases are fine in config.
     transport:
-        ``"stdio"`` or ``"sse"``.  Defaults to ``"stdio"`` when omitted.
+        ``"stdio"``, ``"sse"`` or ``"streamable_http"``.  Defaults to ``"stdio"`` when omitted.
     command:
         Argv for stdio transport.
     url:
-        Legacy SSE endpoint URL (not a Streamable HTTP endpoint).
+        Explicit SSE or Streamable HTTP endpoint URL.
     env:
         Extra environment variables for stdio transport.
     cwd:
@@ -235,8 +235,8 @@ class MCPRegistry:
         Returns ``True`` if the server attached successfully, ``False``
         if it was disabled or failed to handshake (fail-open).
         """
-        if not isinstance(config.transport, str) or config.transport not in {"stdio", "sse"}:
-            raise ValueError("MCP transport must be 'stdio' or 'sse'")
+        if not isinstance(config.transport, str) or config.transport not in {"stdio", "sse", "streamable_http"}:
+            raise ValueError("MCP transport must be stdio, sse or streamable_http")
         if not config.enabled:
             logger.info("MCP server %s disabled, skipping", config.name)
             return False
@@ -245,19 +245,21 @@ class MCPRegistry:
             from ..app import before_executable_extension
             await before_executable_extension("MCP server")
             client = SDKMCPClient(
-                transport=transport, url=config.url if config.transport == "sse" else None,
-                headers=config.headers if config.transport == "sse" else None,
-                bearer_token=config.bearer_token if config.transport == "sse" else None,
+                transport=transport, url=config.url if config.transport != "stdio" else None,
+                headers=config.headers if config.transport != "stdio" else None,
+                bearer_token=config.bearer_token if config.transport != "stdio" else None,
+                http_transport=config.transport if config.transport != "stdio" else "sse",
             )
             return await self._attach_client(config, client, transport)
 
     def _build_transport(self, config: MCPServerConfig) -> MCPTransport | None:
         transport = config.transport
-        if not isinstance(transport, str) or transport not in {"stdio", "sse"}:
-            raise ValueError("MCP transport must be 'stdio' or 'sse'")
-        if transport == "sse":
+        if not isinstance(transport, str) or transport not in {"stdio", "sse", "streamable_http"}:
+            raise ValueError("MCP transport must be stdio, sse or streamable_http")
+        if transport in {"sse", "streamable_http"}:
             if not config.url:
-                raise ValueError("MCP server has empty SSE url")
+                label = "SSE" if transport == "sse" else "Streamable HTTP"
+                raise ValueError(f"MCP server has empty {label} url")
             validate_url(config.url)
             validate_headers(config.headers, config.bearer_token)
             # HTTP contexts are constructed/entered by the SDK owner task.

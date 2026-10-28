@@ -173,3 +173,25 @@ async def test_mcp_update_tool_states(client: IPCClient) -> None:
         {"server_id": "tools", "tool_states": {"read": True, "write": False}},
     )
     assert result["server"]["tool_states"] == {"read": True, "write": False}
+
+
+async def test_streamable_http_ipc_roundtrip_retains_transport(client):
+    added = await client.request("mcp.add_server", {"id": "http", "name": "HTTP", "transport": "streamable_http",
+                                                 "url": "http://localhost/mcp", "bearer_token": "configured"})
+    assert added["server"]["transport"] == "streamable_http"
+    updated = await client.request("mcp.update_server", {"server_id": "http", "url": "http://127.0.0.1/mcp"})
+    assert updated["server"]["transport"] == "streamable_http"
+    assert updated["server"]["bearer_token"] == "configured"
+    with pytest.raises(RuntimeError, match="transport"):
+        await client.request("mcp.update_server", {"server_id": "http", "transport": "http"})
+    assert (await client.request("mcp.list_servers", {}))["servers"][0]["transport"] == "streamable_http"
+
+
+@pytest.mark.parametrize("patch", [{"url": "http://user:secret@localhost/mcp"},
+                                    {"headers": {"X-Test": "value\r\ninjected"}},
+                                    {"bearer_token": "token", "headers": {"Authorization": "other"}}])
+async def test_http_invalid_url_or_auth_rejected_before_persist(client, patch):
+    with pytest.raises(RuntimeError):
+        await client.request("mcp.add_server", {"id": "bad", "name": "Bad", "transport": "streamable_http",
+                                               "url": "http://localhost/mcp", **patch})
+    assert (await client.request("mcp.list_servers", {}))["servers"] == []

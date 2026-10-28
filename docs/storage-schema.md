@@ -260,13 +260,19 @@ Rules are evaluated in insertion order; the first match wins. The auth layer cac
 |---------------|---------|--------------------------------------------------------|
 | `id`          | TEXT PK | UUID v4.                                               |
 | `name`        | TEXT    | Display name; user-defined.                            |
-| `transport`   | TEXT    | CHECK in `('stdio','sse')`.                            |
+| `transport`   | TEXT    | CHECK in `('stdio','sse','streamable_http')`.                            |
 | `command`     | TEXT    | Shell command line for `stdio` transports; nullable.   |
-| `url`         | TEXT    | Endpoint URL for `sse` transports; nullable.           |
+| `url`         | TEXT    | Endpoint URL for HTTP/SSE transports; nullable.           |
 | `env`         | JSON    | Key/value environment variables; empty object default. |
 | `enabled`     | INTEGER | `0`/`1`; disabled servers are not started at boot.     |
 | `created_at`  | TEXT    | ISO-8601 UTC.                                          |
 | `updated_at`  | TEXT    | Bumped on every mutation.                              |
+| `bearer_token` | TEXT | Nullable local bearer token (Schema024). |
+| `headers` | JSON | Nullable extra HTTP headers. |
+| `oauth_client_id` / `oauth_client_secret` | TEXT | Nullable OAuth config; no token flow is implied. |
+| `oauth_scopes` | JSON | Nullable requested scopes. |
+| `oauth_callback_port` | INTEGER | Nullable callback port. |
+| `tool_states` | JSON | Nullable per-tool enablement map. |
 
 ### 2.10 `schema_migrations`
 
@@ -605,6 +611,25 @@ Anthropic 及无法确认协议者由 settled 改为 unknown，追加原因和 b
 核对后可解除责任阻断，但 usage_complete 仍为 false，不伪造完整测量。新日期按原有
 日期边界隔离，不能用覆盖起点或删除历史释放责任。
 
-新离线数据包使用 v4/Schema044；v1/041、v2/042、v3/043 仍只校验/原样恢复，不自动迁移。
+Schema044 引入 v4 数据包；v1/041、v2/042、v3/043 仍只校验/原样恢复，不自动迁移。
+当前创建版本见下方 Schema045。
 升级前停服务，用对应旧工具保存匹配的 DB+vault；回退恢复旧程序及升级前完整备份，
 不直接让旧程序读取044，不做逆向迁移。该数据包仍不包含运营恢复所需的全部配置/所有权。
+
+### Schema045：MCP Streamable HTTP
+
+在迁移事务中重建 `mcp_servers`，仅把 transport CHECK 扩展为
+`('stdio','sse','streamable_http')`。保留 stdio/SSE 标识、全部配置与原始 JSON 字符串、
+空值、时间、凭据、OAuth 字段和工具开关；不重写 URL、不把历史 SSE 自动转为 HTTP。
+沿用主键、name 唯一约束、enabled 检查、默认值及索引/触发器。迁移 runner 在事务前暂时
+关闭外键，提交前执行完整 foreign_key_check，失败回滚表、数据及版本记录并恢复外键设置。
+重建前先核对 table_xinfo 列和正式017 CREATE + 024 ALTER生成的 sqlite_master 表定义；
+额外/隐藏列，以及同名列但 CHECK、默认值、NOT NULL、UNIQUE、collation、外键、
+WITHOUT ROWID 或 STRICT 不同的外部表定义均拒绝，不静默抹掉已有约束。
+此处使用精确正式 SQL 对比，连语义等价的外部格式改写也会拒绝；自定义索引/触发器作为
+独立 schema 对象保留，不被该表定义限制排除。
+
+新离线数据包仅创建 v5/Schema045；精确兼容映射为 v1/041、v2/042、v3/043、v4/044、v5/045。
+旧包继续校验/原样恢复 SQLite 字节，恢复不运行迁移。旧版工具拒绝 v5/045；未知格式、
+未来 schema 及格式/schema 不匹配均拒绝。回退须恢复对应旧程序和升级前完整 DB+vault 备份，
+没有045逆向迁移；数据包仍为 data-only。

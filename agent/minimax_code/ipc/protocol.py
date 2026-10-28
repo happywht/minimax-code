@@ -28,6 +28,9 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+McpTransport = Literal["stdio", "sse", "streamable_http"]
+
+
 class InvokeMcpToolResult(_Base):
     """MCP tool result; structuredContent preserves any JSON value, including null."""
     ok: bool

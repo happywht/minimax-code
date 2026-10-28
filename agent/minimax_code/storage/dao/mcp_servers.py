@@ -14,7 +14,7 @@ from ._base import dumps_json, loads_json, now_iso, row_to_dict
 
 logger = logging.getLogger(__name__)
 
-_TRANSPORT_CHOICES = {"stdio", "sse"}
+_TRANSPORT_CHOICES = {"stdio", "sse", "streamable_http"}
 
 
 def _hydrate(row: Any) -> dict[str, Any] | None:
@@ -55,7 +55,7 @@ class McpServersDAO:
         tool_states: dict[str, bool] | None = None,
     ) -> dict[str, Any]:
         """Insert a new MCP server config and return the persisted row."""
-        if transport not in _TRANSPORT_CHOICES:
+        if not isinstance(transport, str) or transport not in _TRANSPORT_CHOICES:
             raise ValueError(f"transport must be one of {_TRANSPORT_CHOICES}")
         now = now_iso()
         sql = (
@@ -123,7 +123,7 @@ class McpServersDAO:
             sets.append("name = ?")
             params.append(name)
         if transport is not None:
-            if transport not in _TRANSPORT_CHOICES:
+            if not isinstance(transport, str) or transport not in _TRANSPORT_CHOICES:
                 raise ValueError(f"transport must be one of {_TRANSPORT_CHOICES}")
             sets.append("transport = ?")
             params.append(transport)

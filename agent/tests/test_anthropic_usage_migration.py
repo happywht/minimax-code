@@ -34,7 +34,8 @@ def old(tmp_path, monkeypatch):
         (version, run) for version, run in discover(applied) if version < 44])
     db = Database(tmp_path / "upgrade.db")
     db.migrate()
-    monkeypatch.setattr(db_module, "discover_migrations", discover)
+    monkeypatch.setattr(db_module, "discover_migrations", lambda applied: [
+        (version, run) for version, run in discover(applied) if version <= 44])
     db.execute("INSERT INTO sessions(id,title,created_at,updated_at) VALUES('s','',?,?)",
                (STAMP, STAMP))
     db.execute("UPDATE budget_coverage SET started_at=?", (STAMP,))

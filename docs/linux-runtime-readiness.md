@@ -719,3 +719,16 @@ C-only 沿用相同1116文件候选和私有 pair：stdout 实际管道取得两
 `d033befb08eea1c6cbcf40c183f25ba783484a2925eccde80d24d95302b5692d`，
 19份附件共1,338,966字节经独立复核。此结果仅接受该候选的在途正常关停，
 不改变 v3/v4 整批失败、期限场景未通过和公共允许集关闭的状态。
+
+## cgroup 文件系统语义探针（2026-10-28）
+
+单个独立容器、不暂停 attach，15秒期限后，在固定父目录观察到精确 scope 的
+`IN_DELETE|IN_ISDIR`；期限后约0.163–0.164秒的采样捕获该事件。之后14次采样中，
+预开文件读取返回 ENODEV，相对固定目录重新打开返回 ENOENT，均未被当作零值。
+原 PID1 从运行状态变为不存在，未捕获 zombie；runtime 最终 exited/124，探针的
+attach CLI 实测124，精确 CID 删除并确认不存在。无救援或外层超时，0次 SDK。
+
+回执 `.verification/linux-cgroup-fs-probe-v1-20261028T153431Z-91cc5dc2.json` SHA
+`4c28feea471aa71ff40c1192edc83792c234ca54902e8a0bf3188ba504694fb5`；
+7份附件共1,217,937字节经独立复核。该探针只说明本机未暂停 attach 时的观测，
+不能证明 v3/v4 的背压和 zombie 场景，也不改变期限场景失败或 public gate 状态。
