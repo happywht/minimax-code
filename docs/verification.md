@@ -171,3 +171,16 @@ core1050通过/1跳过、协议回放35项和真实浏览器35项通过；未取
 `.verification/ci-d496176-baseline-{windows,ubuntu}/` 和
 `.verification/ci-d496176-backend-full-{windows,ubuntu}/`。这些结果只针对该提交，
 不替代后续 Linux 在途关停和真实模型任务验收。
+
+官方 MCP SDK 既有传输提交 `5db8cb1` 的 CI `40713137920` 随后六项作业全部成功。
+两平台三轮 baseline 各16条命令均退出0；每轮前端903项、协议回放35项、浏览器36项
+通过，core Ubuntu 1045通过/6跳过、Windows 1050通过/1跳过；独立附件各226项通过。
+后端全量 Ubuntu 12651通过/15跳过、Windows 12646通过/20跳过，均自然退出0；
+Python 3.11 两平台各169项通过。原件与独立统计在 `.verification/ci-5db8cb1-*`。
+后续 `a2832e9` 新增 Streamable HTTP 和迁移，其 CI 结果必须单独确认。
+
+`a2832e9` 的 Ubuntu 后端全量 CI 中，12709项通过、15项跳过、1项失败，进程自然
+退出1。唯一失败为旧 Schema040 升级测试仍预期迁移列表止于044；实际新增045。
+修正预期后保留旧项目数据、成果表及再次迁移为空的断言，单例先红后绿；相邻五模块
+72项通过，Schema045/bundle专项35项通过，均自然退出0。原失败及新日志见
+`.verification/ci-a2832e9-failure-review/`；不将原CI改判为通过，修复提交须另跑CI。
