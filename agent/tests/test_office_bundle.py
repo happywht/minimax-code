@@ -79,7 +79,7 @@ def seed(db, *, office=False):
     db.execute("INSERT INTO artifact_service VALUES(1,?)", (SERVICE,))
     text = b"original text\r\n"
     snapshot = "7" * 32
-    (db.path.parent / bundle.VAULT).mkdir()
+    (db.path.parent / bundle.VAULT).mkdir(mode=0o700)
     (db.path.parent / bundle.VAULT / snapshot).write_bytes(text)
     insert(db, "text_artifacts", {
         "id": "art_" + "8" * 32, "project_id": "project", "run_id": "historical-run",
@@ -91,7 +91,7 @@ def seed(db, *, office=False):
     if version < 42:
         return
     vault = db.path.parent / bundle.ATTACHMENT_VAULT
-    vault.mkdir()
+    vault.mkdir(mode=0o700)
     workbook = xlsx_bytes([("清单", worksheet([
         (1, cell("A1", "材料", kind="inlineStr") + cell("B1", "数量", kind="inlineStr")),
         (2, cell("A2", "钢材", kind="inlineStr") + cell("B2", "12")),
