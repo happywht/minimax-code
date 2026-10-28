@@ -92,3 +92,28 @@ schema；回退用对应提交的普通代码回退，不做数据库逆向迁�
 旧全量 CI 日志另确认文本成果升级夹具仍预期迁移至043；现显式补齐044，保留
 旧项目行及表结构断言，该文件34项自然退出0。日志为
 `.verification/ci-migration044-fixture.log`；不据此把已取消的旧全量作业改记为通过。
+
+### 2026-10-28：双平台基线、Python 3.11 与 DAO 归属
+
+提交 `0dd3a4f` 的 CI `40682997989` 已分别完成 Windows、Ubuntu 三轮基线，
+两个 baseline job 均成功。Ubuntu 原始 artifact 已下载核对：16 个命令全部退出0，
+每轮真实浏览器35项通过；独立附件套件191项通过、2个预期恶意ZIP警告。
+后端全量 job 的退出结果另行验收，不能用基线绿色代替全量通过。
+
+新增的原始源码退出诊断发现另一条缓存路径：workspace merge fixture 通过全局
+ProjectsDAO 重新打开先前 IPC fixture 已关闭的数据库，留下非 daemon SQLite
+线程。IPC fixture 现隔离并清理该 DAO，merge fixture 显式使用自己的 DAO，退出时
+恢复调用方缓存后再关闭自有数据库；回归真实执行旧已关闭DB到merge的组合。
+该修复仅测试归属，不改变生产检索或强制关闭外部线程。
+
+同一原始源码的实际单例对照还发现 Python 3.11 流式预算上下文错误：逐片段
+`wait_for(anext)` 在不同任务中推进生成器，跨yield的ContextVar token无法复位；
+3.12 同例通过。产品改为 `asyncio.timeout` 内直接推进生成器，保留超时、取消及
+finally/aclose，未吞掉预算错误。四个新回归在3.11修前均失败；修后包含两处fixture
+及相邻模块的184项在3.11/3.12分别通过67.94/65.24秒，测试主函数和进程均自然0，
+末尾无线程残留。169项较早组合与此重叠，不叠加计数。
+
+命令、原始失败、源hash及自然退出证明保存在
+`.verification/ci-0dd3a4f-thread-3b2158b2/` 的 `stream-context-evidence.json` 和
+`stream-fixture-python{311,312}.{json,log}`。原 `0dd3a4f` 全量诊断仍绑定未修复
+快照；不能把本批定向通过写成其全量结果。无schema变化，回退使用对应代码提交。

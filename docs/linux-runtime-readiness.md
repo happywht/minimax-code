@@ -640,3 +640,27 @@ v1整轮仍为**失败**：正常产品执行已完成，但harness将receipt.wo
 本节更新最终Exec-only有限接线状态，不改写历史计划、失败或其他源码接受范围。
 公共允许集仍空、能力卡unavailable；公开attach背压/drain、child、无人值守、L2、
 完整L1/M1/M7、正式三轮任务与14天真实使用门槛均未因此完成。
+
+## 公开 attach v2 失败记录（2026-10-28）
+
+此批是**整轮失败**，原记录不改写。候选来自原始 `0dd3a4f` 的1115个Git blob，
+仅应用既有精确私有pair，8个安全资源与原验收版本一致；工作树用户改动不纳入。
+源码归档 `60fc56a7666aa64434c5e5887bba3659e707b67414aaa9f59179ce46748c397c`，
+manifest `cdd2ba2ce338900e5314c7a8009631d8965d820c6ecfa0d8a68a8bc028928842`，
+driver冻结 `4c39cec2a304c96eb2f227911b102e00889bb289944fc7881702ccbc427502f7`。
+
+A在暂停真实service并放行有限双流payload后，33次采样未取得预设双流正向阻塞。
+后部stdout实际pipe队列65536字节且原attach线程位于pipe_write；stderr队列0，
+没有对应blocked writer。因此只能确认stdout的所见状态，不能声称双流条件成立或
+断言具体Podman内部原因。未执行B，也未取得成功的排空/原始spill交付证据。
+
+失败路径对精确service pidfd发出SIGCONT后请求正常关闭；工具取消报告
+`Owned container kill was not confirmed`。最终快照三条process行均removed/resource0，
+payload为cancelled/137且保留原错误；服务仍未在关闭窗口退出，harness强制kill/-9，
+rescue标志true。本批因此不能作正常关停、取消时限或公开L1验收；关停卡住的精确
+原因须另取崩溃记录，不能根据数据库最终状态推断过程无错。
+
+回执 `.verification/linux-public-attach-v2-20261028T121358Z-0fb92a66.json` SHA
+`80f741b0916cfb6980cd75586e3dcc89e95b08509e6f5fc0ba002b71788f1c27`，同名目录
+19份原始附件共1,147,150字节均逐项核对hash/size；原始1115源码验后校验通过。
+一次受控SDK请求、零付费模型调用；没有重新派发此批。公共允许集继续为空。

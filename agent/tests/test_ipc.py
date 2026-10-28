@@ -33,6 +33,8 @@ async def isolated_runtime(
     monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(workspace))
     monkeypatch.setattr(app, "_CODEBASE_INDEXERS", {})
     monkeypatch.setattr(app, "_CODEBASE_INDEXER", None)
+    # Preserve any caller-owned DAO while this fixture opens its own runtime.
+    monkeypatch.setattr(app, "_PROJECTS_DAO", None)
     scheduled_builds = set()
     schedule_build = app._schedule_codebase_index_build
 
@@ -82,6 +84,7 @@ async def _clear_runtime():
     from minimax_code.app import (
         get_db,
         set_progress_tracker,
+        set_projects_dao,
         set_runtime,
         set_sessions_dao,
         set_subagent_llm,
@@ -95,6 +98,7 @@ async def _clear_runtime():
     set_runtime(None)
     set_progress_tracker(None)
     set_sessions_dao(None)
+    set_projects_dao(None)
     set_subagent_llm(None)
 
 
@@ -196,6 +200,7 @@ async def test_agent_send_message_streams_hello(
 async def test_isolated_runtime_owns_indexer_database_and_build_cleanup(monkeypatch, tmp_path):
     from minimax_code import app
     from minimax_code.codebase import CodebaseIndexer, CodebaseStore
+    from minimax_code.storage.dao.projects import ProjectsDAO
     from minimax_code.storage.db import AsyncDatabase
 
     runtime_path = tmp_path / "runtime"
@@ -207,9 +212,11 @@ async def test_isolated_runtime_owns_indexer_database_and_build_cleanup(monkeypa
         await old_db.migrate()
         await old_db.close()
         old_indexer = CodebaseIndexer(workspace, CodebaseStore(old_db), root_key="")
+        old_projects = ProjectsDAO(old_db)
         previous_buckets = {str(workspace.resolve()): old_indexer}
         monkeypatch.setattr(app, "_CODEBASE_INDEXERS", previous_buckets)
         monkeypatch.setattr(app, "_CODEBASE_INDEXER", old_indexer)
+        monkeypatch.setattr(app, "_PROJECTS_DAO", old_projects)
         with monkeypatch.context() as runtime_patch:
             scope = isolated_runtime.__wrapped__(runtime_patch, runtime_path)
             await anext(scope)
@@ -217,6 +224,7 @@ async def test_isolated_runtime_owns_indexer_database_and_build_cleanup(monkeypa
             reply = await client.request("agent.send_message", {"content": "hello"})
             assert reply["text"].startswith("[mock]")
             owned_db = app.get_db()
+            assert app.get_projects_dao()._db is owned_db
             indexer = app.get_codebase_indexer()
             await indexer.build_index(force=False)
             await indexer._task
@@ -224,10 +232,13 @@ async def test_isolated_runtime_owns_indexer_database_and_build_cleanup(monkeypa
             assert indexer._store._db is owned_db
             assert old_db._conn is None
             await scope.aclose()
+            assert app.get_projects_dao() is None
             assert owned_db._conn is None
             assert indexer._task.done()
         assert app._CODEBASE_INDEXERS is previous_buckets
         assert app._CODEBASE_INDEXER is old_indexer
+        assert app.get_projects_dao() is old_projects
+        assert old_db._conn is None
     finally:
         if scope is not None:
             await scope.aclose()

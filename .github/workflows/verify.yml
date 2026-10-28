@@ -83,3 +83,41 @@ jobs:
           name: backend-full-${{ matrix.os }}
           include-hidden-files: true
           path: .verification/
+
+  minimum-python:
+    name: Minimum Python 3.11 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.10.8'
+      - run: uv sync --frozen --extra dev
+        working-directory: agent
+      - name: Verify streaming context on minimum supported Python
+        run: >-
+          uv run --no-sync pytest -q
+          tests/test_stream_context.py
+          tests/test_agent_core.py
+          tests/test_agent_cancel.py
+          tests/test_cancel.py
+          tests/test_budget_transport.py
+          tests/test_agent_skill_bindings.py
+          tests/test_reliability.py
+          --junitxml=../.verification/minimum-python.xml
+        working-directory: agent
+      - name: Save minimum Python evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minimum-python-${{ matrix.os }}
+          include-hidden-files: true
+          path: .verification/minimum-python.xml

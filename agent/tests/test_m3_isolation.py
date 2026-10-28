@@ -29,6 +29,7 @@ from minimax_code.ipc.handlers_workspace import register_workspace_handlers
 from minimax_code.ipc.server import IPCServer
 from minimax_code.runs import get_run_service
 from minimax_code.storage.dao.checkpoints import CheckpointDAO
+from minimax_code.storage.dao.projects import ProjectsDAO
 from minimax_code.storage.dao.runs import AgentRunsDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
 from minimax_code.storage.db import AsyncDatabase
@@ -190,7 +191,9 @@ async def test_non_git_workspace_still_runs(native) -> None:
 
 
 @pytest.fixture
-async def merge_env(tmp_path):
+async def merge_env(tmp_path, monkeypatch):
+    from minimax_code import app
+
     main = tmp_path / "main"
     main.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=main, check=True)
@@ -210,16 +213,20 @@ async def merge_env(tmp_path):
     await db.connect()
     await db.migrate()
     sessions = SessionsDAO(db)
+    projects = ProjectsDAO(db)
     await sessions.create(id="ses_wt", title="wt", workspace_mode="worktree",
                           workspace_path=str(wt), base_branch="main",
                           project_id="inbox")
     server = IPCServer(Config(), stdin=io.StringIO(), stdout=io.StringIO())
     register_workspace_handlers(server, dao=sessions, repo_root=main,
                                 worktree_root=wt_root)
-    env = SimpleNamespace(db=db, server=server, sessions=sessions,
+    env = SimpleNamespace(db=db, server=server, sessions=sessions, projects=projects,
                           main=main, wt=wt, wt_root=wt_root)
     try:
-        yield env
+        # Restore the caller's cache before closing this fixture's database.
+        with monkeypatch.context() as fixture_patch:
+            fixture_patch.setattr(app, "_PROJECTS_DAO", projects)
+            yield env
     finally:
         await db.close()
 
@@ -265,15 +272,12 @@ async def test_merge_conflicts_abort_and_report(merge_env) -> None:
     assert status.stdout.strip() == ""
 
 
-async def test_merge_stops_on_failed_validation(merge_env, monkeypatch) -> None:
+async def test_merge_stops_on_failed_validation(merge_env) -> None:
     """A failing project validate command stops the merge before it starts."""
-    from minimax_code.storage.dao.projects import ProjectsDAO
-
-    projects = ProjectsDAO(merge_env.db)
+    projects = merge_env.projects
     await projects.create(id="proj_v", name="v",
                           validate_command="python -c \"raise SystemExit(9)\"")
     await merge_env.sessions.update("ses_wt", project_id="proj_v")
-    monkeypatch.setattr("minimax_code.app.get_projects_dao", lambda: projects)
 
     (merge_env.wt / "code.txt").write_text("broken change", encoding="utf-8")
     ctx = await _merge(merge_env, {"run_validate": True})
@@ -285,17 +289,44 @@ async def test_merge_stops_on_failed_validation(merge_env, monkeypatch) -> None:
     assert (merge_env.main / "code.txt").read_text(encoding="utf-8") == "v1"
 
 
-async def test_merge_skips_validation_when_disabled(merge_env, monkeypatch) -> None:
-    from minimax_code.storage.dao.projects import ProjectsDAO
-
-    projects = ProjectsDAO(merge_env.db)
+async def test_merge_skips_validation_when_disabled(merge_env) -> None:
+    projects = merge_env.projects
     await projects.create(id="proj_v", name="v",
                           validate_command="python -c \"raise SystemExit(9)\"")
     await merge_env.sessions.update("ses_wt", project_id="proj_v")
-    monkeypatch.setattr("minimax_code.app.get_projects_dao", lambda: projects)
 
     (merge_env.wt / "code.txt").write_text("v2 anyway", encoding="utf-8")
     ctx = await _merge(merge_env, {"run_validate": False})
     result = ctx.reply.await_args.args[0]
     assert result["merged"] is True  # explicit opt-out merges without validation
     assert result["validation"] is None
+
+
+async def test_merge_fixture_never_reopens_previous_runtime_database(tmp_path, monkeypatch):
+    from minimax_code import app
+
+    old_db = AsyncDatabase(tmp_path / "previous.sqlite3")
+    scope = None
+    try:
+        await old_db.connect()
+        await old_db.migrate()
+        await old_db.close()
+        old_projects = ProjectsDAO(old_db)
+        monkeypatch.setattr(app, "_PROJECTS_DAO", old_projects)
+        runtime_path = tmp_path / "runtime"
+        runtime_path.mkdir()
+        scope = merge_env.__wrapped__(runtime_path, monkeypatch)
+        env = await anext(scope)
+        assert app.get_projects_dao() is env.projects
+        (env.wt / "code.txt").write_text("owned merge", encoding="utf-8")
+        ctx = await _merge(env)
+        assert ctx.reply.await_args.args[0]["merged"] is True
+        assert old_db._conn is None
+        await scope.aclose()
+        assert env.db._conn is None
+        assert app.get_projects_dao() is old_projects
+        assert old_db._conn is None
+    finally:
+        if scope is not None:
+            await scope.aclose()
+        await old_db.close()

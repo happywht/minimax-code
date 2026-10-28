@@ -1384,7 +1384,10 @@ class AgentCore:
             while True:
                 try:
                     if stall and stall > 0:
-                        chunk = await asyncio.wait_for(aiter.__anext__(), timeout=stall)
+                        # Keep generator entry, yields and close in one task:
+                        # request budget ContextVar tokens span those yields.
+                        async with asyncio.timeout(stall):
+                            chunk = await aiter.__anext__()
                     else:
                         chunk = await aiter.__anext__()
                 except StopAsyncIteration:
