@@ -254,8 +254,12 @@ async def test_trusted_profile_cannot_ignore_frozen_durable_authority(native, fi
         changed["execution_target_hash"] = canonical_hash(value)
         changed["execution_installation_id"] = None
     changed["digest"] = _digest({key: value for key, value in changed.items() if key != "digest"})
+    # The constructor rejects invalid L1 tools/intent immediately. Mutate an
+    # owned valid spec to exercise the gate's independent snapshot validation.
+    spec = AgentExecutionSpec(copy.deepcopy(data))
+    spec.data.update(changed)
     with pytest.raises(HandlerError) as caught:
-        await host_session_gate.require_chat_session("one", internal_agent=AgentExecutionSpec(changed))
+        await host_session_gate.require_chat_session("one", internal_agent=spec)
     assert caught.value.data["reason"] == "session_execution_binding_invalid"
 
 

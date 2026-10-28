@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from minimax_code import app
+from minimax_code.agent.tools.terminal import ExecCommandTool
 from minimax_code.agent_execution import AgentExecutionSpec
 from minimax_code.config import Config
 from minimax_code.ipc import handlers_runner, handlers_terminal
@@ -20,6 +21,7 @@ from minimax_code.ipc.server import IPCServer
 from minimax_code.process_binding import HOST_TARGET
 from minimax_code.process_context import current_process_target
 from minimax_code.process_types import ExecutionTargetSpec, canonical_hash
+from minimax_code.skill_bindings import tool_identity
 from minimax_code.skill_execution import _digest
 from minimax_code.storage.dao.runs import AgentRunsDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
@@ -50,6 +52,11 @@ def public_profile(root, *, version=3, target=TARGET, session_id="execution"):
         data.update(execution_target=copy.deepcopy(target),
                     execution_target_hash=canonical_hash(target),
                     execution_installation_id="installation" if target["mode"] == "podman" else None)
+        if target["mode"] == "podman":
+            data.update(allowlist=[ExecCommandTool.name],
+                        tool_identity=tool_identity([ExecCommandTool()]),
+                        intent={"method": "agent.invoke"},
+                        hooks_policy="disabled", permission_policy_version=1)
     data["digest"] = _digest(data)
     AgentExecutionSpec(data)
     return data

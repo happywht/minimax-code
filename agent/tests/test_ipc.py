@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -24,6 +25,23 @@ async def isolated_runtime(
     tmp_path: Path,
 ) -> AsyncIterator[None]:
     """Keep the chat integration test isolated from the live product DB."""
+    from minimax_code import app
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "sample.py").write_text("answer = 42\n", encoding="utf-8")
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(workspace))
+    monkeypatch.setattr(app, "_CODEBASE_INDEXERS", {})
+    monkeypatch.setattr(app, "_CODEBASE_INDEXER", None)
+    scheduled_builds = set()
+    schedule_build = app._schedule_codebase_index_build
+
+    def schedule_owned_build(**kwargs):
+        before = asyncio.all_tasks()
+        schedule_build(**kwargs)
+        scheduled_builds.update(asyncio.all_tasks() - before)
+
+    monkeypatch.setattr(app, "_schedule_codebase_index_build", schedule_owned_build)
     monkeypatch.setattr("minimax_code.secrets.get_api_key", lambda: None)
     # v1.6.4: get_provider_key("builtin-minimax") no longer routes its
     # fallback through get_api_key() — it reads the per-provider slot
@@ -45,6 +63,17 @@ async def isolated_runtime(
     try:
         yield
     finally:
+        # Drain only this fixture's delayed builds and indexers before the
+        # owned DB closes; they must never reconnect a previous test's DB.
+        tasks = scheduled_builds | {
+            indexer._task for indexer in app._CODEBASE_INDEXERS.values()
+            if indexer._task is not None
+        }
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await _clear_runtime()
 
 
@@ -161,6 +190,48 @@ async def test_agent_send_message_streams_hello(
     # The final message_chunk must have done=True.
     final = [e for e in chunks if e["data"].get("done") is True]
     assert final, "expected a final done event"
+
+
+@pytest.mark.asyncio
+async def test_isolated_runtime_owns_indexer_database_and_build_cleanup(monkeypatch, tmp_path):
+    from minimax_code import app
+    from minimax_code.codebase import CodebaseIndexer, CodebaseStore
+    from minimax_code.storage.db import AsyncDatabase
+
+    runtime_path = tmp_path / "runtime"
+    workspace = runtime_path / "workspace"
+    old_db = AsyncDatabase(tmp_path / "previous.sqlite3")
+    scope = None
+    try:
+        await old_db.connect()
+        await old_db.migrate()
+        await old_db.close()
+        old_indexer = CodebaseIndexer(workspace, CodebaseStore(old_db), root_key="")
+        previous_buckets = {str(workspace.resolve()): old_indexer}
+        monkeypatch.setattr(app, "_CODEBASE_INDEXERS", previous_buckets)
+        monkeypatch.setattr(app, "_CODEBASE_INDEXER", old_indexer)
+        with monkeypatch.context() as runtime_patch:
+            scope = isolated_runtime.__wrapped__(runtime_patch, runtime_path)
+            await anext(scope)
+            client = IPCClient()
+            reply = await client.request("agent.send_message", {"content": "hello"})
+            assert reply["text"].startswith("[mock]")
+            owned_db = app.get_db()
+            indexer = app.get_codebase_indexer()
+            await indexer.build_index(force=False)
+            await indexer._task
+            assert indexer is not old_indexer
+            assert indexer._store._db is owned_db
+            assert old_db._conn is None
+            await scope.aclose()
+            assert owned_db._conn is None
+            assert indexer._task.done()
+        assert app._CODEBASE_INDEXERS is previous_buckets
+        assert app._CODEBASE_INDEXER is old_indexer
+    finally:
+        if scope is not None:
+            await scope.aclose()
+        await old_db.close()
 
 
 @pytest.mark.asyncio
