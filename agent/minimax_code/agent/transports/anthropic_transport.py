@@ -235,6 +235,55 @@ def _convert_tool_choice(
     return {"type": "auto"}
 
 
+class _UsageSnapshot:
+    """Merge cumulative usage fields without adding successive snapshots."""
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int | None] = {}
+        self.invalid: set[str] = set()
+
+    def update(self, usage: Any, *, include_output: bool = False) -> None:
+        fields = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+        if include_output:
+            fields += ("output_tokens",)
+        present = getattr(usage, "model_fields_set", None)
+        for name in fields:
+            if isinstance(usage, Mapping):
+                value = usage.get(name)
+            elif present is not None and name not in present:
+                continue
+            else:
+                value = getattr(usage, name, None)
+            # SDK defaults/omitted/null fields do not replace earlier counts.
+            if value is None:
+                continue
+            if type(value) is int and value >= 0:
+                self.counts[name] = value
+                self.invalid.discard(name)
+            else:
+                self.counts[name] = None
+                self.invalid.add(name)
+
+    def usage(self, *, include_output: bool = False) -> dict[str, int | None]:
+        raw_input = self.counts.get("input_tokens")
+        cache_read = self.counts.get("cache_read_input_tokens")
+        cache_creation = self.counts.get("cache_creation_input_tokens")
+        invalid_input = self.invalid & {
+            "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+        }
+        prompt = (
+            raw_input + (cache_read or 0) + (cache_creation or 0)
+            if raw_input is not None and not invalid_input else None
+        )
+        result = {"prompt_tokens": prompt, "cached_tokens": cache_read,
+                  "cache_creation_tokens": cache_creation}
+        if include_output:
+            output = self.counts.get("output_tokens")
+            result.update(completion_tokens=output,
+                          total_tokens=prompt + output if prompt is not None and output is not None else None)
+        return result
+
+
 async def _anthropic_stream_to_chunks(
     stream: anthropic.AsyncMessageStream,
 ) -> AsyncIterator[StreamChunk]:
@@ -249,8 +298,7 @@ async def _anthropic_stream_to_chunks(
     Thinking blocks are counted (but their content is not forwarded
     to the caller — the agent core only tracks the count).
     """
-    input_tokens = None
-    cache_read, cache_creation = None, None
+    usage_snapshot = _UsageSnapshot()
     tool_blocks: dict[int, dict[str, str]] = {}  # index → {id, name}
     thinking_count = 0
 
@@ -260,12 +308,8 @@ async def _anthropic_stream_to_chunks(
         if etype == "message_start":
             usage = getattr(event.message, "usage", None)
             if usage:
-                raw_input = getattr(usage, "input_tokens", None)
-                cache_read = getattr(usage, "cache_read_input_tokens", None)
-                cache_creation = getattr(usage, "cache_creation_input_tokens", None)
-                input_tokens = (raw_input + (cache_read or 0) + (cache_creation or 0)) if raw_input is not None else None
-                yield StreamChunk(usage={"prompt_tokens": input_tokens, "cached_tokens": cache_read,
-                                         "cache_creation_tokens": cache_creation})
+                usage_snapshot.update(usage)
+                yield StreamChunk(usage=usage_snapshot.usage())
 
         elif etype == "content_block_start":
             block = event.content_block
@@ -336,9 +380,11 @@ async def _anthropic_stream_to_chunks(
                 yield StreamChunk()
 
         elif etype == "message_delta":
-            output_tokens = None
             if hasattr(event, "usage") and event.usage:
-                output_tokens = getattr(event.usage, "output_tokens", None)
+                # message_delta reports cumulative snapshots, including late
+                # input/cache fields. Recompute from raw components so partial
+                # cache updates never count the previous inclusive prompt twice.
+                usage_snapshot.update(event.usage, include_output=True)
 
             stop_reason = "stop"
             if hasattr(event, "delta") and event.delta:
@@ -346,13 +392,7 @@ async def _anthropic_stream_to_chunks(
                 if sr:
                     stop_reason = _STOP_REASON_MAP.get(sr, "stop")
 
-            usage: dict[str, int] = {
-                "prompt_tokens": input_tokens,
-                "completion_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None,
-                "cached_tokens": cache_read,
-                "cache_creation_tokens": cache_creation,
-            }
+            usage = usage_snapshot.usage(include_output=True)
             if thinking_count > 0:
                 usage["thinking_tokens"] = thinking_count
 

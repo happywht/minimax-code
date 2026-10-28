@@ -69,8 +69,10 @@ class _FakeContentBlock:
 
 @dataclass
 class _FakeUsage:
-    input_tokens: int = 0
-    output_tokens: int = 0
+    # Omitted delta fields are absent/None in the SDK; zero is an explicit
+    # cumulative replacement, so the fake must not manufacture it.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @dataclass
