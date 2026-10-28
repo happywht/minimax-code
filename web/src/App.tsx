@@ -23,6 +23,7 @@ import {
   useChat,
   useCrashRecoveryStore,
   useModelStore,
+  useNotificationStore,
   usePermissionStore,
   useProviderStore,
   useSessionStore,
@@ -92,6 +93,16 @@ export default function App() {
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [storageDegraded, setStorageDegraded] = useState(false);
   const paletteRef = useRef<CommandPaletteHandle>(null);
+  const notificationInitialized = useRef(false);
+  const storesInitialized = useRef(false);
+  const initializeNotifications = useCallback(() => {
+    if (notificationInitialized.current) {
+      void useNotificationStore.getState().refresh();
+    } else {
+      initNotificationStore();
+      notificationInitialized.current = true;
+    }
+  }, []);
 
   const retryDelayMs = Math.min(15_000, 1000 * 2 ** retryAttempt);
 
@@ -113,8 +124,18 @@ export default function App() {
   const retryConnection = useCallback(async () => {
     setConnState("connecting");
     try {
+      const wasHttp = ipc.isHttp;
       const reachable = await ipc.reprobe();
       if (reachable && (ipc.isHttp || ipc.isForcedMock)) {
+        if ((!wasHttp || !storesInitialized.current) && ipc.isHttp) {
+          await init();
+          await Promise.all([
+            refreshSessions(), refreshModels(), refreshRules(),
+            refreshProviders(), refreshCrashReport(),
+          ]);
+          initializeNotifications();
+          storesInitialized.current = true;
+        }
         setRetryAttempt(0);
         setConnState("connected");
         void probeStorageHealth();
@@ -126,7 +147,7 @@ export default function App() {
       setRetryAttempt((attempt) => attempt + 1);
       setConnState("error");
     }
-  }, [probeStorageHealth]);
+  }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport, probeStorageHealth, initializeNotifications]);
 
   const handleViewChange = useCallback((next: SidebarView) => {
     if (next === "skills" || next === "settings" || next === "scheduled" || next === "agents" || next === "artifacts" || next === "attachments") {
@@ -158,7 +179,8 @@ export default function App() {
           refreshCrashReport(),
         ]);
         // Initialise notification store WS listeners (v0.7.0)
-        initNotificationStore();
+        initializeNotifications();
+        storesInitialized.current = true;
         // Touch the typed API once so the wire is proven end-to-end
         // even when the agent isn't running yet.
         try {
@@ -172,16 +194,18 @@ export default function App() {
             setConnState("error");
           }
         } catch {
-          // The banner below reports retry state; the rest of the UI
-          // can continue working against the frontend mock.
+          setRetryAttempt((attempt) => attempt + 1);
+          setConnState("error");
         }
       } catch (err) {
+        setRetryAttempt((attempt) => attempt + 1);
+        setConnState("error");
         // eslint-disable-next-line no-console
         console.warn("ui-shell init failed:", err);
         toast.error("UI init failed", err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport, probeStorageHealth]);
+  }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport, probeStorageHealth, initializeNotifications]);
 
   // ── 4.6: Mobile sidebar scroll lock ──
   // Prevent background scrolling when the mobile sidebar overlay is open.

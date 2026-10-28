@@ -1486,8 +1486,8 @@ Rules:
 
 `GET /health` returns `{"ok": true, "version": "<agent version>",
 "uptime_s": <int>}` as long as the agent is alive. Web client uses
-this for the "is the agent running?" badge (with a 200ms timeout
-fallback to in-process mock).
+this for the "is the agent running?" badge. A failed probe leaves the client
+offline; the in-process mock is used only when explicitly configured.
 
 ### 8.3 stdio lifecycle (legacy, preserved for tests)
 

@@ -23,6 +23,7 @@ import { useTaskStore } from "../../stores";
 import type { SidecarEvent } from "../../types/ipc";
 import { strings } from "../../ui/strings";
 import { VerificationBadge } from "../chat/VerificationBadge";
+import { toast } from "../layout/Toast";
 
 type SidecarState = "pending" | "ready" | "error";
 
@@ -75,13 +76,17 @@ export function ProgressPanel({ testId = "progress-panel" }: ProgressPanelProps)
 
   // Hydrate from the persisted task ledger on mount.
   useEffect(() => {
-    void refresh();
+    void refresh().catch(() => {
+      // Connection status is shown by the app-level banner.
+    });
   }, [refresh]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       await refresh();
+    } catch (err) {
+      toast.error("刷新任务失败", err instanceof Error ? err.message : String(err));
     } finally {
       setRefreshing(false);
     }

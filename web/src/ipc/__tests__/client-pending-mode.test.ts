@@ -11,7 +11,7 @@
  *   - isMock returns true during pending
  *   - request() blocks until start() resolves
  *   - request() proceeds via HTTP after start() succeeds
- *   - request() proceeds via mock after start() fails
+ *   - request() rejects after start() fails
  *   - multiple concurrent start() calls trigger one probe
  *   - notify() silently drops in pending mode
  *   - ping() blocks until start() resolves
@@ -126,20 +126,21 @@ describe("IPCClient pending mode", () => {
 
     // request() should block — it won't resolve until start() completes.
     let requestResolved = false;
-    const requestPromise = client.request("session.list").then(() => {
+    const requestPromise = client.request("session.list").finally(() => {
       requestResolved = true;
     });
+    const rejected = expect(requestPromise).rejects.toThrow("Agent unavailable");
 
     // Give the microtask queue a tick — request should still be pending.
     await new Promise((r) => setTimeout(r, 10));
     expect(requestResolved).toBe(false);
 
-    // Now start the client — probe will fail → mock mode.
+    // Now start the client — the failed probe leaves it offline.
     await client.start();
     expect(probeCalled).toBe(true);
 
-    // The queued request should now resolve (via mock backend).
-    await requestPromise;
+    // The queued request must fail instead of returning demo data.
+    await rejected;
     expect(requestResolved).toBe(true);
   });
 
@@ -168,18 +169,12 @@ describe("IPCClient pending mode", () => {
     expect(result.sessions).toEqual([]);
   });
 
-  it("request() proceeds via mock after start() fails (agent down)", async () => {
+  it("request() rejects after start() fails (agent down)", async () => {
     installFetch(() => Promise.reject(new Error("ECONNREFUSED")));
-
     const client = new IPCClient();
     await client.start();
-    expect(client.isMock).toBe(true);
-
-    // Mock backend handles session.list
-    const result = await client.request<{ sessions: unknown[] }>("session.list");
-    expect(result).toBeDefined();
-    // mockHandle returns a sessions array
-    expect(result).toHaveProperty("sessions");
+    expect(client.isMock).toBe(false);
+    await expect(client.request("session.list")).rejects.toThrow("Agent unavailable");
   });
 
   it("multiple concurrent start() calls trigger only one probe", async () => {
@@ -266,7 +261,7 @@ describe("IPCClient pending mode", () => {
 
     const client = new IPCClient();
     await client.start();
-    expect(client.isMock).toBe(true);
+    expect(client.isMock).toBe(false);
     expect(probeCount).toBe(1);
 
     // Stop resets state
@@ -279,7 +274,7 @@ describe("IPCClient pending mode", () => {
     expect(probeCount).toBe(2); // Second probe was made
   });
 
-  it("restart() reprobes after mock fallback and can switch to HTTP", async () => {
+  it("restart() reprobes after going offline and can switch to HTTP", async () => {
     let probeCount = 0;
     let rpcCalled = false;
     installFetch((url, init) => {
@@ -301,7 +296,7 @@ describe("IPCClient pending mode", () => {
 
     const client = new IPCClient();
     await client.start();
-    expect(client.isMock).toBe(true);
+    expect(client.isMock).toBe(false);
     expect(client.isHttp).toBe(false);
 
     await client.restart();
@@ -315,7 +310,7 @@ describe("IPCClient pending mode", () => {
     expect(result.sessions).toEqual([]);
   });
 
-  it("reprobe() upgrades fallback mock mode without clearing listeners", async () => {
+  it("reprobe() reconnects offline mode without clearing listeners", async () => {
     let probeCount = 0;
     let sawReady = false;
     installFetch((url) => {
@@ -335,7 +330,7 @@ describe("IPCClient pending mode", () => {
     });
 
     await client.start();
-    expect(client.isMock).toBe(true);
+    expect(client.isMock).toBe(false);
     expect(await client.reprobe()).toBe(true);
 
     expect(client.isHttp).toBe(true);

@@ -15,7 +15,7 @@
  *     browser-only UI work.
  *   - Otherwise `start()` probes `GET /health`. A 2xx flips to
  *     `mode = "http"`. A failure (network error, 5xx, timeout)
- *     falls back to mock so the UI keeps working offline.
+ *     leaves the client offline until the agent is reachable.
  *
  * Module layout (after the ipc-module restructure):
  *   - `client.ts`  — this file: transport + `ipc` singleton.
@@ -51,7 +51,7 @@ import { localBrowserOrigin } from "./localOrigin";
 import { bindTypedIPC, type TypedIPC } from "./typed";
 /* ─────────────────────── Internal types ─────────────────────── */
 
-type ClientMode = "pending" | "http" | "mock";
+type ClientMode = "pending" | "http" | "mock" | "offline";
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -264,7 +264,7 @@ export class IPCClient {
     this.forceMock =
       !!opts?.mockMode || !!opts?.forceMock || readViteEnv("VITE_AGENT_MODE") === "mock";
     // Start in "pending" — no network requests until `start()` probes
-    // /health and decides between "http" and "mock".  This prevents
+    // /health and decides between "http" and "offline". This prevents
     // the ERR_CONNECTION_REFUSED console-spam that occurs when
     // components fire useEffect IPC calls before the async `start()`
     // resolves.
@@ -300,7 +300,7 @@ export class IPCClient {
    *  - In forced-mock mode (constructor opt or `VITE_AGENT_MODE=mock`)
    *    skip the probe and use the in-process mock.
    *  - Otherwise `GET /health`. 2xx → `mode = "http"` and a WebSocket
-   *    is opened. Failure → `mode = "mock"` and the UI keeps working.
+   *    is opened. Failure leaves the client offline until a successful reprobe.
    *
    * Idempotent. Returns once mode is decided; the WebSocket will
    * reconnect in the background if it drops.
@@ -321,10 +321,11 @@ export class IPCClient {
     }
 
     const reachable = await isAgentReachable(this.baseUrl);
-    this.mode = reachable ? "http" : "mock";
+    this.mode = "offline";
     try {
       if (reachable) {
         await ensureSession(this.baseUrl);
+        this.mode = "http";
         this.connectWs();
       }
     } finally {
@@ -365,11 +366,11 @@ export class IPCClient {
   /**
    * Force a fresh transport probe.
    *
-   * This is intentionally stronger than `start()`: once the client has
-   * fallen back to mock mode, `start()` is idempotent and will not probe
+   * This is intentionally stronger than `start()`: once the client is
+   * offline, `start()` is idempotent and will not probe
    * `/health` again. User-facing retry controls need a real reprobe so
    * opening the UI before the local agent starts does not permanently trap
-   * the session in mock mode.
+   * the session offline.
    */
   async restart(): Promise<void> {
     await this.stop();
@@ -377,12 +378,11 @@ export class IPCClient {
   }
 
   /**
-   * Reprobe the local agent without tearing down a usable mock session.
+   * Reprobe the local agent without tearing down listeners.
    *
    * Unlike `restart()`, this does not reject pending requests or reset
-   * listeners when the agent is still unreachable. It is intended for
-   * UI retry loops that should quietly upgrade fallback mock mode to
-   * the real HTTP/WS transport as soon as the Python agent appears.
+   * listeners when the agent is still unreachable. UI retry loops use it
+   * to reconnect the real HTTP/WS transport when the Python agent appears.
    */
   async reprobe(): Promise<boolean> {
     if (this.forceMock) return true;
@@ -430,6 +430,9 @@ export class IPCClient {
     if (this.mode === "mock") {
       return mockRequest<T>(method, params, this);
     }
+    if (this.mode === "offline") {
+      throw new IPCError({ code: ErrorCode.InternalError, message: "Agent unavailable; reconnect before retrying" });
+    }
 
     return this.httpRequest<T>(method, params, requestId);
   }
@@ -440,6 +443,9 @@ export class IPCClient {
     // notification.  Since notify() is fire-and-forget by design,
     // queuing would add complexity for no real user benefit.
     if (this.mode === "pending") return;
+    if (this.mode === "offline") {
+      throw new IPCError({ code: ErrorCode.InternalError, message: "Agent unavailable; reconnect before retrying" });
+    }
     if (this.mode === "mock") {
       mockNotify(method, params, this);
       return;
@@ -503,6 +509,7 @@ export class IPCClient {
       await this.startPromise;
     }
     if (this.mode === "mock") return true;
+    if (this.mode === "offline") return false;
     return isAgentReachable(this.baseUrl);
   }
 
@@ -840,7 +847,7 @@ export class IPCClient {
 }
 /* ─────────────────────── Module-level singleton ─────────────────────── */
 
-/** Singleton for the app — http transport when the agent is up, mock otherwise. */
+/** Singleton for the app — mock transport requires explicit configuration. */
 export const ipc = new IPCClient();
 
 /** Typed binding on top of the singleton. */

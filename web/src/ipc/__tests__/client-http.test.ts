@@ -9,7 +9,7 @@
  *   - successful /rpc round-trip
  *   - error envelope from /rpc → IPCError
  *   - unknown method still returns a JSON-RPC error
- *   - `/health` probe drives mode = "http" vs fallback to "mock"
+ *   - `/health` probe drives mode = "http" vs offline
  *   - WebSocket pushes dispatch into `on(...)` listener set
  *   - WebSocket `agent.ready` is a no-op (lifecycle)
  *   - WebSocket disconnect → exponential backoff reconnect
@@ -194,20 +194,20 @@ describe("IPCClient.start() mode selection", () => {
     await client.stop();
   });
 
-  it("falls back to mock when /health fails", async () => {
+  it("stays offline when /health fails", async () => {
     installFetch(() => okJson({ ok: false }, 500));
     const client = new IPCClient({ baseUrl: "http://agent.local:9000" });
     await client.start();
-    expect(client.isMock).toBe(true);
+    expect(client.isMock).toBe(false);
     expect(client.isHttp).toBe(false);
     expect(StubWebSocket.instances).toHaveLength(0);
   });
 
-  it("falls back to mock when fetch throws", async () => {
+  it("stays offline when fetch throws", async () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
     const client = new IPCClient({ baseUrl: "http://agent.local:9000" });
     await client.start();
-    expect(client.isMock).toBe(true);
+    expect(client.isMock).toBe(false);
   });
 
   it("forces mock when mockMode is true (skips /health)", async () => {
@@ -656,14 +656,16 @@ describe("mock mode isolation", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("a failed /health probe drops the client into mock mode that still works", async () => {
-    globalThis.fetch = vi.fn(() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
+  it("rejects reads and writes while offline instead of using demo data", async () => {
+    const fetchSpy = vi.fn(() => Promise.reject(new Error("ECONNREFUSED")));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
     const client = new IPCClient({ baseUrl: "http://a" });
     await client.start();
-    expect(client.isMock).toBe(true);
-    const r = await client.request<{ sessions: unknown[] }>("session.list", {});
-    expect(Array.isArray(r.sessions)).toBe(true);
-    await expect(client.ping()).resolves.toBe(true);
+    expect(client.isMock).toBe(false);
+    await expect(client.request("session.list", {})).rejects.toThrow("Agent unavailable");
+    await expect(client.request("agent.send_message", { message: "write" })).rejects.toThrow("Agent unavailable");
+    await expect(client.ping()).resolves.toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
 

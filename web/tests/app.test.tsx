@@ -1,8 +1,5 @@
 /**
- * Smoke test for the App component. The IPC client is set to mock
- * mode (no Tauri internals → IPCClient.useMock=true), so the entire
- * tree can render and a message can be sent end-to-end without the
- * Rust shell.
+ * Smoke test for the App component with explicitly enabled mock mode.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -10,9 +7,12 @@ import userEvent from "@testing-library/user-event";
 import App from "../src/App";
 import { useChat, useSessionStore } from "../src/stores";
 
-// Make sure no Tauri runtime is detected — IPCClient falls back to
-// the in-process mock backend, which emits streaming chunks via
-// setTimeout. We use fake timers so the test is deterministic.
+vi.mock("../src/ipc/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/ipc/client")>();
+  const ipc = new actual.IPCClient({ mockMode: true });
+  return { ...actual, ipc, typedIPC: actual.bindTypedIPC(ipc) };
+});
+
 beforeAll(() => {
   // jsdom doesn't ship crypto.randomUUID reliably in old versions;
   // provide a polyfill that the IPCClient can call.
@@ -26,8 +26,7 @@ beforeAll(() => {
   // on 127.0.0.1:8765 (e.g. a dev server started next to the tests)
   // would answer the /health probe, flip the IPC client to HTTP mode,
   // and break every mock assumption below (plus spend real LLM calls).
-  // Reject all fetches so the probe fails and the client falls back
-  // to the in-process mock deterministically.
+  // Reject all fetches as a safeguard against accidental network use.
   vi.stubGlobal(
     "fetch",
     vi.fn(() => Promise.reject(new Error("network disabled in app tests"))),

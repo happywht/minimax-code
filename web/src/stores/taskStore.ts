@@ -127,7 +127,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const wasLive = !prev || prev.status === "pending" || prev.status === "running";
     const terminal = !["running", "pending"].includes(status);
     if (wasLive && terminal) {
-      void get().refresh();
+      void get().refresh().catch(() => {
+        // The connection banner reports an unavailable backend; retain the
+        // event data until a later durable refresh succeeds.
+      });
     }
   },
 

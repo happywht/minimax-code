@@ -24,13 +24,17 @@ export function EngineCards(): JSX.Element {
   const [engines, setEngines] = useState<EngineInfo[]>([]);
   const [defaultEngine, setDefaultEngine] = useState<string>("native");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const r: ListEnginesResult = await typedIPC.listEngines();
       setEngines(r.engines);
       setDefaultEngine(r.default);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -69,6 +73,7 @@ export function EngineCards(): JSX.Element {
           </span>
         )}
       </p>
+      {error && <p role="alert" className="text-xs text-status-error">引擎列表加载失败：{error}</p>}
       {loading && engines.length === 0 ? (
         <Spinner />
       ) : (
