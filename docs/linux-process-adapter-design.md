@@ -3,13 +3,16 @@
 本文件细化 [Linux 执行链](linux-execution-plan.md) 的 L1，是实现与验收约束，
 不是公共 L1 已发布的声明。基础模块及默认 host 接线已实现；真实 `agent.invoke`
 的正常完成、取消和服务死亡后审查恢复三个隔离候选用例，以及后续四个故障用例
-已于 2026-10-27 验收；`agent.spawn_subagent` 及剩余故障矩阵仍待验收。
+已于 2026-10-27 验收；另一个以 `f953531` 为基底的带观测补丁候选于 2026-10-28
+通过三个启动窗口用例。各批源码与接受范围分别记账；`agent.spawn_subagent` 及
+剩余故障矩阵仍待验收。
 主分支允许集保持为空。
 复用同一个 RunService、持久 run/预算家族和服务目录租约，不增加第二个调度循环。
 
 profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
 [接线契约](linux-execution-profile-contract.md)。产品整链已接受服务死亡后的原绝对期限
-及非阻塞双流 flood 用例，迟到启动、登记窗口及阻塞 IO 等仍待验收；加固 PID1 的实现
+及非阻塞双流 flood 用例，另已接受下文三个迟到启动/create/start 窗口候选用例；
+整链 OOM/pids/CPU、阻塞 IO 等仍待验收。加固 PID1 的实现
 与 helper 验证单独记账，不能将 conmon 相对期限或 helper 成功视为 L1 门槛已满足。
 
 ## 当前实现与未完成范围
@@ -32,7 +35,7 @@ bind/mount alias 准入已有下文定向实机证据。restricted child 与 leg
 显式 overlay 请求在副作用前拒绝，受限内部子链使用 owned directory copy，并清空、
 恢复继承的 overlay context。该内部链测试不扩大公开工具允许类，公开
 `SpawnSubagentTool` 仍拒绝，实际类/委派归属审计、无人值守全部门槛和 UI/IPC 组合待验收。
-文末三个公开 Native 候选用例及四个故障用例不覆盖完整故障矩阵；未审计入口不能
+文末三个公开 Native 候选用例、四个故障用例及三个启动窗口用例不覆盖完整故障矩阵；未审计入口不能
 获取 host fallback。基础 review、受控 controller 测试或纯 validator bind probe
 单独均不构成公共 L1 验收。
 
@@ -145,15 +148,15 @@ filesystem 下，workspace 包含或等于 HOME 的 backing 拒绝，HOME 内正
 ## 生命周期与真实入口接线
 
 1. 校验 Linux/rootless、镜像、工作区身份及资源，提交 intent。
-2. 确定名称带安装身份和随机 exec_id；私有 0700 CID 文件在挂载之外。
+2. 确定名称带安装身份和随机 exec_id；CID 文件位于挂载之外的私有 0700 目录内。
    create 响应失败也按该精确名称/CID 核对，不能假定没有创建。
 3. inspect 对照完整 CID、owner 标签、image、mount/env、security 与资源；证据持久
    成功才进入 created。先提交 starting，再 start attach，不能 CAS 失败后仍启动。
 4. stdin 在 create/start 一致启用，默认关闭；禁 TTY/detach keys，分离 stdout/stderr。
    输出和运行时日志都限额；固定 PID1/BOOTTIME 治理负责绝对期限，conmon timeout
-   仅作相对运行上限。服务 SIGKILL 后的原期限已有文末两个受限用例，迟到启动、
-   create/start 窗口及阻塞 IO 仍需产品故障验收。
-   已超过绝对 deadline 不再启动，控制命令也有有限超时。
+   仅作相对运行上限。服务 SIGKILL 后的原期限及迟到启动/create/start 窗口已有文末
+   固定候选用例；整链资源故障与阻塞 IO 仍需分别验收。宿主在启动前检查原期限，
+   固定 PID1 再核验绝对 deadline，过期 payload 不得执行；控制命令也有有限超时。
 5. stop 后核实 Running=false/Pid0；只有 exited 和有效非零 StartedAt/FinishedAt 才读
    raw exit，created 的 0 不算成功。未知结果不重放。提交 stopped/removing，按完整 CID
    rm，再核实不存在。exists 返回 1 才是不存在；125 是故障。
@@ -327,3 +330,47 @@ checkpoint patch 为 `5dd10b334e7167586c2b7d75c632e16387cf3ab7e7b33dbfb703724382
 完整输入/补丁/清理证据见[运行实测](linux-runtime-readiness.md#三个启动窗口候选用例的失败收口)。
 迟到/过期启动、create/start 死亡窗口及上述其他剩余故障仍待独立验收；主分支允许
 集为空，公开 child、无人值守、公共 L1 和 M1 整体的未验收状态不变。
+
+## 三个启动窗口候选的修复与接受范围（2026-10-28）
+
+保留上一节失败后，以 `f953531` 的 1103 个原始 Git blob 构建独立 v2 staging，
+仅修改唯一 guard/policy 允许配对及三个 observer 调用点/有界暂停；去掉 observer
+可恢复原产品 AST，运行前后源码一致，主分支产品及空允许集不变。本批经真实
+完整 stdio CLI、公开 RPC、实际 SDK 和固定 loopback SSE，三个 case 通过并经
+独立复核接受；它不同于此前 `70870b4` 的 1072 文件候选，不沿用旧源码身份。
+
+harness 在验证前保存本次 CID 实际元数据：0644、64 字节、单链接、UID1000/GID1001，
+位于物理、服务所有、精确 0700 的目录内。只允许 0600/0644，固定父目录/文件身份，
+校验 regular/owner/nlink，以 no-follow/nonblocking 句柄有界读取、前后核验身份及
+原始完整 CID，再沿用 inspect、名称、标签、安装/store 归属检查。父目录阻止外部
+遍历，文件不授予外部写入；没有 chmod 或削弱身份。旧失败 CID 模式仍未知，不能
+据新观察反推。失败清理先释放与持久行和安装匹配的已发布 observer 暂停，再正常
+关闭；失败仍是 failed/rescue，不能据清理成功改成用例通过。这是验证 harness 修复，
+没有据此修改产品生命周期代码。
+
+- 迟到启动：starting 暂停在原 60 秒 BOOTTIME deadline 后 2.244 秒释放，固定 PID1
+  实际启动后拒绝过期执行，exit124/outcome unknown，payload canary 未执行。
+- create 返回后死亡：持久 intent、实际 created 未启动，观测 CID 不写数据库；
+  仅杀死自有服务，重启 reconcile 后 removed/资源零、exit null/outcome unknown，
+  无 payload 或 SDK 重放，请求数 3→3。
+- start 返回后死亡：持久 starting、实际 payload/后代 Running，服务离线后原 PID
+  首次观察均停止于原 deadline 后约 0.232 秒，容器约 0.303 秒；两者均为观测上界。
+  重启保持原 deadline，removed/资源零、exit124/outcome unknown，无重放，请求数 4→4。
+
+全批 172.754 秒、exit0，4 次受控 SDK 请求、0 次付费调用。只有两次预定 pidfd
+SIGKILL；最后服务正常 exit0，无强制清理杀进程、关闭错误或 rescue。最终 9 行
+process 均 removed/resource_held=0，9 个精确 CID absent；其中 3 个固定私有 probe
+exit0、3 个 Git advisory exit125/outcome unknown，以及上述 3 个 payload。
+advisory unavailable、过期 guard 和未启动结果均不能写成 Git/payload 成功。
+
+外层 `.verification/linux-l1-faultwindows-v2-20261028T075557Z-c85714b7.json` SHA-256
+`3b26ea1f86d538f82f59c164870a88363ccc4af97c1b65cb2640fafda2f18835`；同名目录
+`result.json` 为 `5916f2acfc18459054e4b505b58eb2c3a60676d90fed87fc473d32cd49345484`。
+51 份附件共 8,273,152 字节逐项核验，1103 个源码文件前后保持一致。完整归档、
+manifest、harness/driver hash 及本地检查边界见
+[运行实测](linux-runtime-readiness.md#三个启动窗口候选的修复与实机验收)。
+
+本批仅接受三个带观测补丁的固定用例，旧失败和此前七个候选用例保留各自证据。
+下一批为整链 OOM/pids/CPU；网络/secret/socket、runtime/安装身份/租约、持续 fork、
+阻塞输出及公开 child/无人值守仍待验收。公共允许集仍空，公共 L1、M1 整体及 L2/L3
+未完成，不把各批重叠回归或九个 process 行累加为验收数量。

@@ -339,3 +339,61 @@ outcome 保持 unknown，不当作 payload 成功。全批共 **5 次受控 SDK 
 本次按收口要求保留失败，不修复或重跑。此前三个正常/取消/恢复候选用例及四个
 故障用例的独立接受范围不变。迟到/过期启动与 create/start 死亡窗口仍在剩余矩阵中；
 主分支允许集仍为空，公开子任务、无人值守、公共 L1、M1 整体及 L2/L3 均未因此验收。
+
+## 三个启动窗口候选的修复与实机验收
+
+在保留上述 2026-10-27 失败及全部原始附件后，另建 v2 候选，于 2026-10-28 在同一
+受支持 Linux 主机执行，**三个启动窗口用例通过并经独立复核接受**。本批以
+`f953531cdc51e470da12ee5d6d2658533272155c` 的 **1103 个原始 Git blob 文件**为基底，
+排除工作区同期修改，包含该提交已有的 Schema043；仅在独立 staging 修改唯一
+guard/policy 允许配对及三个明确冻结的 observer 调用点/有界暂停。去掉 observer
+恢复该提交的产品 AST；运行前后全部候选源码 hash 一致，没有替换 runtime、
+生命周期、准入、SDK 或 transport。主分支产品代码和空允许集均未改变。
+
+修复的是 harness 的 CID 文件模式假设和失败清理顺序。v2 在校验前保存本次实际
+CID 元数据：**0644、64 字节、单硬链接、UID1000/GID1001，父目录 0700**。
+旧失败的实际模式仍不可得，不能用本批结果反推。文件仅允许 0600/0644，并须在
+物理、服务所有、精确 0700 的父目录内；该目录阻止外部遍历，文件不允许外部写入。
+读取前后固定父目录和文件身份，检查 regular/owner/nlink，以 no-follow、nonblocking
+句柄有界读取并核对原始完整 CID，之后仍核验 inspect、精确名称、标签及安装/store
+归属。没有 chmod CID、批量调整权限或放宽容器身份检查。失败清理先释放与持久行及
+安装身份匹配的已发布 observer 暂停，再请求正常关闭；发生失败仍保留 failed/rescue
+分类，不能靠救援变成通过。
+
+本批通过真实 `python -m minimax_code --stdio`、完整服务启动/租约/迁移/安装核对、
+公开 RPC 和实际 SDK 的固定 loopback SSE 执行，profile 为 `mock=false`。
+三项均沿用持久化的 **60 秒 CLOCK_BOOTTIME 原绝对期限**；独立 180 秒 payload
+上限仅作保护，停止容差 5 秒、观测容差 10 秒保持不变。
+
+| 用例 | 实际接受范围 |
+|---|---|
+| 迟到启动 | 持久 starting 暂停至原 deadline 后 2.244 秒再释放；真实 start 后固定 PID1 返回 124，payload canary 始终未执行，原 deadline 不变，持久 outcome unknown；容器删除、资源释放 |
+| create 返回、CID 尚未持久化时服务死亡 | observer 记录 intent，真实容器仍 created、未启动；仅以 no-follow 读取和精确 inspect 补足观测 CID，不写数据库。杀死自有服务后重启 reconcile，旧行 removed/resource_held=0，exit_code=null/outcome unknown；无旧 payload/SDK 重放，请求数 3→3 |
+| start 返回、running 尚未持久化时服务死亡 | observer 记录 starting，实际 payload/后代心跳和 Running 已证明；杀死自有服务后保持离线，原 PID 均首次观察停止于原 deadline 后约 0.232 秒，容器首次观察停止约 0.303 秒；重启 reconcile 保持原 deadline，旧行 removed/resource_held=0、exit124/outcome unknown，无旧 payload/SDK 重放，请求数 4→4 |
+
+0.232/0.303 秒均为采样得到的**首次停止观测上界**，不代表精确死亡时刻。
+全批执行 **172.754 秒、exit0，4 次受控 SDK 请求、0 次付费调用**。仅两次预定
+pidfd SIGKILL 杀死各自服务，最后服务正常 exit0，无强制清理杀进程、关闭错误或
+rescue。最终数据库 **9 个 process 行全部 removed/resource_held=0，9 个精确 CID
+均核验 absent**：3 个固定私有 preflight 的 exit0、3 个 Git advisory 的
+exit125/outcome unknown，以及 3 个目标 payload 的 exit124/null/124、outcome unknown。
+advisory unavailable 和 guard/未启动结果均不计作 payload 或 Git 成功；这九行不是
+九项独立验收。
+
+准备阶段 Windows 六模块回归 292 项通过、1 项 POSIX 权限用例跳过；124 项离线
+检查包含模式、链接、身份、读取竞争和清理顺序，其中文件系统反例使用模型化 OS。
+它们与本节三项实机结果分别记账，不把 Windows 模型反例写成真实 Linux 反例测试。
+
+冻结与原始证据（当前工作区附件，不随普通克隆提供）：
+
+- v2 源码归档 `.verification/l1-faultwindows-v2-source.tar` SHA-256：`e0b226f51f0af642d1abf4cdb5c73d1b8820f9dce7489b60273006e8140de14c`；source manifest：`ffab5eabae01802e4484da62dbf206924247655aa8df849bd0cb306f2faca3b6`。
+- 实际 harness `verify_l1_faultwindows_remote_v2.py`：`6f86023bc0e4040a23ccb1a78fd19ab0b81243081fd35e913d4a3f2ad8930d86`；driver `run_l1_faultwindows_v2.py`：`e12c152154d277efc7b1e4fe7f6b4847148c44ea58f6b22f82a17d8c93b3199e`；冻结清单 `.verification/l1-faultwindows-v2-frozen-manifest.json`：`12dc70491850409aa4b1760f853d88c1eea08c1a99abfe590379a08e69f7be6f`。
+- 外层 `.verification/linux-l1-faultwindows-v2-20261028T075557Z-c85714b7.json`：`3b26ea1f86d538f82f59c164870a88363ccc4af97c1b65cb2640fafda2f18835`；同名目录 `result.json`：`5916f2acfc18459054e4b505b58eb2c3a60676d90fed87fc473d32cd49345484`。**51 份附件、8,273,152 字节**逐项核验，取回前后完整 1103 文件源码一致。
+
+此前三个正常/取消/恢复及四个故障用例仍保留各自冻结源码和接受范围，旧启动窗口
+失败不改写为通过；本批单独接受上述三个带观测补丁的候选用例。下一批为产品整链
+OOM/pids/CPU，网络/secret/socket、runtime 消失、foreign marker/安装身份/租约丢失、
+持续 fork 和真正阻塞输出仍待分别验收。公开 restricted 子任务、无人值守全部准入、
+公共允许集发布、正式 40 项三轮、安装/升级/完整恢复及 14 天真实使用仍未完成。
+`ACCEPTED_GOVERNORS` 仍为空，`linux-podman-l1` 仍 unavailable；本批不代表公共 L1、
+M1 整体或 L2/L3 完成。

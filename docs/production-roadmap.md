@@ -20,7 +20,7 @@
 | 阶段 | 范围与交付 | 验收门槛 | 状态 |
 |---|---|---|---|
 | M0（2–3 日）可信基线 | 夹具与渲染稳定性、Windows/Linux CI、mock/回放/live 分层、凭据隔离、版本/RPC/能力文档 | 同一提交连续三次确定性回归；失败留证据；真实模型与 mock 分开报告 | Windows 同一提交三轮通过，Linux 离线实机验证已建立；以各批报告为准 |
-| M1（6–8 日）执行边界 | 项目路径失效即阻止；所有 shell/验证/Hooks/MCP 启动统一策略；认证与预览权限；环境过滤、进程树取消、原子写/CAS/备份、只读模式 | 越界/链接/失效目录/并发覆盖/遗留进程/未认证 RPC 和 WS 回归通过 | 实施中；三个真实公开 Native 容器候选用例及四个故障候选场景已接受，精确范围见[实机准备记录](linux-runtime-readiness.md)与[边界设计](linux-process-adapter-design.md)；主分支 L1 允许集仍空，完整入口审计、其余故障矩阵及 L2/L3 待完成 |
+| M1（6–8 日）执行边界 | 项目路径失效即阻止；所有 shell/验证/Hooks/MCP 启动统一策略；认证与预览权限；环境过滤、进程树取消、原子写/CAS/备份、只读模式 | 越界/链接/失效目录/并发覆盖/遗留进程/未认证 RPC 和 WS 回归通过 | 实施中；此前三个公开 Native 容器及四个故障候选用例保留各自接受范围，2026-10-28 另接受 `f953531` 基底的三个启动窗口候选，精确范围见[实机记录](linux-runtime-readiness.md)与[边界设计](linux-process-adapter-design.md)；主分支 L1 允许集仍空，下一批为 OOM/pids/CPU，完整入口审计、其余矩阵及 L2/L3 待完成 |
 | M2（7–10 日）运行与恢复 | RunService、幂等键、固定 ExecutionContext、每会话单写任务、持久事件/审批/结果、预算与熔断 | 重复提交不重复执行；断线补齐最终状态；重启准确标记中断和待核对写操作 | 实施中；共享预算/日账、技能和直接 Agent 持久入口已局部验收；技能配置补齐、团队与完整权限/后代入口审计待完成 |
 | M3（6–9 日）编程闭环 | 需求→计划→修改→验证→审查→交付；真实验证命令、结构化压缩、输出文件引用、rg/符号/FTS、基线撤销、worktree 合并后复验 | 固定任务集交付正确差异和验证证据；保留用户同期修改 | 部分实现；校验执行/证据已接入，完整任务集与其余闭环未验收 |
 | M4（4–6 日）CodexEngine | App Server 会话创建/续接、结构化事件、审批/取消、外部 session ID、能力探测与契约回放 | 两引擎跑同批任务；Codex 不可用明确解释，Native 独立可用 | 会话/历史/恢复离线闭环已验证；真实双引擎任务集待验收 |
@@ -749,6 +749,48 @@ root实际Linux v3私有staging的15模块 **315项通过、1项仅Windows路径
 报告 `.verification/linux-m6-docx-regression-20261027T054555Z-ec82290d.json` SHA256
 `1e69613f6ce5189b7d23011473d205513a70985cad00881d4af9259ea1892145`。
 先前驱动v1的wheel目录校验失败及v2的两项测试失败回执保留，未当作成功证据。
-本节只接受DOCX正文解析、原件保全及v3兼容切片；
-[Linux三个启动窗口候选的失败收口](linux-runtime-readiness.md#三个启动窗口候选用例的失败收口)
-仍未验收，不由本节替代；公共L1允许集仍空。无付费模型或公共容器执行。
+本节只接受DOCX正文解析、原件保全及v3兼容切片，不替代Linux启动窗口独立验收；
+[2026-10-27失败记录](linux-runtime-readiness.md#三个启动窗口候选用例的失败收口)原样保留，
+2026-10-28版本化复验见下节。公共L1允许集仍空；本DOCX批次无付费模型或公共容器执行。
+
+### 2026-10-28：M1 三个启动窗口候选实机验收
+
+以 `f953531` 的 **1103 个原始 Git blob 文件**为基底，在独立 Linux staging 仅加入
+唯一 guard/policy 允许配对和三个明确冻结的 observer 调用点/有界暂停。源码前后
+hash 一致；没有改变主分支产品代码、空 `ACCEPTED_GOVERNORS` 或 runtime/准入链。
+真实完整 stdio CLI、公开 RPC、实际 SDK 的固定 loopback SSE 执行 **172.754 秒、
+exit0，三个用例通过并经独立复核接受**；4 次受控 SDK 请求、0 次付费调用。
+
+- 迟到启动在原 60 秒 BOOTTIME deadline 后 2.244 秒释放 starting 暂停，固定 PID1
+  实际拒绝过期执行，exit124/outcome unknown，payload 未执行。
+- create 返回后、CID 未持久化时，仅杀死自有服务；原行 intent、实际 created 未启动，
+  CID 仅观测不写 DB。重启 reconcile 核销责任，exit null/outcome unknown，无旧
+  payload/SDK 重放，请求数 3→3。
+- start 返回后、running 未持久化时，原行 starting、实际 payload/后代 Running；
+  服务离线期间原 PID 首次观察均停止于原 deadline 后约 0.232 秒，容器约 0.303 秒。
+  这是停止观测上界，不是精确死亡时刻。重启保持原期限、exit124/outcome unknown，
+  无旧 payload/SDK 重放，请求数 4→4。
+
+本次 CID 实测为 0644/64 字节/单链接/UID1000/GID1001、父目录 0700；验证 harness
+先保存模式证据，再按私有父目录、无外部写权限、regular/owner/nlink、no-follow
+有界读取和固定身份核验，继续严格检查完整 CID/名称/标签/安装归属。另使失败清理
+先释放精确 observer 暂停再正常关闭，失败仍保留 failed/rescue 分类。旧失败实际
+模式不可得，不能反推为0644；没有 chmod 或为此修改产品生命周期。
+
+只有两次预定 pidfd SIGKILL，最后服务正常 exit0，无强制清理杀进程、关闭错误或
+rescue。最终 **9 行 process 全部 removed/resource_held=0，9 个 CID absent**：
+3 个私有 probe exit0、3 个 advisory exit125/unknown、3 个目标 payload 的
+exit124/null/124/unknown；advisory 与 guard/未启动结果不能计作 Git/payload 成功。
+
+51 份原始附件 **8,273,152 字节**逐项核验。外层
+`.verification/linux-l1-faultwindows-v2-20261028T075557Z-c85714b7.json` SHA-256
+`3b26ea1f86d538f82f59c164870a88363ccc4af97c1b65cb2640fafda2f18835`；同名目录
+`result.json` 为 `5916f2acfc18459054e4b505b58eb2c3a60676d90fed87fc473d32cd49345484`。
+完整源/harness 冻结值、Windows 292 通过/1 项 POSIX 跳过和 124 项离线检查的准确
+边界见[运行实测](linux-runtime-readiness.md#三个启动窗口候选的修复与实机验收)。
+
+旧启动窗口失败及此前七个候选用例保留原证据和各自源码范围，本批分别记账，不把
+九行 process 当作九项验收。下一批为整链 **OOM/pids/CPU**；网络/secret/socket、
+runtime/安装身份/租约、持续 fork、阻塞输出、公开 restricted 子任务及无人值守仍待
+各自验收。公共 L1 允许集仍空、能力卡仍 unavailable，M1 整体、L2/L3、正式 40 项
+三轮、完整安装/升级/恢复及 14 天真实使用门槛均未因此完成。
