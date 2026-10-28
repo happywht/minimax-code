@@ -4,7 +4,7 @@ call them like any built-in tool.
 
 Fusion of Grok's ``xai-grok-mcp::registry`` (multi-server connection
 manager + per-server tool namespace mapping) into MiniMax's existing
-tool registry. No Rust; pure asyncio on top of :mod:`.client`.
+tool registry. No Rust; pure asyncio with the official SDK facade in :mod:`.sdk_client`.
 
 Naming convention
 -----------------
@@ -24,6 +24,7 @@ logged and skipped, not raised.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -31,8 +32,10 @@ from typing import Any
 
 from ..agent.tools.base import Tool, ToolRegistry, ToolResult
 from .client import MCPClient, MCPClientError
-from .transport import MCPTransport, SSETransport, StdioTransport
-from .types import CallToolResult
+from .http_policy import validate_headers, validate_url
+from .sdk_client import SDKMCPClient
+from .transport import MCPTransport, StdioTransport
+from .types import CallToolResult, tool_result_payload
 from .types import Tool as MCPTool
 
 logger = logging.getLogger(__name__)
@@ -70,7 +73,7 @@ class MCPServerConfig:
     command:
         Argv for stdio transport.
     url:
-        SSE endpoint URL for streamable-HTTP transport.
+        Legacy SSE endpoint URL (not a Streamable HTTP endpoint).
     env:
         Extra environment variables for stdio transport.
     cwd:
@@ -80,7 +83,7 @@ class MCPServerConfig:
     bearer_token:
         Bearer token for SSE transport.
     oauth_client_id / oauth_client_secret / oauth_scopes / oauth_callback_port:
-        Optional OAuth configuration for SSE transport.
+        Retained OAuth metadata; interactive OAuth flows are not implemented.
     tool_states:
         Per-tool enablement map ``{original_tool_name: enabled}``.
     enabled:
@@ -106,8 +109,8 @@ class MCPServerConfig:
 @dataclass
 class _ServerConn:
     config: MCPServerConfig
-    client: MCPClient
-    transport: MCPTransport
+    client: MCPClient | SDKMCPClient
+    transport: MCPTransport | None
     tool_names: list[str] = field(default_factory=list)
 
 
@@ -124,7 +127,7 @@ class _BridgedTool(Tool):
         *,
         server: str,
         mcp_tool: MCPTool,
-        client: MCPClient,
+        client: MCPClient | SDKMCPClient,
         registry: MCPRegistry,
     ) -> None:
         self.name = bridged_name(server, mcp_tool.name)
@@ -159,18 +162,7 @@ def _to_tool_result(
 ) -> ToolResult:
     """Translate an MCP :class:`CallToolResult` into a MiniMax :class:`ToolResult`."""
     metadata: dict[str, Any] = {"server": server, "tool": tool, "isError": result.isError}
-    texts: list[str] = []
-    structured: list[dict[str, Any]] = []
-    for block in result.content:
-        if block.type == "text":
-            texts.append(block.text)  # type: ignore[union-attr]
-        else:
-            structured.append(block.model_dump())
-    output: dict[str, Any] = {}
-    if texts:
-        output["text"] = "\n".join(texts)
-    if structured:
-        output["content"] = structured
+    output = tool_result_payload(result)
     if result.isError:
         return ToolResult.fail(
             output.get("text") or "MCP tool reported an error",
@@ -191,6 +183,7 @@ class MCPRegistry:
     def __init__(self, tool_registry: ToolRegistry) -> None:
         self._tool_registry = tool_registry
         self._servers: dict[str, _ServerConn] = {}
+        self._mutation_lock = asyncio.Lock()
 
     # -- queries ----------------------------------------------------------
 
@@ -242,34 +235,46 @@ class MCPRegistry:
         Returns ``True`` if the server attached successfully, ``False``
         if it was disabled or failed to handshake (fail-open).
         """
+        if not isinstance(config.transport, str) or config.transport not in {"stdio", "sse"}:
+            raise ValueError("MCP transport must be 'stdio' or 'sse'")
         if not config.enabled:
             logger.info("MCP server %s disabled, skipping", config.name)
             return False
-        from ..app import before_executable_extension
-        await before_executable_extension("MCP server")
-        transport = self._build_transport(config)
-        client = MCPClient(transport)
-        return await self._attach_client(config, client, transport)
+        async with self._mutation_lock:
+            transport = self._build_transport(config)
+            from ..app import before_executable_extension
+            await before_executable_extension("MCP server")
+            client = SDKMCPClient(
+                transport=transport, url=config.url if config.transport == "sse" else None,
+                headers=config.headers if config.transport == "sse" else None,
+                bearer_token=config.bearer_token if config.transport == "sse" else None,
+            )
+            return await self._attach_client(config, client, transport)
 
-    def _build_transport(self, config: MCPServerConfig) -> MCPTransport:
-        transport = (config.transport or "stdio").lower()
+    def _build_transport(self, config: MCPServerConfig) -> MCPTransport | None:
+        transport = config.transport
+        if not isinstance(transport, str) or transport not in {"stdio", "sse"}:
+            raise ValueError("MCP transport must be 'stdio' or 'sse'")
         if transport == "sse":
             if not config.url:
-                raise ValueError(f"MCP server {config.name!r} has empty SSE url")
-            return SSETransport(
-                config.url,
-                headers=config.headers,
-                bearer_token=config.bearer_token,
-            )
+                raise ValueError("MCP server has empty SSE url")
+            validate_url(config.url)
+            validate_headers(config.headers, config.bearer_token)
+            # HTTP contexts are constructed/entered by the SDK owner task.
+            return None
         if not config.command:
-            raise ValueError(f"MCP server {config.name!r} has empty command")
+            raise ValueError("MCP server has empty command")
+        if (not isinstance(config.command, list) or not config.command[0] or not all(
+            isinstance(arg, str) and "\0" not in arg for arg in config.command
+        )):
+            raise ValueError("MCP command must be a non-empty string argv list")
         return StdioTransport(config.command, env=config.env, cwd=config.cwd)
 
     async def _attach_client(
         self,
         config: MCPServerConfig,
-        client: MCPClient,
-        transport: MCPTransport,
+        client: MCPClient | SDKMCPClient,
+        transport: MCPTransport | None,
     ) -> bool:
         """Handshake an already-built client and bridge its tools.
 
@@ -282,9 +287,21 @@ class MCPRegistry:
         try:
             await client.initialize()
             tools_result = await client.list_tools()
-        except Exception as exc:  # noqa: BLE001 — fail-open: never break startup
-            logger.warning("MCP server %s attach failed: %s", config.name, exc)
-            await client.close()
+        except BaseException as exc:
+            # Cancellation must close the SDK owner just like a failed
+            # handshake; cleanup is retained and completed before propagation.
+            try:
+                await client.close()
+            except BaseException:
+                # Failed attachment still owns resources until teardown is
+                # confirmed. Keep it reachable for runtime shutdown/reporting.
+                self._servers[key] = _ServerConn(config=config, client=client, transport=transport)
+                raise
+            if not isinstance(exc, Exception):
+                raise
+            detail = (str(exc) if isinstance(client, SDKMCPClient) and
+                      isinstance(exc, MCPClientError) else type(exc).__name__)
+            logger.warning("MCP server %s attach failed (%s)", config.name, detail)
             return False
         disabled = {
             name for name, enabled in (config.tool_states or {}).items() if not enabled
@@ -321,15 +338,19 @@ class MCPRegistry:
 
     async def remove_server(self, name: str) -> bool:
         """Detach a server: unregister its tools and close the client."""
-        key = _sanitize(name)
-        conn = self._servers.pop(key, None)
-        if conn is None:
-            return False
-        for tool_name in conn.tool_names:
-            self._tool_registry.unregister(tool_name)
-        await conn.client.close()
-        logger.info("MCP server %s removed", conn.config.name)
-        return True
+        async with self._mutation_lock:
+            key = _sanitize(name)
+            conn = self._servers.get(key)
+            if conn is None:
+                return False
+            for tool_name in conn.tool_names:
+                self._tool_registry.unregister(tool_name)
+            # Retain the connection on failure: runtime shutdown must not
+            # report successful closure after losing an unconfirmed owner.
+            await conn.client.close()
+            self._servers.pop(key, None)
+            logger.info("MCP server %s removed", conn.config.name)
+            return True
 
     async def add_many(self, configs: Iterable[MCPServerConfig]) -> int:
         """Attach a batch of servers; returns the count that attached."""

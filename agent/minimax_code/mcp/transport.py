@@ -101,12 +101,15 @@ class StdioTransport(MCPTransport):
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def pid(self) -> int | None:
         return self._proc.pid if self._proc is not None else None
 
     async def start(self) -> None:
+        if self._closed:
+            raise MCPTransportError("transport closed")
         if self._proc is not None:
             return  # idempotent
         try:
@@ -152,6 +155,8 @@ class StdioTransport(MCPTransport):
         await self._queue.put(None)  # sentinel: stream end
 
     async def send(self, message: dict[str, Any]) -> None:
+        if self._closed:
+            raise MCPTransportError("transport closed")
         if self._proc is None or self._proc.stdin is None:
             raise MCPTransportError("transport not started")
         payload = json.dumps(message, separators=(",", ":")) + "\n"
@@ -169,9 +174,20 @@ class StdioTransport(MCPTransport):
             yield item
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._finish_close())
+        cancelled = False
+        while not self._close_task.done():
+            try:
+                await asyncio.shield(self._close_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._close_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _finish_close(self) -> None:
         if self._reader_task is not None:
             self._reader_task.cancel()
             try:
@@ -183,15 +199,19 @@ class StdioTransport(MCPTransport):
         if self._stderr_task is not None:
             self._stderr_task.cancel()
             await asyncio.gather(self._stderr_task, return_exceptions=True)
+        await self._queue.put(None)
 
 
 # ---------------------------------------------------------------------------
-# SSE / Streamable-HTTP transport — HTTP GET for server→client, POST for client→server
+# Legacy SSE transport retained for compatibility / in-process replay tests
 # ---------------------------------------------------------------------------
 
 
 class SSETransport(MCPTransport):
-    """MCP transport over HTTP/SSE (StreamableHTTP / SSE variant).
+    """Legacy MCP HTTP/SSE transport retained for compatibility.
+
+    Production registry connections use the official SDK SSE transport. This
+    class does not implement the modern Streamable HTTP transport.
 
     Establishes a long-running ``GET <url>`` SSE stream for inbound
     JSON-RPC messages, and posts outbound JSON-RPC messages to the

@@ -1290,7 +1290,7 @@ unexpected param shape. `crash_dir` resolves to `<data_dir>/crashes`
 | `mcp.update_server` | `{server_id, name?, transport?, command?, url?, env?, enabled?, bearer_token?, headers?, oauth_client_id?, oauth_client_secret?, oauth_scopes?, oauth_callback_port?, tool_states?}` | `{server}` | Updates a persisted server config and re-attaches it when runtime fields change. `tool_states` is a map `{tool_name: enabled}` used to disable individual bridged tools. |
 | `mcp.remove_server` | `{server_id}` | `{ok, server_id}` | Disconnects and deletes the persisted server. |
 | `mcp.list_tools` | `{server_name}` | `{server_name, tools: [{name, description?, inputSchema?}]}` | Lists tools exposed by a single connected server. |
-| `mcp.invoke_tool` | `{server_name, tool_name, arguments?}` | `{ok, server_name, tool_name, text?, content?, isError}` | Calls a tool on the named server. Returns the tool result or a structured error. |
+| `mcp.invoke_tool` | `{server_name, tool_name, arguments?}` | `{ok, server_name, tool_name, text?, content?, isError, structuredContent?}` | Calls a tool on the named server. Retains structured content (any JSON value, including null) when supplied; tool errors retain `isError`. |
 
 ### `codebase.*` — codebase indexing and retrieval (v0.11.0 Milestone 2)
 

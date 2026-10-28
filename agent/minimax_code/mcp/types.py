@@ -1,14 +1,16 @@
 """Pydantic models for the MCP domain — the canonical type reference for
 MiniMax Code's MCP client and server halves.
 
-Mirrors the public MCP spec (``2024-11-05``). The models are
+Registry/IPC views shared with the legacy in-process protocol implementation.
+The official SDK validates production messages against the negotiated protocol
+before projecting them into these models. The models are
 intentionally permissive (``extra="allow"``) so spec extensions and
 forward-compatible fields from upstream servers do not break parsing.
 
 Design notes
 ------------
 
-* Content blocks (text / image / embedded resource) are modelled as a
+* Content blocks (text / image / audio / resource / resource link) are modelled as a
   discriminated union on the ``type`` field, matching the wire format.
 * Capabilities are split into client and server halves — the
   ``initialize`` handshake negotiates which features each side offers.
@@ -84,8 +86,20 @@ class EmbeddedResource(_Base):
     resource: dict[str, Any] = Field(default_factory=dict)
 
 
+class AudioContent(_Base):
+    type: Literal["audio"] = "audio"
+    data: str
+    mimeType: str
+
+
+class ResourceLink(_Base):
+    type: Literal["resource_link"] = "resource_link"
+    uri: str
+    name: str
+
+
 Content = Annotated[
-    TextContent | ImageContent | EmbeddedResource,
+    TextContent | ImageContent | AudioContent | EmbeddedResource | ResourceLink,
     Field(discriminator="type"),
 ]
 
@@ -112,6 +126,7 @@ class Tool(_Base):
     description: str | None = None
     inputSchema: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
     annotations: ToolAnnotations | None = None
+    outputSchema: dict[str, Any] | None = None
 
 
 class CallToolResult(_Base):
@@ -119,6 +134,24 @@ class CallToolResult(_Base):
 
     content: list[Content] = Field(default_factory=list)
     isError: bool = False
+    # SDK 2.x: any JSON value in 2026, object in 2025. SDK validates the
+    # negotiated wire version; model_fields_set preserves explicit null.
+    structuredContent: Any = None
+
+
+def tool_result_payload(result: CallToolResult) -> dict[str, Any]:
+    """Shared bridge/IPC view; retain false/zero/empty/null structured values."""
+    texts = [block.text for block in result.content if block.type == "text"]
+    content = [{**block.model_dump(exclude_unset=True), "type": block.type} for block in result.content
+               if block.type != "text"]
+    output: dict[str, Any] = {}
+    if texts:
+        output["text"] = "\n".join(texts)
+    if content:
+        output["content"] = content
+    if "structuredContent" in result.model_fields_set:
+        output["structuredContent"] = result.structuredContent
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +267,7 @@ class ListPromptsResult(ListResult):
 
 
 __all__ = [
+    "AudioContent",
     "ClientCapabilities",
     "CallToolResult",
     "Content",
@@ -254,9 +288,11 @@ __all__ = [
     "ReadResourceResult",
     "Resource",
     "ResourceContents",
+    "ResourceLink",
     "ResourceTemplate",
     "ServerCapabilities",
     "TextContent",
     "Tool",
     "ToolAnnotations",
+    "tool_result_payload",
 ]

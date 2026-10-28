@@ -11,8 +11,10 @@ from typing import Any
 
 from ..app import get_mcp_registry, get_mcp_servers_dao
 from ..mcp import MCPClientError, MCPRegistry, MCPServerConfig
+from ..mcp.http_policy import validate_headers, validate_url
+from ..mcp.types import tool_result_payload
 from .handler_utils import HandlerError
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS, InvokeMcpToolResult
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -98,12 +100,29 @@ def _validate_opt_int(value: Any, name: str) -> int | None:
 
 
 def _validate_transport_command_url(transport: str, command: Any, url: Any) -> None:
-    if transport not in {"stdio", "sse"}:
+    if not isinstance(transport, str) or transport not in {"stdio", "sse"}:
         raise HandlerError(INVALID_PARAMS, "'transport' must be 'stdio' or 'sse'")
-    if transport == "stdio" and command is not None and (not isinstance(command, list) or not command):
+    if transport == "stdio" and command is not None and (
+        not isinstance(command, list) or not command or not command[0] or not all(
+            isinstance(arg, str) and "\0" not in arg for arg in command
+        )
+    ):
         raise HandlerError(INVALID_PARAMS, "'command' must be a non-empty argv list for stdio transport")
     if transport == "sse" and url is not None and (not isinstance(url, str) or not url):
         raise HandlerError(INVALID_PARAMS, "'url' must be a non-empty string for sse transport")
+    if transport == "sse" and url is not None:
+        try:
+            validate_url(url)
+        except ValueError as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from None
+
+
+def _validate_http_auth(transport: str, headers: Any, token: Any) -> None:
+    if transport == "sse":
+        try:
+            validate_headers(headers, token)
+        except ValueError as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from None
 
 
 async def handle_mcp_list_servers(_params: Any, ctx: Context) -> None:
@@ -140,6 +159,7 @@ async def handle_mcp_add_server(params: Any, ctx: Context) -> None:
         enabled = bool(p.get("enabled", True))
         bearer_token = _validate_opt_string(p.get("bearer_token"), "bearer_token")
         headers = _validate_opt_dict_str(p.get("headers"), "headers")
+        _validate_http_auth(transport, headers, bearer_token)
         oauth_client_id = _validate_opt_string(p.get("oauth_client_id"), "oauth_client_id")
         oauth_client_secret = _validate_opt_string(p.get("oauth_client_secret"), "oauth_client_secret")
         oauth_scopes = _validate_opt_list_str(p.get("oauth_scopes"), "oauth_scopes")
@@ -225,7 +245,10 @@ async def handle_mcp_update_server(params: Any, ctx: Context) -> None:
         transport = p.get("transport", existing.get("transport", "stdio"))
         command = p.get("command")
         url = p.get("url")
-        _validate_transport_command_url(transport, command, url)
+        _validate_transport_command_url(
+            transport, command if command is not None else existing.get("command"),
+            url if url is not None else existing.get("url"),
+        )
 
         name = _validate_opt_string(p.get("name"), "name")
         env = _validate_opt_dict_str(p.get("env"), "env")
@@ -234,6 +257,10 @@ async def handle_mcp_update_server(params: Any, ctx: Context) -> None:
             enabled = bool(enabled)
         bearer_token = _validate_opt_string(p.get("bearer_token"), "bearer_token")
         headers = _validate_opt_dict_str(p.get("headers"), "headers")
+        _validate_http_auth(
+            transport, headers if headers is not None else existing.get("headers"),
+            bearer_token if bearer_token is not None else existing.get("bearer_token"),
+        )
         oauth_client_id = _validate_opt_string(p.get("oauth_client_id"), "oauth_client_id")
         oauth_client_secret = _validate_opt_string(p.get("oauth_client_secret"), "oauth_client_secret")
         oauth_scopes = _validate_opt_list_str(p.get("oauth_scopes"), "oauth_scopes")
@@ -323,23 +350,19 @@ async def handle_mcp_invoke_tool(params: Any, ctx: Context) -> None:
             result = await registry.call_tool(server_name, tool_name, arguments)
         except MCPClientError as exc:
             raise HandlerError(INTERNAL_ERROR, str(exc)) from exc
-        texts: list[str] = []
-        structured: list[dict[str, Any]] = []
-        for block in result.content:
-            if block.type == "text":
-                texts.append(block.text)  # type: ignore[union-attr]
-            else:
-                structured.append(block.model_dump())
-        await ctx.reply(
+        payload = tool_result_payload(result)
+        await ctx.reply(InvokeMcpToolResult.model_validate(
             {
                 "ok": not result.isError,
                 "server_name": server_name,
                 "tool_name": tool_name,
-                "text": "\n".join(texts) if texts else None,
-                "content": structured if structured else None,
+                "text": payload.get("text"),
+                "content": payload.get("content"),
                 "isError": result.isError,
+                **({"structuredContent": payload["structuredContent"]}
+                   if "structuredContent" in payload else {}),
             }
-        )
+        ).model_dump(exclude_unset=True))
     except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message, exc.data)
     except Exception:

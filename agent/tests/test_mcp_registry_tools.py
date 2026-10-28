@@ -14,7 +14,6 @@ from minimax_code.mcp.client import MCPClient
 from minimax_code.mcp.registry import MCPRegistry, MCPServerConfig, bridged_name
 from minimax_code.mcp.transport import (
     InProcessTransport,
-    SSETransport,
     StdioTransport,
     make_in_process_pair,
 )
@@ -147,4 +146,6 @@ def test_build_transport_sse() -> None:
             headers={"X": "1"},
         )
     )  # noqa: SLF001
-    assert isinstance(transport, SSETransport)
+    # HTTP contexts belong to the official SDK owner task, not the legacy
+    # hand-written SSETransport (which buffered an infinite GET response).
+    assert transport is None

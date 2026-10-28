@@ -1898,6 +1898,7 @@ export interface McpTool {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown> | null;
 }
 
 /** Result of ``mcp.list_servers``. */
@@ -1930,6 +1931,7 @@ export interface InvokeMcpToolResult {
   text: string | null;
   content: unknown[] | null;
   isError: boolean;
+  structuredContent?: unknown;
 }
 // ---------------------------------------------------------------------------
 // v0.11.0 — Codebase RAG

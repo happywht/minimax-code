@@ -28,6 +28,17 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class InvokeMcpToolResult(_Base):
+    """MCP tool result; structuredContent preserves any JSON value, including null."""
+    ok: bool
+    server_name: str
+    tool_name: str
+    text: str | None
+    content: list[dict[str, Any]] | None
+    isError: bool
+    structuredContent: Any = None
+
+
 class ArtifactListParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     project_id: str = Field(min_length=1, max_length=128)

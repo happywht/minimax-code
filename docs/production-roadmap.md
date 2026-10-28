@@ -1047,3 +1047,12 @@ Windows六模块162项、前端27项、真实后端浏览器附件4项及build/l
 未混入同期Podman修改，也未重复SIGTERM或调用真实provider。
 精确回执、安装与回退见[XLSX边界](attachment-xlsx.md#2026-10-28-双平台验证与回退)。
 原件保全和预览不等于公式已验算、OCR、表格清洗/编辑/生成或M6完整工作流验收。
+
+### 2026-10-28：官方 MCP SDK 的既有传输接入
+
+现有 stdio 与旧 SSE 连接使用固定版本官方 Python SDK；stdio 仍经原执行策略和进程树
+清理。结构化结果保留，远端未经请求的采样、输入及根目录请求不会自动授权或触发模型。
+同源与响应大小限制覆盖伪装成 SSE 的 POST、错误和重定向。Windows Python 3.11、3.12
+各257项通过，关联进程与关停207项通过；真实 SDK 本地服务互操作、构建及 Ruff 通过。
+该批尚无 Linux 实机验收，也未新增 Streamable HTTP 配置或 OAuth 流程；SDK wire 日志
+抑制及具体诊断取舍见[MCP 接入说明](mcp-sdk-integration.md)。

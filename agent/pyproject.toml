@@ -11,6 +11,7 @@ dependencies = [
     # Phase 1 (skeleton only — these are listed for future tasks, not yet imported):
     "pydantic>=2.7",
     "httpx>=0.27",
+    "mcp==2.3.0",  # official SDK; stdio process ownership stays in execution.spawn_exec
     "aiosqlite>=0.20",
     "apscheduler>=3.10",
     "platformdirs>=4.0",  # cross-platform user data dir resolution
