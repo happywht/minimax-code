@@ -3,7 +3,8 @@
 这是经架构裁定的实施约束，不是公共 L1 已发布的声明；与
 [L1 规格](linux-process-adapter-design.md) 一起使用。新增模块测试通过、手工运行容器
 或能力卡出现均不能单独证明 L1 完成。治理器和有限故障实测已分批记录于
-[运行实测](linux-runtime-readiness.md)，最终源码接线和完整发布门槛仍待验收。
+[运行实测](linux-runtime-readiness.md)。raw `88e0ceb` 的最终 Exec-only 三例有限接线
+已单独验收；公开 attach 背压/drain 及完整发布门槛仍待验收。
 
 ## 固定 profile 与 v3 接单
 
@@ -128,8 +129,9 @@ Podman `--timeout` 从实际启动起计时，不是 intent 的绝对截止。�
 namespace teardown；该治理器已有下述分批候选实测。PR_SET_DUMPABLE=0 不隔离调度权限，
 CLOCK_BOOTTIME timerfd 只提供到期通知，仍需受保护执行流；一次性 stop timer
 存在迟到启动竞争。这里修正早期“必须独立宿主治理服务”的过强判断；加固 PID1 方向
-已实现，并取得 helper、迟到启动、服务死亡与有限负载实测；各批证据不能自动推广
-到最终 Exec-only 源码和完整 L1。完成剩余门槛前，profile 维持 unavailable。
+已实现，并取得 helper、迟到启动、服务死亡与有限负载实测；raw `88e0ceb` 的最终
+Exec-only 三例接线另有独立回执。各批证据仍不能代替公开 attach 背压/drain和完整
+L1。完成剩余门槛前，profile 维持 unavailable。
 Podman --timeout 仅作第二重相对期限。治理方案须单独审定，不能以改名义范围避过验收。
 
 固定绝对期限的工程语义为：持久 boot_id 与 CLOCK_BOOTTIME ns，同一 intent 在所有

@@ -18,7 +18,7 @@ pnpm verify:baseline
 | `pnpm verify:baseline` | ESLint、Ruff、TypeScript/生产构建一次；前端单元、后端核心、协议回放、Playwright 连续三轮 | M0 验收及双平台 CI |
 | `pnpm verify:core` | 生命周期、权限、路径、终端、调度、迁移、数据、契约等高风险回归 | 本地快速确认 |
 | `pnpm verify:replay` | 真实协议解析器/SDK + 受控 HTTP/SSE/stdio 响应 | Provider/MCP 相关变更 |
-| `pnpm verify:attachments` | 安装锁定可选依赖并执行DOCX真实资源子进程/原件/HTTP/迁移/包兼容专项，依赖缺失报错而非跳过 | Windows/Ubuntu CI及本地附件变更 |
+| `pnpm verify:attachments` | 安装锁定可选依赖并执行PDF/DOCX真实资源子进程/原件/HTTP/迁移/包兼容专项，依赖缺失报错而非跳过 | Windows/Ubuntu CI及本地附件变更 |
 | `pnpm verify:full` | `agent/tests/` 全量 pytest，独立任务 | 每次 CI，与核心基线分开报告 |
 | `node scripts/verify.mjs --suite=baseline --repeat=1` | 单轮基线 | 日常迭代 |
 
@@ -88,3 +88,7 @@ host target/hash、定位用户消息气泡、显式选择独立 Native 源会�
 及 `ci-baseline-repair-threads-{ipc-adjacent-final,gates-accepted-final}.log`。
 这些是定向修复证据，完整双平台 CI 与同提交三轮仍须由新作业确认。本批不改
 schema；回退用对应提交的普通代码回退，不做数据库逆向迁移。
+
+旧全量 CI 日志另确认文本成果升级夹具仍预期迁移至043；现显式补齐044，保留
+旧项目行及表结构断言，该文件34项自然退出0。日志为
+`.verification/ci-migration044-fixture.log`；不据此把已取消的旧全量作业改记为通过。
