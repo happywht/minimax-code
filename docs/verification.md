@@ -157,3 +157,17 @@ composer启动自动聚焦路径，不能将失败确定归因为自动聚焦。
 截至2026-10-28 13:02:42 UTC，Windows baseline仍为 `in_progress`，按pending收口；
 其最终结果与artifact待完成后另行核对。本次未取消或重跑该作业。最终作业快照保存在
 `.verification/ci-0659456-independent-review/run-final.json`。
+
+后续完成核对：Windows baseline于13:05:31 UTC成功结束，下载原件至
+`.verification/ci-0659456-baseline-windows/`。16个命令均退出0，三轮各前端899项、
+core1050通过/1跳过、协议回放35项和真实浏览器35项通过；未取消该作业。
+这不会把同提交Ubuntu的快捷键失败改为通过。随后XLSX及停止竞态检查点
+`d496176` 已推送，新CI `40693861165` 的结果须另行核验，不能继承旧提交的结论。
+
+该新提交的 [CI 40693861165](https://github.com/happywht/minimax-code/actions/runs/40693861165)
+随后全部成功：Windows、Ubuntu 两个平台各三轮 baseline 的16条命令均退出0；
+两平台后端全量 JUnit 各12599项，Windows 12579通过/20跳过、Ubuntu 12584通过/15跳过，
+零失败或错误，runner记录退出0。Python 3.11 两平台作业也成功。原始证据分别留在
+`.verification/ci-d496176-baseline-{windows,ubuntu}/` 和
+`.verification/ci-d496176-backend-full-{windows,ubuntu}/`。这些结果只针对该提交，
+不替代后续 Linux 在途关停和真实模型任务验收。
