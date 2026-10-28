@@ -186,3 +186,8 @@ Python 3.11 两平台各169项通过。原件与独立统计在 `.verification/c
 `.verification/ci-a2832e9-failure-review/`；不将原CI改判为通过，修复提交须另跑CI。
 同一轮 Windows 后端全量为12704通过、20跳过、1失败，唯一失败与 Ubuntu 相同；
 两平台 baseline 均成功。Windows 原件和独立统计见同目录的 `windows-full-review.json`。
+
+后续修复及窄范围执行候选 `78276c2` 的 CI `40724758863` 六项作业全部成功：
+Windows、Ubuntu 三轮 baseline 各16条命令退出0；后端全量分别12714通过/20跳过、
+12719通过/15跳过，零失败或错误并自然退出0；Python 3.11 两平台作业成功。原件在
+`.verification/ci-78276c2-*`。后续办公成果提交 `9e7abb9` 的 CI 需另行核验。
