@@ -1,6 +1,6 @@
 # Linux 受限运行环境实测
 
-2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选及四个故障用例、2026-10-28 的三个启动窗口、三个有界资源及一个进程边界候选用例已按文末各自源码范围验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
+2026-10-26 起在用户指定的 Ubuntu 24.04 执行主机上记录 rootless Podman 环境、产品适配器和分批验证。2026-10-27 的三个公开 Native 候选及四个故障用例，以及2026-10-28 的启动窗口、有界资源、进程边界、两条所有权链和两个负载用例已按文末各自源码范围验收。最终 Exec-only 接线与公开 attach 背压/drain 待验收；主分支 L1 允许集仍为空，远程任务、长驻服务及 M5 整体未验收。
 
 ## 安装与主机状态
 
@@ -556,3 +556,45 @@ unavailable，相关规范化 DB 表前后相同、SDK 不增加，没有 host f
 实际宿主 runtime 停机。下一有限工作为持续 fork/真正阻塞输出及经审计的公开入口范围；
 公共允许集仍空、能力卡 unavailable，完整 L1、L2、公开 child、无人值守、M1整体、
 正式40项三轮、完整安装/升级/恢复与14天真实使用门槛均未因此完成。
+
+## 两个有限负载候选的实机验收（2026-10-28）
+
+load v1 经真实完整 stdio CLI、公开 RPC 和实际 SDK 固定 loopback SSE，**持续 fork
+取消、内部 stdout pipe 阻塞后离线到期两例通过，并经 root 与独立复核接受**。
+固定源码为 `934c9fce47b0f38c98be2479b4aad428f1c6d49a` 的1103个原始 Git blob，
+明确不同于运行时较新的 checkout HEAD；前后全部 hash 不变。私有 staging 只允许
+原 guard/policy 配对，没有产品 observer、reader 抑制、guard/资产或 runtime 修改。
+公开允许集仍空；本批不替代最终源码合并后的公开入口审计或发布验收。
+
+沿用固定镜像、128MiB/swap0/pids64/CPU500m、tmpfs32MiB/output256KiB，原60秒
+BOOTTIME deadline 不延长。先固定完整 CID、init PID/startticks、scope/叶及有效限制，
+再发布绑定 nonce/case/exec/CID/cgroup 身份和已校验采样 hash 的 release；180秒
+payload 保护界限不能作为通过依据。无宿主 fork 压力、额外挂载或内核/controller 写入。
+
+| 用例 | 实际接受范围 |
+|---|---|
+| 持续 fork 后公开取消 | 固定最多8个存活子进程、512次尝试，真实 fork/reap 证明跨度5.001374953秒；成功1→91、回收0→85，取消时6个活跃子进程、live_max6，oom_kill仍0。动态成员可在读取间退出，不把瞬时 PID 清单冒充全部稳定身份；原稳定进程身份与精确 CID 持续绑定。公开取消后原 PID 首次观测均停止约1.637秒，CID absent约2.048秒，持久137/cancelled |
+| 内部 stdout pipe 阻塞到原截止 | writer PID3203403/startticks1332897574，fd1为精确匿名 pipe inode1242042913；单次8MiB write、容量及排队均65,536字节，父进程持有读端且从不消费。真实 parent 与 host 均记录 pipe_write/睡眠 write(fd1) 内核证据，计划杀死自有服务前后仍阻塞。最后正向证明在原 deadline 前约13.975毫秒；原 PID 首次观测均停止于 deadline 后约0.060秒，停止容器首次观测约0.137秒，持久124/unknown、run interrupted |
+
+上述停止时间均为采样得到的**首次观测上界**，不是精确死亡时刻；内部 pipe 满和
+intent 文件本身不足以通过，必须有绑定同一 writer 的正向内核阻塞证据。服务离线时
+持久责任仍 resource_held=1，重启真实 reconcile 确认精确 absence 后才核销，无重放。
+**证据限定：**独立的最新 `writer-observation.json` 未下载；已保留的近截止正向
+`blocked-observation` 及 result 内绑定证据支持本次窄范围结论，不宣称两份原始文件都已留存。
+这是 payload 内部匿名 stdout pipe，**不证明公开 attach pipe 饱和、产品 reader
+背压或有界 drain**；读端始终未消费，也不宣称内部 pipe 成功排空或 exec-only 入口均已审计。
+
+全批99.688秒、exit0，**2个 payload、2次受控 SDK、0次付费调用**；最终6行全部
+removed/resource_held=0、6个精确 CID absent。另4行是2个私有 preflight exit0及
+2个 Git advisory125/unknown，分别记账；取消137不视为 OOM，到期124不视为成功。
+服务为1次明确计划内 SIGKILL/-9及最后正常 exit0，无 forced kill、关闭错误或 rescue。
+44项模型化离线检查（含陈旧 proof 的5秒证明跨度/7秒有界等待反例）、Ruff及生成
+检查通过；这些准备检查与两例实际 Linux 证据分开，不累加为额外独立验收。
+
+- 冻结清单 `.verification/l1-load-v1-frozen-manifest.json`：`d338b65d6b9e3062e0e58014fc804ec79760a20b41fce6e2e4850c95eeaa53bb`；源码归档：`a24cfad17c1113c2928731c60b77fb171e9570c8b9181fb4541c05412429fa31`。
+- 回执 `.verification/linux-l1-load-v1-20261028T102906Z-1e0054bb.json`：`f16b77ac3e254c5f21c2cfb029f04283c72c92122f2581cb3dfe97f763dc0d23`；同名目录 result：`86b90796eb310603015862be2310386da47e6b9d6281a0aea1097de07a1ed96f`；22份附件、5,803,268字节逐项核验，附件仅在当前工作区提供。
+
+旧失败及各批源码/接受范围保留；本节只更新持续 fork 取消与内部阻塞 writer 两个
+有限缺口。下一有限工作为经审计的公开入口及最终源码范围；公开 attach 背压/drain
+仍是独立缺口。公共允许集仍空，完整L1、M1/M7整体、L2、公开child、无人值守及既有
+正式40项三轮、安装/升级/恢复、14天真实使用门槛均未因此完成。

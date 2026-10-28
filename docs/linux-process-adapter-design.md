@@ -5,17 +5,19 @@
 的正常完成、取消和服务死亡后审查恢复三个隔离候选用例，以及后续四个故障用例
 已于 2026-10-27 验收；另一个以 `f953531` 为基底的带观测补丁候选于 2026-10-28
 通过三个启动窗口用例；另以 `e0f89e0` 为基底的私有候选接受三个有界资源用例，
-以 `57c3316` 为基底的候选接受一个固定进程边界用例。
-各批源码与接受范围分别记账；`agent.spawn_subagent` 及
-剩余故障矩阵仍待验收。
+以 `57c3316` 为基底的候选接受一个固定进程边界用例；`6eec107` 与 `934c9fc`
+候选又分别接受两条有限所有权链和两个有限负载用例。
+各批源码与接受范围分别记账；最终 Exec-only 接线的 Linux 回归和公开 attach
+背压/drain 仍待验收。Podman 的 `agent.spawn_subagent` 别名已明确拒绝。
 主分支允许集保持为空。
 复用同一个 RunService、持久 run/预算家族和服务目录租约，不增加第二个调度循环。
 
 profile/v3、安装 bootstrap、私有目录与截止保证的细化裁定见
 [接线契约](linux-execution-profile-contract.md)。产品整链已接受服务死亡后的原绝对期限
 及非阻塞双流 flood 用例，另已接受下文三个迟到启动/create/start 窗口候选用例；
-另已接受下文有界 allocator OOM、pids 耗尽取消、CPU 饱和截止及一个network/canary/
-secret/pathname-socket进程用例；持续fork、阻塞IO及marker/重复启动租约争用/合成runtime失败责任仍待验收。加固 PID1 的实现
+另已接受下文有界 allocator OOM、pids 耗尽取消、CPU 饱和截止、固定进程边界、
+marker/重复启动租约争用/合成控制响应，以及持续 fork 取消和 payload 内部阻塞
+stdout 的限定用例。内部匿名管道不等于公开 attach 背压。加固 PID1 的实现
 与 helper 验证单独记账，不能将 conmon 相对期限或 helper 成功视为 L1 门槛已满足。
 
 ## 当前实现与未完成范围
@@ -37,8 +39,9 @@ terminal/runner 已按执行 session 的持久历史限制宿主执行；受限 
 bind/mount alias 准入已有下文定向实机证据。restricted child 与 legacy overlay 已分离：
 显式 overlay 请求在副作用前拒绝，受限内部子链使用 owned directory copy，并清空、
 恢复继承的 overlay context。该内部链测试不扩大公开工具允许类，公开
-`SpawnSubagentTool` 仍拒绝，实际类/委派归属审计、无人值守全部门槛和 UI/IPC 组合待验收。
-文末各批公开 Native、故障、启动窗口、有界资源和固定进程边界候选不覆盖完整故障矩阵；未审计入口不能
+`SpawnSubagentTool` 仍拒绝。公开根入口现收敛为下文唯一 ExecCommandTool；无人值守
+全部门槛和最终 UI/IPC 组合待验收。
+文末各批公开 Native、故障、启动窗口、资源、进程边界、所有权和负载候选不覆盖完整故障矩阵；未审计入口不能
 获取 host fallback。基础 review、受控 controller 测试或纯 validator bind probe
 单独均不构成公共 L1 验收。
 
@@ -97,6 +100,24 @@ intent → created → starting → running → stopped → removing → removed
 停止接单并等待已确认清理，保全升级后 DB/marker/copy/CID 证据，再恢复匹配旧程序的
 完整升级前数据库；未知责任仍保留，不删表或 marker 来释放资源。无逆向迁移或旧程序
 直接读取升级后 DB 的承诺；跨安装/旧备份恢复须另行核对，不自动认领或重放。
+
+## 当前公开候选的 Exec-only 边界
+
+`88e0ceb` 将受监督 Podman 公共根限定为 `agent.invoke`、恰好一个实际
+`ExecCommandTool`（冻结身份为 `exec_command`），技能与技能绑定必须为空，Hooks
+禁用，权限版本为1。文本技能同样拒绝；Native 文件工具、MCP、provider、子任务
+工具及 `agent.spawn_subagent` 别名不在此候选范围。host 与历史 v1/v2 行为保留。
+
+新接单、保存 spec 恢复、持久 owner 授权及非终态幂等 join 共用该形状约束；旧的
+宽工具 Podman v3 不自动缩减后执行，终态历史回执可只读查询。已有私有零模型
+preflight 可能先于新技能/工具拒绝发生；用户模型、工作区和派发仍在拒绝后阻止。
+内部受信 owner/preflight 与公共 Agent spec 分开，不授予公共入口旁路。
+
+130项定向、244项相邻及27项最终 scope 回归均有完整退出0日志，最后27项与定向
+集合重叠，不相加为独立用例数；Ruff 通过。源码及有限入口审计记录位于工作区
+`.verification/linux-public-entry-audit-20261028.md` 与
+`.verification/linux-public-exec-only-*.log`。这些是离线检查，最终源码的 Linux
+公开接线实测尚待完成；`ACCEPTED_GOVERNORS` 保持为空，不据此前私有配对候选开放能力。
 
 ## 控制面与容器边界
 
@@ -489,3 +510,15 @@ restricted 准入拒绝、规范化表不变、无重放；这不代表实际宿
 7个 CID absent，2次受控 SDK/0付费；2次计划内服务-9、duplicate1、3次正常0，无 forced kill/rescue。
 v1 重用日志 ordinal 的失败保留，v2 仅修复单调编号；完整证据见[运行实测](linux-runtime-readiness.md#两条有限所有权候选的实机验收2026-10-28)。
 下一有限缺口为持续fork/真正阻塞输出及经审计公开入口；公共允许集仍空，完整L1、L2、公开child、无人值守及M1发布门槛不变，旧范围不合并改写。
+
+## 两个有限负载用例的接受范围（2026-10-28）
+
+load v1 固定 raw `934c9fc` 的1103个 blob，明确不同于较新 checkout；仅私有配对，无产品 observer/reader/guard 修改。真实 CLI/RPC/SDK 两例99.688秒并经独立复核接受。
+持续 fork/reap 跨5.001秒后公开取消，PID停止/精确CID absent首次观测约1.637/2.048秒。
+另一例是 payload 内部匿名 stdout pipe：8MiB write、满队列65,536字节、读端从不消费，
+parent/host正向内核证据绑定同一 writer；计划服务-9后阻塞保留到原 deadline 前约14毫秒。
+原期限后约0.060秒首次观测全部PID停止，离线resource1在真实reconcile确认absence后归零。
+2次受控SDK/0付费、6行removed/resource0、6个精确CID absent，最后服务0，无rescue/重放。
+最新 `writer-observation.json` 未下载，仅保留近截止正向证明；不宣称两份原始文件均留存。
+完整冻结、回执与限定见[运行实测](linux-runtime-readiness.md#两个有限负载候选的实机验收2026-10-28)。
+本批不证明公开attach背压/drain或exec-only入口审计；公共允许集仍空，旧失败/范围及完整L1、M1/M7、L2、child、无人值守门槛不变。

@@ -274,7 +274,7 @@ on the next `readline() == ""`.
 
 ### Sub-agent working copies (M1, additive result fields)
 
-Public `agent.invoke` and `agent.spawn_subagent` share the existing Native admitted executor.
+Public host `agent.invoke` and `agent.spawn_subagent` share the existing Native admitted executor.
 A replay finds the source/key intent before live configuration/model lookup. Required
 `name` (name or legacy ID) resolves first; optional `agent_id` is a compatibility identity
 fallback. Changed input under that key is INVALID_PARAMS. Optional
@@ -346,12 +346,22 @@ recovery. Historical v1/v2 retain their legacy-host meaning without an implicit 
 Completed v3 receipts include those same actual target/hash/installation fields; query/replay
 uses the saved receipt. The UI displays the saved target rather than the agent's later setting.
 The browser mock returns a simulated host receipt and marks Linux L1 unavailable. The current
-product also keeps Linux L1 unavailable: the accepted governor pair set is empty, and real
-public Native/container/deadline acceptance remains pending. An unavailable profile always
+product also keeps Linux L1 unavailable: the accepted governor pair set is empty. Limited
+Linux candidates have separate source-scoped evidence; final Exec-only wiring and full
+release acceptance remain pending. An unavailable profile always
 refuses execution; it never falls back to host. L1 describes supervised process isolation,
 not a complete filesystem sandbox or disk quota. See the
 [profile contract](linux-execution-profile-contract.md) and
 [foundation status](linux-process-adapter-design.md).
+
+The current supervised Podman public candidate is `agent.invoke` only: exactly one actual
+`ExecCommandTool`, frozen `tool_allowlist:["exec_command"]`, empty skills/bindings, hooks
+disabled and permission version1. Text-only skills, Native file tools and the
+`agent.spawn_subagent` alias are rejected. Admission, saved-spec restore, durable owner
+authorization and active idempotent joins enforce that same shape; historical terminal
+receipts remain readable. Existing private zero-model preflight may occur before skill/tool
+rejection; this does not authorize user-model execution, workspace preparation or dispatch.
+Host behavior is unchanged. No RPC method, input field or schema is added by this restriction.
 
 Their result may include `workspace` (`ChildWorkspaceSummary` in Python/TS):
 

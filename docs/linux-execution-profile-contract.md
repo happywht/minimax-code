@@ -1,8 +1,9 @@
 # Linux L1 profile、安装与接线契约
 
-这是经架构裁定的实施约束，不是已实现能力；与
+这是经架构裁定的实施约束，不是公共 L1 已发布的声明；与
 [L1 规格](linux-process-adapter-design.md) 一起使用。新增模块测试通过、手工运行容器
-或能力卡出现均不能单独证明 L1 完成。严格绝对截止仍待服务外治理实现和实机验证。
+或能力卡出现均不能单独证明 L1 完成。治理器和有限故障实测已分批记录于
+[运行实测](linux-runtime-readiness.md)，最终源码接线和完整发布门槛仍待验收。
 
 ## 固定 profile 与 v3 接单
 
@@ -41,7 +42,8 @@ Podman target：
 Host envelope 不传给仅适用于 Podman 的 ExecutionTargetSpec。Hash 统一 UTF-8、
 sort_keys、紧凑分隔、allow_nan=False；资源为整数。profile 停用、移除或执行/策略字段
 改变，拒绝原排队/恢复请求，不能重解释 target；仅显示名称变化不撤销。
-幂等 receipt 回放先于读取当前配置。既有 invoke/spawn 严格参数不增加临时覆盖。
+终态幂等 receipt 只读回放先于读取当前配置；非终态 join 仍核对保存的公共 spec。
+既有 invoke/spawn 严格参数不增加临时覆盖。
 
 ## 唯一权威与工作区准备
 
@@ -106,23 +108,28 @@ Agents 设置显示默认（根宿主/子继承）、宿主 Native、Linux 容�
 未知/不可用的已保存 ID 保留并显示原因，receipt 从保存 snapshot 展示实际 target。
 同步 Python protocol/handlers/DAO、TS types/typed/mock/store/组件、文档与契约测试。
 
-入口 origin 是服务可信信息，客户端 bool 不提供授权。首批仅公共人工 Agent 和可信
-后代；scheduler/webhook/team 的准入和派发均拒绝 L1，包括 host 定时任务间接创建
-L1 孩子。profile 检查先于 SkillBindings.capture/provider.install。仅支持无可执行
-provider 的文本技能、经过审计的内置工具实际类；MCP、provider、未验证 analyzer
-显式拒绝，不能静默丢工具。Hooks 保持禁用，孩子和派发阶段同样检查。
+入口 origin 是服务可信信息，客户端 bool 不提供授权。当前公开候选仅人工
+`agent.invoke`，恰好一个实际 `ExecCommandTool`、`tool_allowlist=["exec_command"]`、
+空技能/绑定、Hooks 禁用及权限版本1。文本技能、Native 文件工具和
+`agent.spawn_subagent` 别名也拒绝；MCP、provider、未验证 analyzer 不能静默丢弃后执行。
+scheduler/webhook/team 的准入和派发均拒绝 L1，包括 host 定时任务间接创建 L1 孩子。
+profile 检查先于 SkillBindings.capture/provider.install；已有私有零模型 preflight
+可能先于技能/工具形状拒绝，用户模型、工作区和派发不会因此放行。
+
+同一公共形状还核验 spec 恢复、持久 owner 与非终态幂等 join，旧宽工具 Podman v3
+不自动缩减后执行。受信内部子链单独测试，不代表已开放公共 child；公共允许集仍为空。
 
 ## 截止保证与验收缺口
 
-Podman `--timeout` 从实际启动起计时，不是 intent 的绝对截止。当前可实现保证为
-conmon 最大运行时长，以及服务存活时按绝对 deadline 停止。服务被 SIGKILL、start
+Podman `--timeout` 从实际启动起计时，不是 intent 的绝对截止。仅依赖 conmon 最大
+运行时长及服务存活时的 deadline 检查不足：服务被 SIGKILL、start
 延迟落地时，预留 30 秒或 start 前检查不能证明严格截止，因此完整 L1 尚不得通过。
 普通同 UID wrapper 不合格；真正 namespace PID1 可以利用内核 init 保护及退出时
-namespace teardown，但目前仅是候选治理器。PR_SET_DUMPABLE=0 不隔离调度权限，
+namespace teardown；该治理器已有下述分批候选实测。PR_SET_DUMPABLE=0 不隔离调度权限，
 CLOCK_BOOTTIME timerfd 只提供到期通知，仍需受保护执行流；一次性 stop timer
 存在迟到启动竞争。这里修正早期“必须独立宿主治理服务”的过强判断；加固 PID1 方向
-已获准进入实现，但未通过 guard、截止或 L1 验收。完成最终调度攻击、迟到启动与
-服务死亡实机验收前，profile 维持 unavailable。
+已实现，并取得 helper、迟到启动、服务死亡与有限负载实测；各批证据不能自动推广
+到最终 Exec-only 源码和完整 L1。完成剩余门槛前，profile 维持 unavailable。
 Podman --timeout 仅作第二重相对期限。治理方案须单独审定，不能以改名义范围避过验收。
 
 固定绝对期限的工程语义为：持久 boot_id 与 CLOCK_BOOTTIME ns，同一 intent 在所有

@@ -936,3 +936,44 @@ Anthropic 适配器改为逐字段合并累计输入、缓存和输出快照，�
 root 将上述用量/预算/SDK/core 与团队/配置回归合并执行并保存完整输出：206项通过，
 38.77秒，日志 `.verification/root-usage-team-acceptance.log`。该结果为同一工作区快照
 的离线验收，不替代提交后的双平台三轮 CI 或真实模型复验。
+
+### 2026-10-28：两个有限 Linux 负载用例实机验收
+
+load v1 明确固定 raw `934c9fc` 的1103个 blob，区别于较新checkout；仅私有配对，源码前后不变，无产品observer/reader/guard修改。真实CLI/RPC/SDK两例99.688秒，经独立复核接受。
+持续fork/reap跨5.001秒后公开取消，PID停止/CID absent首次观测约1.637/2.048秒；
+内部匿名stdout writer以8MiB write填满65,536字节pipe，读端从不消费，正向内核证据
+在计划服务-9前后成立并保持到原deadline前约14毫秒，原PID在deadline后约0.060秒首次观测均停止。
+离线resource1经真实精确absence才核销；2次受控SDK/0付费，6行removed/resource0、
+6个CID absent，最后服务正常0，无forced kill/rescue/重放。最新writer-observation未下载，保留近截止正向证明，不宣称两份原始文件均留存；完整证据见[运行实测](linux-runtime-readiness.md#两个有限负载候选的实机验收2026-10-28)。
+仅接受持续fork取消与payload内部阻塞stdout，不覆盖公开attach背压/drain或exec-only入口审计。
+下一有限工作为经审计公开入口及最终源码范围；旧失败/范围保留，公共允许集仍空，
+完整L1、M1/M7整体、L2、公开child、无人值守及既有正式发布门槛均未因此完成。
+
+### 2026-10-28：历史预算不确定性、备份兼容与公开入口收敛
+
+Schema044 不重算旧账本：旧 settled Anthropic 和无法可靠匹配协议/模型的记录转为
+unknown，保留数值、来源、时间与 receipt，在同一事务增加预算审计事件。可明确识别的
+OpenAI/Codex 记录不因本次修复标未知。unknown 沿用家族/每日暂停及显式人工核对流程；
+账本锚点缺失时迁移整体拒绝。个人数据库未迁移，原 pilot 记录保持原样。
+
+迁移定向24项通过；备份格式升级4/Schema44，严格保留1/41、2/42、3/43的按字节恢复，
+不隐式迁移或重新绑定。冻结的真实旧 writer 验证 v3→恢复→显式044和旧版拒绝v4。
+兼容组合首轮90通过、1个新夹具失败，修正 Windows 未关闭 SQLite 句柄后该例单独
+通过；没有将其写成全新91项通过。完整命令/退出码在工作区
+`.verification/anthropic-usage-migration-verification.json` 与
+`.verification/anthropic-usage-bundle-compatibility-verification.json`。
+升级须先停止旧程序、取得匹配完整备份；回退使用对应旧程序及升级前数据库，不逆向
+迁移或让旧 writer 打开新库。详见[存储契约](storage-schema.md)与[备份说明](data-vault-bundle.md)。
+
+公开 Podman 候选现限定人工 `agent.invoke` 的唯一实际 ExecCommandTool，空技能/绑定、
+Hooks禁用；Native文件工具、文本技能与 `agent.spawn_subagent` 别名不纳入。新接单、
+恢复、持久 owner 及非终态幂等 join 共用限制，旧宽工具 v3 不自动降配执行。私有
+零模型 preflight 可能先于形状拒绝，但不放行用户模型/工作区/派发。130项定向、244项
+相邻、27项最终 scope 日志均退出0；最后集合有重叠，不相加。详见
+[执行规格](linux-process-adapter-design.md#当前公开候选的-exec-only-边界)。
+最终源码 Linux 接线回归仍待完成，公共允许集保持为空。
+
+双平台全量 CI `40667580099` 的测试本体分别12397/12392通过、15/20跳过，但 pytest
+总结后进程或继承管道未退出，两个 job 均于45分钟取消，作业结果仍为失败。前端4个
+旧夹具已修复，本地全量896项通过；退出阶段泄漏正在单独定位，不增加超时掩盖问题。
+这些检查不替代提交后双平台三轮基线、正式任务评测或个人生产验收。
