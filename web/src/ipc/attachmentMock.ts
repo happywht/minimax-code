@@ -1,4 +1,4 @@
-/** In-memory originals only. No host filesystem, OCR, Office or formula execution. */
+/** In-memory originals only. PDF/DOCX parsing requires the real backend extra. */
 import type { AttachmentGetResult, AttachmentKind, AttachmentOriginal, AttachmentParserStatus } from "../types/ipc";
 import { MOCK_ARTIFACT_SERVICE } from "./artifactMock";
 

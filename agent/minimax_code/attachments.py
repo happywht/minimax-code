@@ -297,6 +297,11 @@ class AttachmentService:
                 # Fixed trusted parser, anonymous input bytes; filename is metadata.
                 parsed = {"declared_type": "docx", "recognized_type": recognize(original),
                           **await inspect_docx(original)}
+            elif declared_type(name) == "pdf" and recognize(original) == "pdf":
+                from .attachment_parser import inspect_pdf
+
+                parsed = {"declared_type": "pdf", "recognized_type": "pdf",
+                          **await inspect_pdf(original)}
             else:
                 parsed = await _blocking(_inspect_pending, self.vault / upload.name, name)
             await _blocking(upload.publish)

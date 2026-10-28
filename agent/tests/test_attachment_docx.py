@@ -314,7 +314,8 @@ def test_native_service_death_terminates_actual_parser(monkeypatch, tmp_path):
             "import asyncio; from pathlib import Path; from minimax_code import attachment_parser as p; "
             f"p._WORKER=Path({str(parser._WORKER)!r}); asyncio.run(p.inspect_docx(b''))")
     executable = getattr(sys, "_base_executable", sys.executable) if os.name == "nt" else sys.executable
-    service = subprocess.Popen([executable, "-I", "-S", "-c", code],
+    # This isolated fixture also ignores PYTHONDONTWRITEBYTECODE; keep its imports read-only.
+    service = subprocess.Popen([executable, "-I", "-B", "-S", "-c", code],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=parser._environment(), creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     try:

@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import __version__
 from .attachment_metadata import REASONS
+from .attachment_metadata import validate as validate_parser_metadata
 from .attachments import (
     DECLARED_TYPES,
     MAX_PREVIEW_BYTES,
@@ -416,6 +417,15 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
                  and len(preview.splitlines()) <= MAX_PREVIEW_LINES and truncated in (0, 1)
                  and bool(truncated) == (status == "truncated") and quality == "unverified",
                  "Invalid attachment reference or parser metadata in SQLite")
+        if parser == 2 and declared == recognized == "pdf" and scope == "inert_text":
+            try:
+                validate_parser_metadata({
+                    "parser_version": parser, "parser_scope": scope, "parser_reason": reason,
+                    "parser_status": status, "preview_text": preview, "preview_truncated": truncated,
+                    "quality_status": quality,
+                }, expected_scope="inert_text")
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise BundleError("Invalid PDF parser metadata in SQLite") from exc
         display_name(name)
         _require(attachment not in ids and snapshot not in snapshots, "Duplicate attachment reference")
         ids.add(attachment)

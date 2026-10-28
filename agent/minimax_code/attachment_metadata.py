@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 SCOPE = "docx_body_paragraphs_tables"
+PDF_SCOPE = "inert_text"
 REASONS = {"ok", "no_extracted_body_text_no_ocr", "preview_limit", "invalid_package",
            "unsafe_package", "package_limit", "unsupported_feature", "missing_dependency",
            "limits_unavailable", "queue_timeout", "parser_timeout", "parser_crash",
@@ -9,16 +10,17 @@ REASONS = {"ok", "no_extracted_body_text_no_ocr", "preview_limit", "invalid_pack
            "unsupported_type", "ocr_not_attempted", "legacy_v1"}
 
 
-def failure(reason, *, unavailable=False):
+def failure(reason, *, unavailable=False, scope=SCOPE):
     return {"parser_status": "parser_unavailable" if unavailable else "parse_failed",
-            "parser_reason": reason, "parser_scope": SCOPE, "parser_version": 2,
+            "parser_reason": reason, "parser_scope": scope, "parser_version": 2,
             "preview_text": "", "preview_truncated": 0, "quality_status": "unverified"}
 
 
-def validate(result):
-    if (type(result) is not dict or set(result) != set(failure("parser_crash"))
+def validate(result, *, expected_scope=SCOPE):
+    if (expected_scope not in {SCOPE, PDF_SCOPE}
+            or type(result) is not dict or set(result) != set(failure("parser_crash"))
             or type(result["parser_version"]) is not int or result["parser_version"] != 2
-            or result["parser_scope"] != SCOPE
+            or result["parser_scope"] != expected_scope
             or result["parser_reason"] not in REASONS
             or result["parser_status"] not in {"parsed", "empty", "truncated", "parse_failed", "parser_unavailable"}
             or result["quality_status"] != "unverified"
@@ -39,4 +41,7 @@ def validate(result):
     }
     if result["parser_reason"] not in permitted[result["parser_status"]]:
         raise ValueError("Invalid parser status/reason")
+    if (expected_scope == PDF_SCOPE and result["parser_status"] in {"parsed", "truncated"}
+            and not result["preview_text"]):
+        raise ValueError("Missing PDF preview text")
     return result

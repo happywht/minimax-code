@@ -73,7 +73,6 @@ async def test_original_versions_restart_display_paths_and_full_integrity(origin
     (b"", "empty.txt", "empty"), (b"", "empty.csv", "empty"),
     (b"\xff\xfe", "bad.txt", "parse_failed"), (b"a\x00b", "nul.csv", "parse_failed"),
     (b'"unfinished', "bad.csv", "parse_failed"),
-    (b"%PDF-1.7\nonly a signature", "paper.pdf", "parser_unavailable"),
     (b"%PDF-1.7\nwrong parser", "paper.txt", "type_mismatch"),
     (b"plain text", "pretend.pdf", "type_mismatch"),
     (b"\x89PNG\r\n\x1a\nnot decoded", "image.png", "ocr_not_attempted"),

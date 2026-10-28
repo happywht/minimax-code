@@ -1,7 +1,7 @@
 """Trusted stdlib-only bootstrap, invoked with -I -S; gate before input/imports.
 
 Resource limits control consumption, not filesystem or network access. Only the
-fixed DOCX parser is loaded after the limits and service lifetime are installed.
+fixed DOCX/PDF parsers load after the limits and service lifetime are installed.
 """
 from __future__ import annotations
 
@@ -79,12 +79,17 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import json
 
-    from minimax_code.attachment_docx import parse_docx
-
     data = sys.stdin.buffer.read(10 * 1024 * 1024 + 1)
     if len(data) > 10 * 1024 * 1024:
         return 127
-    result = parse_docx(data)
+    if data.startswith(b"%PDF-"):
+        from minimax_code.attachment_pdf import parse_pdf
+
+        result = parse_pdf(data)
+    else:
+        from minimax_code.attachment_docx import parse_docx
+
+        result = parse_docx(data)
     sys.stdout.buffer.write(json.dumps(result, ensure_ascii=True).encode("ascii"))
     sys.stdout.buffer.flush()
     return 0

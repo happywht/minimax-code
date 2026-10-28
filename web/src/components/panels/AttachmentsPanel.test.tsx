@@ -38,6 +38,22 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); useAttachmentStore.getState().clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("project attachment panel and dispatch epochs", () => {
+  it.each(["empty", "truncated"] as const)("shows PDF %s boundaries and physical page provenance", async (status) => {
+    const pdf: AttachmentOriginal = { ...row, original_name: "pages.pdf", declared_type: "pdf", recognized_type: "pdf", parser_version: 2, parser_scope: "inert_text", parser_status: status,
+      parser_reason: status === "empty" ? "no_extracted_body_text_no_ocr" : "preview_limit", preview_truncated: status === "truncated" };
+    wire.request.mockImplementation(async (method: string) => method === "attachment.list"
+      ? { attachments: [pdf], service_id: "svc_test" }
+      : { attachment: pdf, preview_text: status === "empty" ? "" : "[page 1]\n<script>literal</script>" });
+    const { container } = render(<AttachmentsPanel onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /pages.pdf/ }));
+    await screen.findByText(/页码为物理页序号/);
+    expect(screen.getByText(/解析算法 v2.*inert_text/)).toBeTruthy();
+    expect(screen.getByText(/识别候选: pdf/)).toBeTruthy();
+    if (status === "empty") expect(screen.getByText("未提取到 PDF 页面文本；未尝试 OCR。原件可能仍包含其他内容。")).toBeTruthy();
+    else expect(screen.getByText(/预览已达到 64 KiB/)).toBeTruthy();
+    expect(container.querySelector("script")).toBeNull();
+    expect(screen.getByRole("button", { name: "下载附件原始字节" })).toBeTruthy();
+  });
   it("uploads selected raw file, escapes preview, separates quality and downloads original", async () => {
     const createURL = vi.fn().mockReturnValue("blob:original");
     vi.stubGlobal("URL", { createObjectURL: createURL, revokeObjectURL: vi.fn() });

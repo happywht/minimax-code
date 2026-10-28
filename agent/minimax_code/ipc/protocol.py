@@ -51,7 +51,7 @@ class AttachmentGetParams(AttachmentListParams):
 
 
 class AttachmentParserMetadata(BaseModel):
-    """Additive Schema043 result fields; v1 is preserved without reparsing."""
+    """Schema043 fields; v1 preserved. inert_text includes bounded PDF page text."""
     model_config = ConfigDict(extra="forbid", strict=True)
     parser_version: Literal[1, 2]
     parser_scope: Literal["legacy_v1", "inert_text", "docx_body_paragraphs_tables", "original_only"]

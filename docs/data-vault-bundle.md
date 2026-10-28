@@ -3,6 +3,10 @@
 此命令保存 **SQLite 数据库、已登记文本成果版本及附件原件**。当前新建包使用
 v4/Schema044；仍可校验、恢复旧 v1/Schema041、v2/Schema042、v3/Schema043，且不迁移或重新绑定旧库。
 它生成 data-only 数据副本，不代表 M7 完整应用备份或可直接启动的迁移。
+文本型PDF预览继续使用既有v2/inert_text和原因枚举，不改变Schema044/bundle4。
+精确v2+declared=recognized=pdf+inert_text行额外校验状态/原因/预览一致性；
+历史TXT类型错配、DOCX及v1分支不变，旧行不重解析。冻结旧raw bundle4 writer/枚举验证合法新PDF行的
+离线校验与恢复；此保证限于数据包读取，不代表整个历史应用二进制兼容。
 现有设置页 `data.*` 导出、导入和立即备份仍是原有语义，不会自动保存独立 vault 字节。
 
 ## 操作

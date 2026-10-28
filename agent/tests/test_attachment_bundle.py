@@ -87,6 +87,105 @@ def legacy_v3_writer():
     return module
 
 
+def legacy_v4_pdf_writer():
+    """Frozen raw bundle4 source/enums; other utilities use today's runtime."""
+    import minimax_code
+
+    name = "minimax_code._frozen_v4_pdf"
+    package = types.ModuleType(name)
+    package.__path__ = [str(Path(minimax_code.__file__).parent)]
+    package.__version__ = minimax_code.__version__
+    sys.modules[name] = package
+    for suffix, digest in (
+        ("attachment_metadata", "8a98687cc48efe1a1365608c50fc7da984c96640d09e481cc80dbe88ddd1c1d2"),
+        ("attachments", "209e6445742d660c91ba5e9c909641cca877ee87a42f65612ff2e4faa034ef39"),
+        ("bundle", "abdabae16f1e68be5d5918e07c3d666d4541d0923b4856aaf001efdaf3da7e14"),
+    ):
+        label = "metadata" if suffix == "attachment_metadata" else "writer" if suffix == "bundle" else suffix
+        path = FIXTURES / f"bundle-v4-{label}.py.txt"
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        loader = importlib.machinery.SourceFileLoader(name + "." + suffix, str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[loader.name] = module
+        loader.exec_module(module)
+    assert module.FORMAT_VERSION == 4 and module.SCHEMA_VERSION == 44
+    return module
+
+
+async def test_pdf_v2_raw_bundle4_reader_verify_restore_and_new_strict_branch(tmp_path):
+    pytest.importorskip("pypdf")
+    from pdf_fixture import pdf_bytes
+
+    data = tmp_path / "pdf-data"
+    db = AsyncDatabase(data / "data.db")
+    await db.connect()
+    await db.migrate()
+    await ProjectsDAO(db).create(id="pdf", name="PDF temporary test")
+    service = AttachmentService(db, data)
+    identity = (await service.list("pdf"))["service_id"]
+    original = pdf_bytes(("Real PDF preview", "中文第二页"))
+    actual = await service.upload("pdf", "paper.pdf", identity, stream(original))
+    assert actual["parser_status"] == "parsed"
+    template = dict(await db.fetchone("SELECT * FROM attachments WHERE id=?", (actual["id"],)))
+    cases = [("parsed", "ok", "[page 1]\ntext\n", 0),
+             ("empty", "no_extracted_body_text_no_ocr", "", 0),
+             ("truncated", "preview_limit", "[page 1]\ncut\n", 1)]
+    cases += [("parse_failed", reason, "", 0) for reason in (
+        "invalid_package", "unsafe_package", "package_limit", "unsupported_feature",
+        "parser_timeout", "parser_crash", "output_limit", "invalid_parser_output")]
+    cases += [("parser_unavailable", reason, "", 0) for reason in (
+        "missing_dependency", "limits_unavailable", "queue_timeout")]
+    for number, (status, reason, preview, truncated) in enumerate(cases, 1):
+        row = {**template, "id": f"att_{number:032x}", "snapshot_id": f"{number:032x}",
+               "version": number + 1, "parser_status": status, "parser_reason": reason,
+               "preview_text": preview, "preview_truncated": truncated}
+        (service.vault / row["snapshot_id"]).write_bytes(original)
+        keys = tuple(row)
+        await db.execute(f"INSERT INTO attachments ({','.join(keys)}) VALUES ({','.join('?' for _ in keys)})", tuple(row.values()))
+    # Historical txt-with-PDF-bytes mismatch is also inert_text, but is not a
+    # PDF-parser result and must not acquire the new PDF wire constraints.
+    mismatch = await service.upload("pdf", "pretend.txt", identity, stream(original))
+    assert mismatch["parser_status"] == "type_mismatch" and mismatch["parser_scope"] == "inert_text"
+    before = [tuple(row) for row in await db.fetchall("SELECT * FROM attachments ORDER BY id")]
+    await db.close()
+    frozen = legacy_v4_pdf_writer()
+    archive = tmp_path / "new-v4.zip"
+    assert bundle.create_bundle(data, archive)["format_version"] == 4
+    assert frozen.verify_bundle(archive)["schema_version"] == 44
+    restored = tmp_path / "old-reader-restore"
+    frozen.restore_bundle(archive, restored)
+    with zipfile.ZipFile(archive) as packed:
+        assert (restored / "data.db").read_bytes() == packed.read("data.db")
+    conn = sqlite3.connect(restored / "data.db")
+    try:
+        assert conn.execute("SELECT * FROM attachments ORDER BY id").fetchall() == before
+    finally:
+        conn.close()
+    assert all(path.read_bytes() == original for path in (restored / "attachment-vault").iterdir())
+    old_archive = tmp_path / "raw-writer-v4.zip"
+    frozen.create_bundle(data, old_archive)
+    assert bundle.verify_bundle(old_archive)["schema_version"] == 44
+    bundle.restore_bundle(old_archive, tmp_path / "new-reader-restore")
+    for status, reason, preview, truncated in [
+        ("parsed", "preview_limit", "[page 1]\nx", 0),
+        ("parsed", "ok", "", 0),
+        ("parse_failed", "invalid_package", "leaked document", 0),
+        ("empty", "ok", "", 0),
+    ]:
+        conn = sqlite3.connect(data / "data.db")
+        try:
+            conn.execute("UPDATE attachments SET parser_status=?,parser_reason=?,preview_text=?,preview_truncated=? WHERE id=?",
+                         (status, reason, preview, truncated, actual["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        # The frozen raw reader accepts these old broad combinations; only the
+        # precise new PDF branch is tightened, without changing the data format.
+        with pytest.raises(bundle.BundleError, match="Invalid PDF parser metadata"):
+            bundle.create_bundle(data, tmp_path / f"invalid-{status}-{reason}-{len(preview)}.zip")
+
+
 async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_all_v1_values(tmp_path):
     meta = json.loads((FIXTURES / "bundle-v2-schema042.json").read_bytes())
     compressed = (FIXTURES / "bundle-v2-schema042.zip.gz").read_bytes()

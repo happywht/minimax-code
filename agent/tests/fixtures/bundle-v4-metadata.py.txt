@@ -1,0 +1,42 @@
+"""Pure parser metadata validation shared by service, child and data-only bundles."""
+from __future__ import annotations
+
+SCOPE = "docx_body_paragraphs_tables"
+REASONS = {"ok", "no_extracted_body_text_no_ocr", "preview_limit", "invalid_package",
+           "unsafe_package", "package_limit", "unsupported_feature", "missing_dependency",
+           "limits_unavailable", "queue_timeout", "parser_timeout", "parser_crash",
+           "output_limit", "invalid_parser_output", "invalid_text", "type_mismatch",
+           "unsupported_type", "ocr_not_attempted", "legacy_v1"}
+
+
+def failure(reason, *, unavailable=False):
+    return {"parser_status": "parser_unavailable" if unavailable else "parse_failed",
+            "parser_reason": reason, "parser_scope": SCOPE, "parser_version": 2,
+            "preview_text": "", "preview_truncated": 0, "quality_status": "unverified"}
+
+
+def validate(result):
+    if (type(result) is not dict or set(result) != set(failure("parser_crash"))
+            or type(result["parser_version"]) is not int or result["parser_version"] != 2
+            or result["parser_scope"] != SCOPE
+            or result["parser_reason"] not in REASONS
+            or result["parser_status"] not in {"parsed", "empty", "truncated", "parse_failed", "parser_unavailable"}
+            or result["quality_status"] != "unverified"
+            or type(result["preview_truncated"]) is not int
+            or result["preview_truncated"] not in (0, 1)
+            or bool(result["preview_truncated"]) != (result["parser_status"] == "truncated")
+            or not isinstance(result["preview_text"], str)
+            or len(result["preview_text"].encode("utf8")) > 65536
+            or len(result["preview_text"].splitlines()) > 2000
+            or (result["parser_status"] not in {"parsed", "truncated"} and result["preview_text"])):
+        raise ValueError("Invalid parser wire result")
+    permitted = {
+        "parsed": {"ok"}, "empty": {"no_extracted_body_text_no_ocr"},
+        "truncated": {"preview_limit"},
+        "parser_unavailable": {"missing_dependency", "limits_unavailable", "queue_timeout"},
+        "parse_failed": {"invalid_package", "unsafe_package", "package_limit", "unsupported_feature",
+                         "parser_timeout", "parser_crash", "output_limit", "invalid_parser_output"},
+    }
+    if result["parser_reason"] not in permitted[result["parser_status"]]:
+        raise ValueError("Invalid parser status/reason")
+    return result

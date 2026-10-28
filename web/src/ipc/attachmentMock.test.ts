@@ -12,6 +12,13 @@ function file(text: string | Uint8Array, name: string): File {
 beforeEach(() => vi.stubGlobal("crypto", webcrypto));
 afterEach(() => vi.unstubAllGlobals());
 describe("inert attachment demo contract", () => {
+  it("does not claim real PDF text parsing in the browser demo", async () => {
+    const row = await storeMockAttachment(file("%PDF-1.7\nBT (visible) Tj ET", "demo.pdf"), "pdf-demo", () => {});
+    expect(row.parser_status).toBe("parser_unavailable");
+    expect(row.parser_reason).toBe("missing_dependency");
+    expect(row.parser_scope).toBe("original_only");
+    expect(attachmentMock("attachment.get", { project_id: "pdf-demo", attachment_id: row.id }, true)).toMatchObject({ preview_text: "" });
+  });
   it("versions independent originals, lists without preview, gets scoped escaped source, downloads original", async () => {
     const first = await storeMockAttachment(file("\ufeff<script>literal</script>\r\n=1+1", "same.txt"), "mock-p", () => {});
     const second = await storeMockAttachment(file("new", "same.txt"), "mock-p", () => {});

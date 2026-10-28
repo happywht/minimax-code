@@ -171,3 +171,28 @@ async def test_required_service_header_and_cors_preflight(upload_client):
     assert response.status_code == 200
     assert "x-attachment-service-id" in response.headers["access-control-allow-headers"].lower()
     assert not service.vault.exists()
+
+
+async def test_pdf_actual_worker_upload_rpc_preview_original_and_mismatch(upload_client):
+    pytest.importorskip("pypdf")
+    from pdf_fixture import pdf_bytes
+
+    client, service, db, _ = upload_client
+    original = pdf_bytes(("HTTP ASCII", "", "中文第三页"))
+    response = await upload(client, original, "../source.pdf")
+    assert response.status_code == 201
+    row = response.json()["attachment"]
+    assert row["parser_status"] == "parsed" and row["parser_scope"] == "inert_text"
+    selected = (await rpc(client, "attachment.get", {"project_id": "p", "attachment_id": row["id"]}))["result"]
+    assert "[page 3]" in selected["preview_text"] and "中文第三页" in selected["preview_text"]
+    assert (await client.get(f"/attachments/{row['id']}/content?project_id=p")).content == original
+    before = dict(await db.fetchone("SELECT * FROM attachments WHERE id=?", (row["id"],)))
+    await db.close()
+    await db.connect()
+    assert (await service.get("p", row["id"]))["attachment"] == row
+    assert dict(await db.fetchone("SELECT * FROM attachments WHERE id=?", (row["id"],))) == before
+    mismatch = (await upload(client, original, "pretend.txt")).json()["attachment"]
+    assert mismatch["parser_status"] == "type_mismatch"
+    bad = (await upload(client, b"%PDF-1.7\nonly signature", "broken.pdf")).json()["attachment"]
+    assert bad["parser_status"] == "parse_failed" and bad["parser_reason"] == "invalid_package"
+    assert (await service.content("p", bad["id"]))[1] == b"%PDF-1.7\nonly signature"

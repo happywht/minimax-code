@@ -3,3 +3,6 @@ agent/tests/fixtures/bundle-v1-writer.py.txt -text
 agent/tests/fixtures/bundle-v2-writer.py.txt -text
 agent/tests/fixtures/bundle-v2-attachments.py.txt -text
 agent/tests/fixtures/bundle-v3-writer.py.txt -text
+agent/tests/fixtures/bundle-v4-writer.py.txt -text
+agent/tests/fixtures/bundle-v4-attachments.py.txt -text
+agent/tests/fixtures/bundle-v4-metadata.py.txt -text

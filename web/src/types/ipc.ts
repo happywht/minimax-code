@@ -50,6 +50,7 @@ export interface AttachmentOriginal {
   parser_status: AttachmentParserStatus;
   parser_version: 1 | 2;
   parser_reason: AttachmentParserReason;
+  /** inert_text includes bounded PDF text in physical page order, without OCR. */
   parser_scope: "legacy_v1" | "inert_text" | "docx_body_paragraphs_tables" | "original_only";
   preview_truncated: boolean;
   quality_status: "unverified";

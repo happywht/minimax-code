@@ -15,7 +15,7 @@ import threading
 import time
 from pathlib import Path
 
-from .attachment_metadata import failure, validate
+from .attachment_metadata import PDF_SCOPE, SCOPE, failure, validate
 
 WALL_SECONDS = 15
 QUEUE_SECONDS = 5
@@ -35,7 +35,8 @@ def _command():
     # parser PID, so launch the base interpreter and add only trusted venv libs
     # after its resource gate. Never process site .pth or inherit PYTHONPATH.
     executable = getattr(sys, "_base_executable", sys.executable) if os.name == "nt" else sys.executable
-    command = [executable, "-I", "-S", str(_WORKER)]
+    # -I ignores Python environment flags; read-only parsing must not cache in the installation.
+    command = [executable, "-I", "-B", "-S", str(_WORKER)]
     if sys.platform == "win32":
         from ._windows_process_host import parent_arguments
 
@@ -47,9 +48,12 @@ def _command():
     return command
 
 
-def _run(data, cancelled):
+def _run(data, cancelled, scope=SCOPE):
+    def failed(reason, **kwargs):
+        return failure(reason, scope=scope, **kwargs)
+
     if sys.platform not in {"linux", "win32"}:
-        return failure("limits_unavailable", unavailable=True)
+        return failed("limits_unavailable", unavailable=True)
     deadline = time.monotonic() + QUEUE_SECONDS
     acquired = False
     while not cancelled.is_set() and time.monotonic() < deadline:
@@ -57,19 +61,19 @@ def _run(data, cancelled):
             acquired = True
             break
     if not acquired:
-        return failure("queue_timeout", unavailable=True)
+        return failed("queue_timeout", unavailable=True)
     process, readers = None, []
     output, errors = bytearray(), bytearray()
     overflow = threading.Event()
     try:
         if cancelled.is_set():
-            return failure("parser_crash")
+            return failed("parser_crash")
         try:
             process = subprocess.Popen(_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, env=_environment(), close_fds=True,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         except (OSError, ValueError, RuntimeError):
-            return failure("limits_unavailable", unavailable=True)
+            return failed("limits_unavailable", unavailable=True)
         deadline = time.monotonic() + WALL_SECONDS
 
         def read(stream, target, limit):
@@ -115,15 +119,16 @@ def _run(data, cancelled):
         for reader in readers:
             reader.join()
         if reason or overflow.is_set():
-            return failure(reason or "output_limit")
+            return failed(reason or "output_limit")
         if process.returncode == 126:
-            return failure("limits_unavailable", unavailable=True)
+            return failed("limits_unavailable", unavailable=True)
         if process.returncode:
-            return failure("parser_crash")
+            return failed("parser_crash")
         try:
-            return validate(json.loads(output))
+            result = json.loads(output)
+            return validate(result) if scope == SCOPE else validate(result, expected_scope=scope)
         except (ValueError, UnicodeError, TypeError):
-            return failure("invalid_parser_output")
+            return failed("invalid_parser_output")
     finally:
         if process is not None and process.poll() is None:
             process.kill()
@@ -134,8 +139,16 @@ def _run(data, cancelled):
 
 
 async def inspect_docx(data):
+    return await _inspect(data, SCOPE)
+
+
+async def inspect_pdf(data):
+    return await _inspect(data, PDF_SCOPE)
+
+
+async def _inspect(data, scope):
     cancelled = threading.Event()
-    task = asyncio.create_task(asyncio.to_thread(_run, data, cancelled))
+    task = asyncio.create_task(asyncio.to_thread(_run, data, cancelled, scope))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

@@ -7,7 +7,7 @@ python-docx 1.2+ 和 defusedxml 0.7.1+；手动在 agent 目录执行
 
 新上传使用算法2、Schema043；旧算法1的字段和值保留，新增范围/原因为legacy_v1，
 没有后台重解析。quality_status始终unverified，不自动加入对话上下文，不产生交付回执。
-PDF/XLSX与OCR不在本片范围。
+本DOCX切片不包含PDF/XLSX与OCR；后续PDF页面文字预览见[PDF有界解析](attachment-pdf.md)。
 
 ## 提取范围
 
@@ -29,7 +29,7 @@ PDF/XLSX与OCR不在本片范围。
 算法/范围/原因/状态及预览上限。错误只返回稳定原因，不返回异常文本或文档XML。
 取消、重复取消、超时和输出超限均终止并等待实际子进程后释放并发槽。
 
-固定内部Python bootstrap使用 `-I -S`，从匿名stdin只接收已校验字节；不接收DB/vault路径、
+固定内部Python bootstrap使用 `-I -B -S`，从匿名stdin只接收已校验字节；不接收DB/vault路径、
 文件名、任意命令、URL、插件、自动安装指令或服务环境秘密。第三方导入与读取输入前，
 Windows使用专用ctypes Job（内存、CPU、活动进程1、kill-on-close）及服务进程创建时间watch，
 直接启动base interpreter以避免venv redirector PID错误；Linux先设置RLIMIT_AS/CPU/CORE，

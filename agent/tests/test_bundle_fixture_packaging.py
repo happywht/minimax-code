@@ -20,6 +20,9 @@ SHA256 = "11fb0bd93206e86514bae8928e65645084c75a58c4c4a38bc8c55ac1464ad863"
     ("agent/tests/fixtures/bundle-v2-writer.py.txt", "4e5ca9bb8cfaebb051193d3b23a72367a0183dfd8149d095eace510243874602"),
     ("agent/tests/fixtures/bundle-v2-attachments.py.txt", "6b37320be1b76db7d1153f89a4ec04554e9f9bed3855028e1652fce6e57a2025"),
     ("agent/tests/fixtures/bundle-v3-writer.py.txt", "6787414419eb71f3405fe767b675d9a56bcea8130464f3c62bc772bdd7b58ed2"),
+    ("agent/tests/fixtures/bundle-v4-writer.py.txt", "abdabae16f1e68be5d5918e07c3d666d4541d0923b4856aaf001efdaf3da7e14"),
+    ("agent/tests/fixtures/bundle-v4-attachments.py.txt", "209e6445742d660c91ba5e9c909641cca877ee87a42f65612ff2e4faa034ef39"),
+    ("agent/tests/fixtures/bundle-v4-metadata.py.txt", "8a98687cc48efe1a1365608c50fc7da984c96640d09e481cc80dbe88ddd1c1d2"),
 ])
 def test_frozen_old_writer_survives_autocrlf_fresh_checkout_and_archive(tmp_path, fixture, digest):
     git = shutil.which("git")
