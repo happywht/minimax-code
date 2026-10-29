@@ -30,8 +30,17 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
   const move = <T,>(items: T[], from: number, to: number): T[] => {
     const next = [...items]; [next[from], next[to]] = [next[to], next[from]]; return next;
   };
+  const moveBlockToSection = (source: number, blockIndex: number, target: number) => {
+    if (source === target || value[source].blocks.length <= 1 || value[target].blocks.length >= 100) return;
+    const block = value[source].blocks[blockIndex];
+    onChange(value.map((section, index) => {
+      if (index === source) return { ...section, blocks: section.blocks.filter((_, i) => i !== blockIndex) };
+      if (index === target) return { ...section, blocks: [...section.blocks, block] };
+      return section;
+    }));
+  };
   return <div className="space-y-3">
-    <p>按顺序编辑章节、段落和表格。表格为纯文本；每表最多 100 行、10 列、1000 格。生成不会核验内容或版式。</p>
+    <p>按顺序编辑章节、段落和表格。选择目标章节可将内容移至该章节末尾；每章至少保留一项内容，且最多 100 项。表格为纯文本；每表最多 100 行、10 列、1000 格。生成不会核验内容或版式。</p>
     {value.map((section, si) => {
       const updateBlock = (bi: number, block: DocxBlock) => update(si, { ...section, blocks: section.blocks.map((item, i) => i === bi ? block : item) });
       return <fieldset key={si} className="space-y-2 rounded border border-line p-2">
@@ -59,6 +68,12 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
             <Button type="button" variant="secondary" disabled={bi === 0} onClick={() => update(si, { ...section, blocks: move(section.blocks, bi, bi - 1) })}>内容上移</Button>
             <Button type="button" variant="secondary" disabled={bi === section.blocks.length - 1} onClick={() => update(si, { ...section, blocks: move(section.blocks, bi, bi + 1) })}>内容下移</Button>
             <Button type="button" variant="secondary" disabled={section.blocks.length === 1} onClick={() => update(si, { ...section, blocks: section.blocks.filter((_, i) => i !== bi) })}>删除内容</Button>
+            <label>移动到章节 <select aria-label={`移动章节 ${si + 1} 的内容 ${bi + 1} 到章节`} value="" disabled={section.blocks.length <= 1 || value.length <= 1 || value.every((item, i) => i === si || item.blocks.length >= 100)} onChange={(e) => {
+              if (e.target.value !== "") moveBlockToSection(si, bi, Number(e.target.value));
+            }}>
+              <option value="">选择目标章节</option>
+              {value.map((target, ti) => ti !== si && <option key={ti} value={ti} disabled={target.blocks.length >= 100}>章节 {ti + 1}{target.heading ? `：${target.heading}` : ""}{target.blocks.length >= 100 ? "（已满）" : ""}</option>)}
+            </select></label>
           </div>
         </div>)}
         <div className="flex flex-wrap gap-2">
