@@ -250,7 +250,7 @@ export interface TypedIPC {
   startRun(params: RunStartParams): Promise<RunAdmissionResult>;
   getRun(runId: string): Promise<RunGetResult>;
   cancelRun(runId: string): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
-  resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number): Promise<RunAdmissionResult>;
+  resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number, scope?: { service: string; session: string; project: string | null; cursor: number }): Promise<RunAdmissionResult>;
   getBudget(runId?: string, day?: string): Promise<BudgetStateResult>;
   getDailyBudgetSettings(): Promise<import("../types/ipc").DailyBudgetSettings>;
   setDailyBudgetSettings(service: string, limit: number | null, expectedSavedLimit?: number | null): Promise<import("../types/ipc").DailyBudgetSettings>;
@@ -770,12 +770,14 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     setDailyBudgetSettings: (service, limit, expectedSavedLimit) => client.request("budget.settings_set", { expected_service_id: service, limit_tokens: limit, ...(expectedSavedLimit !== undefined ? { expected_saved_limit: expectedSavedLimit } : {}) }),
     getBudget: (runId, day) => client.request<BudgetStateResult>("budget.get", { ...(runId ? {run_id: runId} : {}), ...(day ? {day} : {}) }),
     reconcileBudget: (params) => client.request<{ok: boolean}>("budget.reconcile", params),
-    resumeRun: (runId, idempotencyKey, reviewed = false, budgetTokens?: number) =>
+    resumeRun: (runId, idempotencyKey, reviewed = false, budgetTokens?: number, scope) =>
       client.request<RunAdmissionResult>("run.resume", {
         run_id: runId,
         idempotency_key: idempotencyKey,
         reviewed,
         ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
+        ...(scope ? { expected_service_id: scope.service, expected_session_id: scope.session,
+          expected_project_id: scope.project, expected_cursor: scope.cursor } : {}),
       }),
     steerRun: (params) => client.request("run.steer", params),
     searchPublicResearch: (params) => client.request("run.research_search", params),

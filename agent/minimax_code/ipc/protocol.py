@@ -429,6 +429,10 @@ class RunResumeParams(RunIdParams):
     # M2 — raise the per-run cap when resuming a budget_paused run.
     # None inherits the original run's cap from its metadata.
     budget_tokens: int | None = Field(default=None, ge=0)
+    expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_project_id: str | None = Field(default=None, max_length=128)
+    expected_cursor: int | None = Field(default=None, ge=0, le=2**53 - 1)
 
 
 class BudgetGetParams(BaseModel):

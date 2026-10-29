@@ -2068,3 +2068,5 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 `schedule.enable` 可携带 `acknowledge_occurrence_id`、`expected_revision` 与 `expected_service_id`：前者确认已核对的确切发生，后两者校验计划版本和服务身份；仍在运行或清理中的发生不能以此解除。启用未来计划不恢复或重放旧运行。
 
 `session.create` 的引擎交接可选同时提供 `expected_service_id` 与 `handoff_source_session_id`：服务端核对原会话、项目、源/目标引擎及本地默认工作区，并要求新建而非复用；只创建会话，不迁移线程或自动发送消息。
+
+`run.resume` 可附带完整的 `expected_service_id`、`expected_session_id`、`expected_project_id` 和 `expected_cursor`，服务在接单前对照持久运行快照；缺项或已变化时拒绝。调用者仍须审阅外部副作用，运行和文件可能在校验后继续变化；这不是 OS 沙盒或精确恢复。

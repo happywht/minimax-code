@@ -407,6 +407,19 @@ def register_run_handlers(server: Any) -> None:
             run = await dao.get_run(request.run_id)
             if run is None or run["status"] not in {"interrupted", "failed", "cancelled", "budget_paused"}:
                 raise HandlerError(INVALID_PARAMS, "Only interrupted, failed, cancelled or budget-paused runs can be resumed")
+            bound = {"expected_service_id", "expected_session_id", "expected_project_id", "expected_cursor"}
+            if bound & request.model_fields_set:
+                if not bound <= request.model_fields_set or not request.expected_service_id or not request.expected_session_id or request.expected_cursor is None:
+                    raise HandlerError(INVALID_PARAMS, "Recovery review binding is incomplete")
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                identity = await ArtifactDAO(dao._db).service_id()
+                source = await dao.snapshot(request.run_id)
+                session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (run["session_id"],))
+                if (identity != request.expected_service_id or source is None or source["cursor"] != request.expected_cursor
+                        or source["run"]["session_id"] != request.expected_session_id or source["run"]["status"] != run["status"]
+                        or not session or session["project_id"] != request.expected_project_id
+                        or (source["run"].get("metadata") or {}).get("project_id") != request.expected_project_id):
+                    raise HandlerError(INVALID_PARAMS, "Recovery review changed; inspect the run again")
             previous = await dao.request_payload(request.run_id)
             metadata = run.get("metadata") or {}
             budget_paused = run["status"] == "budget_paused"
