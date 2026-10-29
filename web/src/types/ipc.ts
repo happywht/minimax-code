@@ -2153,6 +2153,7 @@ export interface CodebaseSummarizeResult {
   language: string | null;
   total_lines: number;
   symbols: { name: string; kind: string; line: number; children: CodebaseSummarizeResult["symbols"] }[];
+  symbols_truncated?: boolean;
   snippet: string;
   file_count: number;
 }

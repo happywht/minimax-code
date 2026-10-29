@@ -28,7 +28,8 @@ class SummarizeCodebaseTool(Tool):
         "Summarise an indexed file or directory from the codebase. Use this "
         "when the user asks what a module does, what symbols it contains, or "
         "for a high-level overview of a path. Returns language, total lines, "
-        "extracted symbols, and a short preview snippet."
+        "extracted symbols, and a short preview snippet. File symbols are flattened "
+        "and may be truncated; results come from a potentially stale index snapshot."
     )
     parameters = {
         "type": "object",
@@ -70,6 +71,7 @@ class SummarizeCodebaseTool(Tool):
                 "language": result.get("language"),
                 "total_lines": result.get("total_lines"),
                 "symbols": result.get("symbols") or [],
+                "symbols_truncated": result.get("symbols_truncated", False),
                 "snippet": result.get("snippet"),
                 "file_count": result.get("file_count"),
                 "source": _format_source(path, kind, result.get("total_lines")),

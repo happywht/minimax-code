@@ -14,6 +14,7 @@ from .store import CodebaseStore
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SNIPPET_RADIUS = 120
+_MAX_SUMMARY_SYMBOLS = 100
 
 
 @dataclass
@@ -41,6 +42,7 @@ class SummaryResult:
     symbols: list[dict[str, Any]]
     snippet: str
     file_count: int
+    symbols_truncated: bool = False
 
 
 class CodebaseRetriever:
@@ -192,7 +194,7 @@ class CodebaseRetriever:
         """Return a structured summary for a file or directory prefix."""
         chunks = await self._store.get_file_chunks(path, root=self._root)
         if chunks:
-            return self._summarize_file(path, chunks[0])
+            return self._summarize_file(path, chunks)
 
         # Directory prefix: gather files whose path starts with the prefix.
         rows = await self._store.list_files(limit=1000, root=self._root)
@@ -225,21 +227,41 @@ class CodebaseRetriever:
             file_count=len(matching),
         ).__dict__
 
-    def _summarize_file(self, path: str, chunk: dict[str, Any]) -> dict[str, Any]:
-        metadata = chunk.get("metadata") or {}
-        content = chunk.get("content") or ""
+    def _summarize_file(self, path: str, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+        """Summarize all indexed windows, deduplicating their overlapping symbols.
+
+        Symbols are flattened because a parent outside a window may be absent
+        from that window's metadata. This keeps later nested declarations visible.
+        """
+        first = chunks[0]
+        metadata = first.get("metadata") or {}
+        content = first.get("content") or ""
         lines = content.splitlines()
-        preview_lines = min(20, len(lines))
-        snippet = "\n".join(lines[:preview_lines])
+        symbols: list[dict[str, Any]] = []
+        seen: set[tuple[Any, Any, Any]] = set()
+
+        def collect(nodes: list[dict[str, Any]]) -> None:
+            for node in nodes:
+                key = (node.get("name"), node.get("kind"), node.get("line"))
+                if key not in seen:
+                    seen.add(key)
+                    symbols.append({**node, "children": []})
+                collect(node.get("children") or [])
+
+        for chunk in chunks:
+            collect((chunk.get("metadata") or {}).get("symbols") or [])
+        symbols.sort(key=lambda item: (item.get("line") or 0, item.get("name") or ""))
         return SummaryResult(
             path=path,
             kind="file",
             language=metadata.get("language"),
             total_lines=metadata.get("total_lines", 0),
-            symbols=metadata.get("symbols") or [],
-            snippet=snippet,
+            symbols=symbols[:_MAX_SUMMARY_SYMBOLS],
+            snippet="\n".join(lines[:20]),
             file_count=1,
+            symbols_truncated=len(symbols) > _MAX_SUMMARY_SYMBOLS,
         ).__dict__
+
 
 
 def _build_snippet(content: str, query: str, radius: int = _DEFAULT_SNIPPET_RADIUS) -> str:
