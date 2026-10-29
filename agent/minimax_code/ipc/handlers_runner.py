@@ -17,7 +17,7 @@ from typing import Any
 
 from ..execution import capture_output, spawn_exec, spawn_shell
 from .handler_utils import HandlerError
-from .handlers_terminal import default_working_directory, start_terminal_command
+from .handlers_terminal import _cwd_from_params, start_terminal_command
 from .host_session_gate import require_host_session
 from .protocol import INVALID_PARAMS
 from .server import Context
@@ -166,18 +166,6 @@ def _command_from_params(params: dict[str, Any]) -> str:
     return command
 
 
-def _cwd_from_params(params: dict[str, Any]) -> str:
-    raw = params.get("cwd")
-    if raw is None or raw == "":
-        return default_working_directory()
-    if not isinstance(raw, str):
-        raise HandlerError(INVALID_PARAMS, "'cwd' must be a string when provided")
-    path = Path(raw).expanduser().resolve()
-    if not path.exists() or not path.is_dir():
-        raise HandlerError(INVALID_PARAMS, "'cwd' must point to an existing directory")
-    return str(path)
-
-
 def _timeout_from_params(params: dict[str, Any]) -> float:
     raw = params.get("timeout_s", _DEFAULT_TIMEOUT_S)
     if not isinstance(raw, (int, float)) or raw <= 0:
@@ -275,6 +263,7 @@ def register_runner_handlers(server: Any) -> None:
             runner_id = _runner_id_from_params(p)
             chat_session_id = _chat_session_id_from_params(p)
             await require_host_session(chat_session_id)
+            cwd = await _cwd_from_params(p)
             if runner_id == "native":
                 runner = await _runner_entry(id="native", label="Native shell", command_name=None,
                                              version_args=None, supports_prompt=False)
@@ -295,7 +284,7 @@ def register_runner_handlers(server: Any) -> None:
             terminal_command = command if runner_id == "native" else _runner_command(runner, command, p)
             session = await start_terminal_command(
                 command=terminal_command,
-                cwd=_cwd_from_params(p),
+                cwd=cwd,
                 timeout_s=_timeout_from_params(p),
                 chat_session_id=chat_session_id,
                 emit=ctx.emit,

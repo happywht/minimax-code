@@ -93,6 +93,10 @@ MCP 优先官方 Python SDK，保留现有配置和工具桥接；真实互操�
 
 ## M1 实施记录（2026-10-23，进行中）
 
+- `runner.start` 复用终端入口的会话/项目工作目录校验，并在探测外部 CLI 前拒绝越界；
+  目录失效、符号链接逃逸和默认会话目录等相关回归 83 项通过。工作目录限制本身不限制
+  shell 访问宿主文件或网络，不能视为系统沙箱。
+
 - 显式绑定的项目目录、worktree 或会话失效时阻止执行；终端根据关联会话解析目录。
 - 共享进程边界用于 exec、终端、验证、定时命令、Hooks、stdio MCP、内置检查工具及 rg。子进程使用环境白名单；超时覆盖输出管道排空，输出保留有上限。只读规划禁止任意命令和文件修改，文本搜索回退到 Python 读取。
 - Windows 使用独立启动器先加入 kill-on-close Job 再启动命令，POSIX 使用独立进程组。它们用于生命周期管理，不是 OS 沙盒。依据 [Microsoft Job Objects 文档](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)；已在 Windows 真实进程中验证命令退出及启动器被杀后的子进程回收。

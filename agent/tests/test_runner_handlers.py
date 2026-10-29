@@ -212,6 +212,7 @@ async def test_runner_start_external_cli_delegates_to_terminal(
         ]),
     )
     monkeypatch.setattr(handlers_runner, "start_terminal_command", fake_start_terminal_command)
+    monkeypatch.setattr(handlers_terminal, "resolve_root_for_session", AsyncMock(return_value=tmp_path))
 
     handler, ctx = _make_handler("runner.start")
     await handler(
@@ -363,3 +364,89 @@ async def test_runner_start_rejects_invalid_safety_option(
     assert ctx.reply_error_payload is not None
     _code, message, _data = ctx.reply_error_payload
     assert "sandbox_mode" in message
+
+@pytest.mark.asyncio
+async def test_runner_respects_session_workspace_before_start(monkeypatch, tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(handlers_terminal, "resolve_root_for_session", AsyncMock(return_value=root))
+    spawn = AsyncMock()
+    monkeypatch.setattr(handlers_runner, "start_terminal_command", spawn)
+    handler, ctx = _make_handler("runner.start")
+    await handler({"runner_id": "native", "command": "echo ignored", "session_id": "s1",
+                   "cwd": str(outside)}, ctx)
+    assert ctx.reply_error_payload is not None
+    assert "outside the project root" in ctx.reply_error_payload[1]
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runner_default_cwd_uses_session_workspace(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setattr(handlers_terminal, "resolve_root_for_session", AsyncMock(return_value=root))
+    spawn = AsyncMock(return_value=SimpleNamespace(to_wire=lambda: {"id": "test"}))
+    monkeypatch.setattr(handlers_runner, "start_terminal_command", spawn)
+    handler, ctx = _make_handler("runner.start")
+    await handler({"runner_id": "native", "command": "echo ignored", "session_id": "s1"}, ctx)
+    assert ctx.reply_error_payload is None
+    assert spawn.await_args.kwargs["cwd"] == str(root)
+
+@pytest.mark.asyncio
+async def test_runner_rejects_outside_project_before_external_probe(monkeypatch, tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(handlers_terminal, "project_root_from_params", AsyncMock(return_value=root))
+    spawn = AsyncMock()
+    catalog = AsyncMock()
+    monkeypatch.setattr(handlers_runner, "start_terminal_command", spawn)
+    monkeypatch.setattr(handlers_runner, "_runner_catalog", catalog)
+    handler, ctx = _make_handler("runner.start")
+    await handler({"runner_id": "claude-code-cli", "command": "ignored", "project_id": "p1",
+                   "cwd": str(outside)}, ctx)
+    assert ctx.reply_error_payload is not None
+    assert "outside the project root" in ctx.reply_error_payload[1]
+    catalog.assert_not_awaited()
+    spawn.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_runner_fails_closed_for_disappeared_session_workspace(monkeypatch, tmp_path):
+    from minimax_code import workspace_ctx
+
+    missing = tmp_path / "removed"
+    monkeypatch.setattr(workspace_ctx, "_get_session", AsyncMock(return_value={"workspace_path": str(missing)}))
+    spawn = AsyncMock()
+    monkeypatch.setattr(handlers_runner, "start_terminal_command", spawn)
+    handler, ctx = _make_handler("runner.start")
+    await handler({"runner_id": "native", "command": "ignored", "session_id": "s1"}, ctx)
+    assert ctx.reply_error_payload is not None
+    assert "unavailable" in ctx.reply_error_payload[1]
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_session_workspace_symlink_escape(monkeypatch, tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = root / "link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation requires OS permission")
+    monkeypatch.setattr(handlers_terminal, "resolve_root_for_session", AsyncMock(return_value=root))
+    spawn = AsyncMock()
+    monkeypatch.setattr(handlers_runner, "start_terminal_command", spawn)
+    handler, ctx = _make_handler("runner.start")
+    await handler({"runner_id": "native", "command": "ignored", "session_id": "s1",
+                   "cwd": str(link)}, ctx)
+    assert ctx.reply_error_payload is not None
+    assert "outside the project root" in ctx.reply_error_payload[1]
+    spawn.assert_not_awaited()
