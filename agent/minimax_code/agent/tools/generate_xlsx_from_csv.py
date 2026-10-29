@@ -208,6 +208,33 @@ def group_spec(spec: dict, group_by: dict) -> dict:
     }).model_dump()
 
 
+def sort_spec(spec: dict, sort_by: list[dict[str, Any]]) -> dict:
+    """Stable typed multi-column ordering, with blanks last in either direction."""
+    source = XlsxSpec.model_validate(spec)
+    if not isinstance(sort_by, list) or not 1 <= len(sort_by) <= 3:
+        raise ValueError("sort_by must contain 1–3 columns")
+    names = [column.name for column in source.columns]
+    keys = []
+    for item in sort_by:
+        if not isinstance(item, dict) or set(item) != {"column", "direction"}:
+            raise ValueError("Each sort requires column and direction")
+        name, direction = item["column"], item["direction"]
+        if not isinstance(name, str) or name not in names:
+            raise ValueError("Sort column must be an output column name")
+        if not isinstance(direction, str) or direction not in {"asc", "desc"}:
+            raise ValueError("Sort direction must be asc or desc")
+        if name in [key[0] for key in keys]:
+            raise ValueError("Sort columns must be unique")
+        keys.append((name, names.index(name), direction))
+    rows = list(source.rows)
+    for _, index, direction in reversed(keys):
+        present = [row for row in rows if row[index] is not None]
+        blanks = [row for row in rows if row[index] is None]
+        present.sort(key=lambda row: row[index], reverse=direction == "desc")
+        rows = present + blanks
+    return {**source.model_dump(), "rows": rows}
+
+
 class GenerateXlsxFromCsvTool(Tool):
     name = "generate_xlsx_from_csv"
     description = (
@@ -216,7 +243,9 @@ class GenerateXlsxFromCsvTool(Tool):
         "CSV must be UTF-8, with a unique header and at most 1 MiB/1000 rows. Empty cells become blank; "
         "numbers are strict decimal and booleans are true/false. Text beginning '=' remains literal. "
         "Optional filters use output column names and typed values; all conditions must match. "
-        "Apply filters before optional group_by, summaries and chart. group_by produces only grouped rows: "
+        "Apply filters before optional group_by, then optional sort_by before summaries and chart. "
+        "Sort uses up to three output columns, typed values, stable ties and blanks last. "
+        "group_by produces only grouped rows: "
         "blank keys form one group, row count includes every row, count excludes blanks, "
         "sum and average ignore blanks and are blank when all values are blank. "
         "Average rounds half-up to 0–8 decimals (default 2). Values are static. "
@@ -237,6 +266,11 @@ class GenerateXlsxFromCsvTool(Tool):
                 "value": {"anyOf": [{"type": "string"}, {"type": "number"},
                                     {"type": "boolean"}, {"type": "null"}]},
             }, "required": ["column", "operator", "value"], "additionalProperties": False}},
+            "sort_by": {"type": "array", "minItems": 1, "maxItems": 3, "items": {
+                "type": "object", "properties": {
+                    "column": {"type": "string"},
+                    "direction": {"type": "string", "enum": ["asc", "desc"]},
+                }, "required": ["column", "direction"], "additionalProperties": False}},
             "group_by": {"type": "object", "properties": {
                 "column": {"type": "string", "description": "Exact output column used for grouping"},
                 "metrics": {"type": "array", "minItems": 1, "maxItems": 18, "items": {
@@ -258,7 +292,7 @@ class GenerateXlsxFromCsvTool(Tool):
         self.generator = GenerateTableXlsxTool(db, session_id, project_id)
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None) -> ToolResult:
+                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -282,6 +316,8 @@ class GenerateXlsxFromCsvTool(Tool):
                 if summaries:
                     raise ValueError("group_by cannot be combined with summaries")
                 spec = group_spec(spec, group_by)
+            if sort_by is not None:
+                spec = sort_spec(spec, sort_by)
             bound_key = hashlib.sha256(canonical([request_key, attachment_id, original["sha256"]])).hexdigest()
             result = await self.generator.run(filename, bound_key, spec, summaries=summaries, chart=chart)
             if result.success:
@@ -289,6 +325,7 @@ class GenerateXlsxFromCsvTool(Tool):
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
                 result.output["filter_conditions"] = filters or []
+                result.output["sort_by"] = sort_by or []
                 result.output["source_row_count"] = source_row_count
                 result.output["matched_row_count"] = matched_row_count
                 if group_by is not None:

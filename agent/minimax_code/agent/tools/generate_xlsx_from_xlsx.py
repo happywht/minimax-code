@@ -13,7 +13,7 @@ from ...attachment_parser import extract_xlsx
 from ...execution import require_write_access
 from ...office_xlsx import canonical
 from .base import ToolResult
-from .generate_xlsx_from_csv import GenerateXlsxFromCsvTool, csv_to_spec, filter_spec, group_spec
+from .generate_xlsx_from_csv import GenerateXlsxFromCsvTool, csv_to_spec, filter_spec, group_spec, sort_spec
 
 _MESSAGES = {
     "sheet_not_found": "Source sheet does not exist; use its exact name",
@@ -39,6 +39,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Select and reorder columns by exact header, converting to text, number or boolean; optional summaries "
         "are static values and charts use output column names. Optional typed filters use output column names; "
         "all conditions must match and are applied before grouping, summaries and charts. "
+        "Optional sort_by orders up to three output columns after grouping, with stable ties and blanks last. "
         "Optional group_by produces static grouped values: blank keys form a group, count excludes blanks, "
         "sum and average ignore blanks and are blank when all values are blank; average rounds half-up. "
         "Formula cells are never imported: "
@@ -57,7 +58,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
     }
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None) -> ToolResult:
+                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None, sort_by=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -95,6 +96,8 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 if summaries:
                     raise ValueError("group_by cannot be combined with summaries")
                 spec = group_spec(spec, group_by)
+            if sort_by is not None:
+                spec = sort_spec(spec, sort_by)
             bound_key = hashlib.sha256(canonical([request_key, attachment_id, original["sha256"], source_sheet])).hexdigest()
             result = await self.generator.run(filename, bound_key, spec, summaries=summaries, chart=chart)
             if result.success:
@@ -102,6 +105,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
                 result.output["filter_conditions"] = filters or []
+                result.output["sort_by"] = sort_by or []
                 result.output["source_row_count"] = source_row_count
                 result.output["matched_row_count"] = matched_row_count
                 if group_by is not None:
