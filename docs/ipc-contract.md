@@ -1789,7 +1789,7 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 `run.research_list({session_id,project_id,query?,offset?})` 返回 `{session_id,project_id,service_id,sources}`，按时间倒序每页最多 20 条，offset 不超过 10000；列表摘录最多 1000 字。`run.research_get({session_id,project_id,expected_service_id,page_source_id})` 返回相同绑定及 `source`，包含最多 8000 字的保存摘录及原始截断标志。两者均校验会话项目、服务及宿主限制，并在读取后复查绑定；详情中旧服务身份或已删除来源被拒绝。
 
-`run.child_workspace({run_id,session_id,action:"preview"})` 仅审阅有持久父运行、会话、项目和工作区绑定的直接子工作区；受限进程、旧无绑定记录及嵌套工作区不通过该入口处理。返回当前父目录与子结果的文件和有限文本差异，以及 `revision` 和 `service_id`；已收集状态附带服务端保存的 `receipt`（merged、noop 和 conflicts），不表示验证通过；大于 500 个变化拒绝预览。`action:"collect"` 必须附带该版本的 `revision` 与 `expected_service_id`，重新检查文件、绑定和冲突。删除及父目录同期修改不会被自动覆盖；复制期间如发生错误可能已有部分文件写入，应重新核对。独立目录不是操作系统沙盒。
+`run.child_workspace({run_id,session_id,action:"preview"})` 仅审阅有持久父运行、会话、项目和工作区绑定的直接子工作区；受限进程、旧无绑定记录及嵌套工作区不通过该入口处理。返回当前父目录与子结果的文件和有限文本差异，以及 `revision` 和 `service_id`；已收集状态附带服务端保存的 `receipt`（merged、noop 和 conflicts），不表示验证通过；大于 500 个变化拒绝预览。`action:"collect"` 必须附带该版本的 `revision` 与 `expected_service_id`，重新检查文件、绑定和冲突。默认 `on_conflict:"fail"` 遇到冲突时不收集；明确指定 `on_conflict:"skip"` 时只复制无冲突文件，并在未完成回执中列出跳过项，可在处理冲突后重新审阅和收集。删除及父目录同期修改不会被自动覆盖；复制期间如发生错误可能已有部分文件写入，应重新核对。独立目录不是操作系统沙盒。
 
 已结束团队的成员工作区可附带 `team_run_id` 使用同一审阅/收集入口：服务端核对成员 ID 属于该团队的持久结果，以及会话、项目、服务和固定父目录。旧团队记录缺少绑定、未完成或中断时无已保存成员结果的，不提供自动收集；需手动核对。
 

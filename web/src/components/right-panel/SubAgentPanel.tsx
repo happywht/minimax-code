@@ -359,7 +359,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     }).catch(() => { /* History is optional; an absent result is not a pass. */ });
     return () => { cancelled = true; };
   }, [runId, sessionId, teamRunId, projectId]);
-  const invoke = async (collect: boolean) => {
+  const invoke = async (collect: boolean, skipConflicts = false) => {
     const ticket = ++generation.current, host = ipc.agentBaseUrl;
     const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
       useSessionStore.getState().currentSessionId === sessionId &&
@@ -379,7 +379,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         "run.child_workspace", { run_id: runId, session_id: sessionId, action: collect ? "collect" : "preview",
           ...(teamRunId ? { team_run_id: teamRunId } : {}),
           ...(interruptedCollection && review?.team_collection?.step_id ? { confirmed_team_stopped: true, expected_team_step_id: review.team_collection.step_id } : {}),
-          ...(collect && review ? { revision: review.revision, expected_service_id: review.service_id } : {}) },
+          ...(collect && review ? { revision: review.revision, expected_service_id: review.service_id, on_conflict: skipConflicts ? "skip" : "fail" } : {}) },
       );
       if (!current()) return;
       if (result.session_id !== sessionId || result.project_id !== projectId || !result.service_id ||
@@ -502,6 +502,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         {file.diff_truncated && <p>差异已截断，请手动查看。</p>}
       </details>)}
       <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>
+      {review.files.some((f) => !!f.conflict) && review.files.some((f) => !f.conflict && f.parent_sha256 !== f.child_sha256) && <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected"} onClick={() => void invoke(true, true)}>仅收集无冲突文件，跳过冲突</button>}
       {!allowCollect && <p>{review.team_collection?.eligible ? "已保存成员完成及受管任务收束记录；请自行核对相关进程并明确确认。" : `不能收集：${review.team_collection?.reason || "缺少停止或成员完成证据"}。`} 工作副本不是操作系统沙箱。</p>}
       <p>删除和冲突需手动处理；执行中出现错误时可能部分收集，请核对文件。</p>
     </div>}

@@ -276,12 +276,12 @@ def register_run_handlers(server: Any) -> None:
                 if req.action == "collect":
                     if reviewed["revision"] != req.revision:
                         raise ValueError("Workspace changed since review; refresh before collection")
-                    if any(item["conflict"] for item in reviewed["files"]):
+                    if req.on_conflict == "fail" and any(item["conflict"] for item in reviewed["files"]):
                         raise ValueError("Conflicts must be resolved before collection")
                     # Cancellation must not leave an unobserved writer running.
                     def collect():
                         with execution_scope(ExecutionPolicy(workspace=root)):
-                            return collect_child(child, on_conflict="fail")
+                            return collect_child(child, on_conflict=req.on_conflict)
                     task = asyncio.create_task(asyncio.to_thread(collect))
                     try:
                         report = await asyncio.shield(task)

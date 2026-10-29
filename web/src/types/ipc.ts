@@ -1476,7 +1476,7 @@ export interface ChildWorkspaceReview {
   run_id: string; session_id: string; project_id: string | null; service_id: string;
   root: string; revision: string; state: string; kind: string; omitted: string[]; receipt?: ChildWorkspaceReceipt;
   team_collection?: { eligible: boolean; step_id: string | null; reason: string | null } | null;
-  files: Array<{ path: string; conflict: string | null; diff?: string; diff_truncated?: boolean; diff_unavailable?: boolean }>;
+  files: Array<{ path: string; parent_sha256?: string | null; child_sha256?: string | null; conflict: string | null; diff?: string; diff_truncated?: boolean; diff_unavailable?: boolean }>;
 }
 
 /** HTTP POST /preview/access; a temporary read-only preview path. */
