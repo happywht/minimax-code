@@ -1499,11 +1499,13 @@ class AgentCore:
 
         # 1. Permission check (configurable, default-allow).
         action = _check_rule(self._permission_store, name)
-        if name in {"generate_report_docx", "generate_report_pdf", "generate_table_xlsx"}:
+        if name in {"generate_report_docx", "generate_report_pdf", "generate_table_xlsx", "generate_xlsx_from_csv"}:
             # Generated documents are writes: existing write_file restrictions
             # cannot be bypassed by allowing the new tool name.
             write_action = _check_rule(self._permission_store, "write_file")
             actions = {action, write_action}
+            if name == "generate_xlsx_from_csv":
+                actions.add(_check_rule(self._permission_store, "generate_table_xlsx"))
             action = ("deny" if "deny" in actions else "ask" if "ask" in actions
                       else "allow" if "allow" in actions else "ask")
             if action == "ask" and self._permission_gater is None:
