@@ -11,6 +11,7 @@ the user.
 from __future__ import annotations
 
 import difflib
+import hashlib
 from typing import Any
 
 from ...execution import require_write_access
@@ -112,28 +113,22 @@ class EditFileTool(Tool):
             return ToolResult.fail(f"path is a directory: {target}")
 
         try:
-            original = read_target.read_text(encoding="utf-8")
+            original_bytes = read_target.read_bytes()
+            # Match text-mode universal-newline handling while tying the
+            # baseline hash to the exact bytes used to compute this edit.
+            original = original_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         except UnicodeDecodeError:
             return ToolResult.fail("file is not valid UTF-8")
         except OSError as exc:
             return ToolResult.fail(f"read failed: {exc}")
 
-        # v1.5.0 CAS — verify the on-disk bytes match the caller's
-        # last-read fingerprint before touching anything. Placed ahead
-        # of the backup so a blocked edit mints no backup at all.
-        # This closes edit_file's blind spot: ``old_string`` matching
-        # only guards the matched region; concurrent changes elsewhere
-        # in the file used to be silently clobbered by the rewrite.
-        previous_sha = file_sha256(read_target)
+        # Compare the caller's fingerprint with the exact bytes decoded above.
+        # The atomic writer rechecks that baseline before replacing the file.
+        previous_sha = hashlib.sha256(original_bytes).hexdigest()
         expected = kwargs.get("expected_sha256")
         if expected is not None:
             if not isinstance(expected, str) or len(expected) != 64:
                 return ToolResult.fail("'expected_sha256' must be a 64-char hex string")
-            if previous_sha is None:
-                return ToolResult.fail(
-                    "edit_file blocked: file is no longer readable",
-                    output={"path": str(target), "expected_sha256": expected},
-                )
             if previous_sha != expected.strip().lower():
                 return ToolResult.fail(
                     "edit_file blocked: file changed since your read (sha256 "
