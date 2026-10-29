@@ -1004,3 +1004,18 @@ XLSX，结构验证通过，并由附件解析器解析出预期值。首次脚�
 连接；采样并非原子接单屏障。备份与交易保留在
 `/home/ubuntu/.local/share/minimax-code-remote-backups-bdc3b49/upgrade-wl7e6qgb`。
 升级后通过认证 SSH 隧道复查既有完成结果与中断待核对状态均可读取，没有调用模型。
+
+### 正式服务办公成果闭环（2026-10-29）
+
+通过产品 SSH 隧道在正式服务中新建独立测试项目 `proj_0c748cfb`，根目录为
+`/home/ubuntu/.local/share/minimax-office-acceptance-KfgfJz47`。对受控纯数据表通过
+`office.generate_xlsx` 生成并登记成果 `off_673e0585e87843c489f6a4eb5295bc4d`；
+相同请求键重放返回同一成果，列表仍为一项。认证下载的字节大小、SHA-256 和服务身份
+与元数据一致；本地独立全值校验报告与服务报告一致。测试目录中的同名原文件哈希
+未变。测试项目、成果和原文件保留，未调用模型。
+
+真实浏览器通过隧道切换到该项目，打开历史成果、看到存储值预览及历史输入未保留的
+提示，下载的文件 SHA-256 与登记值一致。首次浏览器脚本误用侧栏项目选择器而超时，
+改为实际工作区选择器后通过。脚本为 `.verification/formal-office-acceptance.py` 与
+`.verification/browser-formal-office.py`；该验收不证明模型驱动、公式重算、业务质量、
+版式渲染、OCR，或服务重启后输入快照可恢复。
