@@ -1835,7 +1835,7 @@ attachment 沿用原附件类型、版本、SHA-256 与 v2/inert_text 预览，�
 | 方法 | 参数 | 返回 |
 |------|------|------|
 | `artifact.register` | `{project_id, source_path, run_id?}` | `{artifact}`，成功登记一个新的不可变版本 |
-| `artifact.list` | `{project_id}` | `{artifacts, service_id}`，最近 200 项 |
+| `artifact.list` | `{project_id, run_id?}` | `{artifacts, service_id}`，按项目及可选运行筛选后返回最近 200 项 |
 | `artifact.get` | `{project_id, artifact_id}` | `{artifact, preview_text}`，经过 vault 大小/hash 核对的纯文本 |
 
 参数均严格拒绝未知字段；host、绝对文件路径、内容及验证结论不能由调用者传入。

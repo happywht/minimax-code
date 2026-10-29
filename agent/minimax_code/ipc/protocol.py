@@ -74,6 +74,10 @@ class ArtifactListParams(BaseModel):
     project_id: str = Field(min_length=1, max_length=128)
 
 
+class ArtifactScopedListParams(ArtifactListParams):
+    run_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class ArtifactRegisterParams(ArtifactListParams):
     source_path: str = Field(min_length=1, max_length=1024)
     run_id: str | None = Field(default=None, min_length=1, max_length=128)

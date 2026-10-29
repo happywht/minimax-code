@@ -10,7 +10,7 @@ from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     ArtifactGetParams,
-    ArtifactListParams,
+    ArtifactScopedListParams,
     ArtifactRegisterParams,
 )
 
@@ -35,5 +35,5 @@ def register_artifact_handlers(server):
         return handle
 
     server.register("artifact.register", handler(ArtifactRegisterParams, "register"))
-    server.register("artifact.list", handler(ArtifactListParams, "list"))
+    server.register("artifact.list", handler(ArtifactScopedListParams, "list"))
     server.register("artifact.get", handler(ArtifactGetParams, "get"))

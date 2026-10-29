@@ -30,6 +30,7 @@ export interface ArtifactRegisterParams {
   run_id?: string;
 }
 
+export interface ArtifactListParams { project_id: string; run_id?: string }
 export interface ArtifactListResult { artifacts: TextArtifact[]; service_id: string }
 export interface ArtifactGetResult { artifact: TextArtifact; preview_text: string }
 

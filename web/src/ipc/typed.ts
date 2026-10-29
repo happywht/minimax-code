@@ -130,7 +130,7 @@ import type { IPCClient } from "./client";
 export interface TypedIPC {
   ping(): Promise<boolean>;
   registerArtifact(params: import("../types/ipc").ArtifactRegisterParams): Promise<{ artifact: import("../types/ipc").TextArtifact }>;
-  listArtifacts(projectId: string): Promise<import("../types/ipc").ArtifactListResult>;
+  listArtifacts(projectId: string, runId?: string): Promise<import("../types/ipc").ArtifactListResult>;
   getArtifact(projectId: string, artifactId: string): Promise<import("../types/ipc").ArtifactGetResult>;
   generateReportPair(params: import("../types/ipc").AttachmentReportPairParams): Promise<import("../types/ipc").ReportPairResult>;
   generatePdf(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
@@ -636,7 +636,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
   return {
     ping: () => client.ping(),
     registerArtifact: (params) => client.request("artifact.register", params),
-    listArtifacts: (projectId) => client.request("artifact.list", { project_id: projectId }),
+    listArtifacts: (projectId, runId) => client.request("artifact.list", { project_id: projectId, ...(runId === undefined ? {} : { run_id: runId }) }),
     getArtifact: (projectId, artifactId) => client.request("artifact.get", { project_id: projectId, artifact_id: artifactId }),
     generateReportPair: (params) => client.request("attachment.generate_report_pair", params),
     generatePdf: (params) => client.request("attachment.generate_pdf", params),

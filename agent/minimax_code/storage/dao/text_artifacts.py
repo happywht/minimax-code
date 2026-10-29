@@ -67,10 +67,15 @@ class ArtifactDAO:
                 f"VALUES ({','.join('?' for _ in keys)})", tuple(row.values()))
         return row
 
-    async def list(self, project_id):
-        rows = await self.db.fetchall(
-            "SELECT * FROM text_artifacts WHERE project_id=? ORDER BY rowid DESC "
-            "LIMIT 200", (project_id,))
+    async def list(self, project_id, run_id=None):
+        if run_id is None:
+            rows = await self.db.fetchall(
+                "SELECT * FROM text_artifacts WHERE project_id=? ORDER BY rowid DESC "
+                "LIMIT 200", (project_id,))
+        else:
+            rows = await self.db.fetchall(
+                "SELECT * FROM text_artifacts WHERE project_id=? AND run_id=? "
+                "ORDER BY rowid DESC LIMIT 200", (project_id, run_id))
         return [dict(row) for row in rows]
 
     async def get(self, project_id, artifact_id):

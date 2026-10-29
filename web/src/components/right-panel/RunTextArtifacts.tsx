@@ -22,11 +22,11 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId }: { r
   const load = async () => {
     const ticket = ++epoch.current, host = ipc.agentBaseUrl; setBusy(true); setMessage(""); setSelected(null);
     try {
-      const result = await typedIPC.listArtifacts(projectId);
+      const result = await typedIPC.listArtifacts(projectId, runId);
       if (!current(ticket, host)) return;
       if (result.service_id !== serviceId) throw new Error("服务身份已变化");
       setItems(result.artifacts.filter((row) => row.project_id === projectId && row.service_id === serviceId && row.run_id === runId));
-      if (result.artifacts.length >= 200) setMessage("项目列表最多返回最近 200 项，可能还有更早的关联成果。");
+      if (result.artifacts.length >= 200) setMessage("此运行最多返回最近 200 项，可能还有更早的关联成果。");
     } catch (error) { if (current(ticket, host)) { setItems(null); setMessage(String(error)); } }
     finally { if (current(ticket, host)) setBusy(false); }
   };
@@ -57,7 +57,7 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId }: { r
   };
   return <div className="mt-2 space-y-1 text-xs"><button type="button" disabled={busy} onClick={() => void load()}>读取登记关联的文本成果</button>
     <p>仅显示登记时关联此运行的文本版本；关联不证明由该运行生成或内容已验证。</p>
-    {items && (items.length ? <ul>{items.map((row) => <li key={row.id}><button type="button" disabled={busy} onClick={() => void select(row)}>{row.source_path} · v{row.version}</button></li>)}</ul> : <p>最近返回的项目记录中没有此运行的文本关联。</p>)}
+    {items && (items.length ? <ul>{items.map((row) => <li key={row.id}><button type="button" disabled={busy} onClick={() => void select(row)}>{row.source_path} · v{row.version}</button></li>)}</ul> : <p>此运行没有登记的文本关联。</p>)}
     {selected && <div><button type="button" disabled={busy} onClick={() => void save()}>下载文本原件</button><pre aria-label="文本成果预览" className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{selected.preview || "（无可用预览）"}</pre></div>}
     {message && <p role="status">{message}</p>}
   </div>;

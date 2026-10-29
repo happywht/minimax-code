@@ -205,9 +205,9 @@ class ArtifactService:
             "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
         }, expected_root=project["root_path"])
 
-    async def list(self, project_id):
+    async def list(self, project_id, run_id=None):
         await self.dao.project(project_id)
-        return {"artifacts": await self.dao.list(project_id),
+        return {"artifacts": await self.dao.list(project_id, run_id),
                 "service_id": await self.dao.service_id()}
 
     async def content(self, project_id, artifact_id):
