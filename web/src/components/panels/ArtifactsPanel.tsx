@@ -7,6 +7,12 @@ import { ResearchSourcesPanel } from "./ResearchSourcesPanel";
 
 export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
+  const sessionId = useSessionStore((state) => state.currentSessionId);
+  const [serviceEpoch, setServiceEpoch] = useState(0);
+  useEffect(() => {
+    if (embedded) return;
+    return ipc.onSideCar(() => setServiceEpoch((epoch) => epoch + 1));
+  }, [embedded]);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
   const state = useArtifactStore();
   const host = ipc.agentBaseUrl;
@@ -21,7 +27,7 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
     void useArtifactStore.getState().activate(projectId);
     return () => useArtifactStore.getState().clear();
   }, [projectId, host]);
-  if (office) return <OfficeDeliveryPanel onClose={onClose} onText={() => setOffice(false)} />;
+  if (office) return <OfficeDeliveryPanel key={JSON.stringify([host, projectId, sessionId, serviceEpoch])} onClose={onClose} onText={() => setOffice(false)} />;
   if (research) return <ResearchSourcesPanel onClose={onClose} onText={() => setResearch(false)} />;
   return (
     <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目文本成果">

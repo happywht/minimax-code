@@ -22,7 +22,7 @@ function saveJson(value: unknown, name: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-type TableDraft = { filename: string; runId: string; source: string; csv: string; csvTable: CsvTable | null;
+export type TableDraft = { filename: string; runId: string; source: string; csv: string; csvTable: CsvTable | null;
   originalCsvTable: CsvTable | null; tableDirty: boolean; kinds: OfficeTableSpec["columns"][number]["kind"][];
   candidate: { name: string; text: string; table: CsvTable } | null; analysis: OfficeAnalysisOptions };
 function isDraftTable(value: unknown): value is CsvTable {
@@ -58,29 +58,32 @@ function readTableDraft(value: unknown): TableDraft {
   return data as TableDraft;
 }
 
-export function OfficeDeliveryPanel({ onClose, onText, embedded = false }: { onClose: () => void; onText: () => void; embedded?: boolean }): JSX.Element {
+export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initialDraft, onRetainDraft }: { onClose: () => void; onText: () => void; embedded?: boolean; initialDraft?: TableDraft; onRetainDraft?: (draft: TableDraft) => void }): JSX.Element {
   const project = useSessionStore((state) => state.currentProjectId), host = ipc.agentBaseUrl;
   const session = useSessionStore((state) => state.currentSessionId);
   const state = useOfficeDeliveryStore();
-  const [filename, setFilename] = useState("清单.xlsx"), [runId, setRunId] = useState("");
+  const [filename, setFilename] = useState(initialDraft?.filename ?? "清单.xlsx"), [runId, setRunId] = useState(initialDraft?.runId ?? "");
   const [query, setQuery] = useState("");
-  const [source, setSource] = useState(example), [key, setKey] = useState(() => crypto.randomUUID());
+  const [source, setSource] = useState(initialDraft?.source ?? example), [key, setKey] = useState(() => crypto.randomUUID());
   const generationScope = useRef({ active: false });
   const [inputs, setInputs] = useState<Record<string, OfficeTableSpec>>({});
   const [formError, setFormError] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<OfficeAnalysisOptions>({ summaries: [], chart: null });
+  const [analysis, setAnalysis] = useState<OfficeAnalysisOptions>(initialDraft?.analysis ?? { summaries: [], chart: null });
   const [chartPending, setChartPending] = useState(false);
   const [chartMarkerReady, setChartMarkerReady] = useState(false);
-  const [csv, setCsv] = useState("");
-  const [csvTable, setCsvTable] = useState<CsvTable | null>(null);
-  const [originalCsvTable, setOriginalCsvTable] = useState<CsvTable | null>(null);
-  const [tableDirty, setTableDirty] = useState(false);
-  const [kinds, setKinds] = useState<OfficeTableSpec["columns"][number]["kind"][]>([]);
+  const [csv, setCsv] = useState(initialDraft?.csv ?? "");
+  const [csvTable, setCsvTable] = useState<CsvTable | null>(initialDraft?.csvTable ?? null);
+  const [originalCsvTable, setOriginalCsvTable] = useState<CsvTable | null>(initialDraft?.originalCsvTable ?? null);
+  const [tableDirty, setTableDirty] = useState(initialDraft?.tableDirty ?? false);
+  const [kinds, setKinds] = useState<OfficeTableSpec["columns"][number]["kind"][]>(initialDraft?.kinds ?? []);
   const csvRef = useRef(csv);
   const fileReader = useRef<FileReader | null>(null);
   const fileSequence = useRef(0);
   const [filePending, setFilePending] = useState(false);
-  const [candidate, setCandidate] = useState<{ name: string; text: string; table: CsvTable } | null>(null);
+  const [candidate, setCandidate] = useState<{ name: string; text: string; table: CsvTable } | null>(initialDraft?.candidate ?? null);
+  const draftRef = useRef<TableDraft>({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis });
+  draftRef.current = { filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis };
+  useEffect(() => () => { onRetainDraft?.(draftRef.current); }, []);
   const scoped = state.projectId === project && state.host === host;
   const filteredEntries = (scoped ? state.entries : []).filter((entry) => `${entry.attachment.original_name} ${entry.delivery.id} ${entry.delivery.run_id ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()));
   const marker = project && state.serviceId && scoped ? `minimax:office-chart-pending:${host}:${project}:${state.serviceId}` : null;
@@ -93,7 +96,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false }: { onC
   useEffect(() => {
     const scope = { active: true }; generationScope.current = scope;
     const sequenceRef = fileSequence, readerRef = fileReader;
-    setQuery(""); setKey(crypto.randomUUID()); setFormError(null); setRunId(""); setInputs({}); setFilePending(false); setCandidate(null);
+    setQuery(""); setKey(crypto.randomUUID()); setFormError(null); setInputs({}); setFilePending(false);
     void useOfficeDeliveryStore.getState().activate(project);
     return () => { scope.active = false; sequenceRef.current++; readerRef.current?.abort(); readerRef.current = null; useOfficeDeliveryStore.getState().clear(); };
   }, [project, host]);
