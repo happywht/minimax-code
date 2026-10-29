@@ -208,6 +208,25 @@ def group_spec(spec: dict, group_by: dict) -> dict:
     }).model_dump()
 
 
+def deduplicate_spec(spec: dict, columns: list[str]) -> dict:
+    """Keep the first row for each exact combination of selected output values."""
+    source = XlsxSpec.model_validate(spec)
+    names = [column.name for column in source.columns]
+    if (not isinstance(columns, list) or not 1 <= len(columns) <= 20
+            or any(not isinstance(name, str) or name not in names for name in columns)
+            or len(set(columns)) != len(columns)):
+        raise ValueError("deduplicate_by must contain 1–20 unique output column names")
+    indices = [names.index(name) for name in columns]
+    seen = set()
+    rows = []
+    for row in source.rows:
+        key = tuple(row[index] for index in indices)
+        if key not in seen:
+            seen.add(key)
+            rows.append(row)
+    return {**source.model_dump(), "rows": rows}
+
+
 def sort_spec(spec: dict, sort_by: list[dict[str, Any]]) -> dict:
     """Stable typed multi-column ordering, with blanks last in either direction."""
     source = XlsxSpec.model_validate(spec)
@@ -243,7 +262,8 @@ class GenerateXlsxFromCsvTool(Tool):
         "CSV must be UTF-8, with a unique header and at most 1 MiB/1000 rows. Empty cells become blank; "
         "numbers are strict decimal and booleans are true/false. Text beginning '=' remains literal. "
         "Optional filters use output column names and typed values; all conditions must match. "
-        "Apply filters before optional group_by, then optional sort_by before summaries and chart. "
+        "Apply filters, optional deduplicate_by, optional group_by, then optional sort_by before summaries and chart. "
+        "deduplicate_by uses exact output-column values and keeps the first matching row; blanks match blanks. "
         "Sort uses up to three output columns, typed values, stable ties and blanks last. "
         "group_by produces only grouped rows: "
         "blank keys form one group, row count includes every row, count excludes blanks, "
@@ -266,6 +286,9 @@ class GenerateXlsxFromCsvTool(Tool):
                 "value": {"anyOf": [{"type": "string"}, {"type": "number"},
                                     {"type": "boolean"}, {"type": "null"}]},
             }, "required": ["column", "operator", "value"], "additionalProperties": False}},
+            "deduplicate_by": {"type": "array", "minItems": 1, "maxItems": 20,
+                               "uniqueItems": True, "items": {"type": "string"},
+                               "description": "Output columns forming the exact duplicate key; keep first row"},
             "sort_by": {"type": "array", "minItems": 1, "maxItems": 3, "items": {
                 "type": "object", "properties": {
                     "column": {"type": "string"},
@@ -292,7 +315,7 @@ class GenerateXlsxFromCsvTool(Tool):
         self.generator = GenerateTableXlsxTool(db, session_id, project_id)
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None) -> ToolResult:
+                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -312,6 +335,9 @@ class GenerateXlsxFromCsvTool(Tool):
             source_row_count = len(spec["rows"])
             spec = filter_spec(spec, filters)
             matched_row_count = len(spec["rows"])
+            if deduplicate_by is not None:
+                spec = deduplicate_spec(spec, deduplicate_by)
+            removed_duplicate_count = matched_row_count - len(spec["rows"])
             if group_by is not None:
                 if summaries:
                     raise ValueError("group_by cannot be combined with summaries")
@@ -328,10 +354,12 @@ class GenerateXlsxFromCsvTool(Tool):
                 result.output["sort_by"] = sort_by or []
                 result.output["source_row_count"] = source_row_count
                 result.output["matched_row_count"] = matched_row_count
+                result.output["deduplicate_by"] = deduplicate_by or []
+                result.output["removed_duplicate_count"] = removed_duplicate_count
                 if group_by is not None:
                     result.output["group_by"] = group_by
                     result.output["group_count"] = len(spec["rows"])
-                    result.output["group_notice"] = ("Blank keys form one group; row count includes all matched rows. "
+                    result.output["group_notice"] = ("Blank keys form one group; row count includes all rows after filtering and optional deduplication. "
                         "Count excludes blanks; sum and average ignore blanks and are blank if all values are blank. "
                         "Average rounds half-up to the requested decimals. Values are static and business quality is unverified.")
                 result.output["source_notice"] = "Converted from verified CSV original bytes; the source was not modified."
