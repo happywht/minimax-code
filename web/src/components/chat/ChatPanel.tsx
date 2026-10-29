@@ -174,11 +174,14 @@ export function ChatPanel({
   }, [archiveSession, current, removeSession]);
 
   const headerStatus = (() => {
+    if (connectionState !== "connected") return { label: "连接状态待确认", tone: "amber" };
     switch (status) {
       case "sending":
         return { label: strings.chat.headerStatus.sending, tone: "amber" };
       case "streaming":
         return { label: strings.chat.headerStatus.streaming, tone: "accent" };
+      case "cancelling":
+        return { label: "正在停止", tone: "amber" };
       case "error":
         return { label: strings.chat.headerStatus.error, tone: "red" };
       default:
@@ -199,8 +202,8 @@ export function ChatPanel({
       className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
     >
       {/* Header */}
-      <header className="flex items-center justify-between border-b border-minimax-border bg-minimax-bg/60 px-4 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
+      <header className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 border-b border-line bg-surface-0 px-3 py-2.5 sm:px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <MessageSquare size={14} className="shrink-0 text-minimax-muted" />
           {editing ? (
             <input
@@ -263,8 +266,8 @@ export function ChatPanel({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-ink-2" data-testid="session-engine">{current?.engine === "codex" ? "Codex" : "Native"}</span>
+        <div className="flex shrink-0 items-center gap-1">
+          <span className="text-xs text-ink-2" data-testid="session-engine">{current ? (current.engine === "codex" ? "Codex" : "Native") : "未选择会话"}</span>
           <select aria-label="新会话引擎" value={newEngine}
             onChange={(event) => setNewEngine(event.target.value as "native" | "codex")}
             className="rounded border border-line bg-surface-1 text-xs text-ink-1">
@@ -280,7 +283,7 @@ export function ChatPanel({
             data-testid="chat-header-new"
             onClick={() => void createSession(DEFAULT_SESSION_TITLE, undefined, newEngine)}
             disabled={creatingSession}
-            className="rounded-md px-2 py-1 text-xs text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg disabled:cursor-wait disabled:opacity-50"
+            className="rounded-md border border-line px-2 py-1 text-xs text-ink-0 hover:bg-surface-2 disabled:cursor-wait disabled:opacity-50"
             title={strings.chat.header.newTask}
           >
             {strings.chat.header.newButton}

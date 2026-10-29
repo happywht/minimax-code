@@ -97,7 +97,7 @@ export function useComposerDraft(sessionId: string | null): ComposerDraft {
     const onSuggestion = (e: Event) => {
       const ce = e as CustomEvent<string>;
       if (typeof ce.detail === "string") {
-        setValue(ce.detail);
+        setValue((previous) => previous ? `${previous}\n\n${ce.detail}` : ce.detail);
         ref.current?.focus();
       }
     };

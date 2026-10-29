@@ -70,7 +70,7 @@ function QueuedTaskEditor({ sessionId, host }: { sessionId: string; host: string
   };
 
   return <div className="px-2 py-1 text-xs">
-    <button type="button" className="underline" onClick={() => setOpen(!open)}>排队一个新任务</button>
+    <button type="button" aria-expanded={open} className="rounded px-1 py-1 text-ink-1 underline decoration-line-strong underline-offset-2 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setOpen(!open)}>{open ? "收起排队任务" : "排队一个新任务"}</button>
     {open && <div className="mt-2 space-y-2">
       <p>这是独立任务，会在同会话前面的任务之后执行；不向当前任务中途追加。没有前序任务时会立即开始。停止当前会话会同时取消其排队任务。</p>
       <textarea aria-label="排队任务内容" value={pending ? String(pending.request.content) : text}

@@ -38,14 +38,14 @@ interface TaskTemplatesProps {
 export function TaskTemplates({ disabled, codex, onSelect }: TaskTemplatesProps): JSX.Element {
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-b border-line/60 px-2.5 py-2" aria-label="任务模板">
-      <span className="text-[11px] text-ink-2">任务模板 · 添加到输入框</span>
+      <span className="text-[11px] text-ink-2">任务模板 · 点击添加到草稿</span>
       {TASK_TEMPLATES.map((template) => (
         <button
           key={template.id}
           type="button"
           disabled={disabled}
           onClick={() => onSelect(template.text)}
-          className="rounded border border-line px-2 py-1 text-[11px] text-ink-1 hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-full border border-line px-2.5 py-1 text-[11px] text-ink-1 hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
         >
           {template.label}
         </button>

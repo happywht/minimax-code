@@ -48,7 +48,7 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
   const permission = run && Object.values(permissions).find((p) => p.session_id === session && p.run_id === run.id);
   const awaitingQuestion = !!run && question?.session_id === session && question?.run_id === run.id;
   return <details className="shrink-0 border-b border-line bg-surface-1 px-4 py-2 text-xs" data-testid="current-run-overview">
-    <summary className="cursor-pointer font-medium text-ink-0">当前任务 · {stale ? "状态待刷新" : run ? labels[run.status] ?? run.status : loading ? "正在读取" : "暂无运行记录"}</summary>
+    <summary className="cursor-pointer font-medium text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">任务概览 · {stale ? "状态待刷新" : run ? labels[run.status] ?? run.status : loading ? "正在读取" : "暂无运行记录"}</summary>
     {stale && <p role="status" className="mt-1 text-status-warning">连接或运行记录未确认；以下为最近快照，操作前请刷新。</p>}
     {!run ? <p className="mt-1 text-ink-2">{error ? "无法读取当前会话的运行记录。" : loading ? "正在读取运行记录。" : "此会话尚无可显示的任务运行。"}</p> : <div className="mt-2 space-y-1 text-ink-1">
       <p className="break-all">{active.has(run.status) ? "当前活动运行" : run.status === "queued" ? "已接收的排队任务" : "最近运行"}：{run.title || "未命名"} · {run.id}</p>

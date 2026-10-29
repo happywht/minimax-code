@@ -160,16 +160,16 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
       {messages.length === 0 && finishedRuns.length === 0 && loadingMessages ? (
         <MessageListSkeleton />
       ) : messages.length === 0 && finishedRuns.length === 0 ? (
-        <div data-testid="empty-state" className="mx-auto mt-16 max-w-md px-4">
+        <div data-testid="empty-state" className="mx-auto mt-8 max-w-lg px-2 sm:mt-16 sm:px-4">
           <EmptyState
             icon={<Sparkles size={24} />}
-            title="今天想让我做什么？"
-            hint="可以让我重构代码、解释文件、运行命令，或设置定时任务。"
+            title="从一个清楚的目标开始"
+            hint="描述目标、涉及的资料或目录，以及你希望得到的结果。选择示例会添加到输入框，可继续编辑。"
             action={
               <div className="mt-2 grid w-full grid-cols-1 gap-2 text-left">
-                <Suggestion text="把 src/foo.py 重构为使用 dataclasses" />
-                <Suggestion text="解释 IPC bridge 的作用" />
-                <Suggestion text="设置每天上午 9 点的测试提醒" />
+                <Suggestion text="请先了解当前项目，再提出实现目标的步骤；有不确定的地方先问我。" />
+                <Suggestion text="请阅读相关文件，解释现有实现，并指出需要我注意的限制。" />
+                <Suggestion text="请根据我提供的资料整理一份报告，标明来源和待确认的信息。" />
               </div>
             }
           />

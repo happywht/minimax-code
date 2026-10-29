@@ -134,7 +134,7 @@ export function MessageInput({
         onDragLeave={attachments.handleDragLeave}
         onDrop={attachments.handleDrop}
         className={
-          "relative mx-auto w-full max-w-[780px] rounded-md border bg-surface-1/95 shadow-pop backdrop-blur transition-colors duration-150 supports-[backdrop-filter]:bg-surface-1/85 " +
+          "relative mx-auto w-full max-w-[780px] rounded-lg border bg-surface-1/95 shadow-pop backdrop-blur transition-colors duration-150 supports-[backdrop-filter]:bg-surface-1/85 " +
           (attachments.dragging
             ? "border-accent ring-2 ring-accent/30"
             : "border-line focus-within:border-line-strong")
@@ -213,8 +213,8 @@ export function MessageInput({
             value={draft.value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder={strings.chat.input.placeholder}
-            rows={1}
+            placeholder={streaming ? "当前任务进行中；可在下方排队新任务" : "描述目标、相关资料和期望结果…"}
+            rows={2}
             data-testid="message-input-textarea"
             disabled={disabled}
             className="min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-ink-0 placeholder:text-ink-2 focus:outline-none"
@@ -227,10 +227,10 @@ export function MessageInput({
               onClick={() => void cancel()}
               loading={cancelling}
               icon={<Square size={12} />}
-              className="w-7 px-0"
+              className="px-2"
               title={cancelling ? strings.chat.input.stopping : strings.chat.input.stop}
               aria-label={cancelling ? strings.chat.input.stopping : strings.chat.input.stop}
-            />
+            >{cancelling ? "停止中" : "停止"}</Button>
           ) : (
             <>
               <IconButton
@@ -259,10 +259,10 @@ export function MessageInput({
                 }
                 loading={context.loading}
                 icon={<Send size={14} />}
-                className="w-7 px-0"
+                className="px-2"
                 title={context.loading ? strings.chat.input.loadingContext : strings.chat.input.send}
                 aria-label={context.loading ? strings.chat.input.loadingContext : strings.chat.input.send}
-              />
+              >发送</Button>
             </>
           )}
         </div>
@@ -272,7 +272,11 @@ export function MessageInput({
           agentsError={mention.agentsError}
           onSelect={(option) => void mention.select(option)}
         />
-        <label className="flex items-center gap-2 px-2 text-xs text-minimax-text-secondary">
+        {streaming && <p role="status" className="mx-2 rounded bg-accent-subtle px-2 py-1.5 text-xs text-ink-1">
+          {cancelling ? "正在请求停止，请稍候。" : "当前任务进行中。可停止任务，或在下方排队另一个新任务。"}
+        </p>}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-2 py-2 text-xs text-ink-2">
+        <label className="flex items-center gap-2">
           任务模式
           <select
             aria-label="任务模式"
@@ -286,11 +290,12 @@ export function MessageInput({
             <option value="plan">只读规划</option>
           </select>
         </label>
-        <label className="flex items-center gap-2 px-2 text-xs text-minimax-text-secondary">
+        <label className="flex items-center gap-2">
           <input type="checkbox" checked={captureFileChanges} disabled={disabled}
             onChange={(event) => setCaptureFileChanges(event.target.checked)} />
           采集任务前后文件变化（受限于 Git 可见文件）
         </label>
+        </div>
         <ComposerToolbar
           valueLength={draft.value.length}
           overLimit={draft.overLimit}
@@ -300,6 +305,7 @@ export function MessageInput({
           cancelling={cancelling}
         />
         <QueuedTaskInput sessionId={sessionId} />
+        {!streaming && <p className="px-2.5 pb-2 text-[11px] text-ink-2">Enter 发送 · Shift + Enter 换行；运行中可排队新任务。</p>}
       </div>
     </form>
   );
