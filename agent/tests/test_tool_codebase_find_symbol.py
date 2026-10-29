@@ -82,3 +82,52 @@ async def test_find_symbol_validates_empty_symbol(indexed_store: tuple) -> None:
     result = await tool.run(symbol="")
     assert not result.success
     assert "non-empty" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_exact_symbol_lookup_is_scoped_nested_and_deduplicated(async_db: AsyncDatabase) -> None:
+    from minimax_code.codebase.store import CodebaseStore
+
+    store = CodebaseStore(async_db)
+    nested = {"name": "Container", "kind": "class", "line": 1, "children": [
+        {"name": "target", "kind": "method", "line": 3, "children": []},
+    ]}
+    for start in (1, 2):
+        await store.save_chunk(
+            file_path="src/a.py", start_line=start, end_line=10, content="irrelevant",
+            metadata={"symbols": [nested]}, root="project-a",
+        )
+    await store.save_chunk(
+        file_path="src/other.py", start_line=1, end_line=2, content="target",
+        metadata={"symbols": [{"name": "target", "kind": "function", "line": 1}]},
+        root="project-b",
+    )
+    tool = FindSymbolCodebaseTool(CodebaseRetriever(store, root="project-a"))
+    result = await tool.run(symbol="target", kind="method", file_pattern="src/%")
+    assert result.success
+    assert result.output["definitions"] == [
+        {"file_path": "src/a.py", "line": 3, "source": "src/a.py#L3", "kind": "method"}
+    ]
+    assert result.output["references"] == []
+    assert not result.output["truncated"]
+    assert "stale" in result.output["note"]
+
+
+@pytest.mark.asyncio
+async def test_exact_symbol_lookup_reports_truncation(async_db: AsyncDatabase) -> None:
+    from minimax_code.codebase.store import CodebaseStore
+
+    store = CodebaseStore(async_db)
+    symbols = [
+        {"name": "target", "kind": "function", "line": line}
+        for line in range(1, 102)
+    ]
+    await store.save_chunk(
+        file_path="many.py", start_line=1, end_line=101, content="",
+        metadata={"symbols": symbols}, root="project-a",
+    )
+    tool = FindSymbolCodebaseTool(CodebaseRetriever(store, root="project-a"))
+    result = await tool.run(symbol="target")
+    assert result.success
+    assert len(result.output["definitions"]) == 100
+    assert result.output["truncated"]

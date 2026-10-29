@@ -154,6 +154,40 @@ class CodebaseStore:
         rows = await self._db.fetchall(sql, tuple(params))
         return [self._hydrate(r) for r in rows]
 
+    async def find_symbols(
+        self,
+        symbol: str,
+        *,
+        kind: str | None = None,
+        file_pattern: str | None = None,
+        limit: int = 101,
+        root: str = "",
+    ) -> list[dict[str, Any]]:
+        """Find exact symbols in this root's stored metadata, including children.
+
+        Overlapping chunks may contain the same symbol, so deduplicate before
+        limiting. This reads the existing snapshot and never updates the index.
+        """
+        filters = ["c.root = ?", "j.type = 'object'", "json_extract(j.value, '$.name') = ?"]
+        params: list[Any] = [root, symbol]
+        if kind is not None:
+            filters.append("json_extract(j.value, '$.kind') = ?")
+            params.append(kind)
+        if file_pattern:
+            filters.append("c.file_path LIKE ?")
+            params.append(file_pattern)
+        params.append(limit)
+        sql = (
+            "SELECT DISTINCT c.file_path, json_extract(j.value, '$.line') AS line, "
+            "json_extract(j.value, '$.kind') AS kind "
+            "FROM codebase_chunks c, json_tree("
+            "CASE WHEN json_valid(c.metadata) THEN c.metadata ELSE '{}' END, '$.symbols') j "
+            f"WHERE {' AND '.join(filters)} "
+            "ORDER BY c.file_path, line, kind LIMIT ?"
+        )
+        rows = await self._db.fetchall(sql, tuple(params))
+        return [dict(row) for row in rows]
+
     async def get_file_chunks(
         self, file_path: str, *, root: str = ""
     ) -> list[dict[str, Any]]:

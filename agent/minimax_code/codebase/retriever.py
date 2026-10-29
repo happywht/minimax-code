@@ -166,6 +166,19 @@ class CodebaseRetriever:
             "results": [r.__dict__ for r in results],
         }
 
+    async def find_symbols(
+        self,
+        symbol: str,
+        *,
+        kind: str | None = None,
+        file_pattern: str | None = None,
+        limit: int = 101,
+    ) -> list[dict[str, Any]]:
+        """Find exact symbols in the current root's indexed snapshot."""
+        return await self._store.find_symbols(
+            symbol, kind=kind, file_pattern=file_pattern, limit=limit, root=self._root
+        )
+
     async def summarize(self, path: str) -> dict[str, Any]:
         """Return a structured summary for a file or directory prefix."""
         chunks = await self._store.get_file_chunks(path, root=self._root)
