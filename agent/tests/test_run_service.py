@@ -775,3 +775,36 @@ async def test_reviewed_resume_exposes_unknown_tool_outcome_without_inventing_sa
     assert "UNKNOWN" in projected["content"]
     assert not any(m["role"] == "tool" for m in await messages.list_for_session("one"))
     assert (native.root / "effect.txt").read_text(encoding="utf-8") == "already applied"
+
+async def test_auto_continue_receipt_retains_prior_block_failed_tool(native, monkeypatch):
+    from test_agent_core import CountingTool, FakeLLM, _text_response, _tool_call, _tool_response
+
+    from minimax_code import agent, app
+    from minimax_code.agent.core import AgentCore
+    from minimax_code.agent.tools import ToolRegistry, ToolResult
+
+    class FailingTool(CountingTool):
+        async def run(self, **kwargs):
+            return ToolResult.fail("first block command failed")
+
+    registry = ToolRegistry()
+    registry.register(FailingTool())
+    llm = FakeLLM([_tool_response(_tool_call("echo", {"text": "test"})), _text_response("done")])
+    llm.default_model, llm.mock = "test", True
+
+    def core(**kwargs):
+        kwargs["config"].max_iterations = 1
+        return AgentCore(**kwargs)
+
+    monkeypatch.setattr(agent, "AgentCore", core)
+    monkeypatch.setattr(app, "get_subagent_llm", lambda: llm)
+    monkeypatch.setattr("minimax_code.agent.tools.get_default_registry", lambda: registry)
+    monkeypatch.setattr(builtins, "_resolve_auto_continue", lambda: (True, 2))
+    ctx = await send(native)
+    ctx.reply_error.assert_not_awaited()
+    receipt = ctx.reply.call_args.args[0]
+    assert receipt["blocks"] == 2
+    assert receipt["verification"]["failed_tool_calls"] == 1
+    assert receipt["verification"]["failures"][0]["error"] == "first block command failed"
+    assert receipt["verification"]["requires_review"] is True
+    assert receipt["verification"]["verdict"] == "failed"

@@ -1794,6 +1794,8 @@ async def _run_with_auto_continue(core: Any, *, session_id: str, content: str) -
     blocks = 1
     total_iterations = result.iterations
     total_compactions = result.compactions
+    all_tool_calls = list(getattr(result, "tool_calls", None) or [])
+    all_tool_results = list(getattr(result, "tool_results", None) or [])
     while (
         getattr(core.config, "auto_continue", False)
         and result.truncated
@@ -1811,8 +1813,11 @@ async def _run_with_auto_continue(core: Any, *, session_id: str, content: str) -
         result = await core.run(session_id=session_id, user_message=_CONTINUE_PROMPT)
         total_iterations += result.iterations
         total_compactions += result.compactions
+        all_tool_calls.extend(getattr(result, "tool_calls", None) or [])
+        all_tool_results.extend(getattr(result, "tool_results", None) or [])
     if blocks > 1:
-        result = replace(result, iterations=total_iterations, compactions=total_compactions)
+        result = replace(result, iterations=total_iterations, compactions=total_compactions,
+                         tool_calls=all_tool_calls, tool_results=all_tool_results)
     return result, blocks
 
 

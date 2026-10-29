@@ -123,3 +123,27 @@ async def test_cancelled_block_stops_the_loop() -> None:
     assert blocks == 1
     core.run.assert_awaited_once()
     assert result.cancelled is True
+
+async def test_auto_continue_preserves_failed_tool_evidence_from_earlier_blocks() -> None:
+    from minimax_code.agent.tools.base import ToolResult
+    from minimax_code.verification import verification_evidence
+
+    first = _result(truncated=True)
+    first.tool_calls = [{"name": "exec_command"}]
+    first.tool_results = [ToolResult.fail("command exited with code 1")]
+    second = _result()
+    second.tool_calls = [{"name": "exec_command"}]
+    second.tool_results = [ToolResult.ok({"exit_code": 0})]
+    core = _core(auto=True, max_blocks=2, results=[first, second])
+    merged, blocks = await _run_with_auto_continue(core, session_id="s1", content="hi")
+    assert blocks == 2
+    assert merged.tool_calls == [*first.tool_calls, *second.tool_calls]
+    assert merged.tool_results == [*first.tool_results, *second.tool_results]
+    failures = [{"tool": call["name"], "error": res.error}
+                for call, res in zip(merged.tool_calls, merged.tool_results, strict=True)
+                if not res.success]
+    evidence = verification_evidence(base={"tool_calls": len(merged.tool_calls),
+        "failed_tool_calls": len(failures), "failures": failures})
+    assert evidence["verdict"] == "failed"
+    assert evidence["requires_review"]
+    assert failures == [{"tool": "exec_command", "error": "command exited with code 1"}]
