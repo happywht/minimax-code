@@ -719,6 +719,8 @@ export interface ResearchConfigResult {
   saved_url: string | null;
   effective_url: string | null;
   source: "settings" | "environment" | "environment_invalid" | "unconfigured";
+  provider?: "searxng" | "brave";
+  brave_key_configured?: boolean;
 }
 
 export interface RuntimeRecoveryResult {

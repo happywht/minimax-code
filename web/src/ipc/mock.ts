@@ -1810,7 +1810,9 @@ function mockHandle(
     case "runtime.research_get":
       return { saved_url: mockResearchUrl, effective_url: mockResearchUrl, source: mockResearchUrl ? "settings" : "unconfigured" };
     case "runtime.research_set": {
-      const value = (params as { search_url: string | null }).search_url;
+      const request = params as { search_url: string | null; provider?: string; brave_key?: string; clear_brave_key?: boolean };
+      if (request.brave_key || request.clear_brave_key || request.provider === "brave") throw new Error("演示模式不能保存搜索密钥或启用 Brave");
+      const value = request.search_url;
       if (value !== null) {
         let parsed: URL;
         try { parsed = new URL(value); } catch { throw new Error("Invalid search endpoint"); }

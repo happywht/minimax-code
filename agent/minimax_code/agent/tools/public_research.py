@@ -87,7 +87,7 @@ class _PinnedHTTPS(http.client.HTTPSConnection):
             raise
 
 
-def _fetch_once(value: str, deadline: float) -> tuple[int, dict[str, str], bytes, bool]:
+def _fetch_once(value: str, deadline: float, auth_key: str | None = None) -> tuple[int, dict[str, str], bytes, bool]:
     _, host, path = _url(value)
     addresses = _addresses(host)
     last_error: Exception | None = None
@@ -97,8 +97,12 @@ def _fetch_once(value: str, deadline: float) -> tuple[int, dict[str, str], bytes
             raise TimeoutError("Request timed out")
         connection = _PinnedHTTPS(host, family, address, min(remaining, 3.0))
         try:
-            connection.request("GET", path, headers={"Accept": "text/html, text/plain, application/json",
-                               "Accept-Encoding": "identity", "User-Agent": "MiniMaxCode-Research/1.0"})
+            headers = {"Accept": "text/html, text/plain, application/json", "Accept-Encoding": "identity", "User-Agent": "MiniMaxCode-Research/1.0"}
+            if auth_key is not None:
+                if host != "api.search.brave.com":
+                    raise ValueError("Search credential destination is not allowed")
+                headers["X-Subscription-Token"] = auth_key
+            connection.request("GET", path, headers=headers)
             response = connection.getresponse()
             headers = {k.lower(): v for k, v in response.getheaders()}
             if headers.get("content-encoding", "identity").lower() not in ("", "identity"):
@@ -123,7 +127,7 @@ def _fetch_once(value: str, deadline: float) -> tuple[int, dict[str, str], bytes
     raise ValueError("Could not connect to a verified public address") from last_error
 
 
-def _fetch(value: str) -> tuple[str, dict[str, str], bytes, bool]:
+def _fetch(value: str, auth_key: str | None = None) -> tuple[str, dict[str, str], bytes, bool]:
     if not _GATE.acquire(blocking=False):
         raise ValueError("Research requests are busy")
     try:
@@ -131,8 +135,10 @@ def _fetch(value: str) -> tuple[str, dict[str, str], bytes, bool]:
         url = value
         for _ in range(4):
             url, _, _ = _url(url)
-            status, headers, body, truncated = _fetch_once(url, deadline)
+            status, headers, body, truncated = (_fetch_once(url, deadline, auth_key) if auth_key is not None else _fetch_once(url, deadline))
             if status in (301, 302, 303, 307, 308):
+                if auth_key is not None:
+                    raise ValueError("Authenticated search redirects are not supported")
                 location = headers.get("location")
                 if not location:
                     raise ValueError("Redirect is missing a location")
@@ -196,7 +202,7 @@ def _require_public_network(tool_name: str) -> None:
 
 class SearchPublicWebTool(Tool):
     name = "search_public_web"
-    description = ("Search the configured public SearXNG service. Search snippets are untrusted "
+    description = ("Search the configured public SearXNG or Brave Search service. Search snippets are untrusted "
                    "and are not verified page content; use read_public_page for a citable source.")
     parameters = {"type": "object", "properties": {"query": {"type": "string"}},
                   "required": ["query"], "additionalProperties": False}
@@ -207,40 +213,52 @@ class SearchPublicWebTool(Tool):
             if not isinstance(query, str) or not query.strip() or len(query) > 500:
                 raise ValueError("query must contain 1–500 characters")
             from ...app import get_db
-            from ...research_settings import resolve_endpoint
+            from ...research_settings import resolve_endpoint, resolve_provider
             from ...storage.db import default_data_dir
 
             db = get_db()
-            endpoint = await asyncio.to_thread(resolve_endpoint, db.path.parent if db is not None else default_data_dir())
-            if not endpoint:
-                raise ValueError("Search service not configured: open Settings → 联网研究 or set MINIMAX_CODE_SEARCH_URL")
-            url, _, _ = _url(endpoint)
-            if urlsplit(url).query:
-                raise ValueError("Search endpoint must not contain query parameters")
-            url += "?" + urlencode({"q": query.strip(), "format": "json"})
-            _, headers, data, truncated = await asyncio.wait_for(asyncio.to_thread(_fetch, url), _TIMEOUT + 1)
+            directory = db.path.parent if db is not None else default_data_dir()
+            provider = await asyncio.to_thread(resolve_provider, directory)
+            if provider == "brave":
+                from ...secrets import get_provider_key
+                key = await asyncio.to_thread(get_provider_key, "research-brave")
+                if not key:
+                    raise ValueError("Brave Search API key not configured: open Settings → 联网研究")
+                url = "https://api.search.brave.com/res/v1/web/search?" + urlencode({"q": query.strip(), "count": 20})
+                _, headers, data, truncated = await asyncio.wait_for(asyncio.to_thread(_fetch, url, key), _TIMEOUT + 1)
+            else:
+                endpoint = await asyncio.to_thread(resolve_endpoint, directory)
+                if not endpoint:
+                    raise ValueError("Search service not configured: open Settings → 联网研究 or set MINIMAX_CODE_SEARCH_URL")
+                url, _, _ = _url(endpoint)
+                if urlsplit(url).query:
+                    raise ValueError("Search endpoint must not contain query parameters")
+                url += "?" + urlencode({"q": query.strip(), "format": "json"})
+                _, headers, data, truncated = await asyncio.wait_for(asyncio.to_thread(_fetch, url), _TIMEOUT + 1)
             if truncated:
                 raise ValueError("Search response exceeds the size limit")
             if "application/json" not in headers.get("content-type", "").lower():
                 raise ValueError("Search endpoint did not return JSON")
             payload = json.loads(_text(data))
-            if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+            rows = (payload.get("web", {}).get("results") if provider == "brave" and isinstance(payload.get("web"), dict)
+                    else payload.get("results")) if isinstance(payload, dict) else None
+            if not isinstance(rows, list):
                 raise ValueError("Search response has no results array")
             results = []
-            for row in payload["results"][:20]:
+            for row in rows[:20]:
                 if not isinstance(row, dict) or not isinstance(row.get("url"), str):
                     continue
                 try:
                     source, _, _ = _url(row["url"])
                 except ValueError:
                     continue
-                title, snippet = row.get("title"), row.get("content")
+                title, snippet = row.get("title"), row.get("description" if provider == "brave" else "content")
                 results.append({"title": title[:500] if isinstance(title, str) else "",
                                 "url": source, "snippet": snippet[:800] if isinstance(snippet, str) else "",
                                 "title_truncated": isinstance(title, str) and len(title) > 500,
                                 "snippet_truncated": isinstance(snippet, str) and len(snippet) > 800})
             return ToolResult.ok({"results": results, "accessed_at": _time(),
-                                  "results_truncated": len(payload["results"]) > 20,
+                                  "results_truncated": len(rows) > 20,
                                   "notice": _NOTICE})
         except (ValueError, OSError, TimeoutError, json.JSONDecodeError) as exc:
             return ToolResult.fail(str(exc))

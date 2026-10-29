@@ -44,6 +44,9 @@ class ResearchConfigGetParams(BaseModel):
 class ResearchConfigSetParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     search_url: str | None = Field(max_length=2048)
+    provider: Literal["searxng", "brave"] = "searxng"
+    brave_key: str | None = Field(default=None, max_length=512)
+    clear_brave_key: bool = False
 
 
 class CheckpointRebindParams(BaseModel):

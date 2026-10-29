@@ -2049,3 +2049,5 @@ Cron 身份是 job/revision/持久 UTC scheduled_for；SQLite 原子推进 next_
 
 schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间、会话/任务/当前 run_id、status/reason，以及已有任务的 verification、execution_status 和部分 result；软删除后历史仍可查询。
 此范围不支持远程主机、Codex 调度、一般命令调度，也尚未提供跨运行原子每日预算账本。
+
+`runtime.research_set` 可选 `provider`（`searxng` 或 `brave`）、`brave_key` 和 `clear_brave_key`；密钥写入服务主机系统密钥环，读取仅返回是否配置。Brave 请求固定域名并拒绝携带密钥重定向；配置不等于网络验证。

@@ -33,12 +33,12 @@ def validate_endpoint(value: str) -> str:
     return url
 
 
-def _load(directory: Path) -> str | None:
+def _read_settings(directory: Path) -> dict:
     path = directory / _FILE
     try:
         info = path.lstat()
     except FileNotFoundError:
-        return None
+        return {"provider": "searxng", "search_url": None}
     if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_size > 4096:
         raise ValueError("Search settings file is invalid")
     with path.open("rb") as stream:
@@ -52,9 +52,21 @@ def _load(directory: Path) -> str | None:
         value = json.loads(data)
     except (ValueError, UnicodeError) as exc:
         raise ValueError("Search settings file is invalid") from exc
-    if type(value) is not dict or set(value) != {"search_url"} or not isinstance(value["search_url"], str):
+    if type(value) is not dict or set(value) not in ({"search_url"}, {"search_url", "provider"}):
         raise ValueError("Search settings file is invalid")
-    return validate_endpoint(value["search_url"])
+    provider, url = value.get("provider", "searxng"), value.get("search_url")
+    if provider not in {"searxng", "brave"} or (url is not None and not isinstance(url, str)):
+        raise ValueError("Search settings file is invalid")
+    return {"provider": provider, "search_url": validate_endpoint(url) if url else None}
+
+
+def _load(directory: Path) -> str | None:
+    return _read_settings(directory)["search_url"]
+
+
+def resolve_provider(directory: Path) -> str:
+    with _LOCK:
+        return _read_settings(directory)["provider"]
 
 
 def _environment_endpoint() -> str | None:
@@ -76,31 +88,40 @@ def resolve_endpoint(directory: Path) -> str | None:
 
 def get_config(directory: Path) -> dict:
     with _LOCK:
-        saved = _load(directory)
+        settings = _read_settings(directory)
+        saved = settings["search_url"]
+        from .secrets import has_provider_key
+        try:
+            key_configured = has_provider_key("research-brave")
+        except Exception:
+            key_configured = False
+        extra = {"provider": settings["provider"], "brave_key_configured": key_configured}
         if saved:
-            return {"saved_url": saved, "effective_url": saved, "source": "settings"}
+            return {"saved_url": saved, "effective_url": saved, "source": "settings", **extra}
         try:
             environment = _environment_endpoint()
         except ValueError:
-            return {"saved_url": None, "effective_url": None, "source": "environment_invalid"}
+            return {"saved_url": None, "effective_url": None, "source": "environment_invalid", **extra}
         if environment:
             # Do not echo an environment URL which may contain sensitive path material.
-            return {"saved_url": None, "effective_url": None, "source": "environment"}
-        return {"saved_url": None, "effective_url": None, "source": "unconfigured"}
+            return {"saved_url": None, "effective_url": None, "source": "environment", **extra}
+        return {"saved_url": None, "effective_url": None, "source": "unconfigured", **extra}
 
 
-def set_config(directory: Path, value: str | None) -> dict:
+def set_config(directory: Path, value: str | None, provider: str = "searxng") -> dict:
+    if provider not in {"searxng", "brave"}:
+        raise ValueError("Unknown research provider")
     normalized = validate_endpoint(value) if value is not None else None
     with _LOCK:
         directory.mkdir(parents=True, exist_ok=True)
-        if normalized is None:
+        if normalized is None and provider == "searxng":
             # Replacing with a validated absence, rather than following the target.
             (directory / _FILE).unlink(missing_ok=True)
         else:
             fd, temporary = tempfile.mkstemp(prefix=".research-", dir=directory)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    json.dump({"search_url": normalized}, stream, ensure_ascii=False)
+                    json.dump({"search_url": normalized, "provider": provider}, stream, ensure_ascii=False)
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(temporary, directory / _FILE)

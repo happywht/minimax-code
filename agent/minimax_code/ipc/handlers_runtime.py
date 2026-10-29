@@ -61,7 +61,21 @@ async def _research_config(params: Any, ctx: Context, *, write: bool) -> None:
         db = await ensure_db()
         if db is None:
             raise RuntimeError("Storage unavailable")
-        result = await asyncio.to_thread(set_config, db.path.parent, values.search_url) if write else await asyncio.to_thread(get_config, db.path.parent)
+        if write:
+            from .. import secrets
+            from ..research_settings import validate_endpoint
+            if values.search_url is not None:
+                validate_endpoint(values.search_url)
+            if values.brave_key is not None:
+                key = values.brave_key
+                if not key or key != key.strip() or any(ord(c) < 33 or ord(c) > 126 for c in key) or values.clear_brave_key:
+                    raise ValueError("Invalid search key")
+                await asyncio.to_thread(secrets.set_provider_key, "research-brave", key)
+            if values.clear_brave_key:
+                await asyncio.to_thread(secrets.clear_provider_key, "research-brave")
+            result = await asyncio.to_thread(set_config, db.path.parent, values.search_url, values.provider)
+        else:
+            result = await asyncio.to_thread(get_config, db.path.parent)
         await ctx.reply(result)
     except (ValidationError, ValueError):
         await ctx.reply_error(INVALID_PARAMS, "Invalid or unavailable research settings")
