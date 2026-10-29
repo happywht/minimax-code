@@ -52,6 +52,8 @@ def setup(tmp_path, monkeypatch):
         return ''
     monkeypatch.setattr(upgrade, 'command', command)
     monkeypatch.setattr(upgrade, 'health', lambda port: None)
+    monkeypatch.setattr(upgrade, 'service_identity', lambda unit: (123, '456'))
+    monkeypatch.setattr(upgrade, 'verify_listener', lambda pid, port: None)
     return args, calls, tmp_path
 
 
@@ -172,3 +174,83 @@ def test_start_failure_attempts_stop_and_retains_backup(setup, monkeypatch):
     transaction = next((tmp / 'backups').glob('upgrade-*'))
     assert (transaction / 'data-vault.zip').is_file()
     assert Path(args.unit_file).read_text().startswith(args.new_python)
+
+
+def test_changed_service_pid_fails_after_health_and_stops(setup, monkeypatch):
+    args, calls, tmp = setup
+    identities = iter([(123, '456'), (124, '457')])
+    monkeypatch.setattr(upgrade, 'service_identity', lambda unit: next(identities))
+    with pytest.raises(RuntimeError, match='main process changed'):
+        upgrade.upgrade(args)
+    assert sum('stop' in call for call in calls) == 2
+    transaction = next((tmp / 'backups').glob('upgrade-*'))
+    assert json.loads((transaction / 'state.json').read_text())['state'] == 'failed-during-or-after-switch'
+
+
+def test_unattributed_listener_blocks_healthy_http(setup, monkeypatch):
+    args, calls, tmp = setup
+    checked = []
+    monkeypatch.setattr(upgrade, 'verify_listener', lambda pid, port: (_ for _ in ()).throw(RuntimeError('not owned')))
+    monkeypatch.setattr(upgrade, 'health', lambda port: checked.append(port))
+    with pytest.raises(RuntimeError, match='not owned'):
+        upgrade.upgrade(args)
+    assert checked == [args.port]  # Initial readiness alone cannot accept the upgrade.
+    assert sum('stop' in call for call in calls) == 2
+
+
+def test_listener_attribution_rejects_spoof_and_unreadable_proc(tmp_path, monkeypatch):
+    proc = tmp_path / 'proc'
+    (proc / 'self' / 'net').mkdir(parents=True)
+    (proc / '123' / 'fd').mkdir(parents=True)
+    header = '  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
+    row = '  0: 0100007F:223D 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 42\n'
+    (proc / 'self' / 'net' / 'tcp').write_text(header + row)
+    (proc / 'self' / 'net' / 'tcp6').write_text(header)
+    real_path = Path
+    monkeypatch.setattr(upgrade, 'Path', lambda path: proc if str(path) == '/proc' else
+                        proc / str(path)[len('/proc/'): ] if str(path).startswith('/proc/') else real_path(path))
+    monkeypatch.setattr(upgrade.os, 'readlink', lambda fd: 'socket:[42]')
+    (proc / '123' / 'fd' / '3').touch()
+    upgrade.verify_listener(123, 8765)
+    monkeypatch.setattr(upgrade.os, 'readlink', lambda fd: 'socket:[99]')
+    with pytest.raises(RuntimeError, match='not owned'):
+        upgrade.verify_listener(123, 8765)
+    (proc / 'self' / 'net' / 'tcp6').unlink()
+    with pytest.raises(RuntimeError, match='attribute loopback listener'):
+        upgrade.verify_listener(123, 8765)
+
+
+def test_listener_rejects_an_additional_unowned_reachable_socket(tmp_path, monkeypatch):
+    proc = tmp_path / 'proc'
+    (proc / 'self' / 'net').mkdir(parents=True)
+    (proc / '123' / 'fd').mkdir(parents=True)
+    header = 'sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n'
+    row = '0: {}:223D 00000000:0000 0A 0:0 0:0 0 1000 0 {}\n'
+    (proc / 'self' / 'net' / 'tcp').write_text(header + row.format('0100007F', '42') + row.format('00000000', '43'))
+    (proc / 'self' / 'net' / 'tcp6').write_text(header)
+    (proc / '123' / 'fd' / '3').touch()
+    real_path = Path
+    monkeypatch.setattr(upgrade, 'Path', lambda path: proc if str(path) == '/proc' else
+                        proc / str(path)[len('/proc/'): ] if str(path).startswith('/proc/') else real_path(path))
+    monkeypatch.setattr(upgrade.os, 'readlink', lambda fd: 'socket:[42]')
+    with pytest.raises(RuntimeError, match='not owned'):
+        upgrade.verify_listener(123, 8765)
+
+
+def test_slow_start_waits_for_readiness_before_attribution(setup, monkeypatch):
+    args, calls, tmp = setup
+    events = []
+    def health(port):
+        events.append('health')
+    def identity(unit):
+        events.append('identity')
+        return (123, '456')
+    def listener(pid, port):
+        events.append('listener')
+        assert events[0] == 'health'  # A Type=simple service may not bind until readiness.
+    monkeypatch.setattr(upgrade, 'health', health)
+    monkeypatch.setattr(upgrade, 'service_identity', identity)
+    monkeypatch.setattr(upgrade, 'verify_listener', listener)
+    transaction = upgrade.upgrade(args)
+    assert events == ['health', 'identity', 'listener', 'health', 'identity', 'listener', 'identity']
+    assert json.loads((transaction / 'state.json').read_text())['state'] == 'healthy'

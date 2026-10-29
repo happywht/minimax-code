@@ -208,7 +208,7 @@ python3 scripts/upgrade-linux-user-service.py \
   --backups "$HOME/minimax-backups" --port 8765 --quiesced
 ```
 
-工具停止 unit 并要求状态为 inactive，使用旧版程序创建和校验离线 bundle，再保留旧 unit、原子切换 unit、reload、start，检查 active 与回环 `/health` 的 HTTP 200 和 `ok`、`db`、`web`、`auth_required` 均为 true（不跟随重定向）。新旧虚拟环境必须已安装 bundle 支持且旧 bundle writer 支持当前 schema；不支持时停止并保留原数据。每次交易建立独立私有目录，保留 `state.json`、旧 unit 和 bundle。锁只协调遵守该工具协议的同 unit 升级。health 与 active 只是基本就绪检查，不证明数据库、任务或工作区验收通过，也不证明响应一定由目标进程提供。
+工具停止 unit 并要求状态为 inactive，使用旧版程序创建和校验离线 bundle，再保留旧 unit、原子切换 unit、reload、start，检查 active、systemd MainPID 和 `/proc` 中的 TCP 监听套接字：健康检查前后都要求该主进程持有回环端口的监听套接字，且没有它未持有的可达监听套接字；同时检查进程启动时间及网络命名空间，并要求回环 `/health` 返回 HTTP 200 和 `ok`、`db`、`web`、`auth_required` 均为 true（不跟随重定向）。无法读取或归属这些信息时升级失败；只检查主进程，不将子进程或容器内进程视为其所有者。新旧虚拟环境必须已安装 bundle 支持且旧 bundle writer 支持当前 schema；不支持时停止并保留原数据。每次交易建立独立私有目录，保留 `state.json`、旧 unit 和 bundle。锁只协调遵守该工具协议的同 unit 升级。这些是基本就绪检查，不证明数据库、任务或工作区验收通过。套接字与进程检查是采样，无法消除检查间的竞争或证明共享套接字的独占性；应在可信且操作已静默的本机环境中运行。
 
 **失败和中断：** 工具不会自动恢复旧数据库或用旧程序启动已升级数据。切换过程中或之后失败时，它尽力停止服务并保留新版 unit、原数据和备份；停止失败、超时、SIGKILL、断电或进程崩溃后的实际状态可能未知，不能根据记录推定服务已停止或切换未发生。先检查 systemd、进程及数据目录租约，确认完全停止；保全升级后的数据目录、WAL/SHM、marker、日志和工作副本作为证据。若备份尚未成功校验，不应把它用于恢复。若需要回退，使用**旧版**的 `bundle verify` 和 `bundle restore --new-data-dir` 恢复到全新路径，按 [bundle 恢复边界](data-vault-bundle.md) 另行核对独立文件、marker、身份和凭据；用旧版生成指向新恢复目录的 unit，经检查后由操作者手动部署并启动。不得用旧版直接打开已迁移的新库，也不得覆盖现有数据。失败前停止而尚未切换时同样应先确认实际状态；此流程不自动重启。
 

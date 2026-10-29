@@ -1109,3 +1109,10 @@ Schema046/bundle6 增加成果记录，旧格式1–5仍按原版本恢复。升
 `/tmp/minimax-upgrade-accept-e179ff8912`，本地脚本
 `.verification/live-upgrade-accept.py`、`.verification/live-upgrade-restore.py`。
 测试只处理隔离服务，未升级正式远端服务；生产升级和机器重启仍待验收。
+
+同日补充：升级就绪检查增加 systemd MainPID、进程启动时间、网络命名空间和
+`/proc` 监听套接字归属复核，并在健康请求前后重复检查。Windows 定向18项通过；
+使用更新后的工具在远端隔离用户服务上重新完成 Schema046→047 升级，测试会话保留。
+实测目录 `/tmp/minimax-upgrade-accept-11e8981cf5`，脚本
+`.verification/live-upgrade-accept.py`。这些是采样检查，不能证明共享套接字独占或
+排除采样之间的竞态；正式服务没有升级。

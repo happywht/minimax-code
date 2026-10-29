@@ -68,6 +68,68 @@ def health(port: int) -> None:
         time.sleep(0.5)
 
 
+def service_identity(unit: str) -> tuple[int, str]:
+    """Read active service identity, including Linux process start time against PID reuse."""
+    output = command(['systemctl', '--user', 'show', unit,
+                      '--property=ActiveState', '--property=MainPID'])
+    properties = dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
+    try:
+        pid = int(properties['MainPID'])
+        if properties['ActiveState'] != 'active' or pid <= 0:
+            raise ValueError('service is not active or has no main process')
+        proc = Path('/proc') / str(pid)
+        service_net = (proc / 'ns/net').stat()
+        own_net = Path('/proc/self/ns/net').stat()
+        if (service_net.st_dev, service_net.st_ino) != (own_net.st_dev, own_net.st_ino):
+            raise ValueError('service and upgrade command use different network namespaces')
+        # The command name in stat is parenthesized and may contain spaces or parentheses.
+        fields = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+        start_time = fields[19]
+        if not start_time.isdecimal():
+            raise ValueError('invalid process start time')
+        return pid, start_time
+    except (KeyError, IndexError, OSError, ValueError) as exc:
+        raise RuntimeError(f'cannot establish active service process identity: {exc}') from exc
+
+
+def verify_listener(pid: int, port: int) -> None:
+    """Require every IPv4-reachable listening socket on the port to be held by MainPID."""
+    try:
+        inodes = set()
+        loopback = set()
+        for table in ('tcp', 'tcp6'):
+            rows = (Path('/proc/self/net') / table).read_text().splitlines()
+            if not rows or 'local_address' not in rows[0]:
+                raise ValueError(f'invalid {table} socket table')
+            for row in rows[1:]:
+                fields = row.split()
+                if len(fields) < 10:
+                    raise ValueError(f'invalid {table} socket entry')
+                address, port_hex = fields[1].split(':')
+                if int(port_hex, 16) != port or fields[3] != '0A':
+                    continue
+                # Include wildcard and IPv4-mapped IPv6 listeners conservatively: procfs
+                # does not expose IPV6_V6ONLY and those sockets could accept IPv4 traffic.
+                reachable = (address in ('00000000', '0100007F') if table == 'tcp' else
+                             address in ('0' * 32, '0000000000000000FFFF00000100007F'))
+                if reachable:
+                    if not fields[9].isdecimal() or fields[9] == '0':
+                        raise ValueError('invalid listener inode')
+                    inodes.add(fields[9])
+                    if table == 'tcp' and address == '0100007F':
+                        loopback.add(fields[9])
+        owned = set()
+        for fd in (Path('/proc') / str(pid) / 'fd').iterdir():
+            target = os.readlink(fd)
+            match = re.fullmatch(r'socket:\[(\d+)\]', target)
+            if match:
+                owned.add(match.group(1))
+        if not loopback or not inodes <= owned:
+            raise ValueError('loopback port listener is missing or not owned by the service main process')
+    except (OSError, ValueError, IndexError) as exc:
+        raise RuntimeError(f'cannot attribute loopback listener: {exc}') from exc
+
+
 def upgrade(args: argparse.Namespace) -> Path:
     if not args.quiesced:
         raise ValueError('explicit --quiesced acknowledgement is required before stopping active work')
@@ -166,8 +228,16 @@ def upgrade(args: argparse.Namespace) -> Path:
             record('starting')
             command(['systemctl', '--user', 'start', args.unit])
             command(['systemctl', '--user', 'is-active', '--quiet', args.unit])
+            # Type=simple can report started before the application binds its port.
             health(args.port)
-            command(['systemctl', '--user', 'is-active', '--quiet', args.unit])
+            identity = service_identity(args.unit)
+            verify_listener(identity[0], args.port)
+            health(args.port)
+            if service_identity(args.unit) != identity:
+                raise RuntimeError('service main process changed during health check')
+            verify_listener(identity[0], args.port)
+            if service_identity(args.unit) != identity:
+                raise RuntimeError('service main process changed during listener verification')
             record('healthy')
             return transaction
         except BaseException:
