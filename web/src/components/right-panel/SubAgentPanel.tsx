@@ -349,13 +349,12 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
   }, [runId, sessionId, projectId, teamRunId]);
   useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setValidation(null); validationKey.current = null; setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
   useEffect(() => {
-    if (!teamRunId) return;
     let cancelled = false;
     const host = ipc.agentBaseUrl;
     void ipc.request<{ runs: Array<{ id: string; session_id: string; status: string; metadata?: Record<string, unknown> }> }>("run.list", { session_id: sessionId, limit: 100 }).then(({ runs }) => {
       if (cancelled || host !== ipc.agentBaseUrl || useSessionStore.getState().currentSessionId !== sessionId) return;
       const latest = runs.find((run) => run.session_id === sessionId && run.metadata?.manual_team_validation === true &&
-        run.metadata?.team_run_id === teamRunId && run.metadata?.child_run_id === runId);
+        (run.metadata?.team_run_id ?? null) === (teamRunId ?? null) && run.metadata?.child_run_id === runId);
       if (latest) setValidation({ id: latest.id, status: latest.status });
     }).catch(() => { /* History is optional; an absent result is not a pass. */ });
     return () => { cancelled = true; };
@@ -429,18 +428,18 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     finally { if (current()) setBusy(false); }
   };
   const startValidation = async () => {
-    if (!teamRunId || !receipt?.report.complete || busy) return;
+    if (!receipt?.report.complete || busy) return;
     const ticket = ++generation.current, host = ipc.agentBaseUrl, expected = receipt;
     const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
       useSessionStore.getState().currentSessionId === sessionId && useSessionStore.getState().currentProjectId === projectId;
     setBusy(true); setMessage("");
     try {
-      const snapshot = await ipc.request<ReviewResult & { validate_command?: string | null }>("run.child_workspace", {
-        run_id: runId, session_id: sessionId, team_run_id: teamRunId, action: "preview",
+      const snapshot = await ipc.request<ReviewResult & { validate_command?: string | null; parent_run_id?: string | null }>("run.child_workspace", {
+        run_id: runId, session_id: sessionId, ...(teamRunId ? { team_run_id: teamRunId } : {}), action: "preview",
       });
       if (!current()) return;
       if (snapshot.service_id !== expected.service || snapshot.session_id !== sessionId || snapshot.project_id !== projectId ||
-          snapshot.root !== expected.root || snapshot.state !== "collected" || !snapshot.validate_command ||
+          snapshot.root !== expected.root || snapshot.state !== "collected" || !snapshot.validate_command || (!teamRunId && !snapshot.parent_run_id) ||
           !validReceipt(snapshot.receipt, runId) || JSON.stringify(snapshot.receipt) !== JSON.stringify(expected.report)) {
         throw new Error("收集回执、项目或验证命令不可用，请重新查看并配置项目验证命令。");
       }
@@ -449,7 +448,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       if (!accepted || !current()) return;
       validationKey.current ??= crypto.randomUUID();
       const started = await ipc.request<{ run: { id: string; status: string }; service_id: string; session_id: string; project_id: string }>("run.verify_collected", {
-        session_id: sessionId, team_run_id: teamRunId, child_run_id: runId, expected_service_id: expected.service,
+        session_id: sessionId, ...(teamRunId ? { team_run_id: teamRunId } : { parent_run_id: snapshot.parent_run_id }), child_run_id: runId, expected_service_id: expected.service,
         revision: snapshot.revision, expected_command: snapshot.validate_command, idempotency_key: validationKey.current, confirmed: true,
       });
       if (!current()) return;
@@ -468,7 +467,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       if (stop) await ipc.request("run.cancel", { run_id: validation.id });
       const data = await ipc.request<{ run: { id: string; session_id: string; status: string; metadata?: Record<string, unknown> }; result?: Record<string, unknown> | null }>("run.get", { run_id: validation.id });
       if (!current()) return;
-      if (data.run.session_id !== sessionId || data.run.metadata?.team_run_id !== teamRunId || data.run.metadata?.child_run_id !== runId) throw new Error("验证运行绑定已变化");
+      if (data.run.session_id !== sessionId || (data.run.metadata?.team_run_id ?? null) !== (teamRunId ?? null) || data.run.metadata?.child_run_id !== runId) throw new Error("验证运行绑定已变化");
       setValidation({ id: data.run.id, status: data.run.status, result: data.result });
       if (stop) setMessage("已请求停止；请刷新以确认最终状态。");
     } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
@@ -485,7 +484,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       {!!receipt.report.conflicts.length && <details open><summary>未处理冲突</summary><ul>{receipt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
       <p>回执记录当时结果，文件可能后来发生变化。请核对父目录并通过后续任务按权限执行需要的验证。</p>
       {receipt.report.complete && <button type="button" disabled={busy || !projectId} onClick={() => void addFollowup()}>将收集回执加入后续任务草稿</button>}
-      {teamRunId && allowCollect && receipt.report.complete && <button type="button" disabled={busy || !projectId || !!validation} onClick={() => void startValidation()}>审阅并运行项目验证</button>}
+      {allowCollect && receipt.report.complete && <button type="button" disabled={busy || !projectId || !!validation} onClick={() => void startValidation()}>审阅并运行项目验证</button>}
       {validation && <div className="rounded border border-line p-2">
         <p>验证运行 {validation.id} · {validation.status}</p>
         {validation.result ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(validation.result.verification ?? validation.result, null, 2)}</pre> : <p>结果尚未读取或仍未知。</p>}

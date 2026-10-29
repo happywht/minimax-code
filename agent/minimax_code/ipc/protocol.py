@@ -351,7 +351,8 @@ class RunChildListParams(BaseModel):
 class RunVerifyCollectedParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1, max_length=128)
-    team_run_id: str = Field(min_length=1, max_length=128)
+    team_run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    parent_run_id: str | None = Field(default=None, min_length=1, max_length=128)
     child_run_id: str = Field(min_length=1, max_length=128)
     expected_service_id: str = Field(min_length=1, max_length=128)
     revision: str = Field(min_length=64, max_length=64)

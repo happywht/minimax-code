@@ -185,9 +185,10 @@ def register_run_handlers(server: Any) -> None:
             req = RunChildWorkspaceParams.model_validate(params)
             dao = await _get_dao()
             team_collection: dict[str, Any] | None = None
+            parent_run_id: str | None = None
 
             async def binding():
-                nonlocal team_collection
+                nonlocal team_collection, parent_run_id
                 await require_host_session(req.session_id)
                 if req.team_run_id:
                     from ..orchestrator.team_control import is_active
@@ -238,6 +239,7 @@ def register_run_handlers(server: Any) -> None:
                 child_run = await dao.get_run(req.run_id)
                 meta = (child_run or {}).get("metadata") or {}
                 parent_id = meta.get("parent_run_id") if isinstance(meta, dict) else None
+                parent_run_id = parent_id if isinstance(parent_id, str) else None
                 parent = await dao.get_run(parent_id) if isinstance(parent_id, str) else None
                 parent_meta = (parent or {}).get("metadata") or {}
                 session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
@@ -290,12 +292,12 @@ def register_run_handlers(server: Any) -> None:
                                      "project_id": project_id, "service_id": identity})
                 else:
                     command = None
-                    if req.team_run_id and project_id:
+                    if project_id:
                         from ..storage.dao.projects import ProjectsDAO
                         from ..verification import normalize_validate_command
                         project = await ProjectsDAO(dao._db).get(project_id)
                         command = normalize_validate_command((project or {}).get("validate_command"))
-                    await ctx.reply({**reviewed, "team_collection": team_collection, "validate_command": command, "session_id": req.session_id,
+                    await ctx.reply({**reviewed, "team_collection": team_collection, "parent_run_id": parent_run_id, "validate_command": command, "session_id": req.session_id,
                                      "project_id": project_id, "service_id": identity})
         except (ValidationError, ValueError, HandlerError, OSError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
@@ -323,17 +325,37 @@ def register_run_handlers(server: Any) -> None:
 
             async def binding():
                 await require_host_session(req.session_id)
-                team = await dao.get_run(req.team_run_id)
-                metadata = (team or {}).get("metadata") or {}
-                result = metadata.get("team_result") if isinstance(metadata, dict) else None
-                agents = result.get("agents_run") if isinstance(result, dict) else None
+                if bool(req.team_run_id) == bool(req.parent_run_id):
+                    raise ValueError("Provide exactly one team or parent run")
                 session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
-                if (not team or team["mode"] != "team" or team["session_id"] != req.session_id
-                        or team["status"] not in {"completed", "failed"} or not session or not session["project_id"]
-                        or metadata.get("project_id") != session["project_id"] or not isinstance(agents, list)
-                        or not any(isinstance(a, dict) and isinstance(a.get("workspace"), dict)
-                                   and a["workspace"].get("run_id") == req.child_run_id for a in agents)):
-                    raise ValueError("Team, member or project binding changed")
+                if not session or not session["project_id"]:
+                    raise ValueError("Session project is unavailable")
+                if req.team_run_id:
+                    owner = await dao.get_run(req.team_run_id)
+                    metadata = (owner or {}).get("metadata") or {}
+                    result = metadata.get("team_result") if isinstance(metadata, dict) else None
+                    agents = result.get("agents_run") if isinstance(result, dict) else None
+                    if (not owner or owner["mode"] != "team" or owner["session_id"] != req.session_id
+                            or owner["status"] not in {"completed", "failed"} or not isinstance(agents, list)
+                            or not any(isinstance(a, dict) and isinstance(a.get("workspace"), dict)
+                                       and a["workspace"].get("run_id") == req.child_run_id for a in agents)):
+                        raise ValueError("Team or member binding changed")
+                else:
+                    from ..orchestrator.subagent import get_background_run
+                    child_run = await dao.get_run(req.child_run_id)
+                    child_meta = (child_run or {}).get("metadata") or {}
+                    owner = await dao.get_run(req.parent_run_id)
+                    metadata = (owner or {}).get("metadata") or {}
+                    if (not child_run or child_run["mode"] != "subagent"
+                            or child_meta.get("parent_session_id") != req.session_id
+                            or child_meta.get("parent_run_id") != req.parent_run_id
+                            or not owner or owner["session_id"] != req.session_id
+                            or owner["status"] not in {"completed", "failed", "interrupted", "cancelled", "budget_paused"}
+                            or get_background_run(req.child_run_id) is not None):
+                        raise ValueError("Child or parent run binding changed or remains active")
+                    await require_host_session(child_run["session_id"])
+                if not isinstance(metadata, dict) or metadata.get("project_id") != session["project_id"]:
+                    raise ValueError("Run project binding changed")
                 root = await resolve_root_for_session(req.session_id)
                 identity = await ArtifactDAO(dao._db).service_id()
                 project = await ProjectsDAO(dao._db).get(session["project_id"])
@@ -345,7 +367,9 @@ def register_run_handlers(server: Any) -> None:
                 if child is None:
                     raise ValueError("Collected workspace is unavailable")
                 review = await asyncio.to_thread(preview, child)
-                if review["state"] != "collected" or review["revision"] != req.revision:
+                if (review["state"] != "collected" or review["revision"] != req.revision
+                        or not isinstance(review.get("receipt"), dict)
+                        or review["receipt"].get("complete") is not True):
                     raise ValueError("Collected workspace or parent files changed; review again")
                 permissions = await _ensure_permission_store(ctx.server)
                 if permissions.is_denied("project_validation") or permissions.is_denied("exec_command"):
@@ -374,7 +398,7 @@ def register_run_handlers(server: Any) -> None:
                                                         timeout_s=resolve_validate_timeout())
                 evidence = verification_evidence(configured=True, validation=output)
                 job.result = {"run_id": job.run_id, "session_id": req.session_id,
-                              "team_run_id": req.team_run_id, "child_run_id": req.child_run_id,
+                              "team_run_id": req.team_run_id, "parent_run_id": req.parent_run_id, "child_run_id": req.child_run_id,
                               "verification": evidence}
 
             async def finalize(job, error):
@@ -386,7 +410,7 @@ def register_run_handlers(server: Any) -> None:
                     raise RunPersistenceError("Validation run claim is unconfirmed; inspect it before retrying")
                 status = "completed" if error is None and job.result else "interrupted" if isinstance(error, asyncio.CancelledError) else "failed"
                 result = job.result or {"run_id": job.run_id, "session_id": req.session_id,
-                    "team_run_id": req.team_run_id, "child_run_id": req.child_run_id,
+                    "team_run_id": req.team_run_id, "parent_run_id": req.parent_run_id, "child_run_id": req.child_run_id,
                     "verification": {"verdict": "unknown", "reason": "validation_interrupted_or_failed", "requires_review": True}}
                 saved = await dao.update_run_status(job.run_id, status=status,
                     error=str(error) if error and not isinstance(error, asyncio.CancelledError) else None, result=result)
@@ -399,10 +423,12 @@ def register_run_handlers(server: Any) -> None:
             request = {"mode": "execute", "kind": "team_collection_validation", "team_run_id": req.team_run_id,
                        "child_run_id": req.child_run_id, "command": req.expected_command,
                        "revision": req.revision, "service_id": req.expected_service_id}
+            if req.parent_run_id:
+                request["parent_run_id"] = req.parent_run_id
             run, _, _ = await service.admit(dao=dao, session_id=req.session_id, request=request,
-                request_key=req.idempotency_key, title="团队收集后的项目验证",
+                request_key=req.idempotency_key, title="子任务收集后的项目验证",
                 metadata={"manual_team_validation": True, "team_run_id": req.team_run_id,
-                          "child_run_id": req.child_run_id, "project_id": project_id,
+                          "parent_run_id": req.parent_run_id, "child_run_id": req.child_run_id, "project_id": project_id,
                           "workspace_snapshot": workspace, "validate_command": req.expected_command},
                 workspace=workspace, project_id=project_id, operation=operation, finalize=finalize)
             await ctx.reply({"run": run, "session_id": req.session_id, "project_id": project_id,
