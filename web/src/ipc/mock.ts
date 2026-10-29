@@ -708,6 +708,8 @@ function mockHandle(
     case "run.research_list":
     case "run.research_get":
       throw new Error("演示模式没有已读取的真实网页来源");
+    case "run.child_workspace":
+      throw new Error("演示模式没有真实子任务工作区");
     case "run.steer":
       throw new Error("演示模式不支持运行中补充");
     case "run.get": {

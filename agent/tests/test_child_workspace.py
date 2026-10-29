@@ -98,6 +98,34 @@ async def test_running_and_post_run_mutation_cannot_be_collected(parent):
         collect_child(child)
 
 
+async def test_review_and_copy_reject_changed_source(parent, monkeypatch):
+    from minimax_code import file_mutations
+    from minimax_code.workspace.child_review import preview
+
+    (parent / "a.txt").write_text("original", encoding="utf-8")
+    child = await prepare_child(parent, "review")
+    (child.root / "a.txt").write_text("child result", encoding="utf-8")
+    child.finish("completed")
+    first = preview(child)
+    assert first["files"][0]["path"] == "a.txt"
+    assert "child result" in first["files"][0]["diff"]
+    (parent / "a.txt").write_text("user edit", encoding="utf-8")
+    assert preview(child)["files"][0]["conflict"] == "parent_changed"
+    assert preview(child)["revision"] != first["revision"]
+    (parent / "a.txt").write_text("original", encoding="utf-8")
+    original = file_mutations._atomic_replace
+
+    def mutate_source(target, write, **kwargs):
+        if target == parent / "a.txt":
+            (child.root / "a.txt").write_text("late mutation", encoding="utf-8")
+        return original(target, write, **kwargs)
+
+    monkeypatch.setattr(file_mutations, "_atomic_replace", mutate_source)
+    with pytest.raises(OSError, match="Source changed"):
+        collect_child(child)
+    assert (parent / "a.txt").read_text(encoding="utf-8") == "original"
+
+
 async def test_git_worktree_includes_dirty_inputs_without_touching_parent_index(parent):
     await _git(parent, "init")
     (parent / "source.txt").write_text("committed")

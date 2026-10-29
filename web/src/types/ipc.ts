@@ -1427,6 +1427,12 @@ export interface ChildWorkspaceSummary {
   collection_required: boolean;
 }
 
+export interface ChildWorkspaceReview {
+  run_id: string; session_id: string; project_id: string | null; service_id: string;
+  root: string; revision: string; state: string; kind: string; omitted: string[];
+  files: Array<{ path: string; conflict: string | null; diff?: string; diff_truncated?: boolean; diff_unavailable?: boolean }>;
+}
+
 /** HTTP POST /preview/access; a temporary read-only preview path. */
 export interface PreviewAccessResult {
   path: string;

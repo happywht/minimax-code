@@ -12,6 +12,7 @@ from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
+    RunChildWorkspaceParams,
     RunEventsParams,
     RunIdParams,
     RunResearchGetParams,
@@ -51,6 +52,80 @@ async def _get_read_control_dao(ctx: Context) -> Any:
 
 def register_run_handlers(server: Any) -> None:
     """Register run timeline read APIs."""
+
+    child_review_lock = asyncio.Lock()
+
+    async def handle_child_workspace(params: Any, ctx: Context) -> None:
+        from ..execution import ExecutionPolicy, execution_scope
+        from ..orchestrator.subagent import get_background_run
+        from ..storage.dao.text_artifacts import ArtifactDAO
+        from ..workspace.child import collect_child, load_child
+        from ..workspace.child_review import preview
+        from ..workspace_ctx import require_directory, resolve_root_for_session
+        from .host_session_gate import require_host_session
+
+        try:
+            req = RunChildWorkspaceParams.model_validate(params)
+            dao = await _get_dao()
+
+            async def binding():
+                await require_host_session(req.session_id)
+                child_run = await dao.get_run(req.run_id)
+                meta = (child_run or {}).get("metadata") or {}
+                parent_id = meta.get("parent_run_id") if isinstance(meta, dict) else None
+                parent = await dao.get_run(parent_id) if isinstance(parent_id, str) else None
+                parent_meta = (parent or {}).get("metadata") or {}
+                session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
+                if (not child_run or child_run["mode"] != "subagent"
+                        or meta.get("parent_session_id") != req.session_id or not parent
+                        or parent["session_id"] != req.session_id or not session
+                        or not isinstance(parent_meta, dict) or "project_id" not in parent_meta
+                        or parent_meta["project_id"] != session["project_id"]):
+                    raise ValueError("Child run or project binding is unavailable or changed")
+                await require_host_session(child_run["session_id"])
+                root = require_directory(await resolve_root_for_session(req.session_id))
+                if parent_meta.get("workspace_snapshot") != str(root):
+                    raise ValueError("Parent run workspace binding changed")
+                identity = await ArtifactDAO(dao._db).service_id()
+                return root, session["project_id"], identity
+
+            async with child_review_lock:
+                root, project_id, identity = await binding()
+                if req.action == "collect" and (req.expected_service_id != identity or not req.revision):
+                    raise ValueError("Review this workspace again before collection")
+                if get_background_run(req.run_id) is not None:
+                    raise ValueError("Child is still running")
+                child = load_child(root, req.run_id)
+                if child is None:
+                    raise ValueError("No independent workspace is available for this run")
+                reviewed = await asyncio.to_thread(preview, child)
+                if await binding() != (root, project_id, identity):
+                    raise ValueError("Session, project or service changed during review")
+                if req.action == "collect":
+                    if reviewed["revision"] != req.revision:
+                        raise ValueError("Workspace changed since review; refresh before collection")
+                    if any(item["conflict"] for item in reviewed["files"]):
+                        raise ValueError("Conflicts must be resolved before collection")
+                    # Cancellation must not leave an unobserved writer running.
+                    def collect():
+                        with execution_scope(ExecutionPolicy(workspace=root)):
+                            return collect_child(child, on_conflict="fail")
+                    task = asyncio.create_task(asyncio.to_thread(collect))
+                    try:
+                        report = await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        await task
+                        raise
+                    await ctx.reply({"report": report, "session_id": req.session_id,
+                                     "project_id": project_id, "service_id": identity})
+                else:
+                    await ctx.reply({**reviewed, "session_id": req.session_id,
+                                     "project_id": project_id, "service_id": identity})
+        except (ValidationError, ValueError, HandlerError, OSError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("child workspace review failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Child workspace review or collection failed; some files may have been collected")
 
     async def handle_run_list(params: Any, ctx: Context) -> None:
         try:
@@ -393,6 +468,7 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.steer", handle_run_steer)
     server.register("run.research_list", research_handler(RunResearchListParams))
     server.register("run.research_get", research_handler(RunResearchGetParams, detail=True))
+    server.register("run.child_workspace", handle_child_workspace)
 
 
 async def _start_codex_run(request: RunStartParams, ctx: Context, **options: Any) -> None:

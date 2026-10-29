@@ -365,7 +365,8 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
             if not backup.exists():
                 atomic_copy_file(target, backup, baseline_sha256=None)
         target.parent.mkdir(parents=True, exist_ok=True)
-        atomic_copy_file(_path(child.root, relative), target, baseline_sha256=current)
+        atomic_copy_file(_path(child.root, relative), target, baseline_sha256=current,
+                         expected_source_sha256=final[relative])
         report["merged"].append({"path": relative, "sha256": final[relative]})
     report["complete"] = not conflicts
     if report["complete"]:

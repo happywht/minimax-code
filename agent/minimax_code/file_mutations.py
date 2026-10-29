@@ -61,9 +61,15 @@ def atomic_append_text(target: Path, content: str, *, baseline_path: Path,
     _atomic_replace(target, write, baseline_path=baseline_path, baseline_sha256=baseline_sha256)
 
 
-def atomic_copy_file(source: Path, target: Path, *, baseline_sha256: str | None) -> None:
+def atomic_copy_file(source: Path, target: Path, *, baseline_sha256: str | None,
+                     expected_source_sha256: str | None = None) -> None:
     def write(stream: BinaryIO) -> None:
         with source.open("rb") as incoming:
-            shutil.copyfileobj(incoming, stream, 65536)
+            digest = hashlib.sha256()
+            while chunk := incoming.read(65536):
+                stream.write(chunk)
+                digest.update(chunk)
+            if expected_source_sha256 is not None and digest.hexdigest() != expected_source_sha256:
+                raise OSError("Source changed during collection; preserve it for manual review")
 
     _atomic_replace(target, write, baseline_path=target, baseline_sha256=baseline_sha256)
