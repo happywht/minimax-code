@@ -167,6 +167,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const openScheduled = () => openSettings("scheduled");
+    window.addEventListener("minimax:open-scheduled", openScheduled);
+    return () => window.removeEventListener("minimax:open-scheduled", openScheduled);
+  }, [openSettings]);
+
+  useEffect(() => {
     (async () => {
       try {
         await ipc.start();

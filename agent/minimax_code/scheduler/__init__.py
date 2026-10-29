@@ -297,6 +297,14 @@ class JobScheduler:
                 logger.error("Occurrence %s dispatcher failed",oid,exc_info=t.exception())
         task.add_done_callback(done)
 
+    async def _settle_occurrence(self, occurrence_id, status, **kwargs):
+        entry = await self._occurrences.settle(occurrence_id, status, **kwargs)
+        if entry and _IPC_SERVER is not None:
+            try:
+                _IPC_SERVER.notify({"event": "notification.new", "data": entry})
+            except Exception:
+                logger.exception("Could not push scheduled occurrence notification")
+
     async def _reconcile_occurrences(self, *, dispatch_pending=False):
         from ..runs import get_run_service
         from ..storage.dao.runs import AgentRunsDAO
@@ -313,7 +321,7 @@ class JobScheduler:
                 status = task_outcome({**receipt,"run_id":run["id"],"run_status":run["status"],"verification":(run.get("metadata") or {}).get("verification")})
                 if status == "running":
                     continue
-                await self._occurrences.settle(occurrence["id"],status,expected_run_id=run["id"],reason=run.get("error"),result=receipt.get("text"))
+                await self._settle_occurrence(occurrence["id"],status,expected_run_id=run["id"],reason=run.get("error"),result=receipt.get("text"))
             elif dispatch_pending and occurrence["status"] == "pending":
                 owner = await self._dao.get(occurrence["job_id"])
                 if owner and owner["enabled"] and not owner.get("deleted_at") and owner["revision"]==occurrence["revision"]:
@@ -547,13 +555,13 @@ class JobScheduler:
                 return
             # Admission/config failure before any model call remains repairable.
             status = task_outcome(result) if result.get("run_id") else "blocked"
-            await self._occurrences.settle(occurrence["id"],status,expected_run_id=result.get("run_id"),reason=str(result.get("error")) if result.get("error") else None,result=result.get("text") or result.get("output"))
+            await self._settle_occurrence(occurrence["id"],status,expected_run_id=result.get("run_id"),reason=str(result.get("error")) if result.get("error") else None,result=result.get("text") or result.get("output"))
         except Exception as exc:
             current = await self._occurrences.get(occurrence["id"])
             if current and (current["status"] in {"superseded","cancelled"} or current["run_id"] != occurrence.get("run_id")):
                 return
             logger.exception("Scheduled occurrence blocked")
-            await self._occurrences.settle(occurrence["id"],"blocked",expected_run_id=current["run_id"] if current else None,reason=str(exc))
+            await self._settle_occurrence(occurrence["id"],"blocked",expected_run_id=current["run_id"] if current else None,reason=str(exc))
         finally:
             # A run-completed event can precede occurrence settlement. Wake
             # clients after this dispatcher has finished its bookkeeping.

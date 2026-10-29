@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 
 from ._base import loads_json, now_iso
+
+logger = logging.getLogger(__name__)
 
 
 def hydrate(row):
@@ -190,6 +193,34 @@ class ScheduleOccurrencesDAO:
                         occurrence_id,
                     ),
                 )
+
+            # Notification indexing is auxiliary: a failure must not roll back
+            # the actual occurrence outcome. Stable ids prevent reconciliation
+            # from creating duplicate notifications for the same terminal state.
+            entry = None
+            if status not in {"pending", "running"}:
+                notification_id = "ntf_sched_" + hashlib.sha256(
+                    f"{occurrence_id}:{status}".encode()
+                ).hexdigest()[:32]
+                title = "定时任务已完成" if status == "completed" else "定时任务未完成"
+                kind = "info" if status == "completed" else "warning"
+                job = await fetch(conn, "SELECT name FROM scheduled_jobs WHERE id=?", (row["job_id"],))
+                body = f"{job['name'] if job else '定时任务'} · 查看历史了解本次运行状态和成果"
+                await conn.execute("SAVEPOINT schedule_notification")
+                try:
+                    cursor = await conn.execute(
+                        "INSERT OR IGNORE INTO notifications (id,type,title,body,source,source_id,priority,read,created_at,read_at) VALUES (?,?,?,?,?,?,?,0,?,NULL)",
+                        (notification_id, kind, title, body, "schedule", row["job_id"], 0, ts),
+                    )
+                    if cursor.rowcount:
+                        entry = dict(await fetch(conn, "SELECT * FROM notifications WHERE id=?", (notification_id,)))
+                        entry["read"] = False
+                    await conn.execute("RELEASE SAVEPOINT schedule_notification")
+                except Exception:
+                    await conn.execute("ROLLBACK TO SAVEPOINT schedule_notification")
+                    await conn.execute("RELEASE SAVEPOINT schedule_notification")
+                    logger.exception("Could not record scheduled occurrence notification")
+            return entry
 
     async def pending(self):
         return [

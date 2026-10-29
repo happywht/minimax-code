@@ -179,6 +179,21 @@ function NotificationItem({
             {entry.body}
           </p>
         )}
+        {entry.source === "schedule" && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="mt-1 h-auto px-0 py-0 text-[11px] hover:underline"
+            onClick={() => {
+              window.dispatchEvent(new Event("minimax:open-scheduled"));
+              useNotificationStore.getState().setOpen(false);
+              if (!entry.read) onMarkRead(entry.id);
+            }}
+          >
+            查看定时任务历史
+          </Button>
+        )}
         <div className="mt-1 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
           {!entry.read && (
             <Button
