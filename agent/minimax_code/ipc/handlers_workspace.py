@@ -179,12 +179,22 @@ def register_workspace_handlers(
             if not worktree.is_dir():
                 raise HandlerError(INVALID_PARAMS, f"worktree directory is missing: {worktree}")
 
-            # The main checkout lives at the common git dir's parent.
-            common_raw = (await _run_git(worktree, "rev-parse", "--git-common-dir")).strip()
-            common = Path(common_raw)
-            main_repo = common.parent if common.name == ".git" else common
-            if not (main_repo / ".git").exists():
-                raise HandlerError(INVALID_PARAMS, f"cannot locate the main checkout from {common}")
+            # Only merge a managed session belonging to its bound project.
+            root = (configured_worktree_root or (ensure_data_dir() / "worktrees")).resolve()
+            target = worktree.absolute()
+            if target != target.resolve() or target.parent != root or target.name != session_id:
+                raise HandlerError(INVALID_PARAMS, "worktree does not match the managed session path")
+            main_repo = await _repository_for_project(session.get("project_id"), configured_repo)
+            worktree_common = (await _run_git(
+                worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"
+            )).strip()
+            project_common = (await _run_git(
+                main_repo, "rev-parse", "--path-format=absolute", "--git-common-dir"
+            )).strip()
+            if Path(worktree_common).resolve() != Path(project_common).resolve():
+                raise HandlerError(INVALID_PARAMS, "worktree does not belong to the session project")
+            if (await _run_git(main_repo, "status", "--porcelain")).strip():
+                raise HandlerError(INVALID_PARAMS, "main checkout has uncommitted changes")
 
             main_branch = (await _run_git(main_repo, "rev-parse", "--abbrev-ref", "HEAD")).strip()
             if main_branch in {"", "HEAD"}:
@@ -202,13 +212,20 @@ def register_workspace_handlers(
 
             head = (await _run_git(worktree, "rev-parse", "HEAD")).strip()
 
-            # 2) Idempotency: a head already contained by any local
-            #    branch in the main checkout needs no merge.
-            containing = (await _run_git(main_repo, "branch", "--contains", head)).strip()
-            if containing and not committed_pending:
+            # Check the actual target branch, not every local branch.
+            # merge-base exits 1 when HEAD is not an ancestor.
+            proc = await spawn_exec(
+                "git", "-C", str(main_repo), "merge-base", "--is-ancestor", head, "HEAD",
+                cwd=main_repo, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, ancestor_err = await capture_output(proc, timeout=60)
+            if proc.returncode == 0 and not committed_pending:
                 await ctx.reply({"merged": False, "reason": "already_merged",
                                  "worktree_head": head, "main_branch": main_branch})
                 return
+            if proc.returncode not in (0, 1):
+                raise HandlerError(INVALID_PARAMS, "git merge-base failed",
+                                   {"stderr": ancestor_err.decode(errors="replace")})
 
             # 3) Validate inside the worktree BEFORE merging (M3: 完成
             #    验证后再合并). A failure stops the merge with evidence.
@@ -228,41 +245,27 @@ def register_workspace_handlers(
                                              "worktree_head": head, "validation": validation})
                             return
 
-            # 4) Merge via a temporary branch (a detached worktree HEAD
-            #    cannot be merged directly).
-            merge_branch = f"worktree-merge/{session_id}"
+            # Git accepts the detached commit directly; no user branch is created or deleted.
             try:
-                await _run_git(main_repo, "branch", "-D", merge_branch)
-            except HandlerError:
-                pass  # no stale branch — first merge for this session
-            await _run_git(worktree, "branch", merge_branch, head)
-            try:
-                await _run_git(main_repo, "merge", "--no-ff", merge_branch,
-                               "-m", commit_message)
+                await _run_git(main_repo, "merge", "--no-ff", head, "-m", commit_message)
             except HandlerError as exc:
-                # Conflicts: collect the unmerged files FIRST (they vanish
-                # after the abort), then abort cleanly and report — never
-                # auto-resolve.
                 try:
                     conflicts = (await _run_git(main_repo, "diff", "--name-only",
-                                                "--diff-filter=U")).split()
+                                                "--diff-filter=U")).splitlines()
                 except HandlerError:
                     conflicts = []
-                try:
-                    await _run_git(main_repo, "merge", "--abort")
-                except HandlerError:
-                    logger.warning("merge --abort failed after conflict; leaving repo state for inspection", exc_info=True)
-                await ctx.reply({
-                    "merged": False, "reason": "conflicts", "conflicts": conflicts,
-                    "worktree_head": head, "main_branch": main_branch,
-                    "detail": exc.data.get("stderr", "")[:500] if exc.data else "",
-                })
-                return
-            finally:
-                try:
-                    await _run_git(main_repo, "branch", "-D", merge_branch)
-                except HandlerError:
-                    pass
+                if conflicts:
+                    try:
+                        await _run_git(main_repo, "merge", "--abort")
+                    except HandlerError:
+                        logger.warning("merge --abort failed; leaving repo state for inspection", exc_info=True)
+                    await ctx.reply({
+                        "merged": False, "reason": "conflicts", "conflicts": conflicts,
+                        "worktree_head": head, "main_branch": main_branch,
+                        "detail": exc.data.get("stderr", "")[:500] if exc.data else "",
+                    })
+                    return
+                raise
 
             merge_commit = (await _run_git(main_repo, "rev-parse", "HEAD")).strip()
             await ctx.reply({
