@@ -137,6 +137,7 @@ export interface TypedIPC {
   generateDocx(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   extractAttachmentXlsx(params: { project_id: string; session_id: string; expected_service_id: string; attachment_id: string; expected_sha256: string; sheet_name: string }): Promise<{ ok: true; project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; sheet_name: string; rows: string[][]; date_columns: string[]; percentage_columns: string[]; currency_columns: string[] }>;
   ocrAttachmentImage(params: import("../types/ipc").AttachmentOcrParams): Promise<import("../types/ipc").AttachmentOcrResult>;
+  ocrAttachmentPdfPage(params: import("../types/ipc").AttachmentPdfOcrParams): Promise<import("../types/ipc").AttachmentPdfOcrResult>;
   readAttachmentDocument(params: import("../types/ipc").AttachmentDocumentParams): Promise<import("../types/ipc").AttachmentDocumentResult>;
   listAttachments(projectId: string, cursor?: string, query?: string): Promise<import("../types/ipc").AttachmentListResult>;
   getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
@@ -646,6 +647,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     generateDocx: (params) => client.request("attachment.generate_docx", params),
     extractAttachmentXlsx: (params) => client.request("attachment.extract_xlsx", params),
     ocrAttachmentImage: (params) => client.request("attachment.ocr_image", params),
+    ocrAttachmentPdfPage: (params) => client.request("attachment.ocr_pdf_page", params),
     readAttachmentDocument: (params) => client.request("attachment.read_document", params),
     listAttachments: (projectId, cursor, query) => client.request("attachment.list", { project_id: projectId, ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) }),
     // Preview results retain versioned parser scope/reason independently of quality.

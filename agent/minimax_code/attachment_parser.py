@@ -31,7 +31,7 @@ def _environment():
 
 
 def _command(kind):
-    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image"}:
+    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"}:
         raise ValueError("Invalid fixed parser kind")
     # Windows venv python.exe is a redirector. Kill/wait must target the actual
     # parser PID, so launch the base interpreter and add only trusted venv libs
@@ -52,7 +52,7 @@ def _command(kind):
 
 def _run(data, cancelled, scope=SCOPE, kind="docx"):
     def failed(reason, **kwargs):
-        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image"} else failure(reason, scope=scope, **kwargs)
+        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"} else failure(reason, scope=scope, **kwargs)
 
     if sys.platform not in {"linux", "win32"}:
         return failed("limits_unavailable", unavailable=True)
@@ -129,10 +129,10 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
             return failed("parser_crash")
         try:
             result = json.loads(output)
-            if kind == "ocr_image":
+            if kind in {"ocr_image", "ocr_pdf_page"}:
                 if type(result) is not dict:
                     raise ValueError
-                reasons = {"missing_dependency", "missing_language", "invalid_image", "image_limit"}
+                reasons = {"missing_dependency", "missing_language", "invalid_image", "image_limit", "invalid_pdf", "pdf_limit", "page_out_of_range"}
                 if result.get("ok") is False and set(result) == {"ok", "reason"} and result["reason"] in reasons:
                     return result
                 if (set(result) != {"ok", "text", "truncated"} or result["ok"] is not True
@@ -281,6 +281,15 @@ async def ocr_image(data, kind, language):
     if kind not in kinds or language not in languages or len(data) > 10 * 1024 * 1024:
         return {"ok": False, "reason": "invalid_image"}
     return await _inspect(bytes((kinds[kind], languages[language])) + data, SCOPE, "ocr_image")
+
+
+async def ocr_pdf_page(data, page, language):
+    languages = {"eng": 1, "chi_sim": 2, "eng+chi_sim": 3}
+    if (type(page) is not int or not 1 <= page <= 200 or language not in languages
+            or len(data) > 10 * 1024 * 1024):
+        return {"ok": False, "reason": "invalid_pdf"}
+    return await _inspect(page.to_bytes(4, "big") + bytes((languages[language],)) + data,
+                          PDF_SCOPE, "ocr_pdf_page")
 
 
 async def _inspect(data, scope, kind):

@@ -16,6 +16,7 @@ from .protocol import (
     AttachmentListParams,
     AttachmentReadDocumentParams,
     AttachmentOcrParams,
+    AttachmentPdfOcrParams,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,12 +133,12 @@ def register_attachment_handlers(server):
             logger.exception("attachment.read_document failed")
             await ctx.reply_error(INTERNAL_ERROR, "Document reading failed")
 
-    async def ocr_image(params, ctx):
+    async def ocr_image(params, ctx, *, pdf=False):
         try:
-            from ..attachment_parser import ocr_image as recognize
+            from ..attachment_parser import ocr_image as recognize, ocr_pdf_page
             from .host_session_gate import require_host_session
 
-            request = AttachmentOcrParams.model_validate(params)
+            request = (AttachmentPdfOcrParams if pdf else AttachmentOcrParams).model_validate(params)
             service = await get_attachment_service()
 
             async def check_scope():
@@ -151,13 +152,16 @@ def register_attachment_handlers(server):
             await check_scope()
             row, data = await service.content(request.project_id, request.attachment_id)
             kind = row["recognized_type"]
-            if (kind not in {"png", "jpeg"} or row["declared_type"] != kind
+            if (kind not in ({"pdf"} if pdf else {"png", "jpeg"}) or row["declared_type"] != kind
                     or row["sha256"] != request.expected_sha256):
-                raise ValueError("Select the same PNG or JPEG attachment")
-            result = await recognize(data, kind, request.language)
+                raise ValueError("Select the same PDF attachment" if pdf else "Select the same PNG or JPEG attachment")
+            result = await ocr_pdf_page(data, request.page, request.language) if pdf else await recognize(data, kind, request.language)
             if not result["ok"]:
                 messages = {
-                    "missing_dependency": "Local OCR requires Pillow and tesserocr; install them and restart the service",
+                    "missing_dependency": "Local OCR requires Pillow and tesserocr; PDF OCR also requires PyMuPDF. Install locally and restart the service",
+                    "invalid_pdf": "PDF cannot be rendered safely",
+                    "pdf_limit": "PDF page count, size or rendered pixel limit exceeded, or PDF requires a password",
+                    "page_out_of_range": "Requested physical page does not exist",
                     "missing_language": "Local OCR initialization failed; check Tesseract and the selected language data",
                     "invalid_image": "Image cannot be decoded safely",
                     "image_limit": "Image exceeds 12 million pixels or contains multiple frames",
@@ -171,7 +175,7 @@ def register_attachment_handlers(server):
             await ctx.reply({**result, "project_id": request.project_id, "session_id": request.session_id,
                              "service_id": request.expected_service_id, "attachment_id": request.attachment_id,
                              "sha256": request.expected_sha256, "language": request.language,
-                             "quality": "unverified"})
+                             "quality": "unverified", **({"page": request.page} if pdf else {})})
         except ValidationError:
             await ctx.reply_error(INVALID_PARAMS, "Invalid OCR parameters")
         except (ValueError, OSError) as exc:
@@ -180,6 +184,10 @@ def register_attachment_handlers(server):
             logger.exception("attachment.ocr_image failed")
             await ctx.reply_error(INTERNAL_ERROR, "Local OCR failed")
 
+    async def ocr_pdf(params, ctx):
+        await ocr_image(params, ctx, pdf=True)
+
+    server.register("attachment.ocr_pdf_page", ocr_pdf)
     server.register("attachment.ocr_image", ocr_image)
     server.register("attachment.read_document", read_document)
     server.register("attachment.extract_xlsx", extract_xlsx)

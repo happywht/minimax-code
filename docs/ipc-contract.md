@@ -1729,6 +1729,7 @@ document the migration in this file.
 | `attachment.generate_report_pair` | `{project_id, expected_service_id, filename, title, paragraphs?, sections?, formats?}` | `{status, results}`，共享内容逐格式保存并返回各自状态 |
 | `attachment.generate_pdf` | `{project_id, expected_service_id, filename, title, paragraphs?, sections?}` | `{attachment, preview_text}`，生成并保存 PDF 文本报告，业务及视觉未验证 |
 | `attachment.generate_docx` | `{project_id, expected_service_id, filename, title, paragraphs}` | `{attachment, preview_text}`，生成并保存有界纯文本 DOCX；不验证版式或事实 |
+| `attachment.ocr_pdf_page` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language, page}` | 手动渲染并 OCR 指定 PDF 物理页，返回临时未核验文本及页号 |
 | `attachment.ocr_image` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language}` | 手动执行本地 PNG/JPEG OCR，返回临时未核验文本 |
 | `attachment.read_document` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, unit, offset}` | 读取匹配原件的 PDF 物理页或 DOCX 正文段落的有界文本片段，返回来源、位置与下一游标 |
 | `attachment.extract_xlsx` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, sheet_name}` | 复核会话、服务与附件后返回受控完整工作表行及日期、百分比、货币列；不计算公式 |
@@ -2171,4 +2172,7 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 `run.resume` 可附带完整的 `expected_service_id`、`expected_session_id`、`expected_project_id` 和 `expected_cursor`，服务在接单前对照持久运行快照；缺项或已变化时拒绝。调用者仍须审阅外部副作用，运行和文件可能在校验后继续变化；这不是 OS 沙盒或精确恢复。
 
 
-`attachment.ocr_image` 仅接受 `eng`、`chi_sim` 或 `eng+chi_sim`，仅处理声明与识别类型一致的 PNG/JPEG。操作者需自行安装 Pillow、tesserocr、Tesseract 和所选语言数据，必要时在启动服务前设置 `TESSDATA_PREFIX` 指向 tessdata 目录；不会自动下载或安装。附件最多 10 MiB、1200 万像素且仅单帧；处理复用单并发解析进程、512 MiB 内存和 15 秒墙钟限制，返回最多 16000 字符，结果不会保存或自动进入对话。原件经 SHA-256 校验、不修改。结果未经核验，可能漏字、错字或丢失布局。该实现不进行网络请求，但解析进程的资源限制并非操作系统网络或文件系统沙箱；第三方原生库的安全仍依赖安装来源。扫描 PDF、GIF 和 WebP 当前不支持 OCR。
+`attachment.ocr_image` 仅接受 `eng`、`chi_sim` 或 `eng+chi_sim`，仅处理声明与识别类型一致的 PNG/JPEG。操作者需自行安装 Pillow、tesserocr、Tesseract 和所选语言数据，必要时在启动服务前设置 `TESSDATA_PREFIX` 指向 tessdata 目录；不会自动下载或安装。附件最多 10 MiB、1200 万像素且仅单帧；处理复用单并发解析进程、512 MiB 内存和 15 秒墙钟限制，返回最多 16000 字符，结果不会保存或自动进入对话。原件经 SHA-256 校验、不修改。结果未经核验，可能漏字、错字或丢失布局。该实现不进行网络请求，但解析进程的资源限制并非操作系统网络或文件系统沙箱；第三方原生库的安全仍依赖安装来源。GIF 和 WebP 当前不支持 OCR。
+
+
+`attachment.ocr_pdf_page` 使用相同的会话、项目、服务和原件 SHA-256 校验及语言限制，仅对声明与识别均为 PDF 的原件执行用户指定的一个物理页（1–200）。原件最多 10 MiB，文档最多 200 页，不接受需要密码才能打开的文档；页面每边最多 14400 点，以 108 DPI 渲染并限制 1200 万像素，不渲染注释。操作者须另行在服务环境本地安装 PyMuPDF，以及图片 OCR 的 Pillow、tesserocr、Tesseract 和语言数据；不自动安装或下载。缺依赖、无资源限制、超限或页号无效时拒绝。复用单并发 worker、512 MiB 和 15 秒墙钟限制，最多返回 16000 字符及截断标记；结果临时显示、未经核验，可能错漏或丢失版式，空结果不代表无内容，单页结果不代表全文。原件不修改，不自动加入对话。实现不主动联网，但 worker 并非操作系统网络或文件系统沙箱，第三方库的安全依赖安装来源。

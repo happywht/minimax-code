@@ -68,7 +68,7 @@ def establish_limits():
 
 def main():
     try:
-        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image"}:
+        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"}:
             raise RuntimeError("Invalid fixed parser kind")
         job = establish_limits()
     except Exception:
@@ -84,7 +84,14 @@ def main():
     data = sys.stdin.buffer.read(10 * 1024 * 1024 + 256)
     if len(data) > 10 * 1024 * 1024 + 255:
         return 127
-    if sys.argv[-3] == "ocr_image":
+    if sys.argv[-3] == "ocr_pdf_page":
+        from minimax_code.attachment_ocr import recognize_pdf_page
+
+        if len(data) < 6 or len(data) - 5 > 10 * 1024 * 1024:
+            return 127
+        page = int.from_bytes(data[:4], "big")
+        result = recognize_pdf_page(data[5:], page, data[4])
+    elif sys.argv[-3] == "ocr_image":
         from minimax_code.attachment_ocr import recognize_image
 
         if len(data) < 3 or len(data) - 2 > 10 * 1024 * 1024:

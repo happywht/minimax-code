@@ -123,6 +123,10 @@ class AttachmentOcrParams(ArtifactListParams):
     language: Literal["eng", "chi_sim", "eng+chi_sim"]
 
 
+class AttachmentPdfOcrParams(AttachmentOcrParams):
+    page: int = Field(ge=1, le=200)
+
+
 class DocxBlock(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal["paragraph", "table"]
