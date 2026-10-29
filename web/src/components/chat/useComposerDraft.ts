@@ -40,6 +40,8 @@ export interface ComposerDraft {
   setValue: React.Dispatch<React.SetStateAction<string>>;
   /** Reset the draft to empty. */
   clear: () => void;
+  /** Read the live draft when an asynchronous preparation finishes. */
+  getCurrent: () => { id: string | null; text: string };
   overLimit: boolean;
   usagePct: number;
   nearLimit: boolean;
@@ -137,5 +139,5 @@ export function useComposerDraft(sessionId: string | null): ComposerDraft {
   const nearLimit = usagePct >= 80;
   const critical = usagePct >= 95 || overLimit;
 
-  return { ref, value: draft.text, setValue, clear, overLimit, usagePct, nearLimit, critical };
+  return { ref, value: draft.text, setValue, clear, getCurrent: () => draftRef.current, overLimit, usagePct, nearLimit, critical };
 }

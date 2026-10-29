@@ -8,7 +8,7 @@
  * ``AttachmentRows``, ``MentionPickerDropdown`` and ``ComposerToolbar``.
  */
 import { Camera, Mic, MicOff, Paperclip, Send, Square } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ipc } from "../../ipc";
 import { useChat, useSessionStore } from "../../stores";
 import { Button, IconButton } from "../../ui";
@@ -25,6 +25,10 @@ import { ComposerToolbar } from "./ComposerToolbar";
 import { TaskTemplates } from "./TaskTemplates";
 import { QueuedTaskInput } from "./QueuedTaskInput";
 import { strings } from "../../ui/strings";
+
+function serviceLabel(value: string): string {
+  try { return new URL(value).origin; } catch { return "未知"; }
+}
 
 export interface MessageInputProps {
   testId?: string;
@@ -44,6 +48,10 @@ export function MessageInput({
   const captureFileChanges = useChat((s) => s.captureFileChanges);
   const setCaptureFileChanges = useChat((s) => s.setCaptureFileChanges);
   const sessionId = useSessionStore((s) => s.currentSessionId);
+  const session = useSessionStore((s) => s.sessions.find((item) => item.id === s.currentSessionId));
+  const selectedProjectId = useSessionStore((s) => s.currentProjectId);
+  const projectId = sessionId ? session?.project_id : selectedProjectId;
+  const project = useSessionStore((s) => s.projects.find((item) => item.id === projectId));
   const [budgetScope, setBudgetScope] = useState(() => ({ host: ipc.agentBaseUrl, session: sessionId, value: "" }));
   const [budgetHost, setBudgetHost] = useState(ipc.agentBaseUrl);
   useEffect(() => ipc.onSideCar(() => {
@@ -60,6 +68,8 @@ export function MessageInput({
   const codex = useSessionStore((s) => s.sessions.find((session) => session.id === sessionId)?.engine === "codex");
   const draft = useComposerDraft(sessionId);
   const attachments = useAttachments(draft.ref, draft.setValue);
+  const latestAttachments = useRef(attachments);
+  latestAttachments.current = attachments;
   const voice = useVoiceInput(draft.setValue);
   const mention = useMentionPicker({
     loadAgents,
@@ -102,7 +112,37 @@ export function MessageInput({
       return;
     }
     // Resolve @repo / #file mentions into codebase context.
-    const resolved = await context.buildContext(rawText);
+    const original = useSessionStore.getState();
+    const origin = ipc.agentBaseUrl;
+    const originalProject = original.currentProjectId;
+    const originalSession = original.currentSessionId;
+    const originalFiles = attachments.attachedFiles;
+    const originalImages = attachments.attachedImages;
+    const originalRecord = original.sessions.find((item) => item.id === originalSession);
+    const originalProjectRecord = original.projects.find((item) => item.id === (originalRecord?.project_id ?? originalProject));
+    let scopeChanged = false;
+    const unsubscribe = useSessionStore.subscribe((state) => {
+      const record = state.sessions.find((item) => item.id === originalSession);
+      const projectRecord = state.projects.find((item) => item.id === (originalRecord?.project_id ?? originalProject));
+      if (state.currentSessionId !== originalSession || state.currentProjectId !== originalProject ||
+          record?.project_id !== originalRecord?.project_id || record?.workspace_path !== originalRecord?.workspace_path ||
+          record?.workspace_mode !== originalRecord?.workspace_mode || record?.engine !== originalRecord?.engine ||
+          projectRecord?.root_path !== originalProjectRecord?.root_path) scopeChanged = true;
+    });
+    const stopSidecar = ipc.onSideCar(() => { scopeChanged = true; });
+    let resolved;
+    try { resolved = await context.buildContext(rawText); }
+    finally { unsubscribe(); stopSidecar(); }
+    const current = useSessionStore.getState();
+    const liveDraft = draft.getCurrent();
+    const currentStatus = useChat.getState().status;
+    if (scopeChanged || ipc.agentBaseUrl !== origin || current.currentSessionId !== originalSession ||
+        current.currentProjectId !== originalProject || liveDraft.id !== originalSession || liveDraft.text !== rawText ||
+        latestAttachments.current.attachedFiles !== originalFiles || latestAttachments.current.attachedImages !== originalImages ||
+        currentStatus === "sending" || currentStatus === "streaming" || currentStatus === "cancelling") {
+      useChat.setState({ error: "准备任务期间服务、会话、项目或草稿发生变化；未发送，请核对当前执行位置后重试。" });
+      return;
+    }
     if (!resolved) return;
     const { text: finalText, hasContext } = resolved;
 
@@ -154,6 +194,13 @@ export function MessageInput({
             : "border-line focus-within:border-line-strong")
         }
       >
+        <div className="flex flex-wrap gap-x-3 gap-y-1 border-b border-line px-2.5 py-2 text-xs text-ink-2" aria-label="任务提交位置">
+          <span>服务：{serviceLabel(ipc.agentBaseUrl)}</span>
+          <span>会话：{sessionId ? session?.title ?? "加载中或未知" : "发送时新建"}</span>
+          <span>{sessionId ? "会话所属项目" : "新会话项目"}：{project?.name ?? (projectId ? "加载中或未知" : "未指定")}</span>
+          {session?.workspace_path ? <span>会话工作区：{session.workspace_path}</span> :
+            <span>项目目录：{project?.root_path || "未指定或未知"}（实际执行目录以运行详情为准）</span>}
+        </div>
         {/* Drop zone overlay */}
         {attachments.dragging && (
           <div
