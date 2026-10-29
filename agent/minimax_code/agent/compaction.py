@@ -153,6 +153,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     constraint_sentences: list[str] = []
     changed_paths: list[str] = []
     verification_lines: list[str] = []
+    captured_output_refs: list[str] = []
 
     for group in turn_groups:
         for msg in group:
@@ -164,6 +165,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                 constraint_sentences.extend(state.get("constraints", []))
                 verification_lines.extend(state.get("commands", []))
                 changed_paths.extend(state.get("paths", []))
+                captured_output_refs.extend(state.get("captured_output_refs", []))
                 continue
             role = msg.get("role", "")
             content = _msg_text(msg)
@@ -182,6 +184,9 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                     if path and path not in changed_paths:
                         changed_paths.append(path)
             elif role == "tool":
+                reference = _captured_output_ref(content)
+                if reference:
+                    captured_output_refs.append(reference)
                 call = _matching_command(msg, group)
                 if call:
                     command = _clip(str(call.get("args", {}).get("command", "")), 64)
@@ -194,10 +199,12 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
         constraints = constraints[:3] + ["[other constraints omitted]"] + constraints[-3:]
     commands = verification_lines[-4:]
     changed_paths = _dedupe(changed_paths)[-12:]
+    captured_output_refs = _dedupe(captured_output_refs)[-4:]
     later_messages_omitted |= len(later_user_messages) > 4
     later_user_messages = later_user_messages[-4:]
     state = {"objective": _clip(objective, 500), "constraints": constraints, "commands": commands,
              "paths": changed_paths, "later_user_messages": later_user_messages,
+             "captured_output_refs": captured_output_refs,
              "later_messages_omitted": later_messages_omitted}
     later_excerpt = "\n".join(f"- {message}" for message in reversed(later_user_messages))
     if later_messages_omitted:
@@ -207,21 +214,44 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     budget = min(2400, max(0, int(available * .6) - 20))
     parts = []
     for title, value, fraction in (
-        ("Task objective", objective, .18),
-        ("User constraints", "; ".join(constraints), .20),
-        ("Later user messages (newest first; excerpts)", later_excerpt, .24),
-        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .22),
-        ("File write requests (outcomes not established)", ", ".join(changed_paths), .16),
+        ("Task objective", objective, .16),
+        ("User constraints", "; ".join(constraints), .18),
+        ("Later user messages (newest first; excerpts)", later_excerpt, .18),
+        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .16),
+        ("File write requests (outcomes not established)", ", ".join(changed_paths), .12),
     ):
         if value:
             cap = int(budget * fraction) - len(title) - 6
             if cap > 16:
                 parts.append(f"## {title}\n{_clip(value, cap)}")
+    # Never truncate an opaque reference: a partial identifier cannot be read.
+    title = "Output refs (read_tool_output; current run, unverified)"
+    cap = int(budget * .20) - len(title) - 6
+    refs = []
+    for ref in reversed(captured_output_refs):
+        if len(", ".join(refs + [ref])) > cap:
+            break
+        refs.append(ref)
+    if refs:
+        parts.append(f"## {title}\n{', '.join(refs)}")
     return "\n\n".join(parts) or "[Earlier context omitted: insufficient budget]", state
 
 
 def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:max(0, limit - 12)] + " [truncated]"
+
+
+def _captured_output_ref(content: str) -> str:
+    """Extract only the opaque reference, never the captured output or preview."""
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return ""
+    output = payload.get("output") if isinstance(payload, dict) else None
+    if not isinstance(output, dict) or output.get("_spilled") is not True:
+        return ""
+    ref = output.get("output_ref")
+    return ref if isinstance(ref, str) and re.fullmatch(r"output_[0-9a-f]{32}", ref) else ""
 
 
 def _command_excerpt(content: str) -> str:
