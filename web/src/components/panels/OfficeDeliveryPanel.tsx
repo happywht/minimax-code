@@ -27,13 +27,49 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
   const [csv, setCsv] = useState("");
   const [csvTable, setCsvTable] = useState<CsvTable | null>(null);
   const [kinds, setKinds] = useState<OfficeTableSpec["columns"][number]["kind"][]>([]);
+  const csvRef = useRef(csv);
+  const fileReader = useRef<FileReader | null>(null);
+  const fileSequence = useRef(0);
+  const [filePending, setFilePending] = useState(false);
+  const [candidate, setCandidate] = useState<{ name: string; text: string; table: CsvTable } | null>(null);
   const scoped = state.projectId === project && state.host === host;
   useEffect(() => {
     const scope = { active: true }; generationScope.current = scope;
-    setKey(crypto.randomUUID()); setFormError(null); setRunId(""); setInputs({});
+    const sequenceRef = fileSequence, readerRef = fileReader;
+    setKey(crypto.randomUUID()); setFormError(null); setRunId(""); setInputs({}); setFilePending(false); setCandidate(null);
     void useOfficeDeliveryStore.getState().activate(project);
-    return () => { scope.active = false; useOfficeDeliveryStore.getState().clear(); };
+    return () => { scope.active = false; sequenceRef.current++; readerRef.current?.abort(); readerRef.current = null; useOfficeDeliveryStore.getState().clear(); };
   }, [project, host]);
+  const cancelFileRead = () => { fileSequence.current++; fileReader.current?.abort(); fileReader.current = null; setFilePending(false); };
+  const applyCsv = (text: string, table: CsvTable) => {
+    csvRef.current = text; setCsv(text); setCsvTable(table); setKinds(table.headers.map(() => "text"));
+    setCandidate(null); setFormError(null);
+  };
+  const readCsvFile = (file: File) => {
+    cancelFileRead(); setCandidate(null); setFormError(null);
+    if (file.size > 1048576) { setFormError("CSV 文件超过 1 MiB，草稿未更改"); return; }
+    const sequence = fileSequence.current;
+    const reader = new FileReader(); fileReader.current = reader; setFilePending(true);
+    reader.onload = () => {
+      if (sequence !== fileSequence.current) return;
+      fileReader.current = null; setFilePending(false);
+      try {
+        if (!(reader.result instanceof ArrayBuffer) || reader.result.byteLength > 1048576) throw new Error("CSV 文件大小无效");
+        let text: string;
+        try { text = new TextDecoder("utf-8", { fatal: true }).decode(reader.result); }
+        catch { throw new Error("文件不是有效的 UTF-8"); }
+        const table = parseOfficeCsv(text);
+        if (csvRef.current === "") applyCsv(text, table);
+        else setCandidate({ name: file.name, text, table });
+      } catch (error) { setFormError(`${error instanceof Error ? error.message : "读取失败"}，草稿未更改`); }
+    };
+    reader.onerror = () => {
+      if (sequence !== fileSequence.current) return;
+      fileReader.current = null; setFilePending(false); setFormError("读取 CSV 文件失败，草稿未更改");
+    };
+    try { reader.readAsArrayBuffer(file); }
+    catch { fileReader.current = null; setFilePending(false); setFormError("读取 CSV 文件失败，草稿未更改"); }
+  };
   const edited = () => { setKey(crypto.randomUUID()); setFormError(null); };
   const parsed = () => {
     if (new TextEncoder().encode(source).length > 1048576) throw new Error("结构化输入超过 1 MiB");
@@ -58,9 +94,13 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
     <p>在当前 Agent 服务登记不可变新文件；关联已有 run 只作来源引用，不改变其状态。切换页面只停止本页等待，已提交结果可刷新找回。</p>
     {ipc.isMock && <p role="status">演示模式不生成 Office 文件；请连接真实后端及 attachments 可选依赖。</p>}
     <details className="rounded border border-line p-3">
-      <summary>从粘贴的 CSV 创建表格输入</summary>
+      <summary>从 CSV 创建表格输入</summary>
       <p>首行为列名，逗号分隔；支持引号内逗号和换行。默认全部为文本，保留前导零和公式样文字；空字符串变空白。转换会替换下方 JSON，源 CSV 不会被修改。</p>
-      <Textarea aria-label="粘贴 CSV" rows={6} value={csv} onChange={(event) => { setCsv(event.target.value); setCsvTable(null); setFormError(null); }} />
+      <label>选择本地 UTF-8 CSV 文件（最多 1 MiB）<input aria-label="选择本地 CSV 文件" type="file" accept=".csv,text/csv" onClick={cancelFileRead} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) readCsvFile(file); }} /></label>
+      <p>文件仅在本页读取，不会上传或保存为项目附件。生成时提交转换后的表格数据。</p>
+      {filePending && <p role="status">正在读取文件；现有草稿保留。</p>}
+      {candidate && <div><p>已读取 {candidate.name}（{candidate.table.rows.length} 行）；当前 CSV 草稿不会自动覆盖。</p><Button type="button" variant="secondary" onClick={() => applyCsv(candidate.text, candidate.table)}>使用此文件替换 CSV 草稿</Button><Button type="button" variant="ghost" onClick={() => setCandidate(null)}>保留当前草稿</Button></div>}
+      <Textarea aria-label="粘贴 CSV" rows={6} value={csv} onChange={(event) => { csvRef.current = event.target.value; setCsv(event.target.value); setCsvTable(null); setFormError(null); }} />
       <Button type="button" variant="secondary" onClick={() => { try { const table = parseOfficeCsv(csv); setCsvTable(table); setKinds(table.headers.map(() => "text")); setFormError(null); } catch (error) { setCsvTable(null); setFormError(error instanceof Error ? error.message : "CSV 无效"); } }}>读取 CSV 列</Button>
       {csvTable && <div className="space-y-2"><p>已读取 {csvTable.rows.length} 行，{csvTable.headers.length} 列。数字须在支持的精度内；布尔只接受 true / false。</p>
         {csvTable.headers.map((name, index) => <label key={index} className="flex items-center gap-2">{name}<select aria-label={`第 ${index + 1} 列类型`} value={kinds[index]} onChange={(event) => setKinds((old) => old.map((kind, i) => i === index ? event.target.value as typeof kind : kind))}>

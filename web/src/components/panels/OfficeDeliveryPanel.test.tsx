@@ -45,10 +45,79 @@ beforeEach(() => {
 afterEach(() => { cleanup(); useOfficeDeliveryStore.getState().clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("manual Office delivery", () => {
+  it("loads a UTF-8 file into an empty draft and generates selected types", async () => {
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("生成并登记 XLSX")).not.toBeDisabled());
+    fireEvent.click(screen.getByText("从 CSV 创建表格输入"));
+    const file = new File(["\uFEFF编号,数量\n00123,12"], "清单.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByLabelText("选择本地 CSV 文件"), { target: { files: [file] } });
+    await screen.findByLabelText("第 2 列类型");
+    expect(screen.getByLabelText("粘贴 CSV")).toHaveValue("编号,数量\n00123,12");
+    fireEvent.change(screen.getByLabelText("第 2 列类型"), { target: { value: "number" } });
+    fireEvent.click(screen.getByText("转换为表格输入"));
+    fireEvent.click(screen.getByText("生成并登记 XLSX"));
+    await screen.findByLabelText("办公成果纯文本预览");
+    const sent = wire.request.mock.calls.find(([method]) => method === "office.generate_xlsx")![1];
+    expect(sent.spec.rows).toEqual([["00123", 12]]);
+  });
+
+  it("retains existing drafts for invalid files and asks before replacing CSV", async () => {
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    fireEvent.click(screen.getByText("从 CSV 创建表格输入"));
+    const csv = screen.getByLabelText("粘贴 CSV"), editor = screen.getByLabelText("结构化表格 JSON") as HTMLTextAreaElement;
+    const originalJson = editor.value;
+    fireEvent.change(csv, { target: { value: "旧列\n旧值" } });
+    const input = screen.getByLabelText("选择本地 CSV 文件");
+    fireEvent.change(input, { target: { files: [new File([new Uint8Array([0xff])], "bad.csv")] } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("不是有效的 UTF-8");
+    expect(csv).toHaveValue("旧列\n旧值");
+    fireEvent.change(input, { target: { files: [new File(["新列\n新值"], "new.csv")] } });
+    await screen.findByRole("button", { name: "使用此文件替换 CSV 草稿" });
+    expect(csv).toHaveValue("旧列\n旧值");
+    fireEvent.click(screen.getByText("使用此文件替换 CSV 草稿"));
+    expect(csv).toHaveValue("新列\n新值");
+    expect(editor.value).toBe(originalJson);
+    expect(screen.getByLabelText("第 1 列类型")).toHaveValue("text");
+  });
+
+  it("rejects oversized files before reading and ignores stale file reads", async () => {
+    const readers: FileReader[] = [];
+    const read = vi.spyOn(FileReader.prototype, "readAsArrayBuffer").mockImplementation(function (this: FileReader) { readers.push(this); });
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    await waitFor(() => expect(useOfficeDeliveryStore.getState().busy).toBe(false));
+    fireEvent.click(screen.getByText("从 CSV 创建表格输入"));
+    const input = screen.getByLabelText("选择本地 CSV 文件"), csv = screen.getByLabelText("粘贴 CSV");
+    fireEvent.change(input, { target: { files: [new File([new Uint8Array(1048577)], "large.csv")] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("超过 1 MiB");
+    expect(read).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { files: [new File(["a\nold"], "old.csv")] } });
+    fireEvent.click(input); // Opening a new picker invalidates an earlier read even if cancelled.
+    fireEvent.change(csv, { target: { value: "草稿\n保留" } });
+    Object.defineProperty(readers[0], "result", { value: new TextEncoder().encode("a\nold").buffer });
+    act(() => readers[0].onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>));
+    expect(csv).toHaveValue("草稿\n保留");
+    expect(screen.queryByText("使用此文件替换 CSV 草稿")).toBeNull();
+  });
+
+  it("stages a file if the user starts a draft during the read", async () => {
+    const readers: FileReader[] = [];
+    vi.spyOn(FileReader.prototype, "readAsArrayBuffer").mockImplementation(function (this: FileReader) { readers.push(this); });
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    await waitFor(() => expect(useOfficeDeliveryStore.getState().busy).toBe(false));
+    fireEvent.click(screen.getByText("从 CSV 创建表格输入"));
+    fireEvent.change(screen.getByLabelText("选择本地 CSV 文件"), { target: { files: [new File(["a\n1"], "new.csv")] } });
+    fireEvent.change(screen.getByLabelText("粘贴 CSV"), { target: { value: "正在编辑" } });
+    const buffer = new ArrayBuffer(3); new Uint8Array(buffer).set([97, 10, 49]);
+    Object.defineProperty(readers[0], "result", { value: buffer });
+    act(() => readers[0].onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>));
+    expect(screen.getByLabelText("粘贴 CSV")).toHaveValue("正在编辑");
+    expect(screen.getByText("使用此文件替换 CSV 草稿")).toBeVisible();
+  });
+
   it("converts pasted CSV with selected types into a generation request", async () => {
     render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("生成并登记 XLSX")).not.toBeDisabled());
-    fireEvent.click(screen.getByText("从粘贴的 CSV 创建表格输入"));
+    fireEvent.click(screen.getByText("从 CSV 创建表格输入"));
     fireEvent.change(screen.getByLabelText("粘贴 CSV"), { target: { value: "编号,数量,有效\n00123,12,true\n=literal,3,false" } });
     fireEvent.click(screen.getByText("读取 CSV 列"));
     fireEvent.change(screen.getByLabelText("第 2 列类型"), { target: { value: "number" } });
@@ -65,7 +134,7 @@ describe("manual Office delivery", () => {
     await waitFor(() => expect(screen.getByText("生成并登记 XLSX")).not.toBeDisabled());
     const editor = screen.getByLabelText("结构化表格 JSON") as HTMLTextAreaElement;
     const original = editor.value;
-    fireEvent.click(screen.getByText("从粘贴的 CSV 创建表格输入"));
+    fireEvent.click(screen.getByText("从 CSV 创建表格输入"));
     fireEvent.change(screen.getByLabelText("粘贴 CSV"), { target: { value: "编号\n1234567890123456" } });
     fireEvent.click(screen.getByText("读取 CSV 列"));
     fireEvent.change(screen.getByLabelText("第 1 列类型"), { target: { value: "number" } });
