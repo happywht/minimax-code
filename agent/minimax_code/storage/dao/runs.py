@@ -464,6 +464,54 @@ class AgentRunsDAO:
                 await _append_event(conn, step["run_id"], "step_updated", {"step": step})
         return step
 
+    async def record_tool_result(
+        self, *, run_id: str, session_id: str, parent_id: str | None,
+        tool_call_id: str | None, tool_name: str, success: bool,
+        summary: str, payload: dict[str, Any], error: str | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Commit the tool outcome and its observation as one journal transition."""
+        ts = now_iso()
+        status = "completed" if success else "failed"
+        observation_id = f"step_{uuid.uuid4().hex[:12]}"
+        async with self._db.transaction() as conn:
+            owner = await _fetchone(conn, "SELECT session_id FROM agent_runs WHERE id = ?", (run_id,))
+            if owner is None or owner["session_id"] != session_id:
+                raise ValueError("step session must match its run")
+            parent = None
+            if parent_id:
+                row = await _fetchone(conn,
+                    "SELECT * FROM agent_run_steps WHERE id = ? AND run_id = ? AND kind = 'tool_call'",
+                    (parent_id, run_id))
+                if row is None or row["status"] != "running":
+                    raise ValueError("tool call is not running")
+                duration = _duration_ms(str(row["started_at"]), ts) if row["started_at"] else None
+                await conn.execute(
+                    "UPDATE agent_run_steps SET status=?, summary=?, error=?, completed_at=?, duration_ms=? "
+                    "WHERE id=?", (status, "Completed" if success else str(error or "Tool failed"),
+                                   error, ts, duration, parent_id))
+                parent = _hydrate_step(await _fetchone(conn,
+                    "SELECT * FROM agent_run_steps WHERE id=?", (parent_id,)))
+                await _append_event(conn, run_id, "step_updated", {"step": parent})
+            row = await _fetchone(conn,
+                "SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal FROM agent_run_steps WHERE run_id=?",
+                (run_id,))
+            await conn.execute(
+                "INSERT INTO agent_run_steps (id,run_id,session_id,kind,status,title,summary,"
+                "tool_call_id,tool_name,parent_id,payload,started_at,ordinal) "
+                "VALUES (?,?,?,'observation','running',?,?,?,?,?,?,?,?)",
+                (observation_id, run_id, session_id, f"{tool_name} result", summary,
+                 tool_call_id, tool_name, parent_id, dumps_json(payload), ts, row["ordinal"]))
+            observation = _hydrate_step(await _fetchone(conn,
+                "SELECT * FROM agent_run_steps WHERE id=?", (observation_id,)))
+            await _append_event(conn, run_id, "step_created", {"step": observation})
+            await conn.execute(
+                "UPDATE agent_run_steps SET status=?, error=?, completed_at=?, duration_ms=0 WHERE id=?",
+                (status, error, ts, observation_id))
+            observation = _hydrate_step(await _fetchone(conn,
+                "SELECT * FROM agent_run_steps WHERE id=?", (observation_id,)))
+            await _append_event(conn, run_id, "step_updated", {"step": observation})
+        return parent, observation
+
     async def snapshot(self, run_id: str) -> dict[str, Any] | None:
         """Read state and its cursor in one transaction, including legacy runs."""
         async with self._db.transaction() as conn:
@@ -542,14 +590,22 @@ class AgentRunsDAO:
                 from ...agent_execution import terminal_receipt
                 result = terminal_receipt(profile, _hydrate_run(row), result, status)
             async with conn.execute(
-                "SELECT id FROM agent_run_steps WHERE run_id = ? AND status IN ('pending', 'running')",
+                "SELECT id, kind, payload FROM agent_run_steps WHERE run_id = ? AND status IN ('pending', 'running')",
                 (run_id,),
             ) as cursor:
                 steps = await cursor.fetchall()
             for step in steps:
+                payload = step["payload"]
+                step_error = error
+                if step["kind"] == "tool_call":
+                    original = _load_step_payload(payload)
+                    details = original.copy() if isinstance(original, dict) else (
+                        {} if original is None else {"original_payload": original})
+                    payload = dumps_json({**details, "outcome": "unknown", "requires_review": True})
+                    step_error = f"{error}; tool outcome unknown, review side effects"
                 await conn.execute(
-                    "UPDATE agent_run_steps SET status = ?, error = ?, completed_at = ? WHERE id = ?",
-                    (status, error, ts, step["id"]),
+                    "UPDATE agent_run_steps SET status = ?, error = ?, completed_at = ?, payload = ? WHERE id = ?",
+                    (status, step_error, ts, payload, step["id"]),
                 )
                 updated = _hydrate_step(await _fetchone(conn,
                     "SELECT * FROM agent_run_steps WHERE id = ?", (step["id"],)))

@@ -234,35 +234,23 @@ class _RunRecorder:
         output = result.output if hasattr(result, "output") else str(result)
         error = result.error if hasattr(result, "error") else None
         success = bool(getattr(result, "success", error is None))
-        if parent_id:
-            call_step = await self.dao.complete_step(
-                parent_id,
-                status="completed" if success else "failed",
-                summary="Completed" if success else str(error or "Tool failed"),
-                error=error,
-            )
-            await self.emit("run.step.completed", {"run_id": self.run_id, "step": call_step})
-        step = await self.dao.create_step(
+        call_step, step = await self.dao.record_tool_result(
             run_id=self.run_id,
             session_id=self.session_id,
-            kind="observation",
-            title=f"{tool_name} result",
+            parent_id=parent_id,
             summary=_preview_value(error or output, limit=600),
             tool_call_id=tool_call_id or None,
             tool_name=tool_name,
-            parent_id=parent_id,
+            success=success,
+            error=error,
             payload={
                 "success": success,
                 "output_preview": _preview_value(output, limit=1200),
                 "metadata": getattr(result, "metadata", None),
             },
         )
-        step = await self.dao.complete_step(
-            step["id"],
-            status="completed" if success else "failed",
-            summary=_preview_value(error or output, limit=600),
-            error=error,
-        )
+        if call_step:
+            await self.emit("run.step.completed", {"run_id": self.run_id, "step": call_step})
         await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
 
         try:
@@ -1593,6 +1581,7 @@ async def _handle_agent_send_message(
             tool_name = call.get("name", "unknown")
             args = call.get("args") or call.get("arguments", {})
             tool_call_id = call.get("id", "")
+            await recorder.tool_call(call)
             await ctx.emit(
                 "agent.tool_call",
                 {
@@ -1605,7 +1594,6 @@ async def _handle_agent_send_message(
                 },
             )
             start_new_assistant_message = True
-            await recorder.tool_call(call)
         except Exception as exc:
             from ..run_errors import RunPersistenceError
 
@@ -1649,6 +1637,9 @@ async def _handle_agent_send_message(
             # Flat format — see _on_tool_call above.
             tool_name = call.get("name", "unknown")
             tool_call_id = call.get("id", "")
+            # Commit the result before notifying clients; a disconnected client
+            # can then recover the same outcome from the durable journal.
+            await recorder.tool_result(call, result)
             await ctx.emit(
                 "agent.tool_result",
                 {
@@ -1668,7 +1659,6 @@ async def _handle_agent_send_message(
                 turn_sources.extend(_extract_sources(output))
             except Exception:
                 logger.debug("source extraction failed for %s", tool_name, exc_info=True)
-            await recorder.tool_result(call, result)
         except Exception as exc:
             from ..run_errors import RunPersistenceError
 
