@@ -70,6 +70,32 @@ describe("RunTimelinePanel", () => {
     expect(screen.getByRole("button", { name: "收起" })).toBeInTheDocument();
   });
 
+  it("shows the saved terminal tail and its truncation state", () => {
+    renderWithStep(makeStep({ tool_name: "terminal", payload: { source: "terminal", command: "test", cwd: "/work", exit_code: 0, output_tail: "  saved tail\n", output_truncated: true } }));
+    expect(screen.getByTestId("terminal-output-tail").textContent).toBe("  saved tail\n");
+    expect(screen.getByText(/输出已截断/)).toBeInTheDocument();
+    expect(screen.getByText(/退出码：0/)).toBeInTheDocument();
+  });
+
+  it("distinguishes missing output from an empty saved tail and unknown truncation", () => {
+    renderWithStep(makeStep({ tool_name: "terminal", payload: { source: "terminal" } }));
+    expect(screen.getByText(/没有已保存的输出/)).toBeInTheDocument();
+    cleanup();
+    renderWithStep(makeStep({ tool_name: "terminal", payload: { source: "terminal", output_tail: "" } }));
+    expect(screen.getByText(/保存的输出为空/)).toBeInTheDocument();
+    expect(screen.getByText(/截断情况未知/)).toBeInTheDocument();
+  });
+
+  it("warns that an interrupted command may have unconfirmed side effects", () => {
+    const run = { ...makeRun(), status: "interrupted" as const };
+    const step = makeStep({ tool_name: "terminal", payload: { source: "terminal", command: "test", cwd: "/work" } });
+    useRunTimelineStore.setState({ runs: { [run.id]: { ...run, steps: [step] } }, order: [run.id] });
+    render(<RunTimelinePanel />);
+    expect(screen.getByText(/副作用未知/)).toBeInTheDocument();
+    expect(screen.getByText(/没有已保存的输出/)).toBeInTheDocument();
+    expect(screen.getByText(/退出码：未知/)).toBeInTheDocument();
+  });
+
   it("shows failed step errors in addition to the step summary", () => {
     renderWithStep(
       makeStep({

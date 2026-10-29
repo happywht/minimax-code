@@ -64,10 +64,12 @@ class TerminalSession:
     task: asyncio.Task[None] | None = None
     chunks: list[TerminalChunk] = field(default_factory=list)
     next_seq: int = 1
+    output_chars: int = 0
 
     def append(self, stream: str, text: str) -> None:
         if not text:
             return
+        self.output_chars += len(text)
         self.chunks.append(
             TerminalChunk(
                 seq=self.next_seq,
@@ -347,6 +349,7 @@ async def _complete_run_tracking(
         "exit_code": session.exit_code,
         "status": session.status,
         "output_tail": output_tail,
+        "output_truncated": session.output_chars > len(output_tail),
     }
     summary = _preview_text(
         {

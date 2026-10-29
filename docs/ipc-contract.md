@@ -474,6 +474,11 @@ payloads are retained under `original_payload`. The recovery event and step carr
 the same evidence. Tools are not automatically retried. If the run was budget
 paused before restart, resumption still requires an explicit `budget_tokens` value;
 an unfinished tool additionally requires the caller to review its side effects.
+Terminal run steps with `payload.source = "terminal"` persist an `output_tail`
+when the terminal finishes; `output_truncated` indicates whether earlier output
+was omitted. Older records may omit this flag. This is not a complete output
+archive: an interrupted process may have no saved tail, and anonymous terminals
+have no durable run record.
 
 ### Preview HTTP access (M1)
 

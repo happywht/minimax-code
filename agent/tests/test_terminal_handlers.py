@@ -207,6 +207,7 @@ async def test_terminal_session_tracks_run_timeline(
         assert steps[0]["kind"] == "tool_call"
         assert steps[0]["status"] == "completed"
         assert "timeline terminal" in steps[0]["payload"]["output_tail"]
+        assert steps[0]["payload"]["output_truncated"] is False
     finally:
         monkeypatch.setattr(app_module, "_DB_SINGLETON", None)
         await db.close()
@@ -319,3 +320,13 @@ async def test_terminal_start_uses_project_root(rooted_dirs) -> None:
     payload = await _read_until_done(session["id"])
     await _await_session_task(session["id"])
     assert payload["session"]["status"] == "completed"
+
+
+def test_terminal_output_tail_tracks_discarded_chunks():
+    from minimax_code.ipc.handlers_terminal import TerminalSession, _terminal_output_tail
+
+    session = TerminalSession(id="term", command="test", cwd=".")
+    session.append("stdout", "x" * 1201)
+    tail = _terminal_output_tail(session)
+    assert tail == "x" * 1200
+    assert session.output_chars > len(tail)

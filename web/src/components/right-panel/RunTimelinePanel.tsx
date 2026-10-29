@@ -195,7 +195,7 @@ export function RunTimelinePanel({
             {!["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) && <VerificationBadge evidence={run.metadata?.verification as VerificationEvidence | undefined} />}
             <ol className="space-y-1.5">
               {run.steps.map((step) => (
-                <TimelineStep key={step.id} step={step} />
+                <TimelineStep key={step.id} step={step} runStatus={run.status} />
               ))}
             </ol>
             <RunBudgetPanel run={run} />
@@ -217,7 +217,8 @@ export function RunTimelinePanel({
   );
 }
 
-function TimelineStep({ step }: { step: AgentRunStep }): JSX.Element {
+function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: string }): JSX.Element {
+  const terminal = step.tool_name === "terminal" && step.payload?.source === "terminal";
   const Icon = iconForKind(step.kind);
   const statusClass = statusTone(step.status);
   const detailText = buildStepDetailText(step);
@@ -245,7 +246,7 @@ function TimelineStep({ step }: { step: AgentRunStep }): JSX.Element {
             </span>
           )}
         </div>
-        {detailText && (
+        {terminal ? <TerminalEvidence step={step} runStatus={runStatus} /> : detailText && (
           <ExpandablePre
             text={detailText}
             collapsedText={collapsedDetail}
@@ -255,6 +256,27 @@ function TimelineStep({ step }: { step: AgentRunStep }): JSX.Element {
         )}
       </div>
     </li>
+  );
+}
+
+function TerminalEvidence({ step, runStatus }: { step: AgentRunStep; runStatus: string }): JSX.Element {
+  const payload = step.payload ?? {};
+  const tail = typeof payload.output_tail === "string" ? payload.output_tail : null;
+  const truncated = payload.output_truncated;
+  return (
+    <div className="mt-1 text-[11px] text-minimax-muted" data-testid="terminal-evidence">
+      <div>命令：{typeof payload.command === "string" ? payload.command : "未知"}</div>
+      <div>目录：{typeof payload.cwd === "string" ? payload.cwd : "未知"}</div>
+      <div>运行状态：{runStatus}；退出码：{typeof payload.exit_code === "number" ? payload.exit_code : "未知"}</div>
+      {runStatus === "interrupted" && <div>运行中断，命令的副作用未知，请检查工作区。</div>}
+      {step.error && <div>错误：{step.error}</div>}
+      {tail === null ? <div>没有已保存的输出；中断前的输出可能未持久化。</div> : <>
+        <div>已保存的输出尾部（最多 1200 字符；不是可恢复的终端会话）。
+          {truncated === true ? "输出已截断。" : truncated === false ? "记录时未截断。" : "截断情况未知。"}
+        </div>
+        {tail === "" ? <div>保存的输出为空。</div> : <pre data-testid="terminal-output-tail" className="max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono">{tail}</pre>}
+      </>}
+    </div>
   );
 }
 
