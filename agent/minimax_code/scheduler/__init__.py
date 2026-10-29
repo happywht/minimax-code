@@ -529,8 +529,13 @@ class JobScheduler:
             return
         try:
             async with self._admission_lock:
+                # Keep the recorded coalescing boundary and the cursor based on
+                # the same instant, even if a cron boundary passes during claim.
+                from datetime import UTC, datetime
+                cutoff = datetime.now(UTC)
                 occurrence, created = await self._occurrences.claim(row["id"],source="cron",expected_revision=row["revision"],
-                    scheduled_for=due,coalesced_through=now_iso(),next_due=_next_due(row["cron_expr"],row["timezone"]), allow_new=not self._stopping)
+                    scheduled_for=due,coalesced_through=cutoff.isoformat(timespec="seconds").replace("+00:00","Z"),
+                    next_due=_next_due(row["cron_expr"],row["timezone"],now=cutoff), allow_new=not self._stopping)
         except ValueError:
             return
         if created:
