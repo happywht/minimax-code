@@ -72,6 +72,18 @@ python scripts/prepare-release.py --commit HEAD --web-dist "$PWD/web/dist" --out
 
 搬运包不采集数据目录、用户配置、系统密钥环、Python/Node 运行时、虚拟环境或依赖缓存，也不创建或覆盖安装。目标机器需在独立新目录解压，并自行准备合适版本的 Node、Python、uv 和锁定依赖；完全离线使用还需预先提供目标平台所需的依赖缓存或安装介质。之后可用 `node scripts/start-production.mjs` 或包内 Windows 启动入口启动；Linux 用户服务可使用包内生成器与安装脚本。不要把旧环境直接复制成可移植环境。包内校验值用于搬运核对，不是签名；数据迁移另走数据备份流程。此功能尚未进行跨机搬运、安装或离线依赖演练。
 
+### 解包到新版本目录
+
+在目标机器上使用可信版本的 `scripts/install-release.py`（Python 3.11+），由用户明确运行，指定发布包和一个已存在的、可信的独立版本目录父路径：
+
+```powershell
+python scripts/install-release.py --archive "D:/incoming/minimax-code-1.6.0-0123456789ab.zip" --destination-parent "D:/minimax-releases"
+```
+
+脚本读取 `RELEASE-MANIFEST.json`，在创建目录前检查完整条目集合、大小和 SHA-256，并拒绝绝对路径、穿越、符号链接、重名及不属于发布范围的条目；再以独占方式创建 `minimax-code-<版本>-<提交前缀>` 目录，不覆盖已有目录。完成后出现 `.INSTALL-COMPLETE`；若创建后失败或中断，目录及 `.INSTALL-INCOMPLETE` 可能保留，不应运行，需由用户检查后自行决定是否清理。操作期间应保证包和目标目录可信、没有其他进程并发修改；不要把版本目录父路径指向数据、凭据或工作区目录。
+
+包内校验值只用于发现损坏，不是签名，也不能证明发布者、前端来源或内容可信。解包不安装 Node、Python、uv 或依赖，不复制用户数据与密钥，不启动或切换服务；目标环境和依赖须另行准备。旧包可能不含此安装脚本，应从可信来源单独提供。尚未进行真实搬运、解包或安装演练。
+
 ### Linux 用户服务配置生成（实验）
 
 在 Linux 上准备好固定版本、已安装依赖的虚拟环境和预构建前端后，可生成配置供审查：
