@@ -419,6 +419,12 @@ Revocation blocks later provider calls but cannot retract an in-flight call or
 text already sent to a model. MCP bridge objects retain their live registry
 identity when private Agent registries are cloned, so later disable/reconnect
 checks are not detached by deepcopy. These checks do not provide OS sandboxing.
+The legacy `SkillRuntime.invoke` also rechecks its skill/provider after its
+per-skill wait and before provider installation. If configured with a shared
+registry, its newly installed tool instances carry a live capability token
+across copies; disable, provider replacement or installation teardown blocks
+subsequent dispatch, and teardown removes only its own installed instances.
+The default application runtime has no shared registry in this legacy path.
 Optional `expected_service_id` and `expected_project_id` bind admission or replay
 to the current service and session project; when the service expectation is
 supplied, a null expected project means the unbound project. Legacy callers may

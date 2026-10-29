@@ -238,6 +238,10 @@ class ToolRegistry:
             require_tool_access(name)
             from ...run_ownership import require_live_owned_tool
             require_live_owned_tool(name)
+            from ...run_ownership import LiveSkillCapability
+            capability = getattr(tool, "_live_skill_capability", None)
+            if isinstance(capability, LiveSkillCapability):
+                capability.require_live()
             from ...process_boundary import assert_restricted_dispatch
             assert_restricted_dispatch(tool)
             # All tools speak the kwargs convention: run(**args). The former

@@ -5,6 +5,33 @@ from contextvars import ContextVar
 owned_runtime: ContextVar[dict | None] = ContextVar("owned_runtime", default=None)
 
 
+class LiveSkillCapability:
+    """A temporary provider installation shared by any cloned registries."""
+    def __init__(self, runtime, skill, provider):
+        self.runtime = runtime
+        self.skill_id = skill.skill_id
+        self.version = skill.version
+        self.manifest_tools = tuple(skill.tools)
+        self.provider = provider
+        self.active = True
+
+    def __deepcopy__(self, memo):
+        memo[id(self)] = self
+        return self
+
+    def require_live(self):
+        if not self.active:
+            raise PermissionError("Skill provider installation has ended")
+        try:
+            skill = self.runtime.registry.get(self.skill_id)
+        except KeyError:
+            raise PermissionError("Skill was removed") from None
+        if (not skill.enabled or skill.version != self.version
+                or tuple(skill.tools) != self.manifest_tools
+                or self.runtime._tool_providers.get(self.skill_id) is not self.provider):
+            raise PermissionError("Skill or provider was disabled or changed")
+
+
 def capture_provider_identities(runtime, bindings):
     """Remember the live provider objects associated with accepted skills."""
     if runtime is None:

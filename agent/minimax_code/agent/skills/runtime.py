@@ -207,6 +207,7 @@ class SkillRuntime:
 
         lock = await self._lock_for(skill_id)
         async with lock:
+            self._require_current_skill(skill, provider)
             return await self._invoke_locked(
                 skill=skill,
                 request=request,
@@ -219,6 +220,17 @@ class SkillRuntime:
                 max_iterations=max_iterations,
                 provider=provider,
             )
+
+    def _require_current_skill(self, accepted: Skill, provider: SkillToolProvider) -> None:
+        try:
+            current = self.registry.get(accepted.skill_id)
+        except KeyError:
+            raise SkillInvokeError("Skill was removed while waiting") from None
+        current_provider = self._tool_providers.get(accepted.skill_id)
+        if (not current.enabled or current.version != accepted.version or current.tools != accepted.tools
+                or (not isinstance(provider, _NoopSkillToolProvider) and current_provider is not provider)
+                or (isinstance(provider, _NoopSkillToolProvider) and current_provider is not None)):
+            raise SkillInvokeError("Skill or provider was disabled or changed while waiting")
 
     async def _invoke_locked(
         self,
@@ -252,8 +264,24 @@ class SkillRuntime:
             if current_process_target() is not None:
                 raise ProcessBoundaryError("L1 不支持可执行 skill provider")
             await before_executable_extension("Skill Python provider")
-        installed = provider.install(tool_registry) if tool_registry is not None else set()
-        self.registry.register_skill_tools(skill, installed)
+        self._require_current_skill(skill, provider)
+        before = set(tool_registry.names()) if tool_registry is not None else set()
+        try:
+            installed = provider.install(tool_registry) if tool_registry is not None else set()
+            added = set(tool_registry.names()) - before if tool_registry is not None else set()
+            if set(installed) != added:
+                raise SkillInvokeError("Skill provider installation did not match its registered tools")
+        except BaseException:
+            if tool_registry is not None:
+                for name in set(tool_registry.names()) - before:
+                    tool_registry.unregister(name)
+            raise
+        from ...run_ownership import LiveSkillCapability
+        capability = LiveSkillCapability(self, skill, provider)
+        owned = {name: tool_registry.get(name) for name in added} if tool_registry is not None else {}
+        for tool in owned.values():
+            tool._live_skill_capability = capability
+        self.registry.register_skill_tools(skill.skill_id, installed)
         try:
             agent = self._agent_factory(
                 llm=self.llm,
@@ -287,10 +315,26 @@ class SkillRuntime:
                 budget_exhausted=bool(getattr(outcome, "budget_exhausted", False)),
             )
         finally:
+            capability.active = False
             try:
-                provider.uninstall(tool_registry) if tool_registry is not None else None
+                if tool_registry is not None:
+                    class OwnedCleanup:
+                        def unregister(self, name):
+                            if name in owned and tool_registry.has(name) and tool_registry.get(name) is owned[name]:
+                                tool_registry.unregister(name)
+
+                        def __getattr__(self, name):
+                            if name in {"has", "get", "names", "list"}:
+                                return getattr(tool_registry, name)
+                            raise AttributeError(name)
+
+                    provider.uninstall(OwnedCleanup())
             except Exception:  # pragma: no cover — defensive
                 logger.exception("provider.uninstall failed for %s", skill.skill_id)
+            finally:
+                for name, tool in owned.items():
+                    if tool_registry.has(name) and tool_registry.get(name) is tool:
+                        tool_registry.unregister(name)
             self.registry.unregister_skill_tools(skill.skill_id)
 
     # -- helpers -----------------------------------------------------------
