@@ -1119,7 +1119,7 @@ export const strings = {
       deleteDescription: "这将删除已存储的快照元数据，磁盘上的未跟踪副本将成为孤儿文件。",
       deleteConfirm: "删除",
       restoreTitle: (label: string) => `恢复 Checkpoint ${label}？`,
-      restoreDescription: "这将把工作区回退到 Checkpoint 状态，未提交的改动可能被覆盖。",
+      restoreDescription: "已跟踪快照仅在工作树和暂存区干净且当前提交与快照基底一致时尝试应用；检查与应用之间的其他进程修改仍可能发生冲突。未跟踪文件仅在目标不存在时复制。此操作不是精确回退，请先保护现有工作并审阅差异。",
       restoreConfirm: "恢复",
       defaultLabel: "Checkpoint",
       noDiff: "暂无 Diff。",

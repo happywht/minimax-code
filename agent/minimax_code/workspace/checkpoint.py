@@ -201,9 +201,10 @@ class CheckpointManager:
         skipped_existing: list[str] = []
 
         if checkpoint.git_stash_ref:
-            applied_stash = await self._stash_apply(
-                cwd_str, checkpoint.git_stash_ref, warnings
-            )
+            if await self._can_apply_stash(cwd_str, checkpoint.git_stash_ref, warnings):
+                applied_stash = await self._stash_apply(
+                    cwd_str, checkpoint.git_stash_ref, warnings
+                )
 
         if checkpoint.has_untracked_snapshot and checkpoint.untracked_files:
             restored_untracked, skipped_existing = self._restore_untracked(
@@ -338,6 +339,44 @@ class CheckpointManager:
             warnings.append(f"untracked: {err or 'git failed'}")
             return []
         return [name for name in out.split("\0") if name]
+
+    async def _can_apply_stash(
+        self, cwd: str, stash_ref: str, warnings: list[str]
+    ) -> bool:
+        """Fail closed if tracked work or the snapshot's base has changed.
+
+        This is a preflight, not a lock: another process can modify the tree
+        after it completes. Untracked destinations are handled separately.
+        """
+        if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", stash_ref):
+            warnings.append("已跟踪快照未应用：快照引用无效。")
+            return False
+        rc, out, _, err = await _run_git(
+            cwd, "--no-optional-locks", "status", "--porcelain=v1", "-z",
+            "--untracked-files=no", timeout_s=self._timeout_s,
+        )
+        if err is not None or rc != 0:
+            warnings.append("已跟踪快照未应用：无法检查工作树和暂存区状态。")
+            return False
+        if out:
+            warnings.append("已跟踪快照未应用：工作树或暂存区存在改动或冲突，请先保护并处理这些改动。")
+            return False
+        rc, head, _, err = await _run_git(
+            cwd, "rev-parse", "--verify", "HEAD^{commit}", timeout_s=self._timeout_s,
+        )
+        if err is not None or rc != 0:
+            warnings.append("已跟踪快照未应用：无法检查当前提交。")
+            return False
+        rc, base, _, err = await _run_git(
+            cwd, "rev-parse", "--verify", f"{stash_ref}^1", timeout_s=self._timeout_s,
+        )
+        if err is not None or rc != 0:
+            warnings.append("已跟踪快照未应用：无法检查快照基底。")
+            return False
+        if head.strip() != base.strip():
+            warnings.append("已跟踪快照未应用：当前提交与快照基底不同，请先审阅差异。")
+            return False
+        return True
 
     async def _stash_apply(
         self, cwd: str, stash_ref: str, warnings: list[str]
