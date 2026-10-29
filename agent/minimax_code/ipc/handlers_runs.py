@@ -20,6 +20,7 @@ from .protocol import (
     RunOutputInventoryParams,
     RunOutputPageParams,
     RunResearchGetParams,
+    RunProjectSummaryParams,
     RunResearchSearchParams,
     RunResearchReadParams,
     RunResearchListParams,
@@ -573,6 +574,76 @@ def register_run_handlers(server: Any) -> None:
                 await ctx.reply_error(INTERNAL_ERROR, "Research source query failed")
         return handle
 
+    async def handle_project_summary(params, ctx):
+        from ..runs import get_run_service
+        from ..storage.dao.text_artifacts import ArtifactDAO
+        from .host_session_gate import require_host_session
+        try:
+            request = RunProjectSummaryParams.model_validate(params)
+            dao = await _get_read_control_dao(ctx)
+            service = ArtifactDAO(dao._db)
+            async def check_scope():
+                project = await dao._db.fetchone("SELECT id FROM projects WHERE id=?", (request.project_id,))
+                if not project or await service.service_id() != request.expected_service_id:
+                    raise ValueError("Project or service identity changed")
+            await check_scope()
+            base = """FROM agent_runs r JOIN sessions s ON s.id=r.session_id
+                WHERE s.project_id=? AND s.archived=0 AND r.mode!='subagent'
+                AND json_valid(r.metadata) AND json_extract(r.metadata,'$.project_id')=?
+                AND COALESCE(json_extract(r.metadata,'$.manual_research'),0)!=1"""
+            fields = "r.id,r.session_id,r.title,r.status,r.created_at,r.completed_at,s.title AS session_title"
+            live_service = get_run_service(ctx.server)
+            if request.run_id:
+                row = await dao._db.fetchone(f"SELECT {fields} {base} AND r.id=?", (request.project_id, request.project_id, request.run_id))
+                if not row:
+                    raise ValueError("Run is unavailable in this project")
+                await require_host_session(row["session_id"])
+                receipt = await dao.result_payload(request.run_id)
+                text = receipt.get("text") if isinstance(receipt, dict) and receipt.get("run_id") == request.run_id and receipt.get("session_id") == row["session_id"] else None
+                if not isinstance(text, str):
+                    text = None
+                await check_scope()
+                row2 = await dao._db.fetchone(f"SELECT {fields} {base} AND r.id=?", (request.project_id, request.project_id, request.run_id))
+                if not row2 or row2["session_id"] != row["session_id"]:
+                    raise ValueError("Run project association changed")
+                await ctx.reply({"project_id": request.project_id, "service_id": request.expected_service_id,
+                    "detail": {**dict(row2), "text": text[:8000] if text is not None else None,
+                               "text_truncated": text is not None and len(text) > 8000}})
+                return
+            groups = {"attention": ("awaiting_approval", "waiting_input", "budget_paused", "interrupted"),
+                      "active": ("queued", "planning", "running"),
+                      "recent": ("completed", "failed", "cancelled", "interrupted")}
+            result = {}
+            allowed_sessions = {}
+            for group, statuses in groups.items():
+                placeholders = ",".join("?" for _ in statuses)
+                ordering = "COALESCE(r.completed_at,r.created_at)" if group == "recent" else "r.created_at"
+                rows = await dao._db.fetchall(f"SELECT {fields} {base} AND r.status IN ({placeholders}) ORDER BY {ordering} DESC,r.id DESC LIMIT 26", (request.project_id, request.project_id, *statuses))
+                items = []
+                for row in rows[:25]:
+                    sid = row["session_id"]
+                    if sid not in allowed_sessions:
+                        try:
+                            await require_host_session(sid)
+                            allowed_sessions[sid] = True
+                        except HandlerError:
+                            allowed_sessions[sid] = False
+                    if not allowed_sessions[sid]:
+                        continue
+                    job = live_service.get_job(row["id"])
+                    item = dict(row)
+                    item["live"] = bool(job and job.session_id == row["session_id"]) if row["status"] in {"queued", "planning", "running", "awaiting_approval", "waiting_input"} else None
+                    items.append(item)
+                result[group] = {"items": items, "truncated": len(rows) > 25}
+            await check_scope()
+            await ctx.reply({"project_id": request.project_id, "service_id": request.expected_service_id, "groups": result})
+        except (ValidationError, ValueError, HandlerError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("run project summary failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Project run summary unavailable")
+
+    server.register("run.project_summary", handle_project_summary)
     def manual_research_handler(model, *, read=False):
         async def handle(params, ctx):
             from ..agent.core import _check_rule

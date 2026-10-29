@@ -2057,3 +2057,5 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 `host.fetch` 仅接受远端绝对路径，文件传输强制使用 SFTP，不回退到旧式远端 shell SCP；本机目标校验后替换，不自动备份。
 
 `host.connection` 的 `state` 可为 `degraded`：SSH 隧道进程仍在，但连续两次远端服务健康探测未通过；恢复探测成功后返回 `connected`。该状态不代表远端任务结果。
+
+`run.project_summary` 接受 `project_id`、`expected_service_id` 和可选 `run_id`；无 run_id 时返回项目内未归档会话的有界持久运行分类及可确认的进程内执行者标记，有 run_id 时返回同项目绑定的有界已保存文本结果。排除内部子任务及未绑定项目旧记录；服务重启或断线后活动状态需重新核对。

@@ -47,12 +47,15 @@ const ShortcutsOverlay = lazy(() =>
 const SkillsPanel = lazy(() =>
   import("./components/panels/SkillsPanel").then((module) => ({ default: module.SkillsPanel })),
 );
+const ProjectRunDashboard = lazy(() =>
+  import("./components/panels/ProjectRunDashboard").then((module) => ({ default: module.ProjectRunDashboard })),
+);
 const DeliveryWorkspace = lazy(() =>
   import("./components/panels/DeliveryWorkspace").then((module) => ({ default: module.DeliveryWorkspace })),
 );
 
 type MainView = "chat" | "preview";
-type OverlayView = "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "artifacts" | "attachments" | "office" | "research" | "run-artifacts";
+type OverlayView = "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "artifacts" | "attachments" | "office" | "research" | "run-artifacts" | "task-dashboard";
 type SidebarView = MainView | OverlayView;
 
 /** Connection status derived from sidecar events. */
@@ -148,7 +151,7 @@ export default function App() {
   }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport, probeStorageHealth, initializeNotifications]);
 
   const handleViewChange = useCallback((next: SidebarView) => {
-    if (next === "skills" || next === "settings" || next === "scheduled" || next === "workflows" || next === "webhooks" || next === "agents" || next === "artifacts" || next === "attachments" || next === "office" || next === "research" || next === "run-artifacts") {
+    if (next === "skills" || next === "settings" || next === "scheduled" || next === "workflows" || next === "webhooks" || next === "agents" || next === "artifacts" || next === "attachments" || next === "office" || next === "research" || next === "run-artifacts" || next === "task-dashboard") {
       if (next === "settings") setSettingsInitialTab("models");
       if (next === "scheduled" || next === "workflows" || next === "webhooks") setSettingsInitialTab(next);
       if (next === "agents") setSettingsInitialTab("agents");
@@ -365,7 +368,11 @@ export default function App() {
             {overlayView && (
               <WorkspaceOverlay onClose={() => setOverlayView(null)}>
                 <Suspense fallback={<DeferredPanelFallback />}>
-                  {overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
+                  {overlayView === "task-dashboard" ? (
+                    <ProjectRunDashboard onClose={() => setOverlayView(null)} onOpenSession={() => {
+                      setOverlayView(null); setView("chat"); setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline"));
+                    }} />
+                  ) : overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
                     <DeliveryWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onClose={() => setOverlayView(null)} />
                   ) : overlayView === "skills" ? (
                     <SkillsPanel onClose={() => setOverlayView(null)} />

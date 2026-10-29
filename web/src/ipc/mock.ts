@@ -650,6 +650,8 @@ function mockHandle(
       return { ok: true, message_id: p.message_id } satisfies DeleteMessageResult;
     }
 
+    case "run.project_summary":
+      throw new Error("演示模式不提供持久项目运行摘要");
     case "run.list": {
       const p = params as { session_id?: string; limit?: number; offset?: number } | undefined;
       let runs = Array.from(mockRuns.values()).reverse().map((r) => r.run);

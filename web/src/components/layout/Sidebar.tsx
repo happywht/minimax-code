@@ -46,9 +46,9 @@ export interface SidebarProps {
   testId?: string;
   onMobileClick?: () => void;
   /** Current top-level view — drives which NavItem is highlighted. */
-  view?: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research" | "run-artifacts";
+  view?: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research" | "run-artifacts" | "task-dashboard";
   /** Toggle between top-level views. */
-  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research" | "run-artifacts") => void;
+  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research" | "run-artifacts" | "task-dashboard") => void;
 }
 
 type NavigationGroup = "projects" | "work" | "deliveries" | "automation";
@@ -94,7 +94,8 @@ export function Sidebar({
   const batchMoveToProject = useSessionStore((s) => s.batchMoveToProject);
   const [navigationGroup, setNavigationGroup] = useState<NavigationGroup | null>("projects");
   useEffect(() => {
-    if (["artifacts", "attachments", "office", "research", "run-artifacts"].includes(view)) setNavigationGroup("deliveries");
+    if (view === "task-dashboard") setNavigationGroup("projects");
+    else if (["artifacts", "attachments", "office", "research", "run-artifacts"].includes(view)) setNavigationGroup("deliveries");
     else if (["scheduled", "workflows", "webhooks"].includes(view)) setNavigationGroup("automation");
     else if (["skills", "agents", "preview"].includes(view)) setNavigationGroup("work");
   }, [view]);
@@ -581,6 +582,7 @@ export function Sidebar({
         {([
           { id: "projects" as const, label: "项目与任务", icon: <Folder size={14} />, items: <>
             <NavItem icon={<Folder size={14} />} label="项目与任务列表" selected={navigationGroup === "projects" && view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-projects" />
+            <NavItem icon={<History size={14} />} label="任务状态与结果" selected={view === "task-dashboard"} onClick={() => onViewChange?.("task-dashboard")} testId="sidebar-nav-task-dashboard" />
             <NavItem icon={<History size={14} />} label="任务历史" selected={view === "chat" && filter === "history"} onClick={() => { onViewChange?.("chat"); setFilter("history"); }} testId="sidebar-nav-history" />
             <NavItem icon={<Archive size={14} />} label="已归档" selected={view === "chat" && filter === "archived"} onClick={() => { onViewChange?.("chat"); setFilter("archived"); }} testId="sidebar-nav-archived" />
           </> },

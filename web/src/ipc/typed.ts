@@ -242,6 +242,7 @@ export interface TypedIPC {
   searchCodebase(query: string, opts?: { file_pattern?: string; limit?: number; offset?: number; project_id?: string }): Promise<CodebaseSearchResultShape>;
   summarizeCodebasePath(path: string, opts?: { project_id?: string }): Promise<CodebaseSummarizeResult>;
 
+  getProjectRunSummary(params: { project_id: string; expected_service_id: string; run_id?: string }): Promise<import("../types/ipc").ProjectRunSummaryResult>;
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
   startRun(params: RunStartParams): Promise<RunAdmissionResult>;
   getRun(runId: string): Promise<RunGetResult>;
@@ -752,6 +753,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         project_id: opts?.project_id,
       }),
 
+    getProjectRunSummary: (params) => client.request("run.project_summary", params),
     listRuns: (opts) =>
       client.request<ListRunsResult>("run.list", opts ?? {}),
     startRun: (params) => client.request<RunAdmissionResult>("run.start", params),
