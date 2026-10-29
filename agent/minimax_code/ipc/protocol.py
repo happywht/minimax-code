@@ -81,6 +81,9 @@ class ArtifactScopedListParams(ArtifactListParams):
 class ArtifactRegisterParams(ArtifactListParams):
     source_path: str = Field(min_length=1, max_length=1024)
     run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    request_id: str | None = Field(default=None, min_length=32, max_length=32)
 
 
 class ArtifactGetParams(ArtifactListParams):

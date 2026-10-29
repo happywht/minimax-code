@@ -185,7 +185,12 @@ class ArtifactService:
             if published != data:
                 raise ValueError("Published artifact snapshot failed byte verification")
 
-    async def register(self, project_id, source_path, run_id=None):
+    async def register(self, project_id, source_path, run_id=None, expected_service_id=None,
+                       expected_session_id=None, request_id=None):
+        guarded = (expected_service_id, expected_session_id, request_id)
+        if any(value is not None for value in guarded):
+            if not run_id or not all(guarded) or not _SNAPSHOT.fullmatch(request_id):
+                raise ValueError("Run registration requires service, session and request identities")
         source_path = relative_source(source_path)
         project = await self.dao.project(project_id)
         await self.dao.check_run(project_id, run_id, project["root_path"])
@@ -196,14 +201,17 @@ class ArtifactService:
         await asyncio.to_thread(_parse, data, source_path)
         snapshot = uuid.uuid4().hex
         service_id = await self.dao.service_id()
+        if expected_service_id is not None and service_id != expected_service_id:
+            raise ValueError("Service identity changed")
         await asyncio.to_thread(self._publish, data, snapshot)
         # Orphaned snapshots on DB failure are retained for explicit recovery.
         return await self.dao.insert({
-            "id": f"art_{uuid.uuid4().hex}", "project_id": project_id, "run_id": run_id,
+            "id": f"art_{request_id or uuid.uuid4().hex}", "project_id": project_id, "run_id": run_id,
             "service_id": service_id, "source_path": source_path, "snapshot_id": snapshot,
             "mime_type": MIMES[PurePosixPath(source_path).suffix.lower()],
             "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-        }, expected_root=project["root_path"])
+        }, expected_root=project["root_path"], expected_service_id=expected_service_id,
+            expected_session_id=expected_session_id, idempotent=request_id is not None)
 
     async def list(self, project_id, run_id=None):
         await self.dao.project(project_id)

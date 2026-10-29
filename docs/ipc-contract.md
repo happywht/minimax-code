@@ -1853,9 +1853,12 @@ attachment 沿用原附件类型、版本、SHA-256 与 v2/inert_text 预览，�
 
 | 方法 | 参数 | 返回 |
 |------|------|------|
-| `artifact.register` | `{project_id, source_path, run_id?}` | `{artifact}`，成功登记一个新的不可变版本 |
+| `artifact.register` | `{project_id, source_path, run_id?, expected_service_id?, expected_session_id?, request_id?}` | `{artifact}`，成功登记一个新的不可变版本 |
 | `artifact.list` | `{project_id, run_id?}` | `{artifacts, service_id}`，按项目及可选运行筛选后返回最近 200 项 |
 | `artifact.get` | `{project_id, artifact_id}` | `{artifact, preview_text}`，经过 vault 大小/hash 核对的纯文本 |
+
+带运行登记可同时传入 `expected_service_id`、`expected_session_id` 和 32 位小写十六进制 `request_id`；三项必须一起提供，写入时在同一事务核对归属和请求去重。同一请求重试仅接受相同范围及字节，不证明运行生成了该文件。
+
 
 参数均严格拒绝未知字段；host、绝对文件路径、内容及验证结论不能由调用者传入。
 `project_id` 必须对应存在且设置明确绝对 root_path 的当前服务项目；`source_path` 使用

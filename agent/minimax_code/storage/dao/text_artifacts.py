@@ -40,20 +40,37 @@ class ArtifactDAO:
                 "WHERE r.id=?", (run_id,))
             self._run_binding(row, project_id, expected_root)
 
-    async def insert(self, fields, *, expected_root):
+    async def insert(self, fields, *, expected_root, expected_service_id=None,
+                     expected_session_id=None, idempotent=False):
         async with self.db.transaction() as conn:
             cursor = await conn.execute("SELECT root_path FROM projects WHERE id=?",
                                         (fields["project_id"],))
             project = await cursor.fetchone()
             if project is None or project[0] != expected_root:
                 raise ValueError("Project binding changed during registration")
+            if expected_service_id is not None:
+                cursor = await conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1")
+                service = await cursor.fetchone()
+                if service is None or service[0] != expected_service_id:
+                    raise ValueError("Service identity changed during registration")
             if fields["run_id"] is not None:
                 cursor = await conn.execute(
-                    "SELECT s.project_id,s.workspace_path FROM agent_runs r "
+                    "SELECT s.project_id,s.workspace_path,s.id AS session_id FROM agent_runs r "
                     "JOIN sessions s ON s.id=r.session_id "
                     "WHERE r.id=?", (fields["run_id"],))
                 run = await cursor.fetchone()
                 self._run_binding(run, fields["project_id"], expected_root)
+                if expected_session_id is not None and run["session_id"] != expected_session_id:
+                    raise ValueError("Run session changed during registration")
+            if idempotent:
+                cursor = await conn.execute("SELECT * FROM text_artifacts WHERE id=?", (fields["id"],))
+                existing = await cursor.fetchone()
+                if existing is not None:
+                    row = dict(existing)
+                    keys = ("project_id", "run_id", "service_id", "source_path", "mime_type", "size_bytes", "sha256")
+                    if any(row[key] != fields[key] for key in keys):
+                        raise ValueError("Registration request already used for different content or scope")
+                    return row
             cursor = await conn.execute(
                 "SELECT COALESCE(MAX(version),0)+1 FROM text_artifacts "
                 "WHERE project_id=? AND source_path=?",

@@ -28,6 +28,9 @@ export interface ArtifactRegisterParams {
   project_id: string;
   source_path: string;
   run_id?: string;
+  expected_service_id?: string;
+  expected_session_id?: string;
+  request_id?: string;
 }
 
 export interface ArtifactListParams { project_id: string; run_id?: string }

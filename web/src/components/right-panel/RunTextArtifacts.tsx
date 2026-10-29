@@ -12,11 +12,19 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
   const [selected, setSelected] = useState<{ row: TextArtifact; preview: string } | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [path, setPath] = useState("");
+  const key = `run-text-registration:${JSON.stringify([host, serviceId, projectId, sessionId, runId])}`;
+  const [pending, setPending] = useState<{ path: string; requestId: string } | null>(null);
   const epoch = useRef(0), download = useRef<AbortController | null>(null);
   useEffect(() => {
     ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setMessage(""); setBusy(false);
+    setPath("");
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key) || "null");
+      setPending(saved && typeof saved.path === "string" && /^[0-9a-f]{32}$/.test(saved.requestId) ? saved : null);
+    } catch { setPending(null); }
     return () => { ++epoch.current; download.current?.abort(); };
-  }, [runId, sessionId, projectId, serviceId, review, activeSession, host]);
+  }, [runId, sessionId, projectId, serviceId, review, activeSession, host, key]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setBusy(false); setMessage("连接变化，请重新读取成果。"); }), []);
   const current = (ticket: number, host: string) => ticket === epoch.current && host === ipc.agentBaseUrl &&
     useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === projectId &&
@@ -41,6 +49,32 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
       if (result.artifacts.length >= 200) setMessage("此运行最多返回最近 200 项，可能还有更早的关联成果。");
     } catch (error) { if (current(ticket, host)) { setItems(null); setMessage(String(error)); } }
     finally { if (current(ticket, host)) setBusy(false); }
+  };
+  const register = async () => {
+    const ticket = ++epoch.current, origin = ipc.agentBaseUrl;
+    const request = pending ?? { path: path.trim(), requestId: crypto.randomUUID().replaceAll("-", "") };
+    if (!request.path || !current(ticket, origin)) return;
+    setBusy(true); setMessage("");
+    try {
+      // Persist before issuing the request: an unknown response must be retried with the same ID.
+      sessionStorage.setItem(key, JSON.stringify(request));
+      setPending(request);
+      await verifyScope(ticket, origin);
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current(ticket, origin) || identity.service_id !== serviceId) throw new Error("服务或查看范围已变化");
+      const result = await typedIPC.registerArtifact({ project_id: projectId, source_path: request.path,
+        run_id: runId, expected_service_id: serviceId, expected_session_id: sessionId, request_id: request.requestId });
+      await verifyScope(ticket, origin);
+      const after = await typedIPC.getServiceIdentity();
+      const row = result.artifact;
+      if (!current(ticket, origin) || after.service_id !== serviceId || row.service_id !== serviceId ||
+          row.project_id !== projectId || row.run_id !== runId || row.source_path !== request.path || row.id !== `art_${request.requestId}`)
+        throw new Error("登记结果的范围已变化，请使用同一请求重试核对。" );
+      sessionStorage.removeItem(key); setPending(null); setPath("");
+      setItems((previous) => [row, ...(previous ?? []).filter((item) => item.id !== row.id)]);
+      setMessage("已登记关联的文本快照；请自行核对内容和质量。");
+    } catch (error) { if (current(ticket, origin)) setMessage(`登记结果可能未知，请使用同一请求重试核对：${String(error)}`); }
+    finally { if (current(ticket, origin)) setBusy(false); }
   };
   const select = async (row: TextArtifact) => {
     const ticket = ++epoch.current, host = ipc.agentBaseUrl; setBusy(true); setMessage(""); setSelected(null);
@@ -73,6 +107,15 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
   };
   return <div className="mt-2 space-y-1 text-xs"><button type="button" disabled={busy} onClick={() => void load()}>读取登记关联的文本成果</button>
     <p>仅显示登记时关联此运行的文本版本；关联不证明由该运行生成或内容已验证。</p>
+    <label className="block">项目内文本路径（TXT / MD / CSV，UTF-8，最多 2 MiB）
+      <input className="ml-2 rounded border border-line bg-surface-0 p-1" value={pending?.path ?? path} disabled={busy || !!pending} onChange={(event) => setPath(event.target.value)} />
+    </label>
+    <button type="button" disabled={busy || !(pending?.path ?? path).trim()} onClick={() => void register()}>
+      {pending ? "用同一请求重试登记" : "登记并关联此运行"}
+    </button>
+    {pending && <div><p>登记结果尚未确认。重试使用相同请求，避免重复创建；路径和文件内容须保持不变。</p>
+      <button type="button" disabled={busy} onClick={() => { sessionStorage.removeItem(key); setPending(null); setMessage("已清除本地重试记录；原请求可能已登记，请先读取成果确认，避免重复。"); }}>清除本地重试记录</button>
+    </div>}
     {items && (items.length ? <ul>{items.map((row) => <li key={row.id}><button type="button" disabled={busy} onClick={() => void select(row)}>{row.source_path} · v{row.version}</button></li>)}</ul> : <p>此运行没有登记的文本关联。</p>)}
     {selected && <div><button type="button" disabled={busy} onClick={() => void save()}>下载文本原件</button><pre aria-label="文本成果预览" className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{selected.preview || "（无可用预览）"}</pre></div>}
     {message && <p role="status">{message}</p>}
