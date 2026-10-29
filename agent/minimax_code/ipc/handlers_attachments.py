@@ -15,6 +15,7 @@ from .protocol import (
     AttachmentExtractXlsxParams,
     AttachmentListParams,
     AttachmentReadDocumentParams,
+    AttachmentOcrParams,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,55 @@ def register_attachment_handlers(server):
             logger.exception("attachment.read_document failed")
             await ctx.reply_error(INTERNAL_ERROR, "Document reading failed")
 
+    async def ocr_image(params, ctx):
+        try:
+            from ..attachment_parser import ocr_image as recognize
+            from .host_session_gate import require_host_session
+
+            request = AttachmentOcrParams.model_validate(params)
+            service = await get_attachment_service()
+
+            async def check_scope():
+                await require_host_session(request.session_id)
+                session = await service.dao.db.fetchone(
+                    "SELECT project_id FROM sessions WHERE id=?", (request.session_id,))
+                if (not session or session["project_id"] != request.project_id
+                        or await service.dao.service_id() != request.expected_service_id):
+                    raise ValueError("Session, project or service binding changed")
+
+            await check_scope()
+            row, data = await service.content(request.project_id, request.attachment_id)
+            kind = row["recognized_type"]
+            if (kind not in {"png", "jpeg"} or row["declared_type"] != kind
+                    or row["sha256"] != request.expected_sha256):
+                raise ValueError("Select the same PNG or JPEG attachment")
+            result = await recognize(data, kind, request.language)
+            if not result["ok"]:
+                messages = {
+                    "missing_dependency": "Local OCR requires Pillow and tesserocr; install them and restart the service",
+                    "missing_language": "Local OCR initialization failed; check Tesseract and the selected language data",
+                    "invalid_image": "Image cannot be decoded safely",
+                    "image_limit": "Image exceeds 12 million pixels or contains multiple frames",
+                    "parser_timeout": "Local OCR timed out (15 seconds)",
+                    "queue_timeout": "Local parser is busy; try again",
+                    "limits_unavailable": "Local parser resource limits are unavailable",
+                    "output_limit": "Local OCR output exceeded its limit",
+                }
+                raise ValueError(messages.get(result["reason"], "Local OCR failed safely"))
+            await check_scope()
+            await ctx.reply({**result, "project_id": request.project_id, "session_id": request.session_id,
+                             "service_id": request.expected_service_id, "attachment_id": request.attachment_id,
+                             "sha256": request.expected_sha256, "language": request.language,
+                             "quality": "unverified"})
+        except ValidationError:
+            await ctx.reply_error(INVALID_PARAMS, "Invalid OCR parameters")
+        except (ValueError, OSError) as exc:
+            await ctx.reply_error(-32000, str(exc))
+        except Exception:
+            logger.exception("attachment.ocr_image failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Local OCR failed")
+
+    server.register("attachment.ocr_image", ocr_image)
     server.register("attachment.read_document", read_document)
     server.register("attachment.extract_xlsx", extract_xlsx)
     server.register("attachment.generate_report_pair", handler(AttachmentGeneratePairWithResearchParams, "generate_report_pair"))

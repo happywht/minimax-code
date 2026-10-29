@@ -523,6 +523,7 @@ function mockHandle(
       const p = (params ?? {}) as Record<string, unknown>;
       return artifactMock(method, p, mockProjects.has(String(p.project_id)));
     }
+    case "attachment.ocr_image":
     case "attachment.read_document":
       throw new Error("演示模式不支持读取文档，请连接真实后端。");
     case "attachment.extract_xlsx":

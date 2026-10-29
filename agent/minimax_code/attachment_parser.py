@@ -27,11 +27,11 @@ _WORKER = Path(__file__).with_name("_attachment_parser_worker.py")
 
 def _environment():
     # Python isolated mode also ignores Python env flags. No service secrets.
-    return {key: os.environ[key] for key in ("SystemRoot", "WINDIR", "SYSTEMDRIVE") if key in os.environ}
+    return {key: os.environ[key] for key in ("SystemRoot", "WINDIR", "SYSTEMDRIVE", "TESSDATA_PREFIX") if key in os.environ}
 
 
 def _command(kind):
-    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment"}:
+    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image"}:
         raise ValueError("Invalid fixed parser kind")
     # Windows venv python.exe is a redirector. Kill/wait must target the actual
     # parser PID, so launch the base interpreter and add only trusted venv libs
@@ -52,7 +52,7 @@ def _command(kind):
 
 def _run(data, cancelled, scope=SCOPE, kind="docx"):
     def failed(reason, **kwargs):
-        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "xlsx_list", "pdf_page", "docx_segment"} else failure(reason, scope=scope, **kwargs)
+        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image"} else failure(reason, scope=scope, **kwargs)
 
     if sys.platform not in {"linux", "win32"}:
         return failed("limits_unavailable", unavailable=True)
@@ -129,6 +129,17 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
             return failed("parser_crash")
         try:
             result = json.loads(output)
+            if kind == "ocr_image":
+                if type(result) is not dict:
+                    raise ValueError
+                reasons = {"missing_dependency", "missing_language", "invalid_image", "image_limit"}
+                if result.get("ok") is False and set(result) == {"ok", "reason"} and result["reason"] in reasons:
+                    return result
+                if (set(result) != {"ok", "text", "truncated"} or result["ok"] is not True
+                        or type(result["text"]) is not str or len(result["text"]) > 16000
+                        or type(result["truncated"]) is not bool):
+                    raise ValueError
+                return result
             if kind in {"pdf_page", "docx_segment"}:
                 if type(result) is not dict:
                     raise ValueError
@@ -262,6 +273,14 @@ async def read_document_segment(data, kind, unit=1, offset=0):
     framed = unit.to_bytes(4, "big") + offset.to_bytes(4, "big") + data
     return await _inspect(framed, PDF_SCOPE if kind == "pdf" else SCOPE,
                           "pdf_page" if kind == "pdf" else "docx_segment")
+
+
+async def ocr_image(data, kind, language):
+    kinds = {"png": 1, "jpeg": 2}
+    languages = {"eng": 1, "chi_sim": 2, "eng+chi_sim": 3}
+    if kind not in kinds or language not in languages or len(data) > 10 * 1024 * 1024:
+        return {"ok": False, "reason": "invalid_image"}
+    return await _inspect(bytes((kinds[kind], languages[language])) + data, SCOPE, "ocr_image")
 
 
 async def _inspect(data, scope, kind):
