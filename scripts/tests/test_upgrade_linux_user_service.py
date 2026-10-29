@@ -172,4 +172,3 @@ def test_start_failure_attempts_stop_and_retains_backup(setup, monkeypatch):
     transaction = next((tmp / 'backups').glob('upgrade-*'))
     assert (transaction / 'data-vault.zip').is_file()
     assert Path(args.unit_file).read_text().startswith(args.new_python)
-
