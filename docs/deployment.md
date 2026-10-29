@@ -19,11 +19,16 @@ Windows 专用跳过，含真实 HTTP/SPA HTML/认证；未替代容器、冷启
 
 ```bash
 pnpm install          # JS 依赖
-cd agent && uv sync   # Python 依赖
+cd agent && uv sync --frozen --extra attachments   # Python 及办公/附件依赖
 cd ..
 pnpm build           # 首次准备 / 升级版本时构建
 pnpm start           # 只启动已准备好的版本
 ```
+
+办公成果生成以及 PDF、DOCX、XLSX 附件解析需要 `attachments` 依赖组。仅运行
+`uv sync` 会安装基础功能，但不能视为这些办公功能已就绪；添加依赖后须重启服务。
+Linux 用户服务也应在新版本的独立环境中执行上述安装，再按升级流程切换，避免
+在运行中的虚拟环境里替换依赖。
 
 启动后浏览器打开 **http://127.0.0.1:8765**。检查就绪：
 

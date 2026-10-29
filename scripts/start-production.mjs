@@ -9,7 +9,7 @@ import { Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const prepare = "Run pnpm install, then (cd agent && uv sync), then pnpm build.";
+const prepare = "Run pnpm install, then (cd agent && uv sync --frozen --extra attachments), then pnpm build.";
 
 async function requirePath(target, directory, message) {
   const info = await stat(target).catch(() => null);
@@ -86,7 +86,7 @@ try:
     import minimax_code.app
 except Exception:
     import traceback
-    print('Python dependency check failed. Run (cd agent && uv sync) to prepare dependencies.', file=sys.stderr, flush=True)
+    print('Python dependency check failed. Run (cd agent && uv sync --frozen --extra attachments) to prepare dependencies.', file=sys.stderr, flush=True)
     traceback.print_exc()
     raise SystemExit(1)
 print(sys.argv[2], flush=True)
