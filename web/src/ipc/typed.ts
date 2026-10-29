@@ -370,7 +370,7 @@ export interface TypedIPC {
   // data portability (R21+) — drive the Settings page's Data tab.
   exportData(): Promise<DataExportEnvelope>;
   importData(envelope: DataExportEnvelope): Promise<DataImportSummary>;
-  backupData(targetDir?: string): Promise<DataBackupResult>;
+  backupData(targetDir?: string, requireExistingDir?: boolean): Promise<DataBackupResult>;
 
   // diagnostics (R45+) — sanitized bug-report bundle for the Data tab.
   exportDiagnostic(): Promise<DiagnosticBundle>;
@@ -938,10 +938,10 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     exportDiagnostic: () => client.request<DiagnosticBundle>("diag.export", {}),
     importData: (envelope) =>
       client.request<DataImportSummary>("data.import", { envelope }),
-    backupData: (targetDir) =>
+    backupData: (targetDir, requireExistingDir) =>
       client.request<DataBackupResult>(
         "data.backup",
-        targetDir ? { target_dir: targetDir } : {},
+        targetDir ? { target_dir: targetDir, require_existing_dir: requireExistingDir === true } : {},
       ),
 
     listProviders: () => client.request<ListProvidersResult>("provider.list", {}),

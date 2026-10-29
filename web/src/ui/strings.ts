@@ -434,6 +434,9 @@ export const strings = {
       backupDescLead:
         "通过 online backup API 热复制 SQLite 数据库——含 schema、WAL 内容与派生索引（全文、向量）——写入",
       backupDescTail: "，文件名带 UTC 时间戳。Agent 保持运行；源库只读。",
+      backupDirectoryLabel: "备份目录（可选）",
+      backupDirectoryPlaceholder: "留空使用默认目录",
+      backupDirectoryHint: "填写当前服务所在机器的已有绝对目录路径，按服务的文件权限写入；不会创建该目录。备份使用独立文件名，不覆盖已有文件。",
       backupButton: "立即备份",
       diagTitle: "诊断包",
       diagDesc:

@@ -247,7 +247,8 @@ async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def backup_database(db: Any, target_dir: Path | str | None = None) -> dict[str, Any]:
+async def backup_database(db: Any, target_dir: Path | str | None = None, *,
+                          require_existing_dir: bool = False) -> dict[str, Any]:
     """Hot-copy *db* to a timestamped file via the SQLite backup API.
 
     Unlike the JSON export, the backup is a **file-level complete snapshot**
@@ -258,7 +259,11 @@ async def backup_database(db: Any, target_dir: Path | str | None = None) -> dict
     from ..storage.db import default_data_dir
 
     dest_dir = Path(target_dir).expanduser() if target_dir else default_data_dir() / "backups"
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    if require_existing_dir:
+        if not dest_dir.is_absolute() or not dest_dir.is_dir():
+            raise ValueError("backup directory must be an existing absolute path on the agent host")
+    else:
+        dest_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now(UTC)
     # Clock resolution is not uniqueness: two backups can share a millisecond.
     # Exclusive creation also prevents concurrent requests overwriting a prior
@@ -356,11 +361,14 @@ async def _handle_data_backup(params: Any, ctx: Context) -> None:
         target_dir = None
         if isinstance(params, dict) and params.get("target_dir") is not None:
             target_dir = str(params["target_dir"])
-        result = await backup_database(db, target_dir)
+        require_existing = isinstance(params, dict) and params.get("require_existing_dir") is True
+        result = await backup_database(db, target_dir, require_existing_dir=require_existing)
         await ctx.reply(result)
         logger.info("data.backup: %s (%d bytes)", result["path"], result["bytes"])
     except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message)
+    except ValueError as exc:
+        await ctx.reply_error(INVALID_PARAMS, str(exc))
     except Exception:
         logger.exception("data.backup failed")
         await ctx.reply_error(INTERNAL_ERROR, "data.backup failed")

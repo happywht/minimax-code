@@ -1474,7 +1474,7 @@ real behaviour.
 |--------|--------|--------|-------|
 | `data.export` | `{}` | envelope (below) | Dump every business table into a single JSON document; the frontend turns it into a downloaded file. |
 | `data.import` | `{envelope}` | `{imported: {table: rows}, skipped_tables: [...]}` | Validate and replace-import an export envelope inside one transaction. |
-| `data.backup` | `{target_dir?}` | `{path, bytes}` | Online file-level snapshot via the SQLite backup API; default target is `<data_dir>/backups/`. |
+| `data.backup` | `{target_dir?, require_existing_dir?}` | `{path, bytes}` | Online file-level snapshot via the SQLite backup API; default target is `<data_dir>/backups/`. |
 
 **Export envelope** (the RPC result itself):
 
@@ -1538,6 +1538,8 @@ Semantics:
   Complements the JSON export (which is
   portable across schema versions but excludes derived state).
 * `target_dir` is created if missing; omitted → `<data_dir>/backups/`.
+  When `require_existing_dir` is true, the target must instead be an existing
+  absolute directory on the service host and is not created by this operation.
   The filename embeds a UTC timestamp and an exclusively created random suffix
   (`minimax-code-backup-YYYYMMDD-HHMMSS-<unique>.db`), so backups created
   in the same clock tick cannot overwrite an earlier snapshot.

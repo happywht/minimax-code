@@ -11,7 +11,7 @@
  */
 import { useRef, useState } from "react";
 import { Activity, DatabaseBackup, Download, HardDriveDownload, Upload } from "lucide-react";
-import { Button, Panel } from "../../ui";
+import { Button, Input, Panel } from "../../ui";
 import { strings } from "../../ui/strings";
 import { typedIPC } from "../../ipc";
 import type {
@@ -79,6 +79,7 @@ function DataTab(): JSX.Element {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [backing, setBacking] = useState(false);
+  const [backupDirectory, setBackupDirectory] = useState("");
   const [diagnosing, setDiagnosing] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -175,7 +176,8 @@ function DataTab(): JSX.Element {
     setBacking(true);
     setFeedback(null);
     try {
-      const result: DataBackupResult = await typedIPC.backupData();
+      const directory = backupDirectory.trim();
+      const result: DataBackupResult = await typedIPC.backupData(directory || undefined, Boolean(directory));
       setFeedback({
         kind: "ok",
         text: strings.settings.data.backupOk(result.path, formatBytes(result.bytes)),
@@ -269,6 +271,22 @@ function DataTab(): JSX.Element {
           {strings.settings.data.backupDescLead}{" "}
           <InlineCode>&lt;data dir&gt;/backups/</InlineCode>
           {strings.settings.data.backupDescTail}
+        </p>
+        <label htmlFor="backup-directory" className="mt-3 block text-xs text-ink-1">
+          {strings.settings.data.backupDirectoryLabel}
+        </label>
+        <Input
+          id="backup-directory"
+          data-testid="settings-data-backup-directory"
+          className="mt-1"
+          value={backupDirectory}
+          onChange={(event) => setBackupDirectory(event.target.value)}
+          disabled={exporting || importing || backing || diagnosing}
+          placeholder={strings.settings.data.backupDirectoryPlaceholder}
+          aria-describedby="backup-directory-hint"
+        />
+        <p id="backup-directory-hint" className="mt-1 text-[11px] text-ink-2">
+          {strings.settings.data.backupDirectoryHint}
         </p>
         <div className="mt-3">
           <Button
