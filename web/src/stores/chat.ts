@@ -56,7 +56,7 @@ export interface ChatState {
   reconcileAskUser: (request: AskUserData | null, version: number, sessionId: string) => void;
 
   init: () => Promise<void>;
-  send: (content: string | ContentPart[]) => Promise<void>;
+  send: (content: string | ContentPart[], budgetTokens?: number) => Promise<void>;
   /**
    * v1.1.0 — resume the latest budget-truncated run. Unlike send(),
    * no user bubble is added: the backend injects a fixed continuation
@@ -610,7 +610,10 @@ export const useChat = create<ChatState>((set, get) => ({
     }));
   },
 
-  send: async (content: string | ContentPart[]) => {
+  send: async (content: string | ContentPart[], budgetTokens?: number) => {
+    if (budgetTokens !== undefined && (!Number.isSafeInteger(budgetTokens) || budgetTokens <= 0)) {
+      set({ error: "任务 token 上限必须是安全范围内的正整数。" }); return;
+    }
     // Concurrency guard — prevent double-send from rapid clicks or
     // multiple call sites.  The UI disables the button but the store
     // is the source of truth.
@@ -686,6 +689,7 @@ export const useChat = create<ChatState>((set, get) => ({
         const admission = await trackRequest(sessionId, typedIPC.startRun({
           session_id: sessionId, engine: "codex", content: wireContent,
           idempotency_key: requestKey, mode: get().executionMode,
+          ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
           ...(get().captureFileChanges ? { capture_file_changes: true } : {}),
         }));
         if (useSessionStore.getState().currentSessionId !== sessionId) return;
@@ -705,6 +709,7 @@ export const useChat = create<ChatState>((set, get) => ({
         session_id: sessionId,
         content: wireContent,
         idempotency_key: requestKey,
+        ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
         ...(get().captureFileChanges ? { capture_file_changes: true } : {}),
         ...(get().executionMode === "plan" ? { mode: "plan" as const } : {}),
       }));

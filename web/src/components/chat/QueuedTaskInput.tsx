@@ -8,14 +8,14 @@ import { MAX_INPUT_CHARS } from "./constants";
 type Pending = { request: RunStartParams; project: string | null; draft: string };
 
 /** A separate durable request, never an in-flight steer. */
-export function QueuedTaskInput({ sessionId }: { sessionId: string | null }): JSX.Element | null {
+export function QueuedTaskInput({ sessionId, budgetTokens, budgetValid = true }: { sessionId: string | null; budgetTokens?: number; budgetValid?: boolean }): JSX.Element | null {
   const [host, setHost] = useState(ipc.agentBaseUrl);
   useEffect(() => ipc.onSideCar(() => setHost(ipc.agentBaseUrl)), []);
   if (!sessionId) return null;
-  return <QueuedTaskEditor key={`${host}:${sessionId}`} host={host} sessionId={sessionId} />;
+  return <QueuedTaskEditor key={`${host}:${sessionId}`} host={host} sessionId={sessionId} budgetTokens={budgetTokens} budgetValid={budgetValid} />;
 }
 
-function QueuedTaskEditor({ sessionId, host }: { sessionId: string; host: string }): JSX.Element {
+function QueuedTaskEditor({ sessionId, host, budgetTokens, budgetValid }: { sessionId: string; host: string; budgetTokens?: number; budgetValid: boolean }): JSX.Element {
   const storageKey = `minimax-code:queued-input:${encodeURIComponent(host)}:${encodeURIComponent(sessionId)}`;
   const pendingKey = `${storageKey}:pending`;
   const [text, setText] = useState(() => { try { return localStorage.getItem(storageKey) ?? ""; } catch { return ""; } });
@@ -41,9 +41,10 @@ function QueuedTaskEditor({ sessionId, host }: { sessionId: string; host: string
       session_id: sessionId, content: text.trim(), idempotency_key: crypto.randomUUID(),
       engine: state.sessions.find((s) => s.id === sessionId)?.engine ?? "native",
       mode: useChat.getState().executionMode,
+      ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
       ...(useChat.getState().captureFileChanges ? { capture_file_changes: true } : {}),
     } };
-    if (!pending && (!text.trim() || text.length > MAX_INPUT_CHARS)) return;
+    if (!pending && (!text.trim() || text.length > MAX_INPUT_CHARS || !budgetValid)) return;
     if (value.project !== project || !current()) {
       setNotice("会话或项目已切换；请回到原项目核对待确认请求。"); return;
     }
@@ -73,11 +74,12 @@ function QueuedTaskEditor({ sessionId, host }: { sessionId: string; host: string
     <button type="button" aria-expanded={open} className="rounded px-1 py-1 text-ink-1 underline decoration-line-strong underline-offset-2 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setOpen(!open)}>{open ? "收起排队任务" : "排队一个新任务"}</button>
     {open && <div className="mt-2 space-y-2">
       <p>这是独立任务，会在同会话前面的任务之后执行；不向当前任务中途追加。没有前序任务时会立即开始。停止当前会话会同时取消其排队任务。</p>
+      <p>此任务 token 上限：{pending ? pending.request.budget_tokens ?? "服务默认（接收时确定）" : !budgetValid ? "输入无效" : budgetTokens ?? "服务默认（接收时确定）"}；{pending ? "重试使用原接单快照。" : "提交时固定，之后修改输入不会改变已接收任务。"}</p>
       <textarea aria-label="排队任务内容" value={pending ? String(pending.request.content) : text}
         readOnly={!!pending} maxLength={MAX_INPUT_CHARS} rows={3}
         className="w-full rounded border border-line bg-surface-0 p-2"
         onChange={(event) => { setText(event.target.value); try { localStorage.setItem(storageKey, event.target.value); } catch { /* admission checks storage */ } }} />
-      <Button type="button" size="sm" disabled={busy || (!pending && !text.trim())} loading={busy}
+      <Button type="button" size="sm" disabled={busy || (!pending && (!text.trim() || !budgetValid))} loading={busy}
         onClick={() => void submit()}>{pending ? "重试确认同一任务" : "提交排队任务"}</Button>
       {pending && <button type="button" disabled={busy} className="ml-2 underline" onClick={() => {
         localStorage.removeItem(pendingKey); setPending(null);

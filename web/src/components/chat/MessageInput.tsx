@@ -8,6 +8,8 @@
  * ``AttachmentRows``, ``MentionPickerDropdown`` and ``ComposerToolbar``.
  */
 import { Camera, Mic, MicOff, Paperclip, Send, Square } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ipc } from "../../ipc";
 import { useChat, useSessionStore } from "../../stores";
 import { Button, IconButton } from "../../ui";
 import type { AgentInfo, ContentPart } from "../../types/ipc";
@@ -42,6 +44,18 @@ export function MessageInput({
   const captureFileChanges = useChat((s) => s.captureFileChanges);
   const setCaptureFileChanges = useChat((s) => s.setCaptureFileChanges);
   const sessionId = useSessionStore((s) => s.currentSessionId);
+  const [budgetScope, setBudgetScope] = useState(() => ({ host: ipc.agentBaseUrl, session: sessionId, value: "" }));
+  const [budgetHost, setBudgetHost] = useState(ipc.agentBaseUrl);
+  useEffect(() => ipc.onSideCar(() => {
+    const host = ipc.agentBaseUrl; setBudgetHost(host);
+    setBudgetScope((previous) => ({ ...previous, host, value: "" }));
+  }), []);
+  if (budgetScope.host !== budgetHost || budgetScope.session !== sessionId) {
+    setBudgetScope({ host: budgetHost, session: sessionId, value: "" });
+  }
+  const budgetText = budgetScope.host === budgetHost && budgetScope.session === sessionId ? budgetScope.value : "";
+  const budgetNumber = budgetText ? Number(budgetText) : undefined;
+  const budgetValid = !budgetText || (/^[1-9]\d*$/.test(budgetText) && budgetNumber !== undefined && Number.isSafeInteger(budgetNumber));
 
   const codex = useSessionStore((s) => s.sessions.find((session) => session.id === sessionId)?.engine === "codex");
   const draft = useComposerDraft(sessionId);
@@ -70,7 +84,7 @@ export function MessageInput({
   const handleSubmit = async (e?: React.FormEvent | React.KeyboardEvent) => {
     e?.preventDefault();
     if (disabled) return;
-    if (draft.overLimit) return;
+    if (draft.overLimit || !budgetValid) return;
 
     const rawText = draft.value;
     const hasText = rawText.trim().length > 0;
@@ -84,7 +98,7 @@ export function MessageInput({
       }
       draft.clear();
       mention.closePicker();
-      await send(rawText);
+      await send(rawText, budgetNumber);
       return;
     }
     // Resolve @repo / #file mentions into codebase context.
@@ -102,12 +116,12 @@ export function MessageInput({
       draft.clear();
       attachments.clearAll();
       mention.closePicker();
-      await send(parts);
+      await send(parts, budgetNumber);
     } else {
       draft.clear();
       attachments.clearAll();
       mention.closePicker();
-      await send(hasContext ? finalText : rawText);
+      await send(hasContext ? finalText : rawText, budgetNumber);
     }
   };
 
@@ -255,6 +269,7 @@ export function MessageInput({
                 disabled={
                   (!draft.value.trim() && attachments.attachedImages.length === 0) ||
                   draft.overLimit ||
+                  !budgetValid ||
                   context.loading
                 }
                 loading={context.loading}
@@ -295,7 +310,15 @@ export function MessageInput({
             onChange={(event) => setCaptureFileChanges(event.target.checked)} />
           采集任务前后文件变化（受限于 Git 可见文件）
         </label>
-        </div>
+        <label className="flex flex-wrap items-center gap-2 px-2 pb-1 text-xs text-ink-1">
+          下一任务 token 上限
+          <input aria-label="下一任务 token 上限" inputMode="numeric" pattern="[0-9]*" value={budgetText} maxLength={16}
+            onChange={(event) => setBudgetScope({ host: budgetHost, session: sessionId, value: event.target.value })}
+            placeholder="空白：服务默认" className="w-36 rounded border border-line bg-surface-0 px-2 py-1 text-ink-0" />
+          <span className="text-ink-2">空白沿用服务默认（当前值未知）；正整数用于接下来新任务及其子任务。</span>
+        </label>
+        {!budgetValid && <p role="alert" className="px-2 text-xs text-status-error">请输入安全范围内的正整数，或留空使用服务默认。</p>}
+        <p className="px-2 pb-1 text-[11px] text-ink-2">这是 token 数量，不是金额或 Coding Plan 费用上限。日限额另行生效；Native 在请求前估算，Codex 按已观察用量事后控制，均不能保证严格费用上限。切换会话或连接变化会清空此输入。</p>
         <ComposerToolbar
           valueLength={draft.value.length}
           overLimit={draft.overLimit}
@@ -304,7 +327,7 @@ export function MessageInput({
           critical={draft.critical}
           cancelling={cancelling}
         />
-        <QueuedTaskInput sessionId={sessionId} />
+        <QueuedTaskInput sessionId={sessionId} budgetTokens={budgetNumber} budgetValid={budgetValid} />
         {!streaming && <p className="px-2.5 pb-2 text-[11px] text-ink-2">Enter 发送 · Shift + Enter 换行；运行中可排队新任务。</p>}
       </div>
     </form>
