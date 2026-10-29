@@ -73,7 +73,9 @@ class CodebaseRetriever:
     ) -> dict[str, Any]:
         """Hybrid search the codebase and return snippets.
 
-        Combines FTS5 keyword ranking with sqlite-vec vector similarity.
+        FTS5 selects keyword candidates; vector similarity only re-ranks
+        those candidates. The default hash embedder is a lexical heuristic,
+        not a semantic model.
         ``file_pattern`` is a SQL ``LIKE`` pattern (``%`` wildcards).
         """
         # 1. Keyword results from FTS5.
@@ -110,7 +112,13 @@ class CodebaseRetriever:
         # We use vector similarity to re-rank keyword hits rather than
         # introducing pure vector hits, which keeps results interpretable
         # even with lightweight embedders.
-        max_fts_rank = max((row.get("rank", 0.0) or 0.0 for row in fts_rows), default=0.0)
+        # FTS5's default BM25 rank is non-positive, with lower values
+        # indicating better matches. Invert it before normalizing so keyword
+        # relevance contributes to the combined score.
+        max_fts_score = max(
+            (max(0.0, -(row.get("rank", 0.0) or 0.0)) for row in fts_rows),
+            default=0.0,
+        )
         max_vec_score = 0.0
         if min_vec_distance is not None:
             # Convert L2 distance on unit vectors to a [0, 1] similarity.
@@ -123,8 +131,8 @@ class CodebaseRetriever:
         for row in fts_rows:
             rid = row["rowid"]
             fts_score = 0.0
-            if max_fts_rank > 0:
-                fts_score = (row.get("rank", 0.0) or 0.0) / max_fts_rank
+            if max_fts_score > 0:
+                fts_score = max(0.0, -(row.get("rank", 0.0) or 0.0)) / max_fts_score
 
             vec_score = 0.0
             distance = vec_distance_by_rowid.get(rid)
@@ -139,6 +147,7 @@ class CodebaseRetriever:
             )
             scored.append((hybrid_score, rid, row))
 
+        # Python's stable sort preserves the store's rank/rowid order on ties.
         scored.sort(key=lambda x: x[0], reverse=True)
 
         # 5. Build result objects, honouring offset/limit.

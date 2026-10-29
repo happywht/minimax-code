@@ -147,7 +147,7 @@ class CodebaseStore:
             "FROM codebase_chunks_fts fts "
             "JOIN codebase_chunks c ON c.rowid = fts.rowid "
             f"WHERE codebase_chunks_fts MATCH ? AND c.root = ? {file_where} "
-            "ORDER BY rank DESC "
+            "ORDER BY rank ASC, c.rowid ASC "
             "LIMIT ? OFFSET ?"
         )
         params = [query, root, *params, limit, offset]
