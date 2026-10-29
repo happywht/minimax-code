@@ -24,6 +24,9 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
   const state = useAttachmentStore(), host = ipc.agentBaseUrl;
   const scoped = state.projectId === projectId && state.host === host;
   const [file, setFile] = useState<File | null>(null);
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const filteredAttachments = (scoped ? state.attachments : []).filter((row) => `${row.original_name} ${row.id}`.toLowerCase().includes(query.trim().toLowerCase()) && (typeFilter === "all" || row.recognized_type === typeFilter));
   const [docName, setDocName] = useState("报告.docx"), [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [format, setFormat] = useState<"docx" | "pdf" | "both">("docx");
@@ -35,7 +38,7 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
   const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources, researchSources.map((item) => item.page_source_id), sessionId]);
   useEffect(() => {
-    setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setVisualSections(false); setSections(sectionExample); setSources([]); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
+    setQuery(""); setTypeFilter("all"); setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setVisualSections(false); setSections(sectionExample); setSources([]); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   useEffect(() => { setResearchSources([]); }, [projectId, sessionId, host, state.serviceId]);
@@ -53,6 +56,35 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
       <Button type="submit" disabled={!scoped || !file || file.size > 10485760 || !state.serviceId || state.busy || state.loading}>上传原件</Button>
       <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(projectId)}>刷新</Button>
     </form>
+    {scoped && state.loading && <p role="status">正在读取附件…</p>}
+    {scoped && !state.loading && !state.attachments.length && <p>当前项目还没有附件原件。</p>}
+    <div className="space-y-2 rounded border border-line p-3"><h3 className="font-semibold">已有附件与报告</h3>
+      <div className="flex flex-wrap gap-2"><Input aria-label="搜索附件" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按名称或附件 ID 筛选" />
+      <select aria-label="筛选附件类型" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} className="rounded border border-line bg-surface-0 px-2 text-xs text-ink-1"><option value="all">全部类型</option><option value="pdf">PDF</option><option value="docx">DOCX</option><option value="xlsx">XLSX</option><option value="csv">CSV</option><option value="txt">TXT</option></select></div>
+      <p className="text-xs text-ink-2">筛选当前项目已加载记录；已选预览不会因筛选而改变。匹配 {filteredAttachments.length} 项。</p>
+    <ul className="space-y-1">{filteredAttachments.map((row) => <li key={row.id}>
+      <button disabled={state.busy} className="max-w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3" onClick={() => void state.select(row.id)}>
+        {row.original_name} · v{row.version} · {row.id} · {row.size_bytes} 字节 · {labels[row.parser_status]} / 未验证
+      </button>
+    </li>)}</ul>
+    {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
+      <h3 className="font-medium">已选附件 · {state.selected.original_name}</h3>
+      <p className="break-all text-xs text-ink-1">声明类型: {state.selected.declared_type} · 识别候选: {state.selected.recognized_type} · {labels[state.selected.parser_status]} · 未验证</p>
+      <p className="break-all text-xs text-ink-1">解析算法 v{state.selected.parser_version} · 范围 {state.selected.parser_scope} · 原因 {state.selected.parser_reason}</p>
+      {state.selected.parser_reason === "no_extracted_body_text_no_ocr" && <p role="status">{state.selected.recognized_type === "pdf" ? "未提取到 PDF 页面文本；未尝试 OCR。原件可能仍包含其他内容。" : "未提取到正文文本；未尝试 OCR。原件可能仍包含其他内容。"}</p>}
+      {state.selected.recognized_type === "pdf" && <p role="status">预览只包含已有文字；页码为物理页序号，空页标记不代表文件没有内容，未尝试 OCR。</p>}
+      {state.selected.recognized_type === "xlsx" && <p role="status">XLSX 仅预览存储的单元格、坐标和类型；公式与缓存值分别标注，不执行或重算公式，缓存可能缺失或陈旧，未验证正确性。每表最多 A1:T100，全局最多 1500 个单元格；不还原 Excel 排版。含外部关系（包括超链接）的文件不支持解析。</p>}
+      {state.selected.recognized_type === "xlsx" && state.selected.parser_status === "empty" && <p role="status">有界扫描未发现非空单元格；不等于文件没有其他内容。</p>}
+      {state.selected.preview_truncated && <p role="status">{state.selected.recognized_type === "xlsx" ? "预览已达到单元格窗口、数量或 64 KiB / 2000 行展示上限，部分存储内容未显示；可下载完整原件。" : "预览已达到 64 KiB / 2000 行展示上限，后续内容未显示；可下载完整原件。"}</p>}
+      <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
+      <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
+      <PdfOriginalPreview attachment={state.selected} />
+      <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
+      {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
+        ? <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" aria-label="附件纯文本预览">{state.preview}</pre>
+        : <p role="status">当前状态不提供文本预览；可下载保存的原件。</p>}
+    </div>}
+    </div>
     <form className="flex flex-col gap-2 rounded border border-line p-3" onSubmit={(event) => {
       event.preventDefault(); setFormError(null);
       if (sources.some((source) => !source.title.trim() || !source.url.trim())) {
@@ -129,28 +161,6 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
     </div>}
     {file && file.size > 10485760 && <p role="alert">文件超过 10 MiB，未上传。</p>}
     {scoped && state.error && <p role="alert" className="text-status-error">{state.error}</p>}
-    {scoped && state.loading && <p role="status">正在读取附件…</p>}
-    {scoped && !state.loading && !state.attachments.length && <p>当前项目还没有附件原件。</p>}
-    <ul className="space-y-1">{(scoped ? state.attachments : []).map((row) => <li key={row.id}>
-      <button disabled={state.busy} className="max-w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3" onClick={() => void state.select(row.id)}>
-        {row.original_name} · v{row.version} · {row.id} · {row.size_bytes} 字节 · {labels[row.parser_status]} / 未验证
-      </button>
-    </li>)}</ul>
-    {scoped && state.selected && <div className="space-y-2">
-      <p className="break-all text-xs text-ink-1">声明类型: {state.selected.declared_type} · 识别候选: {state.selected.recognized_type} · {labels[state.selected.parser_status]} · 未验证</p>
-      <p className="break-all text-xs text-ink-1">解析算法 v{state.selected.parser_version} · 范围 {state.selected.parser_scope} · 原因 {state.selected.parser_reason}</p>
-      {state.selected.parser_reason === "no_extracted_body_text_no_ocr" && <p role="status">{state.selected.recognized_type === "pdf" ? "未提取到 PDF 页面文本；未尝试 OCR。原件可能仍包含其他内容。" : "未提取到正文文本；未尝试 OCR。原件可能仍包含其他内容。"}</p>}
-      {state.selected.recognized_type === "pdf" && <p role="status">预览只包含已有文字；页码为物理页序号，空页标记不代表文件没有内容，未尝试 OCR。</p>}
-      {state.selected.recognized_type === "xlsx" && <p role="status">XLSX 仅预览存储的单元格、坐标和类型；公式与缓存值分别标注，不执行或重算公式，缓存可能缺失或陈旧，未验证正确性。每表最多 A1:T100，全局最多 1500 个单元格；不还原 Excel 排版。含外部关系（包括超链接）的文件不支持解析。</p>}
-      {state.selected.recognized_type === "xlsx" && state.selected.parser_status === "empty" && <p role="status">有界扫描未发现非空单元格；不等于文件没有其他内容。</p>}
-      {state.selected.preview_truncated && <p role="status">{state.selected.recognized_type === "xlsx" ? "预览已达到单元格窗口、数量或 64 KiB / 2000 行展示上限，部分存储内容未显示；可下载完整原件。" : "预览已达到 64 KiB / 2000 行展示上限，后续内容未显示；可下载完整原件。"}</p>}
-      <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
-      <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
-      <PdfOriginalPreview attachment={state.selected} />
-      <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
-      {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
-        ? <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" aria-label="附件纯文本预览">{state.preview}</pre>
-        : <p role="status">当前状态不提供文本预览；可下载保存的原件。</p>}
-    </div>}
+
   </section>;
 }

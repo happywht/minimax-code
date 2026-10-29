@@ -17,7 +17,7 @@ const tabs: Array<{ id: DeliveryTab; label: string }> = [
 ];
 type Binding = { project: string; session: string | null; host: string; service: string };
 
-export function DeliveryWorkspace({ tab, onSelect, onClose }: { tab: DeliveryTab; onSelect: (tab: DeliveryTab) => void; onClose: () => void }): JSX.Element {
+export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: DeliveryTab; onSelect: (tab: DeliveryTab) => void; onClose: () => void; onEdit?: () => void }): JSX.Element {
   const project = useSessionStore((s) => s.currentProjectId), session = useSessionStore((s) => s.currentSessionId);
   const projectName = useSessionStore((s) => s.projects.find((item) => item.id === project)?.name);
   const host = ipc.agentBaseUrl;
@@ -76,13 +76,20 @@ export function DeliveryWorkspace({ tab, onSelect, onClose }: { tab: DeliveryTab
         <Button size="sm" variant="ghost" onClick={onClose}>关闭</Button></div>
       <nav aria-label="交付物类型" className="flex flex-wrap gap-1">{tabs.map((item) => <Button key={item.id} type="button" size="sm"
         variant={item.id === tab ? "primary" : "ghost"} aria-current={item.id === tab ? "page" : undefined} onClick={() => switchTab(item.id)}>{item.label}</Button>)}</nav>
-      <p className="text-xs text-ink-2">不同类型保存在各自的项目记录中；仅当前会话的明确关联显示为任务成果。内容和版式需自行核对。</p>
+      <p className="text-xs text-ink-2">不同类型保存在各自的项目记录中；仅当前会话的明确关联显示为任务成果。内容和版式需自行核对。标签切换保留草稿；切换项目、会话或服务会清除未保存编辑，请先保存或复制。</p>
       {!ready && <p role="status" className="text-xs text-status-warning">{error || (!project ? "请先选择项目。" : "正在确认当前服务身份…")}</p>}
       {!!error && project && <Button type="button" size="sm" variant="secondary" onClick={() => void refreshScope(true)}>重新确认</Button>}
     </header>
     {validBinding && <div key={scopeKey} className="relative min-h-0 flex-1">
       {!ready && <div className="absolute inset-0 z-10 bg-surface-overlay/90" aria-hidden="true" />}
-      <div ref={surfaceRef} className="h-full" aria-hidden={!ready || undefined}>
+      <div ref={surfaceRef} className="h-full" aria-hidden={!ready || undefined} onChangeCapture={(event) => {
+        const target = event.target as HTMLElement;
+        if ((tab === "attachments" || tab === "office") && !target.getAttribute("aria-label")?.startsWith("搜索")) onEdit?.();
+      }} onClickCapture={(event) => {
+        const button = (event.target as HTMLElement).closest("button");
+        const label = button?.textContent ?? "";
+        if ((tab === "attachments" || tab === "office") && /添加|删除|新增|插入|移动|转换|恢复/.test(label)) onEdit?.();
+      }}>
         {visited.has("artifacts") && <div className="h-full" hidden={tab !== "artifacts"}><ArtifactsPanel embedded onClose={onClose} /></div>}
         {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} /></div>}
         {visited.has("office") && <div className="h-full" hidden={tab !== "office"}><OfficeDeliveryPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} /></div>}

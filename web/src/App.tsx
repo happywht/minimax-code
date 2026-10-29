@@ -87,6 +87,7 @@ export default function App() {
   const [view, setView] = useState<MainView>("chat");
   const automationEdited = useRef(false);
   const settingsEdited = useRef(false);
+  const deliveryEdited = useRef(false);
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
@@ -167,7 +168,15 @@ export default function App() {
     settingsEdited.current = false;
     return true;
   }, []);
+  const leaveDelivery = useCallback(() => {
+    if (!deliveryEdited.current) return true;
+    if (!window.confirm("交付物工作区可能有未保存的报告或表格草稿。离开会丢失草稿，确定离开吗？")) return false;
+    deliveryEdited.current = false;
+    return true;
+  }, []);
+  const isDelivery = (value: string | null) => value === "artifacts" || value === "attachments" || value === "office" || value === "research" || value === "run-artifacts";
   const handleViewChange = useCallback((next: SidebarView) => {
+    if (isDelivery(overlayView) && !isDelivery(next) && !leaveDelivery()) return;
     if ((overlayView === "settings" || overlayView === "agents") && next !== overlayView && !leaveSettings()) return;
     const automation = (value: string | null) => value === "scheduled" || value === "workflows" || value === "webhooks";
     if (automation(overlayView) && !automation(next) && !leaveAutomation()) return;
@@ -180,26 +189,27 @@ export default function App() {
     }
     setOverlayView(null);
     setView(next);
-  }, [overlayView, leaveAutomation, leaveSettings]);
+  }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
 
   const openSettings = useCallback((tab: SettingsTab) => {
+    if (isDelivery(overlayView) && !leaveDelivery()) return;
     if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return;
     if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return;
     setSettingsInitialTab(tab);
     setOverlayView("settings");
-  }, [overlayView, leaveAutomation, leaveSettings]);
+  }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
 
   useEffect(() => {
-    const openChat = () => { if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return; setOverlayView(null); setView("chat"); };
+    const openChat = () => { if (isDelivery(overlayView) && !leaveDelivery()) return; if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return; setOverlayView(null); setView("chat"); };
     window.addEventListener("minimax:open-chat", openChat);
     return () => window.removeEventListener("minimax:open-chat", openChat);
-  }, [overlayView, leaveAutomation, leaveSettings]);
+  }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
 
   useEffect(() => {
-    const openScheduled = () => { if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; setOverlayView("scheduled"); };
+    const openScheduled = () => { if (isDelivery(overlayView) && !leaveDelivery()) return; if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; setOverlayView("scheduled"); };
     window.addEventListener("minimax:open-scheduled", openScheduled);
     return () => window.removeEventListener("minimax:open-scheduled", openScheduled);
-  }, [overlayView, leaveSettings]);
+  }, [overlayView, leaveSettings, leaveDelivery]);
 
   useEffect(() => {
     (async () => {
@@ -388,14 +398,14 @@ export default function App() {
               </>
             )}
             {overlayView && (
-              <WorkspaceOverlay onClose={() => { if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; if (overlayView !== "scheduled" && overlayView !== "workflows" && overlayView !== "webhooks" || leaveAutomation()) setOverlayView(null); }}>
+              <WorkspaceOverlay onClose={() => { if (isDelivery(overlayView) && !leaveDelivery()) return; if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; if (overlayView !== "scheduled" && overlayView !== "workflows" && overlayView !== "webhooks" || leaveAutomation()) setOverlayView(null); }}>
                 <Suspense fallback={<DeferredPanelFallback />}>
                   {overlayView === "task-dashboard" ? (
                     <ProjectRunDashboard onClose={() => setOverlayView(null)} onOpenSession={() => {
                       setOverlayView(null); setView("chat"); setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline"));
                     }} />
                   ) : overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
-                    <DeliveryWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onClose={() => setOverlayView(null)} />
+                    <DeliveryWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { deliveryEdited.current = true; }} onClose={() => { if (leaveDelivery()) setOverlayView(null); }} />
                   ) : overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks" ? (
                     <AutomationWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (leaveAutomation()) { setOverlayView(null); setView("chat"); } }} />
                   ) : overlayView === "skills" ? (

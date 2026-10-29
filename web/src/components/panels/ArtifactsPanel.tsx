@@ -12,10 +12,12 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
   const host = ipc.agentBaseUrl;
   const scoped = state.projectId === projectId && state.host === host;
   const [path, setPath] = useState("");
+  const [query, setQuery] = useState("");
+  const filteredArtifacts = (scoped ? state.artifacts : []).filter((row) => `${row.source_path} ${row.run_id ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()));
   const [office, setOffice] = useState(false);
   const [research, setResearch] = useState(false);
   useEffect(() => {
-    setPath("");
+    setPath(""); setQuery("");
     void useArtifactStore.getState().activate(projectId);
     return () => useArtifactStore.getState().clear();
   }, [projectId, host]);
@@ -39,14 +41,18 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
       {scoped && state.error && <p role="alert" className="text-status-error">{state.error}</p>}
       {state.loading && <p role="status">正在读取成果…</p>}
       {!state.loading && !state.artifacts.length && <p>当前项目还没有登记的文本成果。</p>}
+      <div className="space-y-1"><h3 className="font-medium">已登记文本成果</h3>
+        <Input aria-label="搜索文本成果" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按路径或运行 ID 筛选已加载成果" />
+        <p className="text-xs text-ink-2">只筛选当前项目已加载记录。匹配 {filteredArtifacts.length} 项。</p></div>
       <ul className="space-y-1">
-        {(scoped ? state.artifacts : []).map((row) => <li key={row.id}>
-          <button className="rounded border border-line p-2 text-left hover:bg-surface-3" onClick={() => void state.select(row.id)}>
+        {filteredArtifacts.map((row) => <li key={row.id}>
+          <button className="w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => void state.select(row.id)}>
             {row.source_path} · v{row.version} · {row.size_bytes} 字节 · 可解析 / 未验证 · {row.run_id ? `登记关联运行 ${row.run_id}` : "未关联运行"}
           </button>
         </li>)}
       </ul>
-      {scoped && state.selected && <div className="space-y-2">
+      {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
+        <h3 className="font-medium">预览与下载</h3>
         <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
         <Button disabled={state.busy} onClick={() => void state.download()}>下载原始字节</Button>
         <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" aria-label="成果纯文本预览">{state.preview}</pre>
