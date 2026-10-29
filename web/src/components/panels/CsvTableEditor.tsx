@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "../../ui";
 import type { OfficeTableSpec } from "../../types/ipc";
-import type { CsvTable } from "./officeCsv";
+import { csvToOfficeSpec, type CsvTable } from "./officeCsv";
 
 const PAGE_SIZE = 20;
 const HISTORY_LIMIT = 20;
@@ -12,6 +12,10 @@ type Snapshot = { table: CsvTable; kinds: Kind[] };
 export function CsvTableEditor({ table, original, kinds, onChange: applyChange }: { table: CsvTable; original: CsvTable; kinds: Kind[]; onChange: (next: CsvTable, nextKinds?: Kind[]) => void }): JSX.Element {
   const [page, setPage] = useState(0);
   const [dedupeColumns, setDedupeColumns] = useState<number[]>([]);
+  const [sortColumn, setSortColumn] = useState(0);
+  const [sortKind, setSortKind] = useState<"text" | "number">("text");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [sortError, setSortError] = useState<string | null>(null);
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
   const snapshot = (): Snapshot => ({ table, kinds: [...kinds] });
@@ -38,7 +42,27 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
   useEffect(() => { setPage((current) => Math.min(current, lastPage)); }, [lastPage]);
   useEffect(() => { setPage(0); setPast([]); setFuture([]); }, [original]);
   // Column edits can change indices, so require the user to select keys again.
-  useEffect(() => { setDedupeColumns([]); }, [table.headers]);
+  useEffect(() => { setDedupeColumns([]); setSortColumn(0); setSortError(null); }, [table.headers]);
+  const sortRows = () => {
+    try {
+      const values = sortKind === "number"
+        ? csvToOfficeSpec({ headers: ["排序列"], rows: table.rows.map((row) => [row[sortColumn]]) }, ["number"]).rows.map((row) => row[0])
+        : table.rows.map((row) => row[sortColumn] === "" ? null : row[sortColumn]);
+      const direction = sortDirection === "asc" ? 1 : -1;
+      const rows = table.rows.map((row, index) => ({ row, index, value: values[index] }));
+      rows.sort((a, b) => {
+        if (a.value === null || b.value === null) return a.value === b.value ? a.index - b.index : a.value === null ? 1 : -1;
+        const compared = typeof a.value === "number" && typeof b.value === "number"
+          ? (a.value < b.value ? -1 : a.value > b.value ? 1 : 0)
+          : (String(a.value) < String(b.value) ? -1 : String(a.value) > String(b.value) ? 1 : 0);
+        return compared ? compared * direction : a.index - b.index;
+      });
+      onChange({ ...table, rows: rows.map((item) => item.row) });
+      setPage(0); setSortError(null);
+    } catch (error) {
+      setSortError(error instanceof Error ? error.message : "排序失败，表格未更改");
+    }
+  };
   const edit = (row: number, column: number, value: string) => onChange({ ...table, rows: table.rows.map((cells, i) =>
     i === row ? cells.map((old, j) => j === column ? value : old) : cells) });
   const remove = (row: number) => onChange({ ...table, rows: table.rows.filter((_, i) => i !== row) });
@@ -90,6 +114,19 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
       <Button type="button" variant="secondary" disabled={!empty} onClick={() =>
       onChange({ ...table, rows: table.rows.filter((cells) => cells.some((cell) => cell !== "")) })}>移除全空行（{empty}）</Button>
       <Button type="button" variant="secondary" onClick={() => { onChange(original, original.headers.map(() => "text" as const)); setPage(0); }}>恢复读取时的表格</Button></div>
+    <fieldset className="space-y-2 rounded border border-line p-2">
+      <legend>按列排序</legend>
+      <p>文本按 UTF-16 码元顺序、区分大小写；数字使用表格的安全精度规则，非法数字会拒绝排序。空字符串始终排在最后，相同值保持原顺序。只改变草稿，可撤销。</p>
+      <div className="flex flex-wrap gap-2">
+        <label>排序列 <select aria-label="排序列" value={sortColumn} onChange={(event) => setSortColumn(Number(event.target.value))}>
+          {table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"}）</option>)}
+        </select></label>
+        <label>比较方式 <select aria-label="排序比较方式" value={sortKind} onChange={(event) => setSortKind(event.target.value as "text" | "number")}><option value="text">文本</option><option value="number">数字</option></select></label>
+        <label>方向 <select aria-label="排序方向" value={sortDirection} onChange={(event) => setSortDirection(event.target.value as "asc" | "desc")}><option value="asc">升序</option><option value="desc">降序</option></select></label>
+        <Button type="button" variant="secondary" disabled={table.rows.length < 2} onClick={sortRows}>排序草稿</Button>
+      </div>
+      {sortError && <p role="alert" className="text-status-error">{sortError}；表格未更改。</p>}
+    </fieldset>
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>按列去重</legend>
       <p>选择关键列后预览待删除数量；所有所选列的原始文本完全相同才算重复，空字符串也参与匹配。保留当前顺序中的第一行，不自动去除空白或忽略大小写。</p>
