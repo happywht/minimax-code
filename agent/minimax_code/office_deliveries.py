@@ -100,7 +100,7 @@ class OfficeService:
         result = await self.originals.get(project_id, attachment["id"])
         return {"delivery": delivery, **result}
 
-    async def generate(self, request, *, expected_session=None, processing=None, analysis=None):
+    async def generate(self, request, *, expected_session=None, processing=None, analysis=None, request_context=None):
         from .attachment_parser import inspect_xlsx
 
         require_write_access()
@@ -111,6 +111,8 @@ class OfficeService:
                 fingerprint_input["processing"] = processing
             if analysis is not None:
                 fingerprint_input["analysis"] = analysis.model_dump()
+            if request_context is not None:
+                fingerprint_input["request_context"] = request_context
             fingerprint = digest(fingerprint_input)
             existing = await self.dao.find(request.project_id, request.request_key, expected_session=expected_session)
             if existing is not None:

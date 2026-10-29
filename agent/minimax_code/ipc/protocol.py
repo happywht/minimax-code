@@ -259,6 +259,7 @@ class OfficeGenerateParams(ArtifactListParams):
 class OfficeAnalysisGenerateParams(OfficeGenerateParams):
     summaries: list[Summary] = Field(default_factory=list, max_length=20)
     chart: Chart | None = None
+    register_chart_delivery: bool = False
 
 
 class OfficeListParams(ArtifactListParams):

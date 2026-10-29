@@ -31,10 +31,10 @@ export function OfficeAnalysisControls({ spec, value, onChange }: { spec: Office
     <Button type="button" variant="secondary" disabled={!spec || value.summaries.length >= 20} onClick={() => onChange({ ...value,
       summaries: [...value.summaries, { column: "", operation: "count", decimals: 2 }] })}>添加汇总</Button>
     <label className="block"><input type="checkbox" checked={!!value.chart} onChange={(event) => onChange({ ...value,
-      chart: event.target.checked ? { kind: "bar", category_column: "", value_column: "", title: "数据图表" } : null })} />生成图表附件</label>
+      chart: event.target.checked ? { kind: "bar", category_column: "", value_column: "", title: "数据图表" } : null })} />生成图表成果</label>
     {value.chart && <div className="space-y-1">
       <p>图表仅引用原始数据行，需要至少一行；类别列为文本或数字，数值列为数字。附件预览不显示图表，请下载后查看；业务和视觉未验收。</p>
-      <p>图表不能关联 run，创建不是幂等操作。结果不明时请先检查项目附件，再决定是否重试。</p>
+      <p>图表会登记到办公成果；结果不明时可刷新，或以相同输入重试。</p>
       <label>图表类型<select aria-label="图表类型" value={value.chart.kind} onChange={(event) => patchChart({ kind: event.target.value as OfficeChart["kind"] })}><option value="bar">柱状图</option><option value="line">折线图</option></select></label>{" "}
       <label>类别列<select aria-label="图表类别列" value={value.chart.category_column} onChange={(event) => patchChart({ category_column: event.target.value })}>
         <option value="">选择列</option>{value.chart.category_column && !categories.some((column) => column.name === value.chart!.category_column) && <option value={value.chart.category_column}>当前列不可用：{value.chart.category_column}</option>}
