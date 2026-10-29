@@ -347,6 +347,32 @@ def collection_history(child: ChildWorkspace) -> list[dict[str, Any]]:
     return result
 
 
+def read_resolution_backup(child: ChildWorkspace, attempt_id: str) -> dict[str, str]:
+    """Read only a journal-bound, digest-verified pre-resolution text backup."""
+    records = [record for record in collection_history(child) if record.get("id") == attempt_id]
+    if len(records) != 1:
+        raise ValueError("Backup attempt is unavailable")
+    record = records[0]
+    relative, expected = record.get("path"), record.get("parent_sha256")
+    if (record.get("operation") != "manual_resolution" or not isinstance(relative, str)
+            or not _included(relative) or not isinstance(expected, str)
+            or len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected)
+            or not isinstance(attempt_id, str) or not attempt_id or Path(attempt_id).name != attempt_id):
+        raise ValueError("Backup lacks a verifiable original digest")
+    backup = _path(child.base, "resolution-backups/" + attempt_id + "/" + relative)
+    if record.get("backup") != str(backup) or not backup.is_file() or backup.is_symlink():
+        raise ValueError("Backup is unavailable or its path is invalid")
+    with backup.open("rb") as stream:
+        data = stream.read(16385)
+    if len(data) > 16384 or hashlib.sha256(data).hexdigest() != expected:
+        raise ValueError("Backup content does not match the recorded digest")
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Backup is not UTF-8") from exc
+    return {"attempt_id": attempt_id, "path": relative, "sha256": expected, "content": content}
+
+
 def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[str, Any]:
     require_write_access()
     if active_child():
@@ -458,7 +484,8 @@ def resolve_child_text(child: ChildWorkspace, relative: str, content: str,
               "complete": False, "pruned": False}
     attempt = {"version": 1, "id": attempt_id, "run_id": child.run_id,
                "status": "in_progress", "pending_path": relative, "report": report,
-               "operation": "manual_resolution", "backup": str(backup)}
+               "operation": "manual_resolution", "backup": str(backup),
+               "path": relative, "parent_sha256": parent_sha}
 
     def save_attempt() -> None:
         atomic_write_text(journal, json.dumps(attempt, ensure_ascii=False, indent=2),

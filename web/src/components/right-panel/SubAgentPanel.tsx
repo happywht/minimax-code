@@ -338,17 +338,18 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
   const [receipt, setReceipt] = useState<{ report: ChildWorkspaceReceipt; root: string; service: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [merge, setMerge] = useState<{ path: string; text: string } | null>(null);
+  const [backup, setBackup] = useState<{ attempt_id: string; path: string; sha256: string; content: string } | null>(null);
   const [message, setMessage] = useState("");
   const [validation, setValidation] = useState<{ id: string; status: string; result?: Record<string, unknown> | null } | null>(null);
   const validationKey = useRef<string | null>(null);
   const generation = useRef(0);
   const projectId = useSessionStore((s) => s.sessions.find((s) => s.id === sessionId)?.project_id ?? null);
   useEffect(() => {
-    setReview(null); setReceipt(null); setMerge(null); setMessage(""); setBusy(false); setValidation(null); validationKey.current = null;
+    setReview(null); setReceipt(null); setMerge(null); setBackup(null); setMessage(""); setBusy(false); setValidation(null); validationKey.current = null;
     const epoch = generation;
     return () => { epoch.current++; };
   }, [runId, sessionId, projectId, teamRunId]);
-  useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setMerge(null); setValidation(null); validationKey.current = null; setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setMerge(null); setBackup(null); setValidation(null); validationKey.current = null; setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
   useEffect(() => {
     let cancelled = false;
     const host = ipc.agentBaseUrl;
@@ -392,7 +393,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         setMessage(result.report.complete ? "收集已完成，尚未验证。子工作区及备份仍保留。" : "收集未完成；请核对冲突与已写入文件。");
       } else {
         if (result.receipt && !validReceipt(result.receipt, runId)) throw new Error("已保存的收集回执无效");
-        setMerge(null); setReview(result);
+        setMerge(null); setBackup(null); setReview(result);
         setReceipt(result.receipt ? { report: result.receipt, root: result.root, service: result.service_id, kind: result.kind } : null);
       }
     } catch (error) {
@@ -401,6 +402,27 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         setMessage(`${error instanceof Error ? error.message : String(error)}${collect ? "。结果未确认，可能部分收集；请重新查看并逐项核对父目录，不能推断哪些文件已写入。" : ""}`);
       }
     } finally { if (current()) setBusy(false); }
+  };
+  const readBackup = async (attemptId: string, path: string, sha256: string) => {
+    if (!review || busy) return;
+    const snapshot = review, ticket = ++generation.current, host = ipc.agentBaseUrl;
+    const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
+      useSessionStore.getState().currentSessionId === sessionId &&
+      (useSessionStore.getState().currentProjectId === projectId || (!projectId && useSessionStore.getState().currentProjectId === "inbox"));
+    setBusy(true); setMessage(""); setBackup(null);
+    try {
+      const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string;
+        backup: { attempt_id: string; path: string; sha256: string; content: string } }>("run.child_workspace", {
+        run_id: runId, session_id: sessionId, ...(teamRunId ? { team_run_id: teamRunId } : {}), action: "read_backup",
+        revision: snapshot.revision, expected_service_id: snapshot.service_id, attempt_id: attemptId,
+      });
+      if (!current()) return;
+      if (result.session_id !== sessionId || result.project_id !== projectId || result.service_id !== snapshot.service_id ||
+          result.backup?.attempt_id !== attemptId || result.backup.path !== path || result.backup.sha256 !== sha256 ||
+          typeof result.backup.content !== "string") throw new Error("备份绑定或摘要不匹配，请重新查看");
+      setBackup(result.backup);
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { if (current()) setBusy(false); }
   };
   const resolveText = async () => {
     if (!review || !merge || busy || !allowCollect) return;
@@ -529,6 +551,15 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
             {!!attempt.report.conflicts.length && <details><summary>当时的冲突</summary><ul>{attempt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
           </> : <p>记录格式不可用，请手动核对。</p>}
           {attempt.backup && <p className="break-all">备份路径：{attempt.backup}</p>}
+          {attempt.operation === "manual_resolution" && (attempt.path && attempt.parent_sha256 ? <>
+            <button type="button" disabled={busy} onClick={() => void readBackup(attempt.id, attempt.path!, attempt.parent_sha256!)}>查看合并前备份</button>
+            {backup?.attempt_id === attempt.id && <div>
+              <p className="break-all">原文件：{backup.path} · SHA-256：{backup.sha256}</p>
+              <p>内容与记录的写入前摘要一致；仅供查看，不会恢复或覆盖文件。</p>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{backup.content}</pre>
+              <button type="button" onClick={() => setBackup(null)}>关闭备份内容</button>
+            </div>}
+          </> : <p>旧记录缺少原文件摘要，无法在此核验备份；请在文件系统中自行查看。</p>)}
           {attempt.pending_path && <p className="break-all">复制结果待核对：{attempt.pending_path}。不能推断是否已写入。</p>}
         </div>)}
         <p>历史记录反映当时的结果，不能证明当前文件未变化，也不代表验证或验收。</p>

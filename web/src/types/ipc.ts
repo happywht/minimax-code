@@ -1497,7 +1497,7 @@ export interface ChildWorkspaceReceipt {
 export interface ChildWorkspaceCollectionAttempt {
   id: string; run_id: string; version: 1;
   status: "in_progress" | "interrupted" | "partial" | "complete";
-  operation?: string; backup?: string;
+  operation?: string; backup?: string; path?: string; parent_sha256?: string;
   pending_path: string | null; report: ChildWorkspaceReceipt;
 }
 
