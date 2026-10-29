@@ -19,6 +19,8 @@ import type { ScheduledJob, ScheduleContext } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { InlineCode, TabHeader } from "./fields";
 import { emptyScheduleContext, validScheduleContext, ScheduleContextFields, ScheduleSnapshot, ScheduleHistory } from "./ScheduleContextFields";
+import { ipc } from "../../ipc";
+import { StreamEvent } from "../../types/ipc";
 
 export { ScheduledTab };
 
@@ -38,6 +40,13 @@ function ScheduledTab({onOpenSession}: {onOpenSession?: () => void}): JSX.Elemen
   const [draftContext, setDraftContext] = useState(emptyScheduleContext);
 
   useEffect(() => { if (jobs.length === 0) void refresh(); }, [jobs.length, refresh]);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const wake = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => void refresh(), 200); };
+    const unsubs = [StreamEvent.RunUpdated, StreamEvent.RunCompleted, StreamEvent.TaskProgress, StreamEvent.ScheduleUpdated].map((event) => ipc.on(event, wake));
+    unsubs.push(ipc.onSideCar((event) => { if (event.status === "started") wake(); }));
+    return () => { if (timer) clearTimeout(timer); unsubs.forEach((unsub) => unsub()); };
+  }, [refresh]);
 
   const handleCreate = async () => {
     const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context: draftContext });
@@ -297,11 +306,9 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
           <ScheduleContextFields value={editContext} onChange={setEditContext} />
         </div>
       )}
-      {expanded && (
-        <div data-testid={`settings-job-tasks-${job.id}`} className="border-t border-line px-3 py-2">
-          <ScheduleHistory job={job} onOpenSession={onOpenSession} />
-        </div>
-      )}
+      <div data-testid={expanded ? `settings-job-tasks-${job.id}` : undefined} className={expanded ? "border-t border-line py-2" : ""}>
+        <ScheduleHistory job={job} expanded={expanded} onOpenSession={onOpenSession} />
+      </div>
     </li>
   );
 }

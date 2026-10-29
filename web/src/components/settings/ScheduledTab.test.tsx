@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ScheduledJob } from "../../types/ipc";
 
 vi.mock("../../ipc", () => ({
+  ipc: { agentBaseUrl: "local", on: vi.fn(() => () => {}), onSideCar: vi.fn(() => () => {}) },
   typedIPC: {
     listJobs: vi.fn(),
     createJob: vi.fn(),
@@ -21,9 +22,10 @@ vi.mock("../../components/layout/ErrorBoundary", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
-import { typedIPC } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import { useScheduleStore, useTaskStore } from "../../stores";
 import { ScheduledTab } from "./ScheduledTab";
+import { ScheduleHistory } from "./ScheduleContextFields";
 
 const listJobs = vi.mocked(typedIPC.listJobs);
 const createJob = vi.mocked(typedIPC.createJob);
@@ -153,4 +155,19 @@ it("retains the manual key AND original revision after lost ACK and an edit", as
   await useScheduleStore.getState().runNow("retry");
   expect(run.mock.calls.at(-1)?.[1]).not.toBe(original[1]);
   expect(run.mock.calls.at(-1)?.[2]).toBe(2);
+});
+
+it("refreshes a collapsed occurrence when it starts waiting for approval", async () => {
+  const events = new Map<string, () => void>();
+  vi.mocked(ipc.on).mockImplementation((event, callback) => { events.set(event, () => callback({} as never)); return () => {}; });
+  const occurrence = { id: "occ", job_id: "job_1", revision: 1, source: "cron" as const, session_id: "session",
+    task_id: "task", run_id: "run", status: "running", execution_status: "running", created_at: "now",
+    context: makeJob().context! };
+  vi.mocked(typedIPC.listScheduleOccurrences).mockResolvedValueOnce({ occurrences: [occurrence] })
+    .mockResolvedValueOnce({ occurrences: [{ ...occurrence, execution_status: "awaiting_approval" }] });
+  render(<ScheduleHistory job={makeJob({ active_occurrence_id: "occ" })} expanded={false} />);
+  expect(await screen.findByText(/当前发生：运行中/)).toBeVisible();
+  events.get("run.updated")?.();
+  expect(await screen.findByText(/当前发生：等待授权/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "打开会话处理授权" })).toBeVisible();
 });

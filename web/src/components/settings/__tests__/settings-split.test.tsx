@@ -31,7 +31,7 @@ vi.mock("../../../stores", () => {
   };
 });
 
-vi.mock("../../../types/ipc", () => ({}));
+vi.mock("../../../types/ipc", () => ({ StreamEvent: { RunUpdated: "run.updated", RunCompleted: "run.completed", TaskProgress: "task.progress", ScheduleUpdated: "schedule.updated" } }));
 vi.mock("../../layout/ErrorBoundary", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));

@@ -1528,6 +1528,7 @@ so the frontend can route them by name without a regex.
 | `permission.closed` | `{request_id, session_id, run_id}` — a Native or Codex consent wait ended, timed out or was cancelled; late snapshots must not revive it. |
 | `agent.status`          | `{session_id, status, detail?}`                     |
 | `task.progress`         | `{task_id, progress, message?}`                     |
+| `schedule.updated` | `{job_id, occurrence_id}`；发生执行及状态记账结束后提示客户端重新读取，不代表执行成功。 |
 | `permission.request`    | `{request_id, tool, args, session_id?}` — modal triggers; `session_id` (v1.2.0) tags which conversation the gated call belongs to |
 | `permission.resolved`   | `{request_id, decision}`                            |
 | `run.created`           | `{run}`                                              |

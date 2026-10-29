@@ -44,6 +44,7 @@ KNOWN_EVENTS = {
     "permission.resolved",
     "permission.closed",
     "task.progress",
+    "schedule.updated",
     "agent.subagent_progress",
     "notification.new",
     "notification.read",

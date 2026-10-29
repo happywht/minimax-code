@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Button, Input } from "../../ui";
 import { useModelStore, useSessionStore } from "../../stores";
 import { VerificationBadge } from "../chat/VerificationBadge";
-import { typedIPC } from "../../ipc";
-import type { ScheduleContext, ScheduleOccurrence, ScheduledJob } from "../../types/ipc";
+import { ipc, typedIPC } from "../../ipc";
+import { StreamEvent, type ScheduleContext, type ScheduleOccurrence, type ScheduledJob } from "../../types/ipc";
 
 const labels: Record<string,string> = {ready:"已绑定",needs_rebind:"需要重新绑定",blocked:"配置受阻",requires_review:"需要核对",pending:"待接单",running:"运行中",awaiting_approval:"等待授权",completed:"执行结束",budget_paused:"预算暂停",cancelled:"已取消",failed:"执行失败",interrupted:"运行中断",superseded:"已被重新绑定替代",manual:"手动",cron:"定时",chat:"对话（可写）",execute:"执行",plan:"只读规划"};
 const label = (value: string) => labels[value] ?? value;
@@ -39,18 +39,59 @@ export function ScheduleSnapshot({ job }: { job: ScheduledJob }): JSX.Element {
   </div>;
 }
 
-export function ScheduleHistory({ job, onOpenSession }: { job: ScheduledJob; onOpenSession?: () => void }): JSX.Element {
+export function ScheduleHistory({ job, expanded, onOpenSession }: { job: ScheduledJob; expanded: boolean; onOpenSession?: () => void }): JSX.Element {
   const [history, setHistory] = useState<ScheduleOccurrence[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
   useEffect(() => {
     let current = true;
-    void typedIPC.listScheduleOccurrences(job.id).then((result) => { if (current) {setHistory(result.occurrences);setError(null); } }, (failure: unknown) => { if (current) setError(String(failure)); });
-    return () => { current = false; };
-  }, [job.id, job.active_occurrence_id]);
-  return <div className="space-y-1">{error ?? (history.length === 0 ? "暂无发生记录" : history.map((occurrence) => <div key={occurrence.id}>
+    let running = false, pending = false;
+    let connectionVersion = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const host = ipc.agentBaseUrl;
+    setHistory([]); setError(null); setStale(false);
+    if (!expanded && !job.active_occurrence_id) return () => { current = false; };
+    const refresh = async () => {
+      if (!current) return;
+      if (running) { pending = true; return; }
+      running = true;
+      const version = connectionVersion;
+      try {
+        const result = await typedIPC.listScheduleOccurrences(job.id);
+        if (current && version === connectionVersion && host === ipc.agentBaseUrl) { setHistory(result.occurrences.filter((row) => row.job_id === job.id)); setError(null); setStale(false); }
+      } catch (failure) {
+        if (current) { setError(String(failure)); setStale(true); }
+      } finally {
+        running = false;
+        if (pending && current) { pending = false; void refresh(); }
+      }
+    };
+    const wake = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => void refresh(), 150); };
+    const unsubs = [StreamEvent.RunUpdated, StreamEvent.RunCompleted, StreamEvent.TaskProgress, StreamEvent.ScheduleUpdated,
+      StreamEvent.PermissionRequest, StreamEvent.PermissionResolved].map((event) => ipc.on(event, wake));
+    unsubs.push(ipc.onSideCar((event) => {
+      if (event.status === "started") wake();
+      else { connectionVersion++; setStale(true); setError("连接中断，状态待刷新"); }
+    }));
+    void refresh();
+    return () => { current = false; if (timer) clearTimeout(timer); unsubs.forEach((unsub) => unsub()); };
+  }, [job.id, job.active_occurrence_id, expanded]);
+  const active = history.find((occurrence) => occurrence.id === job.active_occurrence_id);
+  const status = (occurrence: ScheduleOccurrence) => occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status;
+  const open = (occurrence: ScheduleOccurrence) => {
+    useSessionStore.getState().setCurrentProject(occurrence.context.project_id);
+    useSessionStore.getState().setCurrent(occurrence.session_id);
+    void useSessionStore.getState().refresh({ loadCurrent: false });
+    onOpenSession?.();
+  };
+  return <div className="space-y-1 px-3 text-xs" data-testid={`schedule-history-${job.id}`}>
+    {job.active_occurrence_id && <p>{stale ? "状态待刷新" : active ? `当前发生：${label(status(active))}` : "正在读取当前发生状态"}
+      {active && !stale && status(active) === "awaiting_approval" && <Button onClick={() => open(active)}>打开会话处理授权</Button>}</p>}
+    {error && <p role="status">{error}</p>}
+    {expanded && !error && (history.length === 0 ? "暂无发生记录" : history.map((occurrence) => <div key={occurrence.id}>
     <p>{label(occurrence.source)} · {occurrence.scheduled_for ?? occurrence.created_at} · {label(occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status)} · {occurrence.reason}</p>
     <VerificationBadge evidence={occurrence.verification} />
     {occurrence.result && <p className="whitespace-pre-wrap">{occurrence.result}</p>}
-    <Button onClick={() => { void useSessionStore.getState().setCurrent(occurrence.session_id); onOpenSession?.(); }}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
+    <Button onClick={() => open(occurrence)}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
   </div>))}</div>;
 }

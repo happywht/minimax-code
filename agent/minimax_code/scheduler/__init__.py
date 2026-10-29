@@ -555,6 +555,15 @@ class JobScheduler:
             logger.exception("Scheduled occurrence blocked")
             await self._occurrences.settle(occurrence["id"],"blocked",expected_run_id=current["run_id"] if current else None,reason=str(exc))
         finally:
+            # A run-completed event can precede occurrence settlement. Wake
+            # clients after this dispatcher has finished its bookkeeping.
+            if _IPC_SERVER is not None:
+                try:
+                    from ..ipc.server import Context
+                    await Context(server=_IPC_SERVER, method="schedule").emit(
+                        "schedule.updated", {"job_id": occurrence["job_id"], "occurrence_id": occurrence["id"]})
+                except Exception:
+                    logger.exception("Schedule update notification failed")
             # A completed occurrence releases the DB lease only after RunService
             # has drained writer/validation/cleanup; then one overdue catch-up.
             if self._started and not self._stopping:

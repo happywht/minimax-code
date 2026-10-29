@@ -1762,6 +1762,7 @@ export const StreamEvent = {
   PermissionResolved: "permission.resolved",
   PermissionClosed: "permission.closed",
   TaskProgress: "task.progress",
+  ScheduleUpdated: "schedule.updated",
   SubAgentProgress: "agent.subagent_progress",
   NotificationNew: "notification.new",
   NotificationRead: "notification.read",

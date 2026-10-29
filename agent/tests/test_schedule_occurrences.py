@@ -96,6 +96,20 @@ async def settled(state, oid):
     return (await state.scheduler._occurrences.get(oid))["status"] not in {"pending", "running"}
 
 
+async def test_occurrence_settlement_notifies_after_durable_update(scheduled):
+    events = []
+    scheduled.server.register_listener(events.append)
+    job = await create(scheduled)
+    ack = await scheduled.scheduler.run_now(job["id"], idempotency_key="notify", expected_revision=1)
+    task = scheduled.scheduler._occurrence_tasks[ack["occurrence_id"]]
+    scheduled.release.set()
+    await task
+    occurrence = await scheduled.scheduler._occurrences.get(ack["occurrence_id"])
+    assert occurrence["status"] == "completed"
+    assert any(event.get("event") == "schedule.updated" and
+               event.get("data", {}).get("occurrence_id") == occurrence["id"] for event in events)
+
+
 async def test_manual_concurrency_replay_lease_and_fresh_conversations(scheduled):
     state = scheduled
     job = await create(state)

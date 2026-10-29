@@ -42,17 +42,21 @@ export interface ScheduleState {
 }
 
 const manualKeys = new Map<string, {key:string; expectedRevision:number}>();
+let refreshEpoch = 0;
 
 export const useScheduleStore = create<ScheduleState>((set, get) => ({
   jobs: [],
   loading: false,
 
   refresh: async () => {
+    const ticket = ++refreshEpoch;
     set({ loading: true });
     try {
       const r = await typedIPC.listJobs();
+      if (ticket !== refreshEpoch) return;
       set({ jobs: r.jobs, loading: false });
     } catch (err) {
+      if (ticket !== refreshEpoch) return;
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
       toast.error(strings.toasts.jobsLoadFailed, message);
@@ -62,7 +66,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   create: async (opts) => {
     try {
       const r = await typedIPC.createJob(opts);
-      set((s) => ({ jobs: [...s.jobs, r.job] }));
+      refreshEpoch++;
+      set((s) => ({ jobs: [...s.jobs, r.job], loading: false }));
       return r.job;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -72,9 +77,10 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   },
 
   remove: async (jobId) => {
+    refreshEpoch++;
     const prev = get().jobs;
     // Optimistic remove — restore on failure.
-    set({ jobs: prev.filter((j) => j.id !== jobId) });
+    set({ jobs: prev.filter((j) => j.id !== jobId), loading: false });
     try {
       await typedIPC.deleteJob(jobId);
     } catch (err) {
@@ -88,7 +94,8 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     const existing = get().jobs.find((job) => job.id === jobId);
     try {
       const result = await typedIPC.updateJob(jobId, existing?.revision ?? 1, opts);
-      set((state) => ({jobs:state.jobs.map((job) => job.id === jobId ? result.job : job)}));
+      refreshEpoch++;
+      set((state) => ({jobs:state.jobs.map((job) => job.id === jobId ? result.job : job), loading: false}));
       return result.job;
     } catch (err) {
       toast.error(strings.toasts.jobCreateFailed, err instanceof Error ? err.message : String(err));
@@ -99,8 +106,9 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   enable: async (jobId, acknowledgeOccurrenceId) => {
     try {
       const r = await typedIPC.enableJob(jobId, acknowledgeOccurrenceId);
+      refreshEpoch++;
       set((s) => ({
-        jobs: s.jobs.map((j) => (j.id === jobId ? r.job : j)),
+        jobs: s.jobs.map((j) => (j.id === jobId ? r.job : j)), loading: false,
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -111,8 +119,9 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
   disable: async (jobId) => {
     try {
       const r = await typedIPC.disableJob(jobId);
+      refreshEpoch++;
       set((s) => ({
-        jobs: s.jobs.map((j) => (j.id === jobId ? r.job : j)),
+        jobs: s.jobs.map((j) => (j.id === jobId ? r.job : j)), loading: false,
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
