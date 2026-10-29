@@ -1737,6 +1737,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 `run.child_workspace({run_id,session_id,action:"preview"})` 仅审阅有持久父运行、会话、项目和工作区绑定的直接子工作区；受限进程、旧无绑定记录及嵌套工作区不通过该入口处理。返回当前父目录与子结果的文件和有限文本差异，以及 `revision` 和 `service_id`；已收集状态附带服务端保存的 `receipt`（merged、noop 和 conflicts），不表示验证通过；大于 500 个变化拒绝预览。`action:"collect"` 必须附带该版本的 `revision` 与 `expected_service_id`，重新检查文件、绑定和冲突。删除及父目录同期修改不会被自动覆盖；复制期间如发生错误可能已有部分文件写入，应重新核对。独立目录不是操作系统沙盒。
 
+已结束团队的成员工作区可附带 `team_run_id` 使用同一审阅/收集入口：服务端核对成员 ID 属于该团队的持久结果，以及会话、项目、服务和固定父目录。旧团队记录缺少绑定、未完成或中断时无已保存成员结果的，不提供自动收集；需手动核对。
+
 `run.child_list({session_id})` 返回同一父会话及其持久父运行、当前项目绑定的最近 100 条直接子运行，包含 `service_id` 和真实持久 `status`。`live` 仅表示服务内可确认的后台任务，缺失不能证明同步子任务已停止；活动状态但 `live=false` 时客户端应显示待核对，不应推断仍在运行。历史缺少父运行绑定的记录不包含在内。
 
 `run.output_page({run_id,session_id,output_ref,expected_service_id,offset?,limit?})` 按字符分页读取该运行的捕获输出 JSON；最多 8000 字符，返回当前/下一偏移、总字符数和绑定标识。输出仅包含工具捕获到的内容，命令捕获上限和截断标记仍然适用；引用不跨项目、会话或服务使用。

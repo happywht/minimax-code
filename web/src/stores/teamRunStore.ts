@@ -36,6 +36,7 @@ export interface TeamRunEntry {
     success: boolean;
     conflicts: Array<{ file_path: string; agents: string[]; conflict_type: string }>;
     budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean; limit_tokens: number | null } | null;
+    agents_run: Array<{ agent_name: string; workspace?: { run_id: string } }>;
   };
 }
 
@@ -106,6 +107,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
                   success: result.success,
                   conflicts: result.conflicts,
                   budget: result.budget,
+                  agents_run: result.agents_run,
                 },
               }
             : r,

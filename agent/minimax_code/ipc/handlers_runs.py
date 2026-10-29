@@ -186,6 +186,24 @@ def register_run_handlers(server: Any) -> None:
 
             async def binding():
                 await require_host_session(req.session_id)
+                if req.team_run_id:
+                    team = await dao.get_run(req.team_run_id)
+                    meta = (team or {}).get("metadata") or {}
+                    result = meta.get("team_result") if isinstance(meta, dict) else None
+                    agents = result.get("agents_run") if isinstance(result, dict) else None
+                    session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
+                    if (not team or team["mode"] != "team" or team["session_id"] != req.session_id
+                            or team["status"] not in {"completed", "failed"} or not session
+                            or not isinstance(agents, list) or "project_id" not in meta
+                            or meta["project_id"] != session["project_id"]
+                            or not any(isinstance(a, dict) and isinstance(a.get("workspace"), dict)
+                                       and a["workspace"].get("run_id") == req.run_id for a in agents)):
+                        raise ValueError("Team member or project binding is unavailable or changed")
+                    root = require_directory(await resolve_root_for_session(req.session_id))
+                    if meta.get("workspace_snapshot") != str(root):
+                        raise ValueError("Team workspace binding changed")
+                    identity = await ArtifactDAO(dao._db).service_id()
+                    return root, session["project_id"], identity
                 child_run = await dao.get_run(req.run_id)
                 meta = (child_run or {}).get("metadata") or {}
                 parent_id = meta.get("parent_run_id") if isinstance(meta, dict) else None

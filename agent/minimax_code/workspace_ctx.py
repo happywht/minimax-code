@@ -132,7 +132,7 @@ def current_run_id() -> str | None:
     return _current_run_id.get()
 
 
-def set_current_run_id(run_id: str) -> Token[str | None]:
+def set_current_run_id(run_id: str | None) -> Token[str | None]:
     """Publish *run_id* for the current task; returns the reset token."""
     return _current_run_id.set(run_id)
 

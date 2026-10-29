@@ -326,7 +326,7 @@ function validReceipt(value: ChildWorkspaceReceipt | undefined, runId: string): 
     (!value.complete || value.conflicts.length === 0);
 }
 
-function ChildWorkspaceReview({ runId, sessionId }: { runId: string; sessionId: string }): JSX.Element {
+export function ChildWorkspaceReview({ runId, sessionId, teamRunId }: { runId: string; sessionId: string; teamRunId?: string }): JSX.Element {
   const [review, setReview] = useState<ReviewResult | null>(null);
   const [receipt, setReceipt] = useState<{ report: ChildWorkspaceReceipt; root: string; service: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -337,7 +337,7 @@ function ChildWorkspaceReview({ runId, sessionId }: { runId: string; sessionId: 
     setReview(null); setReceipt(null); setMessage(""); setBusy(false);
     const epoch = generation;
     return () => { epoch.current++; };
-  }, [runId, sessionId, projectId]);
+  }, [runId, sessionId, projectId, teamRunId]);
   useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
   const invoke = async (collect: boolean) => {
     const ticket = ++generation.current, host = ipc.agentBaseUrl;
@@ -349,6 +349,7 @@ function ChildWorkspaceReview({ runId, sessionId }: { runId: string; sessionId: 
       if (collect && !review) return;
       const result = await ipc.request<ReviewResult & { report?: ChildWorkspaceReceipt }>(
         "run.child_workspace", { run_id: runId, session_id: sessionId, action: collect ? "collect" : "preview",
+          ...(teamRunId ? { team_run_id: teamRunId } : {}),
           ...(collect && review ? { revision: review.revision, expected_service_id: review.service_id } : {}) },
       );
       if (!current()) return;
@@ -378,7 +379,7 @@ function ChildWorkspaceReview({ runId, sessionId }: { runId: string; sessionId: 
       useSessionStore.getState().currentSessionId === sessionId && useSessionStore.getState().currentProjectId === projectId;
     setBusy(true); setMessage("");
     try {
-      const result = await ipc.request<ReviewResult>("run.child_workspace", { run_id: runId, session_id: sessionId, action: "preview" });
+      const result = await ipc.request<ReviewResult>("run.child_workspace", { run_id: runId, session_id: sessionId, action: "preview", ...(teamRunId ? { team_run_id: teamRunId } : {}) });
       if (!current()) return;
       if (result.run_id !== runId || result.session_id !== sessionId || result.project_id !== projectId || result.service_id !== expected.service ||
           result.root !== expected.root || result.state !== "collected" || !validReceipt(result.receipt, runId) ||

@@ -331,6 +331,7 @@ class RunChildWorkspaceParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     run_id: str = Field(min_length=1, max_length=128)
     session_id: str = Field(min_length=1, max_length=128)
+    team_run_id: str | None = Field(default=None, min_length=1, max_length=128)
     action: Literal["preview", "collect"]
     revision: str | None = Field(default=None, min_length=64, max_length=64)
     expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)

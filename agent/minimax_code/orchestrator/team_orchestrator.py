@@ -168,6 +168,8 @@ class TeamOrchestrator:
         session_id: str | None = None,
         parent_session_id: str | None = None,
         budget_tokens: int | None = None,
+        workspace_snapshot: str | None = None,
+        project_id: str | None = None,
     ) -> TeamRunResult:
         """Execute a team run and persist the result.
 
@@ -189,7 +191,8 @@ class TeamOrchestrator:
         runs_dao: Any | None = None
         budget_handle: Any | None = None
         metadata: dict[str, Any] = {"team_result": None, "parent_session_id": parent_session_id,
-                                   "budget": {"limit_tokens": resolve_run_budget(budget_tokens)}}
+                                   "budget": {"limit_tokens": resolve_run_budget(budget_tokens)},
+                                   "workspace_snapshot": workspace_snapshot, "project_id": project_id}
         scopes = ExitStack()
         children = RetainedChildren()
         owner_task = asyncio.current_task()
@@ -601,15 +604,20 @@ class TeamOrchestrator:
             runtime = SubAgentRuntime(llm=self._llm)
             handle = runtime.build(config)
             timeout_s = _subagent_wall_clock_s()
-            if timeout_s > 0:
-                envelope = await asyncio.wait_for(
-                    runtime.invoke(handle, session_id=sid, request=request),
-                    timeout=timeout_s,
-                )
-            else:
-                envelope = await runtime.invoke(
-                    handle, session_id=sid, request=request,
-                )
+            # Every member needs a distinct copy even if the caller inherited
+            # an unrelated run id through its context.
+            from ..workspace_ctx import reset_current_run_id, set_current_run_id
+            token = set_current_run_id(None)
+            try:
+                if timeout_s > 0:
+                    envelope = await asyncio.wait_for(
+                        runtime.invoke(handle, session_id=sid, request=request),
+                        timeout=timeout_s,
+                    )
+                else:
+                    envelope = await runtime.invoke(handle, session_id=sid, request=request)
+            finally:
+                reset_current_run_id(token)
             incomplete = any(envelope.get(key) for key in ("cancelled", "truncated", "budget_exhausted", "partial"))
             await self._emit_progress(
                 "agent_failed" if incomplete else "agent_completed", task_id, team_name,

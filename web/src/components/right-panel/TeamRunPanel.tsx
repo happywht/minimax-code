@@ -27,6 +27,7 @@ import { formatRelative } from "../../lib/time";
 import { strings } from "../../ui/strings";
 import type { AgentRun } from "../../types/ipc";
 import { useSessionStore } from "../../stores/sessionStore";
+import { ChildWorkspaceReview } from "./SubAgentPanel";
 
 function statusIcon(status: TeamRunEntry["status"]) {
   switch (status) {
@@ -134,6 +135,10 @@ function RunCard({ run, onRemove, onCancel }: { run: TeamRunEntry; onRemove: () 
           {run.result.merged_text.slice(0, 300)}
         </p>
       )}
+      {isDone && run.session_id && run.result?.agents_run.map((agent, index) => agent.workspace?.run_id &&
+        <details key={`${agent.workspace.run_id}-${index}`} className="mt-2"><summary>{agent.agent_name} · 审阅独立工作区</summary>
+          <ChildWorkspaceReview runId={agent.workspace.run_id} sessionId={run.session_id!} teamRunId={run.task_id} />
+        </details>)}
     </div>
   );
 }
@@ -143,13 +148,14 @@ function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
   const [stopMessage, setStopMessage] = useState("");
   const [stopping, setStopping] = useState(false);
   const done = run.status === "completed";
-  const teamResult = run.metadata?.team_result as { budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean } | null } | undefined;
+  const teamResult = run.metadata?.team_result as { budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean } | null; agents_run?: Array<{ agent_name: string; workspace?: { run_id: string } }> } | undefined;
   const budget = teamResult?.budget;
   return (
     <li
       data-testid={`teamrun-history-${run.id}`}
-      className="flex items-center justify-between gap-2 rounded-md border border-line/60 bg-surface-2/50 px-2 py-1.5 text-[11px]"
+      className="rounded-md border border-line/60 bg-surface-2/50 px-2 py-1.5 text-[11px]"
     >
+      <div className="flex items-center justify-between gap-2">
       <span className="flex min-w-0 items-center gap-1.5">
         {done ? (
           <CheckCircle2 size={11} className="shrink-0 text-status-success" />
@@ -169,6 +175,11 @@ function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
         }).catch((error) => setStopMessage(`停止请求失败：${String(error)}`)).finally(() => setStopping(false));
       }}>停止</button>}
       <span className="shrink-0 text-ink-2">{formatRelative(run.created_at)}</span>
+      </div>
+      {teamResult?.agents_run?.map((agent, index) => agent.workspace?.run_id &&
+        <details key={`${agent.workspace.run_id}-${index}`} className="mt-2"><summary>{agent.agent_name} · 审阅独立工作区</summary>
+          <ChildWorkspaceReview runId={agent.workspace.run_id} sessionId={run.session_id} teamRunId={run.id} />
+        </details>)}
     </li>
   );
 }

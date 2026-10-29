@@ -330,7 +330,7 @@ def register_team_handlers(
             # back to the canned "stub: agent xxx would handle..." path,
             # so team runs never produced a real answer. None (no db /
             # boot not yet run) keeps the legacy stub path for tests.
-            from ..app import get_subagent_llm
+            from ..app import get_sessions_dao, get_subagent_llm
             from ..orchestrator.team_orchestrator import TeamOrchestrator
 
             orch = TeamOrchestrator(
@@ -343,13 +343,20 @@ def register_team_handlers(
             # root — members spawned via ``create_task`` copy the context
             # and inherit it; the scope makes this handler independent of
             # whether it was called from a parent run or directly.
-            async with session_root_scope(session_id):
+            async with session_root_scope(session_id) as root:
+                session_dao = get_sessions_dao()
+                session = await session_dao.get(session_id) if session_dao else None
+                if not session:
+                    await ctx.reply_error(INVALID_PARAMS, "Team session is unavailable")
+                    return
                 team_task = asyncio.create_task(orch.run(
                     team_name,
                     request,
                     session_id=session_id,
                     parent_session_id=parent_session_id,
                     budget_tokens=budget_tokens,
+                    workspace_snapshot=str(root),
+                    project_id=session.get("project_id"),
                 ))
                 result = await asyncio.shield(team_task)
             await ctx.reply({
