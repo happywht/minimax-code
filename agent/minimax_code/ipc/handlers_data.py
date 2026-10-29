@@ -180,56 +180,58 @@ async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
             "before accepting webhook deliveries."
         )
 
-    # FK enforcement must be off for the truncate-and-refill dance (SQLite
-    # bulk-load idiom); PRAGMA is a no-op inside a transaction, so toggle it
-    # before BEGIN and restore it in the finally block below.
-    await db.execute("PRAGMA foreign_keys=OFF")
     imported: dict[str, int] = {}
     skipped: list[str] = []
-    try:
-        async with db.transaction() as conn:
-            # Older exports have timeline state but no durable event history.
-            # Do not attach this installation's previous events to imported runs.
-            if ("run_events" in columns_by_table and "run_events" not in envelope_tables
-                    and {"agent_runs", "agent_run_steps"} & envelope_tables.keys()):
-                await conn.execute("DELETE FROM run_events")
-            for table in sorted(envelope_tables):
-                if table not in columns_by_table:
-                    # Table no longer exists in this install (schema drift).
-                    skipped.append(table)
-                    continue
-                whitelist = columns_by_table[table]
-                # Column set = whitelist ∩ union of envelope row keys, so
-                # drifted columns are dropped and columns absent from every
-                # row keep their SQL DEFAULT instead of a forced NULL.
-                keys = set()
-                for row in envelope_tables[table]:
-                    keys.update(row)
-                cols = [c for c in whitelist if c in keys]
-                if not cols:
-                    # Envelope rows carry no known columns (e.g. an empty
-                    # table dumped as [{}]) — just truncate.
-                    await conn.execute(f'DELETE FROM "{table}"')  # noqa: S608
-                    imported[table] = 0
-                    continue
-                # Column names come from PRAGMA table_info (trusted schema
-                # metadata), never from the envelope — not injectable.
-                col_list = ", ".join(f'"{c}"' for c in cols)
-                placeholders = ", ".join("?" for _ in cols)
-                # ``table`` was matched against the whitelist above.
+    async with db.import_transaction() as conn:
+        # Refuse to conceal pre-existing corruption or create new dangling
+        # references, including references from tables absent in the envelope.
+        async with conn.execute("PRAGMA foreign_key_check") as cursor:
+            if await cursor.fetchone():
+                raise ValueError("Existing foreign key violations prevent import")
+        # Older exports have timeline state but no durable event history.
+        # Do not attach this installation's previous events to imported runs.
+        if ("run_events" in columns_by_table and "run_events" not in envelope_tables
+                and {"agent_runs", "agent_run_steps"} & envelope_tables.keys()):
+            await conn.execute("DELETE FROM run_events")
+        for table in sorted(envelope_tables):
+            if table not in columns_by_table:
+                # Table no longer exists in this install (schema drift).
+                skipped.append(table)
+                continue
+            whitelist = columns_by_table[table]
+            # Column set = whitelist ∩ union of envelope row keys, so
+            # drifted columns are dropped and columns absent from every
+            # row keep their SQL DEFAULT instead of a forced NULL.
+            keys = set()
+            for row in envelope_tables[table]:
+                keys.update(row)
+            cols = [c for c in whitelist if c in keys]
+            if not cols:
+                # Envelope rows carry no known columns (e.g. an empty
+                # table dumped as [{}]) — just truncate.
                 await conn.execute(f'DELETE FROM "{table}"')  # noqa: S608
-                payload = [
-                    tuple(row.get(c) for c in cols) for row in envelope_tables[table]
-                ]
-                if payload:
-                    await conn.executemany(
-                        f'INSERT INTO "{table}" ({col_list}) '  # noqa: S608
-                        f"VALUES ({placeholders})",
-                        payload,
-                    )
-                imported[table] = len(payload)
-    finally:
-        await db.execute("PRAGMA foreign_keys=ON")
+                imported[table] = 0
+                continue
+            # Column names come from PRAGMA table_info (trusted schema
+            # metadata), never from the envelope — not injectable.
+            col_list = ", ".join(f'"{c}"' for c in cols)
+            placeholders = ", ".join("?" for _ in cols)
+            # ``table`` was matched against the whitelist above.
+            await conn.execute(f'DELETE FROM "{table}"')  # noqa: S608
+            payload = [
+                tuple(row.get(c) for c in cols) for row in envelope_tables[table]
+            ]
+            if payload:
+                await conn.executemany(
+                    f'INSERT INTO "{table}" ({col_list}) '  # noqa: S608
+                    f"VALUES ({placeholders})",
+                    payload,
+                )
+            imported[table] = len(payload)
+
+        async with conn.execute("PRAGMA foreign_key_check") as cursor:
+            if await cursor.fetchone():
+                raise ValueError("Import would cause foreign key violations")
 
     logger.info(
         "data.import: %d tables, %d rows total, %d skipped",
@@ -267,13 +269,15 @@ async def backup_database(db: Any, target_dir: Path | str | None = None) -> dict
     os.close(descriptor)
     dest = Path(filename)
 
-    target = sqlite3.connect(str(dest))
     try:
-        # aiosqlite's backup() drives the C-level backup on the source's
-        # worker thread; the target stays a plain sync connection.
-        await db._conn.backup(target)  # type: ignore[attr-defined]
-    finally:
-        target.close()
+        target = sqlite3.connect(str(dest))
+        try:
+            await db.backup(target)
+        finally:
+            target.close()
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
     return {"path": str(dest), "bytes": dest.stat().st_size}
 
 

@@ -42,6 +42,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import platformdirs
@@ -415,10 +416,7 @@ class AsyncDatabase:
             sync.close()
 
     async def applied_versions(self) -> set[int]:
-        await self.connect()
-        assert self._conn is not None
-        async with self._conn.execute("SELECT version FROM schema_migrations") as cur:
-            rows = await cur.fetchall()
+        rows = await self.fetchall("SELECT version FROM schema_migrations")
         return {int(r[0]) for r in rows}
 
     # -- transaction helpers ------------------------------------------------
@@ -439,6 +437,39 @@ class AsyncDatabase:
                 except Exception:  # pragma: no cover
                     pass
                 raise
+
+    @asynccontextmanager
+    async def import_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Hold the connection lock across FK toggling, import, and restoration."""
+        await self.connect()
+        assert self._conn is not None
+        conn = self._conn
+        async with self._lock:
+            async with conn.execute("PRAGMA foreign_keys") as cursor:
+                original = int((await cursor.fetchone())[0])
+            try:
+                await conn.execute("PRAGMA foreign_keys=OFF")
+                await conn.execute("BEGIN IMMEDIATE")
+                yield conn
+                await conn.commit()
+            except BaseException:
+                # aiosqlite may already have queued an operation when its
+                # awaiter is cancelled; rollback is queued after that operation.
+                await _finish_cleanup(conn.rollback())
+                raise
+            finally:
+                await _finish_cleanup(conn.execute(f"PRAGMA foreign_keys={original}"))
+
+    async def backup(self, target: sqlite3.Connection) -> None:
+        """Copy a committed snapshot while excluding other connection operations.
+
+        If cancelled, wait for the queued SQLite operation to finish before
+        releasing the lock or allowing the caller to close the target.
+        """
+        await self.connect()
+        assert self._conn is not None
+        async with self._lock:
+            await _finish_cleanup(self._conn.backup(target))
 
     async def execute(self, sql: str, params: tuple | dict = ()) -> aiosqlite.Cursor:
         await self.connect()
@@ -465,6 +496,20 @@ class AsyncDatabase:
         async with self._lock:
             async with self._conn.execute(sql, params) as cur:
                 return list(await cur.fetchall())
+
+
+async def _finish_cleanup(operation: Any) -> None:
+    """Complete a queued SQLite cleanup even under repeated cancellation."""
+    task = asyncio.ensure_future(operation)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 # ---------------------------------------------------------------------------

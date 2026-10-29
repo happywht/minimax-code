@@ -12,7 +12,9 @@ Coverage:
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -515,3 +517,154 @@ class TestPreledgerDisasterRecoveryRoundTrip:
         after = await dump_database(reopened)
         assert after["tables"] == envelope["tables"]
         await reopened.close()
+
+
+@pytest.fixture
+async def fk_import_db(tmp_path):
+    db = AsyncDatabase(tmp_path / "fk-import.db")
+    await db.connect()
+    await db.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY)")
+    await db.execute("INSERT INTO schema_migrations VALUES (1)")
+    await db.execute("CREATE TABLE parent(id INTEGER PRIMARY KEY)")
+    await db.execute("CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))")
+    await db.execute("INSERT INTO parent VALUES (1)")
+    await db.execute("INSERT INTO child VALUES (1, 1)")
+    yield db
+    await db.close()
+
+
+def _fk_envelope(tables):
+    return {"format": EXPORT_FORMAT, "schema_version": 1, "tables": tables}
+
+
+async def test_partial_import_rejects_orphans_and_rolls_back(fk_import_db):
+    db = fk_import_db
+    with pytest.raises(ValueError, match="Import would cause foreign key violations"):
+        await restore_database(db, _fk_envelope({"parent": [{"id": 2}]}))
+    assert (await db.fetchone("SELECT id FROM parent"))[0] == 1
+    assert (await db.fetchone("SELECT parent_id FROM child"))[0] == 1
+    assert (await db.fetchone("PRAGMA foreign_keys"))[0] == 1
+
+
+async def test_existing_fk_violations_are_not_hidden(fk_import_db):
+    db = fk_import_db
+    await db.execute("PRAGMA foreign_keys=OFF")
+    await db.execute("INSERT INTO child VALUES (2, 999)")
+    with pytest.raises(ValueError, match="Existing foreign key violations"):
+        await restore_database(db, _fk_envelope({"parent": [{"id": 999}]}))
+    assert (await db.fetchone("SELECT id FROM parent"))[0] == 1
+    assert (await db.fetchone("PRAGMA foreign_keys"))[0] == 0
+    assert len(await db.fetchall("PRAGMA foreign_key_check")) == 1
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_import_serializes_connection_and_restores_fk_on_cancel(fk_import_db, cancel):
+    db = fk_import_db
+    entered, release = threading.Event(), threading.Event()
+
+    def pause():
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError("test timed out")
+        return 0
+
+    await db._conn.create_function("pause_import", 0, pause)
+    await db.execute("CREATE TRIGGER pause_parent BEFORE DELETE ON parent BEGIN SELECT pause_import(); END")
+    importing = asyncio.create_task(restore_database(db, _fk_envelope({"parent": [{"id": 1}]})))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        concurrent = asyncio.create_task(db.execute("INSERT INTO child VALUES (3, 999)"))
+        await asyncio.sleep(0.05)
+        assert not concurrent.done()
+        if cancel:
+            importing.cancel()
+        release.set()
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await importing
+        else:
+            await importing
+        with pytest.raises(sqlite3.IntegrityError):
+            await concurrent
+        assert (await db.fetchone("PRAGMA foreign_keys"))[0] == 1
+        assert (await db.fetchone("SELECT id FROM parent"))[0] == 1
+        assert await db.fetchall("PRAGMA foreign_key_check") == []
+    finally:
+        release.set()
+        if not importing.done():
+            await importing
+
+
+async def test_backup_waits_for_import_and_copies_committed_state(fk_import_db, tmp_path):
+    db = fk_import_db
+    entered, release = threading.Event(), threading.Event()
+
+    def pause():
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError("test timed out")
+        return 0
+
+    await db._conn.create_function("pause_import", 0, pause)
+    await db.execute("CREATE TRIGGER pause_parent BEFORE DELETE ON parent BEGIN SELECT pause_import(); END")
+    importing = asyncio.create_task(restore_database(db, _fk_envelope({
+        "child": [{"id": 1, "parent_id": 2}], "parent": [{"id": 2}],
+    })))
+    backup = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        backup = asyncio.create_task(backup_database(db, tmp_path / "backups"))
+        await asyncio.sleep(0.05)
+        assert not backup.done()
+        release.set()
+        await importing
+        result = await asyncio.wait_for(backup, 5)
+        with sqlite3.connect(result["path"]) as snapshot:
+            assert snapshot.execute("SELECT id FROM parent").fetchone()[0] == 2
+            assert snapshot.execute("SELECT parent_id FROM child").fetchone()[0] == 2
+            assert snapshot.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        release.set()
+        if not importing.done():
+            await importing
+        if backup is not None and not backup.done():
+            await backup
+
+
+async def test_cancelled_backup_waits_for_worker_before_closing_target(
+    fk_import_db, tmp_path, monkeypatch
+):
+    db = fk_import_db
+    entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+    original_backup = db._conn.backup
+
+    def progress(status, remaining, total):
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError("test timed out")
+        completed.set()
+
+    async def paused_backup(target):
+        await original_backup(target, pages=1, progress=progress)
+
+    monkeypatch.setattr(db._conn, "backup", paused_backup)
+    task = asyncio.create_task(backup_database(db, tmp_path / "backups"))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        assert completed.is_set()
+        assert list((tmp_path / "backups").glob("*.db")) == []
+        assert (await db.fetchone("PRAGMA foreign_keys"))[0] == 1
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass

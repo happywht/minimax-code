@@ -1407,17 +1407,22 @@ Semantics:
   columns fall back to SQL defaults); values are always bound
   parameters. Envelope tables unknown to this install are reported in
   `skipped_tables`, not fatal.
-* **All-or-nothing** — the whole import runs inside one
-  `BEGIN IMMEDIATE` transaction with `PRAGMA foreign_keys=OFF` around it
-  (SQLite bulk-load idiom); any failure rolls back to the pre-import
-  state. FTS indexes stay in sync via the existing triggers on
-  `memories`; vec indexes are rebuilt by re-indexing.
+* **All-or-nothing** — the whole import runs inside one `BEGIN IMMEDIATE`
+  transaction. The shared connection lock covers the temporary foreign-key
+  toggle, transaction and restoration of its prior setting. Imports are
+  rejected if the existing database has foreign-key violations or if the
+  proposed import would create them. A failure before commit rolls back;
+  cancellation after commit was queued may still leave the complete import
+  committed, so inspect the result before retrying. FTS indexes stay in sync
+  via the existing triggers on `memories`; vec indexes require re-indexing.
 
 **`data.backup` semantics (R23):**
 
 * File-level **complete snapshot** via the SQLite online backup API —
-  schema, WAL contents, FTS indexes and vec shadows included — taken
-  without blocking readers. Complements the JSON export (which is
+  schema, WAL contents, FTS indexes and vec shadows included. Backups share
+  the connection lock with imports and other managed database operations;
+  cancellation waits for the SQLite worker before closing the backup target.
+  Complements the JSON export (which is
   portable across schema versions but excludes derived state).
 * `target_dir` is created if missing; omitted → `<data_dir>/backups/`.
   The filename embeds a UTC timestamp and an exclusively created random suffix
