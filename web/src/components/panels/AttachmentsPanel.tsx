@@ -5,6 +5,7 @@ import { Button, Input, Textarea } from "../../ui";
 import type { AttachmentParserStatus, DocxSection, ReportSource, ResearchSource } from "../../types/ipc";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
+import { SearchableTextPreview } from "./SearchableTextPreview";
 import { ReportSectionsEditor, readEditableSections } from "./ReportSectionsEditor";
 import { ReportResearchPicker } from "./ReportResearchPicker";
 import { DraftFileControl } from "./DraftFileControl";
@@ -194,7 +195,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <PdfOriginalPreview attachment={state.selected} />
       <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
-        ? <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" aria-label="附件纯文本预览">{state.preview}</pre>
+        ? <SearchableTextPreview key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} label="附件纯文本预览" className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" />
         : <p role="status">当前状态不提供文本预览；可下载保存的原件。</p>}
     </div>}
     </div>

@@ -4,6 +4,7 @@ import { useArtifactStore, useSessionStore } from "../../stores";
 import { Button, Input } from "../../ui";
 import { OfficeDeliveryPanel } from "./OfficeDeliveryPanel";
 import { ResearchSourcesPanel } from "./ResearchSourcesPanel";
+import { SearchableTextPreview } from "./SearchableTextPreview";
 
 export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
@@ -61,7 +62,7 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
         <h3 className="font-medium">预览与下载</h3>
         <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
         <Button disabled={state.busy} onClick={() => void state.download()}>下载原始字节</Button>
-        <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" aria-label="成果纯文本预览">{state.preview}</pre>
+        <SearchableTextPreview key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} label="成果纯文本预览" className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" />
       </div>}
     </section>
   );
