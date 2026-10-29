@@ -241,7 +241,14 @@ function NotificationItem({
             size="sm"
             className="mt-1 h-auto px-0 py-0 text-[11px] hover:underline"
             onClick={() => {
-              window.dispatchEvent(new Event("minimax:open-scheduled"));
+              let target: { jobId: string; occurrenceId?: string } | undefined;
+              try {
+                const binding = JSON.parse(entry.source_id || "") as { job_id?: string; occurrence_id?: string };
+                if (binding.job_id) target = { jobId: binding.job_id, occurrenceId: binding.occurrence_id };
+              } catch {
+                if (entry.source_id) target = { jobId: entry.source_id };
+              }
+              window.dispatchEvent(new CustomEvent("minimax:open-scheduled", { detail: target }));
               useNotificationStore.getState().setOpen(false);
               if (!entry.read) onMarkRead(entry.id);
             }}

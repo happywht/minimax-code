@@ -44,10 +44,15 @@ export function ScheduleSnapshot({ job }: { job: ScheduledJob }): JSX.Element {
   </div>;
 }
 
-export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { job: ScheduledJob; expanded: boolean; serviceId?: string; onOpenSession?: () => boolean | void }): JSX.Element {
+export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targetOccurrenceId }: { job: ScheduledJob; expanded: boolean; serviceId?: string; targetOccurrenceId?: string; onOpenSession?: () => boolean | void }): JSX.Element {
   const [history, setHistory] = useState<ScheduleOccurrence[]>([]);
   const [cursor, setCursor] = useState<ScheduleOccurrenceCursor | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [initialLoaded, setInitialLoaded] = useState(false);
+  const targetRef = useRef<HTMLDivElement>(null);
+  const autoPages = useRef(0);
+  const [autoLimitReached, setAutoLimitReached] = useState(false);
+  useEffect(() => { autoPages.current = 0; setAutoLimitReached(false); }, [job.id, targetOccurrenceId]);
   const pageEpoch = useRef(0), paging = useRef(false), paged = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
@@ -64,7 +69,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
     let timer: ReturnType<typeof setTimeout> | undefined;
     const host = ipc.agentBaseUrl;
     ++pageEpoch.current; paging.current = false; paged.current = false;
-    setHistory([]); setCursor(null); setLoadingMore(false); setError(null); setStale(false);
+    setHistory([]); setCursor(null); setLoadingMore(false); setInitialLoaded(false); setError(null); setStale(false);
     if (!expanded && !job.active_occurrence_id) return () => { current = false; };
     const refresh = async () => {
       if (!current) return;
@@ -80,7 +85,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
             return [...latest, ...previous.filter((row) => !ids.has(row.id))];
           });
           if (!paged.current) setCursor(result.next_cursor ?? null);
-          setError(null); setStale(false);
+          setError(null); setStale(false); setInitialLoaded(true);
         }
       } catch (failure) {
         if (current) { setError(String(failure)); setStale(true); }
@@ -118,6 +123,17 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
       if (ticket === pageEpoch.current) { paging.current = false; setLoadingMore(false); }
     }
   };
+  useEffect(() => {
+    if (!expanded || !targetOccurrenceId || !initialLoaded || stale || error) return;
+    if (history.some((row) => row.id === targetOccurrenceId)) {
+      targetRef.current?.scrollIntoView({ block: "center" });
+    } else if (cursor && !loadingMore && !autoLimitReached) {
+      // The initial page plus at most nine automatic older-page requests.
+      if (autoPages.current >= 9) { setAutoLimitReached(true); return; }
+      autoPages.current++;
+      void loadMore();
+    }
+  }, [expanded, targetOccurrenceId, initialLoaded, history, cursor, loadingMore, stale, error, autoLimitReached]);
   const active = history.find((occurrence) => occurrence.id === job.active_occurrence_id);
   const status = (occurrence: ScheduleOccurrence) => occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status;
   const terminalReview = verified && ["failed", "cancelled", "interrupted", "budget_paused"].includes(verified.status);
@@ -157,6 +173,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
     {job.active_occurrence_id && <p>{stale ? "状态待刷新" : active ? `当前发生：${label(status(active))}` : "正在读取当前发生状态"}
       {active && !stale && status(active) === "awaiting_approval" && <Button onClick={() => open(active)}>打开会话处理授权</Button>}</p>}
     {error && <p role="status">{error}</p>}
+    {expanded && targetOccurrenceId && initialLoaded && !history.some((row) => row.id === targetOccurrenceId) && <p role="status">{stale || error ? "无法确认通知关联的发生记录，请刷新后重试。" : autoLimitReached && cursor ? "已自动查找 10 页，请手动加载更早记录。" : cursor || loadingMore ? "正在查找通知关联的发生记录…" : "通知关联的发生记录已不可用。"}</p>}
     {job.binding_state === "requires_review" && <div className="space-y-2 rounded border border-status-warning/30 bg-surface-1 p-2">
       <p className="font-medium text-status-warning">计划已暂停，需要核对本次发生</p>
       <p>启用未来计划与继续原运行是不同操作。启用只允许未来按当前计划运行，不自动恢复或重放原步骤；继续原运行请打开其会话并核对后使用恢复入口。</p>
@@ -171,7 +188,8 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
         {reviewError && <p role="alert" className="break-words text-status-warning">{reviewError}</p>}
       </> : <p>当前发生尚未确认；请刷新，不要重复执行。</p>}
     </div>}
-    {expanded && (history.length === 0 ? (error ? "无法读取发生记录" : "暂无发生记录") : history.map((occurrence) => <div key={occurrence.id}>
+    {expanded && (history.length === 0 ? (error ? "无法读取发生记录" : "暂无发生记录") : history.map((occurrence) => <div key={occurrence.id} ref={occurrence.id === targetOccurrenceId ? targetRef : undefined} className={occurrence.id === targetOccurrenceId ? "rounded border border-accent p-2" : undefined}>
+    {occurrence.id === targetOccurrenceId && <p className="font-medium">通知关联的发生记录</p>}
     <p>{label(occurrence.source)} · {occurrence.scheduled_for ?? occurrence.created_at} · {label(occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status)} · {occurrence.reason}</p>
     <VerificationBadge evidence={occurrence.verification} />
     {occurrence.result && <p className="whitespace-pre-wrap">{occurrence.result}</p>}

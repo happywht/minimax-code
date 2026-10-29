@@ -30,7 +30,7 @@ type EditDraft = CreateDraft & { revision: number | null; service: string | null
 const createDrafts = new Map<string, CreateDraft>();
 const editDrafts = new Map<string, EditDraft>();
 
-function ScheduledTab({onOpenSession, active = true, serviceId, draftScope}: {onOpenSession?: () => boolean | void; active?: boolean; serviceId?: string; draftScope?: string}): JSX.Element {
+function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, target}: {target?: { jobId: string; occurrenceId?: string } | null; onOpenSession?: () => boolean | void; active?: boolean; serviceId?: string; draftScope?: string}): JSX.Element {
   const jobs = useScheduleStore((s) => s.jobs);
   const refresh = useScheduleStore((s) => s.refresh);
   const create = useScheduleStore((s) => s.create);
@@ -144,6 +144,7 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope}: {on
           }
         }}>放弃草稿</Button>
       </div>)}
+      {target && !loading && !jobs.some((job) => job.id === target.jobId) && <p role="status">通知关联的计划当前不可用，可能已删除。</p>}
       <ul className="space-y-1.5" data-testid="settings-jobs-list">
         {jobs.length === 0 && !loading && (
           <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">
@@ -154,6 +155,8 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope}: {on
           <ScheduledJobRow
             key={j.id}
             job={j}
+            targetOccurrenceId={target?.jobId === j.id ? target.occurrenceId : undefined}
+            targetJob={target?.jobId === j.id}
             serviceId={serviceId}
             draftKey={draftScope ? JSON.stringify([draftScope, j.id]) : undefined}
             onOpenSession={onOpenSession}
@@ -179,14 +182,16 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope}: {on
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession, serviceId, draftKey }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId }: {
+  targetJob?: boolean; targetOccurrenceId?: string;
   onOpenSession?: () => boolean | void;
   job: ScheduledJob; serviceId?: string; draftKey?: string; onToggle: (enabled: boolean) => void;
   onDelete: () => void; onRunNow: () => void;
   onUpdate: (revision: number, name: string, cron: string, prompt: string, context: ScheduleContext, expectedService: string) => Promise<{ job: ScheduledJob | null; error?: string }>;
 }): JSX.Element {
   const [restored] = useState(() => draftKey ? editDrafts.get(draftKey) : undefined);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(!!targetJob);
+  useEffect(() => { if (targetJob) setExpanded(true); }, [targetJob, targetOccurrenceId]);
   const [editing, setEditing] = useState(!!restored);
   const [editName, setEditName] = useState(restored?.name ?? job.name);
   const [editCron, setEditCron] = useState(restored?.cron ?? job.cron);
@@ -379,7 +384,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
         </div>
       )}
       <div data-testid={expanded ? `settings-job-tasks-${job.id}` : undefined} className={expanded ? "border-t border-line py-2" : ""}>
-        <ScheduleHistory job={job} expanded={expanded} serviceId={serviceId} onOpenSession={onOpenSession} />
+        <ScheduleHistory job={job} expanded={expanded} targetOccurrenceId={targetOccurrenceId} serviceId={serviceId} onOpenSession={onOpenSession} />
       </div>
     </li>
   );

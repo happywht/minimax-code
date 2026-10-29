@@ -12,7 +12,8 @@ const tabs: { id: AutomationTab; label: string }[] = [
 ];
 type Binding = { host: string; service: string };
 
-export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onEdit, onScheduledEdit }: {
+export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onEdit, onScheduledEdit, scheduleTarget }: {
+  scheduleTarget?: { jobId: string; occurrenceId?: string; host: string } | null;
   tab: AutomationTab; onSelect: (tab: AutomationTab) => void; onClose: () => void; onOpenSession: () => boolean | void; onEdit: () => void; onScheduledEdit?: () => void;
 }): JSX.Element {
   const project = useSessionStore((s) => s.currentProjectId);
@@ -88,7 +89,7 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
     {binding && <div key={JSON.stringify([binding.host, binding.service])} className="relative min-h-0 flex-1">
       {!ready && <div className="absolute inset-0 z-10 bg-surface-overlay/90" aria-hidden="true" />}
       <div ref={surfaceRef} className="h-full overflow-auto p-4" aria-hidden={!ready || undefined} onChangeCapture={() => { if (tab === "scheduled") onScheduledEdit?.(); else onEdit(); }}>
-        {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab key={JSON.stringify([binding.host, binding.service, project])} active={ready} serviceId={binding.service} draftScope={JSON.stringify([binding.host, binding.service, project])} onOpenSession={onOpenSession} /></div>}
+        {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab target={scheduleTarget?.host === binding.host ? scheduleTarget : null} key={JSON.stringify([binding.host, binding.service, project])} active={ready} serviceId={binding.service} draftScope={JSON.stringify([binding.host, binding.service, project])} onOpenSession={onOpenSession} /></div>}
         {visited.has("workflows") && <div hidden={tab !== "workflows"}><WorkflowsTab /></div>}
         {visited.has("webhooks") && <div hidden={tab !== "webhooks"}><WebhooksTab /></div>}
       </div>

@@ -93,6 +93,7 @@ export default function App() {
   const deliveryEdited = useRef(false);
   const officeEdited = useRef(false);
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
+  const [scheduleTarget, setScheduleTarget] = useState<{ jobId: string; occurrenceId?: string; host: string } | null>(null);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -214,7 +215,7 @@ export default function App() {
   }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
 
   useEffect(() => {
-    const openScheduled = () => { if (isDelivery(overlayView) && !leaveDelivery()) return; if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; setOverlayView("scheduled"); };
+    const openScheduled = (event: Event) => { if (isDelivery(overlayView) && !leaveDelivery()) return; if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; const target = (event as CustomEvent<{ jobId?: string; occurrenceId?: string }>).detail; setScheduleTarget(target?.jobId ? { jobId: target.jobId, occurrenceId: target.occurrenceId, host: ipc.agentBaseUrl } : null); setOverlayView("scheduled"); };
     window.addEventListener("minimax:open-scheduled", openScheduled);
     return () => window.removeEventListener("minimax:open-scheduled", openScheduled);
   }, [overlayView, leaveSettings, leaveDelivery]);
@@ -419,7 +420,7 @@ export default function App() {
                   ) : overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
                     <DeliveryWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={(kind) => { if (kind === "table") officeEdited.current = true; else deliveryEdited.current = true; }} onClose={() => { if (leaveDelivery()) setOverlayView(null); }} />
                   ) : overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks" ? (
-                    <AutomationWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onScheduledEdit={() => { scheduledDraftEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (!leaveAutomation()) return false; setOverlayView(null); setView("chat"); return true; }} />
+                    <AutomationWorkspace scheduleTarget={scheduleTarget} tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onScheduledEdit={() => { scheduledDraftEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (!leaveAutomation()) return false; setOverlayView(null); setView("chat"); return true; }} />
                   ) : overlayView === "skills" ? (
                     <SkillsPanel onClose={() => setOverlayView(null)} onOpenRun={() => { setOverlayView(null); setView("chat"); setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline")); }} />
                   ) : (

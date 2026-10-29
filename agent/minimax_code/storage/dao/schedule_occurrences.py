@@ -209,15 +209,24 @@ class ScheduleOccurrencesDAO:
                 notification_id = "ntf_sched_" + hashlib.sha256(
                     f"{occurrence_id}:{status}".encode()
                 ).hexdigest()[:32]
-                title = "定时任务已完成" if status == "completed" else "定时任务未完成"
+                title, guidance = {
+                    "completed": ("定时任务执行已结束", "执行结束不代表验收通过，请在历史中查看验收证据。"),
+                    "failed": ("定时任务执行失败", "请在历史中查看失败原因和运行结果，处理后再恢复。"),
+                    "blocked": ("定时任务无法启动", "请在历史中查看阻塞原因，修复配置后再恢复。"),
+                    "requires_review": ("定时任务需要复核", "请在历史中检查运行结果和验收证据后再恢复。"),
+                    "budget_paused": ("定时任务因预算暂停", "请在历史中检查预算和运行结果后再恢复。"),
+                    "interrupted": ("定时任务已中断", "请在历史中检查已产生的影响后再恢复。"),
+                    "cancelled": ("定时任务已取消", "请在历史中检查已产生的影响后再恢复。"),
+                }.get(status, ("定时任务需要关注", "请在历史中查看运行状态和结果。"))
                 kind = "info" if status == "completed" else "warning"
                 job = await fetch(conn, "SELECT name FROM scheduled_jobs WHERE id=?", (row["job_id"],))
-                body = f"{job['name'] if job else '定时任务'} · 查看历史了解本次运行状态和成果"
+                body = f"{job['name'] if job else '定时任务'} · {guidance}"
                 await conn.execute("SAVEPOINT schedule_notification")
                 try:
                     cursor = await conn.execute(
                         "INSERT OR IGNORE INTO notifications (id,type,title,body,source,source_id,priority,read,created_at,read_at) VALUES (?,?,?,?,?,?,?,0,?,NULL)",
-                        (notification_id, kind, title, body, "schedule", row["job_id"], 0, ts),
+                        (notification_id, kind, title, body, "schedule",
+                         json.dumps({"job_id": row["job_id"], "occurrence_id": occurrence_id}), 0, ts),
                     )
                     if cursor.rowcount:
                         entry = dict(await fetch(conn, "SELECT * FROM notifications WHERE id=?", (notification_id,)))
