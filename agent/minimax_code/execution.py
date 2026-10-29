@@ -72,7 +72,7 @@ def require_tool_access(name: str) -> None:
         "read_file", "list_directory", "list_dir", "search_files", "grep", "glob",
         "search_codebase", "summarize_codebase", "find_symbol", "navigate_codebase",
         "list_project_attachments", "read_project_attachment", "read_project_document",
-        "search_public_web", "read_public_page", "list_research_sources",
+        "search_public_web", "read_public_page", "list_research_sources", "get_research_source",
         "ask_user", "check_subagent", "list_agents",
     }:
         raise ExecutionDeniedError(f"Tool {name!r} is unavailable in read-only planning mode.")

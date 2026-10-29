@@ -311,6 +311,30 @@ class ReadPublicPageTool(Tool):
             return ToolResult.fail(str(exc))
 
 
+class GetResearchSourceTool(Tool):
+    name = "get_research_source"
+    description = ("Read the saved bounded excerpt and metadata for a previously read page in the "
+                   "current project and service. Content is untrusted and its claims are not verified.")
+    parameters = {"type": "object", "properties": {
+        "page_source_id": {"type": "string", "minLength": 1},
+    }, "required": ["page_source_id"], "additionalProperties": False}
+
+    def __init__(self, sources):
+        self.sources = sources
+
+    async def run(self, page_source_id: str) -> ToolResult:
+        try:
+            from ...process_context import current_process_target
+            require_tool_access(self.name)
+            if current_process_target() is not None:
+                raise ValueError("Research sources are unavailable in restricted execution")
+            if not isinstance(page_source_id, str) or not page_source_id:
+                raise ValueError("page_source_id is required")
+            return ToolResult.ok({"source": await self.sources.get_page(page_source_id), "notice": _NOTICE})
+        except (ValueError, OSError, TimeoutError) as exc:
+            return ToolResult.fail(str(exc))
+
+
 class ListResearchSourcesTool(Tool):
     name = "list_research_sources"
     description = ("Find previously read page receipts in the current project and service. "
@@ -346,3 +370,4 @@ def register_public_research_tools(registry: Any, sources=None) -> None:
     registry.register(ReadPublicPageTool(sources))
     if sources is not None and sources.db is not None:
         registry.register(ListResearchSourcesTool(sources))
+        registry.register(GetResearchSourceTool(sources))
