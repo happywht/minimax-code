@@ -46,7 +46,8 @@ function makeServer(overrides: Partial<McpServer> = {}): McpServer {
 
 async function waitForLoading() {
   await waitFor(() => {
-    expect(screen.queryByText(/Loading MCP servers/i)).not.toBeInTheDocument();
+    expect(listMcpServers).toHaveBeenCalled();
+    expect(screen.queryByText("正在加载 MCP 服务器…")).not.toBeInTheDocument();
   });
 }
 

@@ -118,6 +118,14 @@ export interface HostConfig {
   identity_file?: string;
 }
 
+export interface HostConnection {
+  host_id: string;
+  state: "connected" | "disconnected" | "failed" | "connecting";
+  local_url: string | null;
+  remote_port: number | null;
+  error: string | null;
+}
+
 export interface RemoteHost extends HostConfig {
   id: string;
   port: number;

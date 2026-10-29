@@ -248,6 +248,9 @@ on the next `readline() == ""`.
 | `engine.status` | req/res | M4 — one engine's card by id. Unavailable engines carry `unavailable_reason` so the UI can disable them explicitly. |
 | `host.create` | req/res | M5 — register a remote Linux run host (name/hostname/username/port/identity_file reference — credentials are never stored). Duplicate names and missing identity files fail fast. |
 | `host.list` | req/res | M5 — list hosts, optional `enabled` filter. |
+| `host.connect` | req/res | Start an owned loopback SSH forward to an existing remote agent; returns connection status. |
+| `host.disconnect` | req/res | Close and reap the host's SSH forward. |
+| `host.connection` | req/res | Read the current forward status. |
 | `host.get` | req/res | M5 — one host by id. |
 | `host.update` | req/res | M5 — tri-state field update incl. enable/disable. |
 | `host.delete` | req/res | M5 — remove the host (its runs are history and survive). |

@@ -6,6 +6,7 @@ verified file transfer and queryable upload publication journals.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from ..hosts.ssh import fetch_file, probe_host, push_file, run_ssh, upload_action
+from ..hosts.tunnel import HostTunnelManager
 from ..storage.dao.hosts import HostsDAO
 from .handler_utils import HandlerError, check_params
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS, HostPushParams, HostTransferStatusParams
@@ -38,9 +40,13 @@ def _upload_target(value: str) -> str:
     return str(target)
 
 
-def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = None) -> None:
+def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = None,
+                           tunnel_manager: Any = None) -> None:
     dao_factory = _make_dao_factory(dao)
     runner = ssh_runner  # injectable for tests; None = real ssh
+    tunnels = tunnel_manager or HostTunnelManager()
+    server._host_tunnel_manager = tunnels
+    lifecycle_lock = asyncio.Lock()
 
     async def _require_host(host_id: str) -> dict[str, Any]:
         host = await (await dao_factory()).get(host_id)
@@ -116,7 +122,14 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
                 updates["enabled"] = bool(params["enabled"])
             if not updates:
                 raise HandlerError(INVALID_PARAMS, "host.update: no fields to update")
-            row = await (await dao_factory()).update(host_id, **updates)
+            async with lifecycle_lock:
+                await _require_host(host_id)
+                # Editing connection coordinates or disabling a host cannot
+                # leave a live tunnel attached to its obsolete configuration.
+                if ({"hostname", "username", "port", "identity_file"} & updates.keys()
+                        or updates.get("enabled") is False):
+                    await tunnels.disconnect(host_id)
+                row = await (await dao_factory()).update(host_id, **updates)
             if row is None:
                 raise HandlerError(INVALID_PARAMS, f"unknown host_id: {host_id!r}")
             await ctx.reply({"ok": True, "host": row})
@@ -129,7 +142,9 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
     async def handle_host_delete(params: Any, ctx: Context) -> None:
         try:
             check_params(params, expected_keys={"host_id"})
-            deleted = await (await dao_factory()).delete(str(params["host_id"]))
+            async with lifecycle_lock:
+                await tunnels.disconnect(str(params["host_id"]))
+                deleted = await (await dao_factory()).delete(str(params["host_id"]))
             if not deleted:
                 raise HandlerError(INVALID_PARAMS,
                                    f"unknown host_id: {params['host_id']!r}")
@@ -282,6 +297,44 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             logger.exception("host.fetch failed")
             await ctx.reply_error(INTERNAL_ERROR, "host.fetch failed")
 
+    async def handle_host_connect(params: Any, ctx: Context) -> None:
+        try:
+            check_params(params, expected_keys={"host_id"})
+            if set(params) - {"host_id", "remote_port", "local_port"}:
+                raise HandlerError(INVALID_PARAMS, "unexpected connection parameters")
+            async with lifecycle_lock:
+                host = await _require_host(str(params["host_id"]))
+                connection = await tunnels.connect(
+                    host, remote_port=params.get("remote_port", 8765),
+                    local_port=params.get("local_port", 0))
+            await ctx.reply({"connection": connection})
+        except (HandlerError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.connect failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.connect failed")
+
+    async def handle_host_disconnect(params: Any, ctx: Context) -> None:
+        try:
+            check_params(params, expected_keys={"host_id"})
+            async with lifecycle_lock:
+                host = await _require_host(str(params["host_id"]))
+                connection = await tunnels.disconnect(host["id"])
+            await ctx.reply({"connection": connection})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+
+    async def handle_host_connection(params: Any, ctx: Context) -> None:
+        try:
+            check_params(params, expected_keys={"host_id"})
+            host = await _require_host(str(params["host_id"]))
+            await ctx.reply({"connection": tunnels.connection(host["id"])})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+
+    server.register("host.connect", handle_host_connect)
+    server.register("host.disconnect", handle_host_disconnect)
+    server.register("host.connection", handle_host_connection)
     server.register("host.create", handle_host_create)
     server.register("host.list", handle_host_list)
     server.register("host.get", handle_host_get)

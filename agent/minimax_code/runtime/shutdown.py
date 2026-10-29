@@ -61,6 +61,12 @@ async def _shutdown(server: Any) -> None:
     # Attempt every independent resource closure. Preserve the failed outcome
     # even if the rest close successfully; the CLI must retain its dirty marker.
     failures: list[BaseException] = []
+    tunnels = getattr(server, "_host_tunnel_manager", None)
+    if tunnels is not None:
+        try:
+            await tunnels.close()
+        except Exception as exc:
+            failures.append(exc)
     registry = get_mcp_registry()
     if registry is not None:
         for item in registry.list_servers():

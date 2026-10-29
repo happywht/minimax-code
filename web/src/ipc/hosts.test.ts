@@ -13,6 +13,9 @@ describe("remote host contract", () => {
     await api.getHost("h");
     await api.updateHost("h", { port: 2222 });
     await api.probeHost("h");
+    await api.connectHost({ host_id: "h", remote_port: 8765 });
+    await api.getHostConnection("h");
+    await api.disconnectHost("h");
     await api.execHost({ host_id: "h", command: "pwd", timeout_s: 10 });
     await api.pushHostFile(transfer);
     await api.getHostTransferStatus({ host_id: "h", remote_path: "/target", transfer_id: transfer.transfer_id });
@@ -21,7 +24,10 @@ describe("remote host contract", () => {
     expect(request.mock.calls).toEqual([
       ["host.create", config], ["host.list", { enabled: true }],
       ["host.get", { host_id: "h" }], ["host.update", { host_id: "h", port: 2222 }],
-      ["host.probe", { host_id: "h" }], ["host.exec", { host_id: "h", command: "pwd", timeout_s: 10 }],
+      ["host.probe", { host_id: "h" }],
+      ["host.connect", { host_id: "h", remote_port: 8765 }],
+      ["host.connection", { host_id: "h" }], ["host.disconnect", { host_id: "h" }],
+      ["host.exec", { host_id: "h", command: "pwd", timeout_s: 10 }],
       ["host.push", transfer],
       ["host.transfer_status", { host_id: "h", remote_path: "/target", transfer_id: transfer.transfer_id }],
       ["host.fetch", { host_id: "h", remote_path: "/target", local_path: "out" }],

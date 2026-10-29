@@ -16,6 +16,7 @@ import {
   Globe,
   Puzzle,
   ScrollText,
+  Server,
   ShieldAlert,
   Users,
   Webhook,
@@ -37,10 +38,11 @@ import { McpServersTab } from "./McpServersTab";
 import { MemoryTab } from "./MemoryTab";
 import { PluginsTab } from "./PluginsTab";
 import { DataTab } from "./DataTab";
+import { HostsTab } from "./HostsTab";
 import { WorktreesTab } from "./WorktreesTab";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 
-export type SettingsTab = "models" | "providers" | "permissions" | "scheduled" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins" | "worktrees" | "data";
+export type SettingsTab = "hosts" | "models" | "providers" | "permissions" | "scheduled" | "agents" | "teams" | "audit" | "webhooks" | "workflows" | "mcp-servers" | "memory" | "plugins" | "worktrees" | "data";
 
 const TAB_GROUPS: Array<{
   label: string;
@@ -55,6 +57,7 @@ const TAB_GROUPS: Array<{
       { id: "mcp-servers", icon: <Blocks size={12} />, label: strings.settings.page.tabMcp, testId: "settings-tab-mcp-servers" },
       { id: "memory", icon: <Brain size={12} />, label: strings.settings.page.tabMemory, testId: "settings-tab-memory" },
       { id: "plugins", icon: <Puzzle size={12} />, label: strings.settings.page.tabPlugins, testId: "settings-tab-plugins" },
+      { id: "hosts", icon: <Server size={12} />, label: "远程主机", testId: "settings-tab-hosts" },
       { id: "worktrees", icon: <GitBranch size={12} />, label: strings.settings.page.tabWorktrees, testId: "settings-tab-worktrees" },
       { id: "data", icon: <Database size={12} />, label: strings.settings.page.tabData, testId: "settings-tab-data" },
     ],
@@ -173,6 +176,7 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           {tab === "mcp-servers" && <McpServersTab />}
           {tab === "memory" && <MemoryTab />}
           {tab === "plugins" && <PluginsTab />}
+          {tab === "hosts" && <HostsTab />}
           {tab === "worktrees" && <WorktreesTab />}
           {tab === "data" && <DataTab />}
         </div>

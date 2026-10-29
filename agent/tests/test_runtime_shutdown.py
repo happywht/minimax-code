@@ -73,6 +73,13 @@ async def test_repeated_cancel_waits_same_terminal_cleanup_before_database(lifet
     assert state.db.close.await_count == 1
 
 
+async def test_shutdown_closes_owned_host_tunnels(lifetime):
+    close = AsyncMock()
+    lifetime.server._host_tunnel_manager = SimpleNamespace(close=close)
+    await shutdown_runtime(lifetime.server)
+    close.assert_awaited_once()
+
+
 async def test_late_registered_descendant_is_drained(lifetime):
     state = lifetime
     async def child():

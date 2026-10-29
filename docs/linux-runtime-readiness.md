@@ -773,3 +773,43 @@ service自然退出0，无强杀或救援，整批80.213秒。原 attach CLI 返
 复核模型因账号可用性错误未启动，本次由主代理执行 Git 源码、文件哈希和关键结果
 的确定性核对。该批使用源码运行，非发行 wheel 安装；scheduled、扩展 latch、重启
 旧快照、长期 systemd 与跨主机生产仍待单独验收，不据此认定完整 L1 或 M7 完成。
+
+## 临时用户服务与 SSH 恢复初测（2026-10-29）
+
+在用户提供的 Linux 主机建立隔离源码、私有数据目录及临时 systemd 用户单元
+`minimax-remote-accept-2088b96a0c`，使用锁定依赖及受控 mock 模型。通过 SSH
+直接转发连接提交一次 run，关闭 SSH 后重新连接，读取到 completed 结果；重启该
+测试服务后重新读取同一 run，结果与重启前一致。测试结束后停止该临时单元，未更改
+主机既有服务。测试未证明任务在断线时仍在运行，也未验证产品 SSH 隧道、前端页面、
+永久安装、机器重启或付费模型。首次因测试夹具未捕获连接尚未就绪时的 SSH 异常失败；
+第二次复用了旧依赖导致缺少 `httpx2`，第三次使用匹配锁文件的独立环境通过。
+本地脚本位于 `.verification/remote-service-accept*.py`；测试目录保留在远端
+`/tmp/minimax-remote-accept-2088b96a0c`。
+
+产品隧道补充实测：Windows 使用 `HostTunnelManager`、真实 OpenSSH 与临时 SSH 密钥
+连接同一远端测试服务，健康检查及经认证 `session.list` 读取既有会话成功；关闭
+manager 后停止临时服务并移除测试公钥。前两次分别因测试数据缺少 enabled、Windows
+临时私钥 ACL 过宽失败，修正测试配置和 ACL 后通过；原测试脚本分别保存在
+`.verification/product-tunnel-live*.py`。该验证未覆盖浏览器完整交互或永久安装。
+
+第四次隔离复测在 `run.start` 返回 queued 时关闭 SSH，再重新连接读取 completed；
+重启临时用户服务后，同一结果保持一致。测试使用受控 mock，并在结束时停止临时
+服务，未证明机器重启或正式常驻部署。测试脚本 `.verification/remote-service-accept-v4.py`，
+远端隔离目录 `/tmp/minimax-remote-accept-1181176507`。
+
+## 独立用户服务安装与浏览器验证（2026-10-29）
+
+在用户主机的 `/home/ubuntu/.local/share/minimax-code-remote` 准备独立源码、数据、
+工作区和预构建前端，安装并启用用户服务 `minimax-code-remote.service`，监听回环端口
+18765。用户 linger 原已启用；健康检查报告数据库、认证和前端均可用。产品的
+HostTunnelManager 使用真实 Windows OpenSSH 隧道打开浏览器，页面加载并连接；重启
+该用户服务后，使用新隧道再次打开页面成功。两次验收均未调用付费模型。
+源码包基于 `4cd39ff` 并覆盖本轮隧道 handler、manager、shutdown 与前端构建；这不是
+机器重启验收。安装脚本最初独占创建了空 unit 后因 SFTP 模式失败，确认空文件后继续。
+
+为后续免密码使用创建专用 Windows 私钥
+`C:\Users\Hitao\.ssh\minimax-code-remote-678367084c`；远端公钥被限定只允许到
+`127.0.0.1:18765` 的端口转发，并通过产品隧道实测。密钥不进入仓库或备份包。
+停用服务可执行 `systemctl --user disable --now minimax-code-remote.service`；保留
+数据目录，移除授权时只删除 `authorized_keys` 中带标识 `minimax-code-678367084c`
+的那一行。完整机器重启、付费模型任务、自动安装升级和 14 天试用尚未验收。
