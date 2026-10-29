@@ -34,6 +34,7 @@ class RunJob:
     task: asyncio.Task[Any] | None = None
     cancel_callback: Callable[[], None] | None = None
     cancel_requested: bool = False
+    cleanup_completed: bool = False
     record: Any = None
     message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:8]}")
     result: dict[str, Any] | None = None
@@ -59,6 +60,10 @@ class RunService:
         self._by_run: dict[str, RunJob] = {}
         self._admissions: set[asyncio.Task[Any]] = set()
         self._admission_lock = asyncio.Lock()
+        self._accepted_admissions: set[asyncio.Task[Any]] = set()
+        self._draining = False
+        self._shutdown_started = False
+        self._drain_task: asyncio.Task[None] | None = None
 
     def submit(
         self, session_id: str, operation: Callable[[RunJob], Awaitable[Any]], *,
@@ -66,7 +71,8 @@ class RunService:
         finalize: Callable[[RunJob, BaseException | None], Awaitable[None]] | None = None,
     ) -> RunJob:
         """Atomically enqueue before the first await; same-session jobs are FIFO."""
-        if self._closing:
+        accepted = asyncio.current_task() in self._accepted_admissions
+        if self._closing and not (accepted and self._draining and not self._shutdown_started):
             raise RunServiceClosing("Run service is shutting down")
         queue = self._jobs.setdefault(session_id, [])
         if job is None and len(queue) >= 32:
@@ -95,9 +101,12 @@ class RunService:
                         finalized = True
                         if finalize:
                             await finalize(job, error)
+                        job.cleanup_completed = True
             except BaseException as exc:
-                if not finalized and finalize:
-                    await finalize(job, exc)
+                if not finalized:
+                    if finalize:
+                        await finalize(job, exc)
+                    job.cleanup_completed = True
                 raise
             finally:
                 self._remove(job)
@@ -121,29 +130,35 @@ class RunService:
             async with self._admission_lock:
                 if self._closing:
                     raise RunServiceClosing("Run service is shutting down")
-                run, created = await dao.admit_run(
-                    session_id=session_id, request=request, title=title, metadata=metadata,
-                    request_key=request_key, resumed_from_id=resumed_from_id,
-                    **({"continuation": True} if continuation else {}))
-                if not created:
-                    return run, self._by_run.get(run["id"]), False
-                job = RunJob(session_id, run_id=run["id"], dao=dao,
-                             message_id=run["assistant_message_id"], workspace=workspace,
-                             project_id=project_id, budget_tokens=budget_tokens,
-                             daily_baseline=daily_baseline,
-                             daily_budget_limit=daily_budget_limit,
-                             validate_command=validate_command)
+                current = asyncio.current_task()
+                assert current is not None
+                self._accepted_admissions.add(current)
                 try:
-                    self.submit(session_id, operation, job=job, finalize=finalize)
-                except BaseException:
-                    await dao.terminate_run(run["id"], status="cancelled",
-                                            error="Service closed before execution started",
-                                            result={"session_id": session_id,
-                                                    "message_id": job.message_id,
-                                                    "run_id": job.run_id, "text": "",
-                                                    "cancelled": True})
-                    raise
-                return run, job, True
+                    run, created = await dao.admit_run(
+                        session_id=session_id, request=request, title=title, metadata=metadata,
+                        request_key=request_key, resumed_from_id=resumed_from_id,
+                        **({"continuation": True} if continuation else {}))
+                    if not created:
+                        return run, self._by_run.get(run["id"]), False
+                    job = RunJob(session_id, run_id=run["id"], dao=dao,
+                                 message_id=run["assistant_message_id"], workspace=workspace,
+                                 project_id=project_id, budget_tokens=budget_tokens,
+                                 daily_baseline=daily_baseline,
+                                 daily_budget_limit=daily_budget_limit,
+                                 validate_command=validate_command)
+                    try:
+                        self.submit(session_id, operation, job=job, finalize=finalize)
+                    except BaseException:
+                        await dao.terminate_run(run["id"], status="cancelled",
+                                                error="Service closed before execution started",
+                                                result={"session_id": session_id,
+                                                        "message_id": job.message_id,
+                                                        "run_id": job.run_id, "text": "",
+                                                        "cancelled": True})
+                        raise
+                    return run, job, True
+                finally:
+                    self._accepted_admissions.discard(current)
 
         task = asyncio.create_task(accept(), name=f"admit-run:{session_id}")
         self._admissions.add(task)
@@ -208,8 +223,52 @@ class RunService:
             job.task.cancel()
         return True
 
+    async def drain(self) -> None:
+        """Fence new work and wait for accepted RunService jobs without cancelling them.
+
+        Only admissions already inside the database operation cross the fence.
+        This does not stop other service owners or establish process-wide quiescence.
+        Cancelling a waiter leaves the shared drain running; failures remain observable
+        by subsequent callers. A separate shutdown may still cancel running work.
+        """
+        if self._drain_task is None:
+            self._closing = True
+            self._draining = True
+            jobs = {job for queue in self._jobs.values() for job in queue}
+            admissions = list(self._admissions)
+
+            async def finish_drain() -> None:
+                results = await asyncio.gather(*admissions, return_exceptions=True)
+                failures = []
+                for result in results:
+                    if isinstance(result, BaseException):
+                        if not isinstance(result, RunServiceClosing):
+                            failures.append(result)
+                    elif result[1] is not None:
+                        jobs.add(result[1])
+                jobs.update(job for queue in self._jobs.values() for job in queue)
+                active_jobs = [job for job in jobs if job.task]
+                results = await asyncio.gather(
+                    *(job.task for job in active_jobs), return_exceptions=True)
+                for job, value in zip(active_jobs, results, strict=True):
+                    if isinstance(value, asyncio.CancelledError):
+                        # Only service-requested cancellation entered the normal teardown path.
+                        if not job.cancel_requested or not job.cleanup_completed:
+                            failures.append(value)
+                    elif isinstance(value, BaseException):
+                        failures.append(value)
+                if failures:
+                    raise RunShutdownError("Run drain ended with an error") from failures[0]
+
+            self._drain_task = asyncio.create_task(finish_drain(), name="run-service-drain")
+            # Retrieve errors even if every waiter disconnects.
+            self._drain_task.add_done_callback(
+                lambda task: None if task.cancelled() else task.exception())
+        await asyncio.shield(self._drain_task)
+
     async def shutdown(self) -> None:
         """Drain cancellation/child-process cleanup before closing the database."""
+        self._shutdown_started = True
         self._closing = True
         # A job can finish/remove itself while admissions are being awaited.
         # Retain both sides of that await so its cleanup error is not lost.
