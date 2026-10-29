@@ -957,3 +957,21 @@ SSH 检查标记和 cgroup，未再次终止服务。脚本为 `.verification/fo
 真实浏览器中选中其验收会话，确认界面显示持久化输出尾部的结束标记。
 脚本为 `.verification/upgrade-real-4102fe0.py` 和 `browser-terminal-evidence.py`。
 本次没有运行付费模型，也未验证整机重启。
+
+### 运行中输出检查点实机验收（2026-10-29）
+
+正式用户服务从 `4102fe0` 升级至
+`/home/ubuntu/.local/share/minimax-code-releases/627fff52d22e4f8b3b6dc54f455ddeb50305022b`，
+包含终端输出检查点及 UTF-8 增量解码。升级前采样没有活动运行、计划、任务或已
+建立客户端连接；备份及交易位于
+`/home/ubuntu/.local/share/minimax-code-remote-backups-627fff5/upgrade-n5m8o40u`。
+采样不是原子接单屏障。升级后旧的完成与中断验收记录均通过认证隧道读取。
+
+在独立验收会话 `ses_c8ef72d3` 中启动受控终端命令，确认中文和 emoji 输出已写入
+运行 `run_1c84f89adce8` 的持久检查点，再在仅该测试运行且无其他客户端连接的采样
+条件下终止用户服务主进程。systemd 重启后，运行状态为 `interrupted`，工具结果标记
+未知且需核对；检查点仍包含完整中文与 emoji，测试标记文件仅一行，服务 cgroup 中
+只剩主进程。真实浏览器打开该会话后可看到保存的输出及“检查点之后可能丢失”的提示。
+本次没有调用模型，也不证明任意输出或脱离 cgroup 的进程完全恢复；检查点之间尚未
+提交的输出仍可能丢失。脚本为 `.verification/formal-checkpoint-crash.py` 和
+`.verification/browser-checkpoint-evidence.py`，验收会话及独立标记目录保留供核查。
