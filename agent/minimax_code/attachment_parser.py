@@ -170,13 +170,13 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
                 return result
             if kind == "xlsx_extract":
                 reasons = {"sheet_name", "sheet_not_found", "hidden_sheet", "hidden_rows", "hidden_columns",
-                           "complex_sheet", "import_limit", "formula", "unsupported_cell", "formatted_number",
+                           "complex_sheet", "import_limit", "formula", "unsupported_cell", "formatted_number", "unsupported_date", "padded_identifier",
                            "missing_dependency", "invalid_package", "unsafe_package", "package_limit", "unsupported_feature"}
                 if type(result) is not dict:
                     raise ValueError
                 if result.get("ok") is False and set(result) == {"ok", "reason"} and result["reason"] in reasons:
                     return result
-                if result.get("ok") is not True or set(result) != {"ok", "rows"}:
+                if result.get("ok") is not True or set(result) != {"ok", "rows", "date_columns", "percentage_columns", "currency_columns"}:
                     raise ValueError
                 rows = result["rows"]
                 if (type(rows) is not list or not 1 <= len(rows) <= 1001
@@ -185,6 +185,12 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
                         or len(rows) * len(rows[0]) > 5000
                         or any(type(value) is not str or len(value) > 4096 for row in rows for value in row)):
                     raise ValueError
+                for field in ("date_columns", "percentage_columns", "currency_columns"):
+                    columns = result[field]
+                    if (type(columns) is not list or len(columns) > 20
+                            or any(type(value) is not str or value not in rows[0] for value in columns)
+                            or len(set(columns)) != len(columns)):
+                        raise ValueError
                 return result
             return validate(result, expected_scope=scope,
                             expected_kind="xlsx" if kind == "xlsx" else None)

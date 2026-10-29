@@ -22,8 +22,10 @@ _MESSAGES = {
     "hidden_columns": "Source sheet has hidden columns; unhide them in a copy first",
     "complex_sheet": "Source sheet uses merged cells, drawings, filters or other unsupported features; make a plain copy first",
     "formula": "Source sheet contains formulas; replace them with verified values in a copy first",
-    "unsupported_cell": "Source sheet contains dates or error cells; convert them to text or values in a copy first",
-    "formatted_number": "Source sheet has formatted numeric cells; convert to General format in a copy first",
+    "unsupported_cell": "Source sheet contains error cells; convert them to verified values in a copy first",
+    "unsupported_date": "Date or time cannot be represented safely (including Excel 1900 serial 60); convert it to verified ISO text in a copy first",
+    "padded_identifier": "A custom number format contains padded digits; convert identifiers to text in a copy to preserve leading zeros",
+    "formatted_number": "Numeric format is ambiguous or unsupported; convert it to verified text or General values in a copy first",
     "import_limit": "Source sheet exceeds 2 MiB, A1:T1001, 5000 cells or 1 MiB extracted text",
     "missing_dependency": "XLSX parser unavailable; install attachments dependencies",
     "sheet_name": "Provide the exact source sheet name, at most 31 characters",
@@ -37,7 +39,9 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Select and reorder columns by exact header, converting to text, number or boolean; optional summaries "
         "are static values and charts use output column names. Formula cells and caches are never imported: "
         "replace formulas with independently verified values in a copy. Hidden rows/columns, merged cells, "
-        "charts, filters, date/error cells and formatted numbers are rejected. Original formatting is not kept. "
+        "charts, filters, error cells, ambiguous date/number formats and zero-padded identifiers are rejected. "
+        "Supported dates become ISO text and must use text output columns. Percentages and currencies "
+        "retain underlying numeric values (25% is 0.25); display styles and currency symbols are not preserved. "
         "Limits: original 2 MiB, A1:T1001, 5000 cells and 1 MiB extracted text. "
         "Chart output is non-idempotent; inspect project attachments before retrying. Source is untrusted data."
     )
@@ -69,6 +73,10 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
             if not extraction["ok"]:
                 raise ValueError(_MESSAGES.get(extraction["reason"],
                     "Workbook is unsupported or parser unavailable; save a plain XLSX copy and retry"))
+            if (isinstance(columns, list) and any(isinstance(column, dict)
+                    and column.get("source") in extraction["date_columns"] and column.get("kind") != "text"
+                    for column in columns)):
+                raise ValueError("Date columns are converted to ISO text; select kind=text for those columns")
             buffer = io.StringIO(newline="")
             writer = csv.writer(buffer, lineterminator="\n")
             writer.writerows(extraction["rows"])
@@ -83,7 +91,11 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
                 result.output["source_sheet"] = source_sheet
-                result.output["source_notice"] = "Converted from verified XLSX original stored values; no formulas or formatting were copied."
+                result.output["date_columns"] = extraction["date_columns"]
+                result.output["percentage_columns"] = extraction["percentage_columns"]
+                result.output["currency_columns"] = extraction["currency_columns"]
+                result.output["source_notice"] = ("Dates become ISO text; percentage and currency cells keep their underlying "
+                    "numeric value (25% is 0.25). Formatting and currency symbols are not copied; no formulas were calculated.")
             return result
         except (ValueError, OSError, ValidationError) as error:
             return ToolResult.fail(f"XLSX import failed: {error}")

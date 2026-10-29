@@ -36,8 +36,10 @@ def workbook_bytes(kind="normal"):
         sheet.merge_cells("A3:A4")
     elif kind == "hidden":
         sheet.row_dimensions[3].hidden = True
-    elif kind == "formatted":
-        sheet["B3"].number_format = "0.00%"
+    elif kind == "padded":
+        sheet["B3"].number_format = "000000"
+    elif kind == "time":
+        sheet["B3"].number_format = "hh:mm:ss"
     book.create_sheet("另一个")
     output = BytesIO()
     book.save(output)
@@ -112,8 +114,9 @@ async def test_import_chart_uses_selected_columns(env):
     assert len(openpyxl.load_workbook(BytesIO(output)).active._charts) == 1
 
 
-@pytest.mark.parametrize(("kind", "reason"), [("formula", "formula"), ("date", "formatted_number"),
-    ("merged", "complex_sheet"), ("hidden", "hidden_rows"), ("formatted", "formatted_number")])
+@pytest.mark.parametrize(("kind", "reason"), [("formula", "formula"),
+    ("merged", "complex_sheet"), ("hidden", "hidden_rows"), ("padded", "padded_identifier"),
+    ("time", "formatted_number")])
 async def test_unsupported_sheet_features_fail_closed(kind, reason):
     result = await extract_xlsx(workbook_bytes(kind), "资料")
     assert result == {"ok": False, "reason": reason}
@@ -140,3 +143,66 @@ async def test_import_obeys_prior_csv_and_table_denials():
     gate = type("Gater", (), {"request_consent": AsyncMock(return_value=True)})()
     core = AgentCore(llm=object(), registry=Fake(), permission_store=Store(), permission_gater=gate)
     assert not (await core._dispatch_tool({"name": "generate_xlsx_from_xlsx", "arguments": {}})).success
+
+
+def formatted_book(epoch="1900", serial=None):
+    from openpyxl.utils.datetime import CALENDAR_MAC_1904
+
+    book = openpyxl.Workbook()
+    if epoch == "1904":
+        book.epoch = CALENDAR_MAC_1904
+    sheet = book.active
+    sheet.title = "数据"
+    sheet.append(["日期", "比例", "金额", "精度"])
+    sheet.append([datetime(2024, 1, 2, 12, 30, 15), 0.25, 1234.5, 1.23456])
+    if serial is not None:
+        sheet["A2"] = serial
+        sheet["A2"].number_format = "yyyy-mm-dd"
+    sheet["B2"].number_format = "0.00%"
+    sheet["C2"].number_format = '"$"#,##0.00'
+    sheet["D2"].number_format = "0.00"
+    output = BytesIO()
+    book.save(output)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("epoch", ["1900", "1904"])
+async def test_formatted_values_preserve_underlying_and_dates(epoch, env):
+    _, _, service, upload, registry = env
+    original = formatted_book(epoch)
+    source = await upload("p", original)
+    args = {"attachment_id": source["id"], "filename": "report.xlsx", "request_key": "formatted",
+        "source_sheet": "数据", "sheet_name": "结果", "columns": [
+            {"source": "日期", "name": "日期", "kind": "text"},
+            {"source": "比例", "name": "比例", "kind": "number"},
+            {"source": "金额", "name": "金额", "kind": "number"},
+            {"source": "精度", "name": "精度", "kind": "number"}]}
+    result = await registry.dispatch("generate_xlsx_from_xlsx", args)
+    assert result.success, result.error
+    assert result.output["date_columns"] == ["日期"]
+    assert result.output["percentage_columns"] == ["比例"]
+    assert result.output["currency_columns"] == ["金额"]
+    assert "25% is 0.25" in result.output["source_notice"]
+    _, data = await service.content("p", result.output["attachment_id"])
+    row = next(openpyxl.load_workbook(BytesIO(data)).active.iter_rows(min_row=2, max_row=2, values_only=True))
+    assert row == ("2024-01-02T12:30:15", 0.25, 1234.5, 1.23456)
+    assert (await service.content("p", source["id"]))[1] == original
+
+
+async def test_1900_fake_date_and_1904_epoch_are_distinct():
+    assert await extract_xlsx(formatted_book("1900", 60), "数据") == {"ok": False, "reason": "unsupported_date"}
+    mac = await extract_xlsx(formatted_book("1904", 60), "数据")
+    assert mac["ok"] and mac["rows"][1][0] == "1904-03-01"
+
+
+async def test_custom_identifier_formats_fail_instead_of_dropping_zeros():
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "数据"
+    sheet.append(["编号"])
+    sheet.append([123])
+    sheet["A2"].number_format = '"000"0'
+    output = BytesIO()
+    book.save(output)
+    result = await extract_xlsx(output.getvalue(), "数据")
+    assert not result["ok"] and result["reason"] in {"padded_identifier", "formatted_number"}

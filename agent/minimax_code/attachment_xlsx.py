@@ -266,10 +266,24 @@ def _preflight(parts, fromstring, *, full_sheet=None):
     style_count = len(xfs) if xfs is not None else 1
     require(style_count <= MAX_STYLES, "package_limit")
     require(xfs is None or all(item.tag == f"{{{NS}}}xf" for item in xfs))
+    custom_formats = {}
+    if full_sheet is not None and styles is not None:
+        formats = styles.find(f"{{{NS}}}numFmts")
+        if formats is not None:
+            for entry in formats:
+                identity, code = entry.get("numFmtId", ""), entry.get("formatCode", "")
+                require(entry.tag == f"{{{NS}}}numFmt" and identity.isascii() and identity.isdecimal()
+                        and len(identity) <= 5 and 164 <= int(identity) <= 65535 and int(identity) not in custom_formats
+                        and 0 < len(code) <= 512, "formatted_number")
+                custom_formats[int(identity)] = code
+    base_xfs = styles.find(f"{{{NS}}}cellStyleXfs") if styles is not None else None
     workbook = trees["xl/workbook.xml"]
     require(workbook.tag == f"{{{NS}}}workbook", "unsupported_feature")
     props = workbook.find(f"{{{NS}}}workbookPr")
-    epoch = "1904" if props is not None and props.get("date1904") in {"1", "true"} else "1900"
+    epoch_value = props.get("date1904", "0") if props is not None else "0"
+    if full_sheet is not None:
+        require(epoch_value in {"0", "false", "1", "true"}, "unsupported_date")
+    epoch = "1904" if epoch_value in {"1", "true"} else "1900"
     sheet_sets = workbook.findall(f"{{{NS}}}sheets")
     require(len(sheet_sets) == 1)
     sheets = sheet_sets[0]
@@ -359,11 +373,28 @@ def _preflight(parts, fromstring, *, full_sheet=None):
                 value = values[0] if values else None
                 require(value is None or not list(value))
                 raw = value.text or "" if value is not None else None
+                import_kind = None
                 if capture:
                     require(not formulae, "formula")
-                    require(kind not in {"e", "d"}, "unsupported_cell")
-                    if kind == "n" and value is not None and raw not in {None, ""} and xfs is not None:
-                        require(xfs[int(style)].get("numFmtId", "0") == "0", "formatted_number")
+                    require(kind != "e", "unsupported_cell")
+                    if kind == "n" and value is not None and raw not in {None, ""}:
+                        from .xlsx_import_formats import number_kind
+
+                        style_xf = xfs[int(style)] if xfs is not None else None
+                        numfmt = style_xf.get("numFmtId", "0") if style_xf is not None else "0"
+                        require(numfmt.isascii() and numfmt.isdecimal() and len(numfmt) <= 5, "formatted_number")
+                        if style_xf is not None:
+                            base_id = style_xf.get("xfId", "0")
+                            require(base_id.isascii() and base_id.isdecimal() and len(base_id) <= 5, "formatted_number")
+                            if base_xfs is not None:
+                                require(int(base_id) < len(base_xfs) and base_xfs[int(base_id)].get("numFmtId", "0") == "0", "formatted_number")
+                            else:
+                                require(base_id == "0", "formatted_number")
+                            require(style_xf.get("applyNumberFormat") not in {"0", "false"} or numfmt == "0", "formatted_number")
+                        import_kind = number_kind(int(numfmt), custom_formats)
+                    elif kind == "d" and raw:
+                        require("T" in raw or ISO_DATE.fullmatch(raw) is not None, "unsupported_date")
+                        import_kind = "date"
                 if formulae:
                     formula = formulae[0]
                     require(
@@ -411,9 +442,16 @@ def _preflight(parts, fromstring, *, full_sheet=None):
                         "raw": decoded,
                     }
                 if capture and has_value:
-                    require(record["kind"] in {"string", "number", "boolean"}, "unsupported_cell")
+                    require(record["kind"] in {"string", "number", "boolean", "iso_date"}, "unsupported_cell")
                     require(len(record["raw"]) <= 4096, "import_limit")
-                    full_cells[(actual_row, column)] = record
+                    captured = dict(record)
+                    captured["import_kind"] = import_kind
+                    if import_kind == "date" and kind == "n":
+                        from .xlsx_import_formats import excel_date
+
+                        captured["raw"] = excel_date(record["raw"], epoch)
+                        captured["kind"] = "iso_date"
+                    full_cells[(actual_row, column)] = captured
                 if has_value:
                     populated += 1
                     if actual_row <= ROWS and column <= COLUMNS and displayed < MAX_DISPLAY:
@@ -456,7 +494,13 @@ def extract_sheet(data, sheet_name):
                 else:
                     values.append(record["raw"])
             rows.append(values)
-        result = {"ok": True, "rows": rows}
+        def columns_of(kind):
+            return [rows[0][column - 1] for column in range(1, selected["full_columns"] + 1)
+                    if any(record.get("import_kind") == kind and col == column and row > 1
+                           for (row, col), record in cells.items())]
+
+        result = {"ok": True, "rows": rows, "date_columns": columns_of("date"),
+                  "percentage_columns": columns_of("percentage"), "currency_columns": columns_of("currency")}
         require(len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= 1024 * 1024,
                 "import_limit")
         return result
