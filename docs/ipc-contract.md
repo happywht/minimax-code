@@ -911,7 +911,14 @@ preserves the source run's cumulative cap, including an unset cap; supplying a v
 may preserve or raise it. The ledger rejects a reduction against the current family
 cap and continues enforcing family and daily liabilities. It creates
 a new request with a recovery handoff and `resumed_from_id`; the original record
-stays intact. The original provider/model/effort and workspace binding must still
+stays intact. For Native runs, a source may have only one direct recovery or
+manual continuation child, including one created before this rule was introduced.
+Admission checks this in the same transaction as the child creation. A matching
+`run.resume` retry with the same idempotency key returns the existing admission;
+a different key cannot create another branch from that source. `agent.continue_run`
+uses a source-specific key, so its matching retries likewise return the existing
+continuation. To continue after that child ends, select the child as the source,
+subject to its status and the normal review requirements. The original provider/model/effort and workspace binding must still
 match. Codex uses its saved thread/workspace/protocol rather than a Native model snapshot;
 its recovery prompt asks to inspect prior side effects before continuing. An unresolved started
 Codex run blocks ordinary new sends. Source recovery marking, source event and child admission

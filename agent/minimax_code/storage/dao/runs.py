@@ -135,6 +135,21 @@ class AgentRunsDAO:
                 await _append_event(conn, resumed_from_id, "status", {"run": source})
             run_id, ts = f"run_{uuid.uuid4().hex}", now_iso()
             codex = request.get("engine") == "codex"
+            if resumed_from_id and not codex:
+                # Admission is serialized with competing recoveries. Checking
+                # only in the RPC handler permits two distinct request keys to
+                # enqueue separate continuations of the same uncertain work.
+                source = await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (resumed_from_id,))
+                allowed_statuses = ({"completed", "cancelled"} if continuation else
+                                    {"interrupted", "failed", "cancelled", "budget_paused"})
+                if (not source or source["session_id"] != session_id
+                        or source["status"] not in allowed_statuses):
+                    raise ValueError("Recovery source is no longer resumable in this session")
+                child = await _fetchone(conn,
+                    "SELECT id FROM agent_runs WHERE session_id=? AND resumed_from_id=? LIMIT 1",
+                    (session_id, resumed_from_id))
+                if child:
+                    raise ValueError("Run already has a recovery or continuation; continue from that run")
             if codex:
                 session = await _fetchone(conn, "SELECT * FROM sessions WHERE id=?", (session_id,))
                 if session is None or session["engine"] != "codex":
