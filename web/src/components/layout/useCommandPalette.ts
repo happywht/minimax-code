@@ -1,3 +1,4 @@
+import { allowScopeChange } from "../../lib/scopeChangeGuard";
 /**
  * useCommandPalette — items, filtering, keyboard nav and shortcut registration.
  */
@@ -150,7 +151,7 @@ export function useCommandPalette({
   const execute = useCallback(
     (item: PaletteItem) => {
       if (item.id === "action:new-task") {
-        void createSession(DEFAULT_SESSION_TITLE);
+        if (allowScopeChange()) void createSession(DEFAULT_SESSION_TITLE);
       } else if (item.id === "action:preview") {
         onTogglePreview?.();
       } else if (item.id === "action:skills") {

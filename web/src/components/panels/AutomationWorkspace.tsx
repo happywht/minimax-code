@@ -13,7 +13,7 @@ const tabs: { id: AutomationTab; label: string }[] = [
 type Binding = { host: string; service: string };
 
 export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onEdit }: {
-  tab: AutomationTab; onSelect: (tab: AutomationTab) => void; onClose: () => void; onOpenSession: () => void; onEdit: () => void;
+  tab: AutomationTab; onSelect: (tab: AutomationTab) => void; onClose: () => void; onOpenSession: () => boolean | void; onEdit: () => void;
 }): JSX.Element {
   const project = useSessionStore((s) => s.currentProjectId);
   const projectName = useSessionStore((s) => s.projects.find((item) => item.id === project)?.name);

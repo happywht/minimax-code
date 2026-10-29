@@ -40,7 +40,7 @@ export function ScheduleSnapshot({ job }: { job: ScheduledJob }): JSX.Element {
   </div>;
 }
 
-export function ScheduleHistory({ job, expanded, onOpenSession }: { job: ScheduledJob; expanded: boolean; onOpenSession?: () => void }): JSX.Element {
+export function ScheduleHistory({ job, expanded, onOpenSession }: { job: ScheduledJob; expanded: boolean; onOpenSession?: () => boolean | void }): JSX.Element {
   const [history, setHistory] = useState<ScheduleOccurrence[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
@@ -81,10 +81,10 @@ export function ScheduleHistory({ job, expanded, onOpenSession }: { job: Schedul
   const status = (occurrence: ScheduleOccurrence) => occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status;
   const open = (occurrence: ScheduleOccurrence) => {
     if (!occurrence.context?.project_id || !occurrence.session_id) return;
-    useSessionStore.getState().setCurrentProject(occurrence.context.project_id);
-    useSessionStore.getState().setCurrent(occurrence.session_id);
+    if (onOpenSession?.() === false) return;
+    if (!useSessionStore.getState().setCurrentProject(occurrence.context.project_id)) return;
+    if (!useSessionStore.getState().setCurrent(occurrence.session_id)) return;
     void useSessionStore.getState().refresh({ loadCurrent: false });
-    onOpenSession?.();
   };
   return <div className="space-y-1 px-3 text-xs" data-testid={`schedule-history-${job.id}`}>
     {job.active_occurrence_id && <p>{stale ? "状态待刷新" : active ? `当前发生：${label(status(active))}` : "正在读取当前发生状态"}

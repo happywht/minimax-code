@@ -24,7 +24,7 @@ import { StreamEvent } from "../../types/ipc";
 
 export { ScheduledTab };
 
-function ScheduledTab({onOpenSession, active = true}: {onOpenSession?: () => void; active?: boolean}): JSX.Element {
+function ScheduledTab({onOpenSession, active = true}: {onOpenSession?: () => boolean | void; active?: boolean}): JSX.Element {
   const jobs = useScheduleStore((s) => s.jobs);
   const refresh = useScheduleStore((s) => s.refresh);
   const create = useScheduleStore((s) => s.create);
@@ -154,7 +154,7 @@ function ScheduledTab({onOpenSession, active = true}: {onOpenSession?: () => voi
 }
 
 function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession }: {
-  onOpenSession?: () => void;
+  onOpenSession?: () => boolean | void;
   job: ScheduledJob; onToggle: (enabled: boolean) => void;
   onDelete: () => void; onRunNow: () => void;
   onUpdate: (name: string, cron: string, prompt: string, context: ScheduleContext) => Promise<void>;

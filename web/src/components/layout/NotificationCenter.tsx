@@ -194,8 +194,8 @@ function NotificationItem({
         ? snapshot.pending_native_permissions?.some((item) => item.request_id === binding.request_id && item.run_id === binding.run_id && item.session_id === binding.session_id)
         : snapshot.pending_ask_user?.request_id === binding.request_id && snapshot.pending_ask_user.run_id === binding.run_id && snapshot.pending_ask_user.session_id === binding.session_id;
       if (!pending) throw new Error("请求已解决、超时或失效，请查看运行历史");
-      useSessionStore.getState().setCurrentProject(binding.project_id);
-      useSessionStore.getState().setCurrent(binding.session_id);
+      if (!useSessionStore.getState().setCurrentProject(binding.project_id)) return;
+      if (!useSessionStore.getState().setCurrent(binding.session_id)) return;
       void useSessionStore.getState().refresh({ loadCurrent: false });
       window.dispatchEvent(new Event("minimax:open-chat"));
       useNotificationStore.getState().setOpen(false);

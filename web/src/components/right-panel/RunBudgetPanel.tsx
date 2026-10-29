@@ -57,7 +57,7 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
   const reviewOwner = async (sessionId: string, ownerRunId: string) => {
     try {
       const {useSessionStore, useRunTimelineStore} = await import("../../stores");
-      useSessionStore.getState().setCurrent(sessionId);
+      if (!useSessionStore.getState().setCurrent(sessionId)) return;
       await useRunTimelineStore.getState().loadForSession(sessionId);
       const snapshot = await typedIPC.getRunSteps(ownerRunId);
       if (useSessionStore.getState().currentSessionId !== sessionId) return;

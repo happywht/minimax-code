@@ -1,3 +1,4 @@
+import { allowScopeChange } from "../../lib/scopeChangeGuard";
 /**
  * Left sidebar — 240px wide. Contains:
  *   - Brand mark
@@ -299,6 +300,7 @@ export function Sidebar({
 
   const handleDeleteProject = async () => {
     if (!deleteTarget) return;
+    if (currentProjectId === deleteTarget.id && !allowScopeChange()) return;
     await deleteProject(deleteTarget.id);
     if (currentProjectId === deleteTarget.id) {
       setCurrentProject("inbox");
@@ -393,7 +395,7 @@ export function Sidebar({
   };
 
   const handleSessionClick = (s: SessionMeta) => {
-    setCurrentProject(s.project_id ?? "inbox");
+    if (!setCurrentProject(s.project_id ?? "inbox")) return;
     setCurrent(s.id);
   };
 
@@ -544,7 +546,7 @@ export function Sidebar({
           className="flex-1"
           loading={creatingSession}
           disabled={creatingSession}
-          onClick={() => void createSession(DEFAULT_SESSION_TITLE, currentProject.id)}
+          onClick={() => { if (allowScopeChange()) void createSession(DEFAULT_SESSION_TITLE, currentProject.id); }}
           title={`在「${currentProject.name}」创建新任务`}
           data-testid="sidebar-new-task"
         >
@@ -570,7 +572,7 @@ export function Sidebar({
         <IconButton
           aria-label={strings.layout.sidebar.createWorktreeTask}
           title={strings.layout.sidebar.createWorktreeTask}
-          onClick={() => void createWorktree(DEFAULT_WORKTREE_TITLE, "HEAD")}
+          onClick={() => { if (allowScopeChange()) void createWorktree(DEFAULT_WORKTREE_TITLE, "HEAD"); }}
           data-testid="sidebar-new-worktree-task"
         >
           <GitBranch size={14} />

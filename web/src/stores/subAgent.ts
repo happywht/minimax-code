@@ -227,7 +227,7 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
     await useSessionStore.getState().refresh({ loadCurrent: false });
     if (get().runs[id] !== row || useSessionStore.getState().currentSessionId !== source) return false;
     if (!useSessionStore.getState().sessions.some((session) => session.id === row.session_id)) return false;
-    useSessionStore.getState().setCurrent(row.session_id);
+    if (!useSessionStore.getState().setCurrent(row.session_id)) return false;
     useRunTimelineStore.setState((s) => ({ runs: { ...s.runs, [id]: { ...snapshot.run, steps: snapshot.steps } },
       order: [id, ...s.order.filter((item) => item !== id)] }));
     return useSessionStore.getState().currentSessionId === row.session_id;

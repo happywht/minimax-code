@@ -1,3 +1,4 @@
+import { allowScopeChange } from "../../lib/scopeChangeGuard";
 ﻿/**
  * Chat container — header (session title + actions) on top, message
  * list in the middle. The composer lives in a sibling component so the
@@ -164,7 +165,7 @@ export function ChatPanel({
               description: strings.chat.menu.deleteDesc,
               confirmLabel: strings.chat.menu.deleteLabel,
             });
-            if (!ok) return;
+            if (!ok || !allowScopeChange()) return;
             await removeSession(current.id);
             toast.success(strings.chat.menu.delete, current.title);
           })();
@@ -281,7 +282,7 @@ export function ChatPanel({
           <button
             type="button"
             data-testid="chat-header-new"
-            onClick={() => void createSession(DEFAULT_SESSION_TITLE, undefined, newEngine)}
+            onClick={() => { if (allowScopeChange()) void createSession(DEFAULT_SESSION_TITLE, undefined, newEngine); }}
             disabled={creatingSession}
             className="rounded-md border border-line px-2 py-1 text-xs text-ink-0 hover:bg-surface-2 disabled:cursor-wait disabled:opacity-50"
             title={strings.chat.header.newTask}

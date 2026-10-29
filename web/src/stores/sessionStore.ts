@@ -11,6 +11,7 @@ import type { Project, Session } from "../types/ipc";
 import { useChat } from "./chat";
 import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../lib/defaultTitles";
 import { strings } from "../ui/strings";
+import { allowScopeChange } from "../lib/scopeChangeGuard";
 
 export type SessionFilter =
   | "all"
@@ -119,9 +120,9 @@ export interface SessionState {
   rename: (id: string, title: string) => Promise<void>;
   moveSessionProject: (id: string, projectId: string) => Promise<void>;
   mergeSessions: (sessions: SessionMeta[]) => void;
-  setCurrent: (id: string | null, loadMessages?: boolean) => void;
+  setCurrent: (id: string | null, loadMessages?: boolean) => boolean;
   setFilter: (filter: SessionFilter) => void;
-  setCurrentProject: (id: string | null) => void;
+  setCurrentProject: (id: string | null) => boolean;
   toggleProjectExpanded: (id: string) => void;
   createProject: (name: string, description?: string, rootPath?: string, validateCommand?: string) => Promise<Project | null>;
   updateProject: (id: string, fields: { name?: string; description?: string; root_path?: string; validate_command?: string }) => Promise<boolean>;
@@ -399,6 +400,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setCurrent: (id: string | null, loadMessages = true) => {
+    if (id !== get().currentSessionId && loadMessages && !allowScopeChange()) return false;
     ++refreshSeq;
     set({ currentSessionId: id });
     storeCurrentSessionId(id);
@@ -408,13 +410,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (id && loadMessages) {
       void useChat.getState().loadMessages(id);
     }
+    return true;
   },
 
   setFilter: (filter: SessionFilter) => set({ filter }),
 
   setCurrentProject: (id: string | null) => {
+    if (id !== get().currentProjectId && !allowScopeChange()) return false;
     set({ currentProjectId: id });
     storeCurrentProjectId(id);
+    return true;
   },
 
   toggleProjectExpanded: (id: string) => {

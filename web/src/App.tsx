@@ -31,6 +31,7 @@ import {
 import type { SettingsTab } from "./components/settings/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
 import type { CommandPaletteHandle } from "./components/layout/CommandPalette";
+import { registerScopeChangeGuard } from "./lib/scopeChangeGuard";
 
 const MobilePairingModal = lazy(() =>
   import("./components/modals/MobilePairingModal").then((module) => ({ default: module.MobilePairingModal })),
@@ -173,6 +174,21 @@ export default function App() {
     if (!window.confirm("交付物工作区可能有未保存的报告或表格草稿。离开会丢失草稿，确定离开吗？")) return false;
     deliveryEdited.current = false;
     return true;
+  }, []);
+  useEffect(() => registerScopeChangeGuard(() => {
+    if (!deliveryEdited.current) return true;
+    if (!window.confirm("切换项目或会话会清除交付物中可能未保存的报告或表格草稿。留在当前页面，或确定继续切换？")) return false;
+    deliveryEdited.current = false;
+    return true;
+  }), []);
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!deliveryEdited.current && !automationEdited.current && !settingsEdited.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
   }, []);
   const isDelivery = (value: string | null) => value === "artifacts" || value === "attachments" || value === "office" || value === "research" || value === "run-artifacts";
   const handleViewChange = useCallback((next: SidebarView) => {
@@ -407,7 +423,7 @@ export default function App() {
                   ) : overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
                     <DeliveryWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { deliveryEdited.current = true; }} onClose={() => { if (leaveDelivery()) setOverlayView(null); }} />
                   ) : overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks" ? (
-                    <AutomationWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (leaveAutomation()) { setOverlayView(null); setView("chat"); } }} />
+                    <AutomationWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (!leaveAutomation()) return false; setOverlayView(null); setView("chat"); return true; }} />
                   ) : overlayView === "skills" ? (
                     <SkillsPanel onClose={() => setOverlayView(null)} />
                   ) : (
@@ -415,7 +431,7 @@ export default function App() {
                       key={overlayView}
                       initialTab={settingsInitialTab}
                       onEdit={() => { settingsEdited.current = true; }}
-                      onClose={() => { if (leaveSettings()) setOverlayView(null); }}
+                      onClose={() => { if (!leaveSettings()) return false; setOverlayView(null); return true; }}
                     />
                   )}
                 </Suspense>

@@ -83,7 +83,7 @@ export function WorkspaceSwitcher({
   const selectProject = (project: Project) => {
     setOpen(false);
     if (project.id === currentProject.id) return;
-    setCurrentProject(project.id);
+    if (!setCurrentProject(project.id)) return;
     toast.info(strings.layout.workspace.switchedToast, project.name);
   };
 

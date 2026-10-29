@@ -53,8 +53,8 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
       if (!current()) return;
       if (result.project_id !== project || result.service_id !== expected || !result.detail || result.detail.id !== item.id || result.detail.session_id !== item.session_id) throw new Error("运行或会话归属已改变");
       if (open) {
-        useSessionStore.getState().setCurrentProject(project);
-        useSessionStore.getState().setCurrent(item.session_id);
+        if (!useSessionStore.getState().setCurrentProject(project)) return;
+        if (!useSessionStore.getState().setCurrent(item.session_id)) return;
         void useSessionStore.getState().refresh({ loadCurrent: false });
         onOpenSession();
       } else setDetail(result.detail);
