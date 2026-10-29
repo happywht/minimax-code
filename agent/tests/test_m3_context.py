@@ -158,7 +158,7 @@ def _tool_call(name: str, args: dict[str, Any], call_id: str = "call_1") -> dict
             "function": {"name": name, "arguments": json.dumps(args)}}
 
 
-async def test_oversized_output_spills_to_workspace(tmp_path, monkeypatch) -> None:
+async def test_oversized_output_without_durable_run_falls_back_to_truncation(tmp_path, monkeypatch) -> None:
     from minimax_code.agent.core import AgentConfig, AgentCore
     from minimax_code.agent.tools import ToolRegistry
     from minimax_code.workspace_ctx import reset_current_root, set_current_root
@@ -180,17 +180,11 @@ async def test_oversized_output_spills_to_workspace(tmp_path, monkeypatch) -> No
         result = await core.run(session_id="ses_spill", user_message="go")
 
         assert result.budget_exhausted is False
-        # The spill landed in the run's workspace.
-        spill_dir = tmp_path / ".minimax" / "tool-outputs" / "ses_spill"
-        files = list(spill_dir.glob("*.json"))
-        assert files, "oversized output must be spilled to disk"
-        json.loads(files[0].read_text(encoding="utf-8"))  # must be valid JSON
-        assert files[0].stat().st_size > 2_000  # the FULL payload, not the preview
-
-        # The last tool message the LLM sees is a reference, not the blob.
+        # A standalone run has no verifiable durable owner; do not persist
+        # an unbound workspace file or pretend it can be recovered.
+        assert not (tmp_path / ".minimax" / "tool-outputs").exists()
         llm_view = json.dumps(llm.messages, ensure_ascii=False)
-        assert "_spilled" in llm_view
-        assert spill_dir.name in llm_view  # session folder in the reference
+        assert "_truncated" in llm_view
         assert "x" * 120_000 not in llm_view  # the blob itself never enters context
     finally:
         reset_current_root(token)

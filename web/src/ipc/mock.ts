@@ -710,6 +710,8 @@ function mockHandle(
       throw new Error("演示模式没有已读取的真实网页来源");
     case "run.child_workspace":
       throw new Error("演示模式没有真实子任务工作区");
+    case "run.output_page":
+      throw new Error("演示模式没有已保存的工具输出");
     case "run.child_list": {
       const p = params as { session_id: string };
       const session = mockSessions.get(p.session_id);

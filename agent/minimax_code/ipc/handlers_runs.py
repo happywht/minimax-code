@@ -16,6 +16,7 @@ from .protocol import (
     RunChildWorkspaceParams,
     RunEventsParams,
     RunIdParams,
+    RunOutputPageParams,
     RunResearchGetParams,
     RunResearchListParams,
     RunResumeParams,
@@ -55,6 +56,24 @@ def register_run_handlers(server: Any) -> None:
     """Register run timeline read APIs."""
 
     child_review_lock = asyncio.Lock()
+
+    async def handle_output_page(params: Any, ctx: Context) -> None:
+        from ..tool_outputs import read
+        from .host_session_gate import require_host_session
+
+        try:
+            req = RunOutputPageParams.model_validate(params)
+            await require_host_session(req.session_id)
+            dao = await _get_read_control_dao(ctx)
+            page = await read(dao._db, run_id=req.run_id, session_id=req.session_id,
+                ref=req.output_ref, service_id=req.expected_service_id, offset=req.offset, limit=req.limit)
+            await require_host_session(req.session_id)
+            await ctx.reply(page)
+        except (ValidationError, ValueError, HandlerError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("tool output page failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Captured output is unavailable")
 
     async def handle_child_list(params: Any, ctx: Context) -> None:
         from ..orchestrator.subagent import get_background_run
@@ -519,6 +538,7 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.research_get", research_handler(RunResearchGetParams, detail=True))
     server.register("run.child_workspace", handle_child_workspace)
     server.register("run.child_list", handle_child_list)
+    server.register("run.output_page", handle_output_page)
 
 
 async def _start_codex_run(request: RunStartParams, ctx: Context, **options: Any) -> None:

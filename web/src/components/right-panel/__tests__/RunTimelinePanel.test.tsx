@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { RunTimelinePanel } from "../RunTimelinePanel";
 import { usePermissionStore, useRunTimelineStore, useSessionStore } from "../../../stores";
 import type { AgentRun, AgentRunStep } from "../../../types/ipc";
+import { ipc } from "../../../ipc";
 
 function makeRun(): AgentRun {
   return {
@@ -75,6 +76,24 @@ describe("RunTimelinePanel", () => {
     expect(screen.getByTestId("terminal-output-tail").textContent).toBe("  saved tail\n");
     expect(screen.getByText(/输出已截断/)).toBeInTheDocument();
     expect(screen.getByText(/退出码：0/)).toBeInTheDocument();
+  });
+
+  it("opens captured output by its run reference and discards late responses on session switch", async () => {
+    let resolve!: (value: unknown) => void;
+    const request = vi.spyOn(ipc, "request").mockReturnValue(new Promise((done) => { resolve = done; }));
+    useSessionStore.setState({ currentSessionId: "session-1", sessions: [] });
+    renderWithStep(makeStep({ payload: { metadata: { truncated_stdout: true, tool_output: {
+      output_ref: "output-1", run_id: "run-1234567890", session_id: "session-1", project_id: null,
+      service_id: "service", chars: 100 } } } }));
+    expect(screen.getByText(/命令输出在捕获时已截断/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "查看已捕获输出" }));
+    expect(request).toHaveBeenCalledWith("run.output_page", expect.objectContaining({
+      run_id: "run-1234567890", session_id: "session-1", output_ref: "output-1", expected_service_id: "service" }));
+    act(() => useSessionStore.setState({ currentSessionId: "session-2" }));
+    await act(async () => { resolve({ id: "output-1", run_id: "run-1234567890", session_id: "session-1",
+      project_id: null, service_id: "service", offset: 0, next_offset: 4, chars: 4, page: "secret" }); });
+    expect(screen.queryByText("secret")).not.toBeInTheDocument();
+    request.mockRestore();
   });
 
   it("distinguishes missing output from an empty saved tail and unknown truncation", () => {

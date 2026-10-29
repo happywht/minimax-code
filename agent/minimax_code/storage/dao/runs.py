@@ -466,7 +466,7 @@ class AgentRunsDAO:
             if run is None:
                 return None
             async with conn.execute(
-                "SELECT * FROM agent_run_steps WHERE run_id = ? ORDER BY ordinal, id", (run_id,)
+                "SELECT * FROM agent_run_steps WHERE run_id = ? AND COALESCE(tool_name,'') != '__captured_output_v1__' ORDER BY ordinal, id", (run_id,)
             ) as cursor:
                 steps = [_hydrate_step(row) for row in await cursor.fetchall()]
             row = await _fetchone(conn, "SELECT COALESCE(MAX(seq), 0) AS seq FROM run_events WHERE run_id = ?", (run_id,))
@@ -499,7 +499,7 @@ class AgentRunsDAO:
 
     async def get_step(self, step_id: str) -> dict[str, Any] | None:
         row = await self._db.fetchone(
-            "SELECT * FROM agent_run_steps WHERE id = ?",
+            "SELECT * FROM agent_run_steps WHERE id = ? AND COALESCE(tool_name,'') != '__captured_output_v1__'",
             (step_id,),
         )
         return _hydrate_step(row)
@@ -513,7 +513,7 @@ class AgentRunsDAO:
         order_by: str | None = None,
     ) -> list[dict[str, Any]]:
         sql = (
-            "SELECT * FROM agent_run_steps WHERE run_id = ? "
+            "SELECT * FROM agent_run_steps WHERE run_id = ? AND COALESCE(tool_name,'') != '__captured_output_v1__' "
             f"ORDER BY {parse_order_by(order_by, _STEP_SORTABLE, default='ordinal ASC')}"
         )
         params: list[Any] = [run_id]

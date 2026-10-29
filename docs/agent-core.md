@@ -600,7 +600,7 @@ is injected between chunks).
 | `temperature` | `None` | LLM temperature override |
 | `system_prompt_extra` | `None` | Appended to the system prompt |
 | `skill_instructions` | `None` | Skill runtime output (Phase 1.5) |
-| `max_tool_output_bytes` | `50_000` | Truncate tool output above this |
+| `max_tool_output_bytes` | `50_000` | Above this, save bounded captured output to the owning durable run when possible; otherwise truncate. |
 | `stall_timeout` | `120.0` | Maximum silence between LLM stream events; `0` disables the watchdog |
 | `compaction_threshold` | `0.8` | History fraction of the context window that triggers compaction |
 | `context_window` | model catalog | Context window (tokens) feeding the compaction gate |

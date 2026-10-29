@@ -23,6 +23,7 @@ import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
 import { NativeSteerInput } from "./NativeSteerInput";
 import { RunAttachments } from "./RunAttachments";
 import type { VerificationEvidence } from "../../types/ipc";
+import { ipc } from "../../ipc";
 
 export interface RunTimelinePanelProps {
   testId?: string;
@@ -270,9 +271,56 @@ function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: stri
             testId="run-timeline-step-detail"
           />
         )}
+        <CapturedToolOutput step={step} />
       </div>
     </li>
   );
+}
+
+interface OutputReference { output_ref: string; service_id: string; run_id: string; session_id: string; project_id: string | null; chars: number }
+interface OutputPage { id: string; service_id: string; run_id: string; session_id: string; project_id: string | null; offset: number; next_offset: number; chars: number; page: string }
+
+function CapturedToolOutput({ step }: { step: AgentRunStep }): JSX.Element | null {
+  const session = useSessionStore((s) => s.currentSessionId);
+  const project = useSessionStore((s) => s.sessions.find((item) => item.id === session)?.project_id ?? null);
+  const [page, setPage] = useState<OutputPage | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const epoch = useRef(0);
+  const meta = step.payload?.metadata as Record<string, unknown> | undefined;
+  const ref = meta?.tool_output as OutputReference | undefined;
+  useEffect(() => {
+    setPage(null); setError(""); setBusy(false);
+    const version = epoch;
+    return () => { version.current++; };
+  }, [session, project, step.id]);
+  useEffect(() => {
+    if (!ref?.output_ref) return;
+    return ipc.onSideCar(() => { epoch.current++; setPage(null); setBusy(false); setError("连接变化，请重新读取输出。"); });
+  }, [ref?.output_ref]);
+  if (!ref || typeof ref.output_ref !== "string" || ref.run_id !== step.run_id || ref.session_id !== session || ref.project_id !== project) return null;
+  const load = async (offset: number) => {
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl;
+    setBusy(true); setError("");
+    try {
+      const data = await ipc.request<OutputPage>("run.output_page", { run_id: ref.run_id, session_id: ref.session_id,
+        output_ref: ref.output_ref, expected_service_id: ref.service_id, offset, limit: 4000 });
+      if (ticket !== epoch.current || host !== ipc.agentBaseUrl) return;
+      if (data.id !== ref.output_ref || data.run_id !== ref.run_id || data.session_id !== ref.session_id ||
+          data.project_id !== ref.project_id || data.service_id !== ref.service_id || data.offset !== offset) throw new Error("输出归属已变化");
+      setPage(data);
+    } catch (failure) { if (ticket === epoch.current) { setPage(null); setError(String(failure)); } }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
+  return <div className="mt-1 text-[11px] text-minimax-muted">
+    <button type="button" disabled={busy} onClick={() => void load(0)}>查看已捕获输出</button>
+    <p>仅包含工具实际捕获内容；{meta?.truncated_stdout === true || meta?.truncated_stderr === true ? "命令输出在捕获时已截断。" : "请核对原始截断标记。"}</p>
+    {error && <p role="alert">{error}</p>}
+    {page && <><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{page.page}</pre>
+      <div>{page.offset}–{page.next_offset} / {page.chars} 字符</div>
+      <button type="button" disabled={busy || page.offset === 0} onClick={() => void load(Math.max(0, page.offset - 4000))}>上一页</button>{" "}
+      <button type="button" disabled={busy || page.next_offset >= page.chars} onClick={() => void load(page.next_offset)}>下一页</button></>}
+  </div>;
 }
 
 function TerminalEvidence({ step, runStatus }: { step: AgentRunStep; runStatus: string }): JSX.Element {

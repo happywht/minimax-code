@@ -319,6 +319,16 @@ class RunChildListParams(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
 
 
+class RunOutputPageParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    output_ref: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=4000, ge=1, le=8000)
+
+
 class RunResearchListParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1)
