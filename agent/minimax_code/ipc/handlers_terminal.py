@@ -60,6 +60,7 @@ class TerminalSession:
     exit_code: int | None = None
     error: str | None = None
     process: asyncio.subprocess.Process | None = None
+    process_cleanup_attempted: bool = False
     task: asyncio.Task[None] | None = None
     chunks: list[TerminalChunk] = field(default_factory=list)
     next_seq: int = 1
@@ -98,6 +99,41 @@ class TerminalSession:
 
 
 _SESSIONS: dict[str, TerminalSession] = {}
+_TERMINAL_CLOSING = False
+_TERMINAL_DRAIN_TASK: asyncio.Task[None] | None = None
+
+
+class TerminalDrainError(RuntimeError):
+    """Terminal session completion could not be confirmed."""
+
+
+async def drain_terminal_sessions() -> None:
+    """Fence new terminal sessions and wait for existing session cleanup.
+
+    This only covers the in-process terminal registry, not other execution paths.
+    Process-tree cleanup is attempted, but cannot prove all descendants are gone.
+    Cancellation of a caller does not cancel the retained drain.
+    """
+    global _TERMINAL_CLOSING, _TERMINAL_DRAIN_TASK
+    if _TERMINAL_DRAIN_TASK is None:
+        _TERMINAL_CLOSING = True
+        sessions = list(_SESSIONS.values())
+
+        async def finish() -> None:
+            tasks = [s.task for s in sessions if s.task is not None]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            if any(isinstance(result, BaseException) for result in results):
+                raise TerminalDrainError("terminal task did not confirm cleanup")
+            if any(s.process is not None and s.process.returncode is None for s in sessions):
+                raise TerminalDrainError("terminal process is still running")
+            if any(s.process is not None and not s.process_cleanup_attempted for s in sessions):
+                raise TerminalDrainError("terminal process cleanup was not attempted")
+
+        _TERMINAL_DRAIN_TASK = asyncio.create_task(finish(), name="terminal-drain")
+        _TERMINAL_DRAIN_TASK.add_done_callback(
+            lambda task: None if task.cancelled() else task.exception()
+        )
+    await asyncio.shield(_TERMINAL_DRAIN_TASK)
 
 
 def _preview_text(value: Any, *, limit: int = 600) -> str:
@@ -376,6 +412,7 @@ async def _run_session(
         session.process = process
         if session.status == "cancelled":
             await _terminate_process(process)
+            session.process_cleanup_attempted = True
             return
         session.status = "running"
         session.updated_at = time.time()
@@ -388,12 +425,14 @@ async def _run_session(
                 asyncio.gather(process.wait(), stdout_task, stderr_task), timeout=timeout_s
             )
             await _terminate_process(process)
+            session.process_cleanup_attempted = True
             if session.status != "cancelled":
                 session.status = "completed" if session.exit_code == 0 else "failed"
         except TimeoutError:
             session.status = "cancelled"
             session.error = f"command timed out after {timeout_s:g}s"
             await _terminate_process(process)
+            session.process_cleanup_attempted = True
             session.exit_code = process.returncode
         finally:
             for reader in (stdout_task, stderr_task):
@@ -406,6 +445,7 @@ async def _run_session(
         session.error = "cancelled"
         if session.process is not None:
             await asyncio.shield(_terminate_process(session.process))
+            session.process_cleanup_attempted = True
         raise
     except Exception as exc:
         session.status = "failed"
@@ -428,6 +468,7 @@ async def _stop_session(session: TerminalSession) -> None:
     session.updated_at = time.time()
     if session.process is not None:
         await _terminate_process(session.process)
+        session.process_cleanup_attempted = True
 
 
 async def start_terminal_command(
@@ -440,6 +481,8 @@ async def start_terminal_command(
 ) -> TerminalSession:
     """Start a lightweight command session and return its in-memory row."""
     await require_host_session(chat_session_id)
+    if _TERMINAL_CLOSING:
+        raise HandlerError(_TERMINAL_ERROR, "Terminal service is closing")
     session = TerminalSession(
         id=f"term_{uuid.uuid4().hex[:10]}",
         command=command,
