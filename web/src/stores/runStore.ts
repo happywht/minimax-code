@@ -116,7 +116,9 @@ async function drain(): Promise<void> {
         }
       }
       if (refresh && entries.every((entry) => "pending_ask_user" in entry)) {
-        const question = entries.map((entry) => entry.pending_ask_user).find((value) => value != null) ?? null;
+        const questions = entries.map((entry) => entry.pending_ask_user).filter((value) => value != null);
+        const currentQuestionId = useChat.getState().askUser?.request_id;
+        const question = questions.find((value) => value.request_id === currentQuestionId) ?? questions[0] ?? null;
         useChat.getState().reconcileAskUser(question, askVersion, current);
       }
       if (refresh) {
@@ -177,6 +179,12 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
     unsubs = [
       ...[StreamEvent.RunCreated, StreamEvent.RunUpdated, StreamEvent.RunStepStarted, StreamEvent.RunStepCompleted,
         StreamEvent.RunCompleted].map((event) => ipc.on(event, wake)),
+      // These transient interactions are absent from the durable event journal.
+      // Refresh after each change so another run's pending question can surface
+      // and a snapshot invalidated by an in-flight event is retried.
+      ...[StreamEvent.AskUser, StreamEvent.AskUserClosed, StreamEvent.PermissionRequest,
+        StreamEvent.PermissionResolved, StreamEvent.PermissionClosed].map((event) =>
+        ipc.on(event, () => { void requestSync(useSessionStore.getState().currentSessionId, true); })),
       ipc.onSideCar((event) => {
         if (event.status === "started") void requestSync(useSessionStore.getState().currentSessionId, true);
       }),
