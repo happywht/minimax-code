@@ -28,7 +28,7 @@ MAX_FILES = 10000
 WEB_EXTENSIONS = {".html", ".js", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".woff", ".woff2", ".ttf"}
 GIT_PATHS = ["package.json", "agent/pyproject.toml", "agent/uv.lock", "agent/README.md",
              "agent/minimax_code", "agent/skills", "scripts/start-production.mjs"]
-OPTIONAL_PATHS = ["Start-MiniMax-Code.cmd", "scripts/generate-linux-user-service.py", "scripts/install-linux-user-service.py", "scripts/install-release.py"]
+OPTIONAL_PATHS = ["scripts/generate-linux-user-service.py", "scripts/install-linux-user-service.py", "scripts/install-release.py", "scripts/start-release.mjs", "scripts/start-release.ps1", "Start-Installed-Release.cmd"]
 
 
 def git(*args: str) -> bytes:

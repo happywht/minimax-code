@@ -230,12 +230,25 @@ class Database:
 
     # -- migrations ---------------------------------------------------------
 
-    def migrate(self) -> list[int]:
+    def migrate(self, *, release_fresh: bool = False) -> list[int]:
         """Run any pending migrations synchronously.
 
         Returns the list of newly-applied versions.
         """
         with self._lock:
+            guard = os.environ.get("MINIMAX_CODE_RELEASE_SCHEMA_GUARD")
+            if guard in {"existing", "initialize-new"}:
+                table = self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()
+                if table is None:
+                    if guard != "initialize-new" or not release_fresh:
+                        raise RuntimeError("Release startup refused: existing database has no migration record; inspect it before use")
+                    if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') LIMIT 1").fetchone():
+                        raise RuntimeError("Release startup refused: new database is not empty")
+                else:
+                    applied_existing = self._applied_versions()
+                    required = {version for version, _ in discover_migrations([])}
+                    if applied_existing != required:
+                        raise RuntimeError("Release startup refused: database schema differs; back up and handle upgrade or recovery explicitly")
             ensure_migration_table(self._conn)
             applied = self._applied_versions()
             pending = discover_migrations(applied)
@@ -357,6 +370,7 @@ class AsyncDatabase:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._pragmas = pragmas
         self._conn: aiosqlite.Connection | None = None
+        self._release_fresh = False
         self._lock = asyncio.Lock()
         logger.debug("async database will live at %s", self.path)
 
@@ -371,6 +385,13 @@ class AsyncDatabase:
         # issued through bare execute() uncommitted — silently lost on
         # close — and make a later BEGIN fail with "cannot start a
         # transaction within a transaction".
+        guard = os.environ.get("MINIMAX_CODE_RELEASE_SCHEMA_GUARD")
+        if guard in {"existing", "initialize-new"}:
+            self._release_fresh = not os.path.lexists(self.path)
+            if self._release_fresh and guard != "initialize-new":
+                raise RuntimeError("Release startup requires an existing database or explicit new-data initialization")
+            if not self._release_fresh and self.path.is_symlink():
+                raise RuntimeError("Release startup refuses a symbolic-link database")
         self._conn = await aiosqlite.connect(str(self.path), isolation_level=None)
         self._conn.row_factory = aiosqlite.Row
         if self._pragmas:
@@ -411,7 +432,7 @@ class AsyncDatabase:
         # async side (WAL, foreign_keys, …) so the lock dance works.
         sync = Database(self.path)
         try:
-            return sync.migrate()
+            return sync.migrate(release_fresh=self._release_fresh)
         finally:
             sync.close()
 

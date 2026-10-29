@@ -244,6 +244,8 @@ async def _maybe_open_db() -> Any:
                 logger.debug("failed to close partially initialised storage", exc_info=True)
             if _DB_SINGLETON is db:
                 _DB_SINGLETON = None
+        if os.environ.get("MINIMAX_CODE_RELEASE_SCHEMA_GUARD") in {"existing", "initialize-new"}:
+            raise
         return None
 
 

@@ -102,8 +102,10 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
     except Exception:
         # Storage may be disabled (MINIMAX_CODE_NO_DB=1) or the
         # DB may be briefly unavailable at boot — both are fine,
-        # the handlers will lazily retry on first use.
-        pass
+        # the handlers will lazily retry on first use. Installed releases
+        # instead fail closed when their explicit schema guard is enabled.
+        if os.environ.get("MINIMAX_CODE_RELEASE_SCHEMA_GUARD") in {"existing", "initialize-new"}:
+            raise
     server = IPCServer(config=config, stdin=sys.stdin, stdout=sys.stdout)
     register_app_handlers(server)
     from .app import initialize_execution_service
