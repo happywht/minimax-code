@@ -46,6 +46,13 @@ export function ScheduleSnapshot({ job }: { job: ScheduledJob }): JSX.Element {
 
 export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targetOccurrenceId }: { job: ScheduledJob; expanded: boolean; serviceId?: string; targetOccurrenceId?: string; onOpenSession?: () => boolean | void }): JSX.Element {
   const [history, setHistory] = useState<ScheduleOccurrence[]>([]);
+  const [filter, setFilter] = useState("all");
+  const [filteredHistory, setFilteredHistory] = useState<ScheduleOccurrence[]>([]);
+  const [filteredCursor, setFilteredCursor] = useState<ScheduleOccurrenceCursor | null>(null);
+  const [filteredBusy, setFilteredBusy] = useState(false);
+  const [filteredError, setFilteredError] = useState("");
+  const [filterRefresh, setFilterRefresh] = useState(0);
+  const filterEpoch = useRef(0), filterPaging = useRef(false);
   const [cursor, setCursor] = useState<ScheduleOccurrenceCursor | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [initialLoaded, setInitialLoaded] = useState(false);
@@ -104,6 +111,42 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
     void refresh();
     return () => { current = false; ++pageEpoch.current; if (timer) clearTimeout(timer); unsubs.forEach((unsub) => unsub()); };
   }, [job.id, job.active_occurrence_id, expanded]);
+  useEffect(() => {
+    const ticket = ++filterEpoch.current, host = ipc.agentBaseUrl;
+    filterPaging.current = false;
+    setFilteredHistory([]); setFilteredCursor(null); setFilteredError(""); setFilteredBusy(false);
+    if (!expanded || filter === "all") return () => { ++filterEpoch.current; };
+    setFilteredBusy(true);
+    void typedIPC.listScheduleOccurrences(job.id, undefined, filter).then((result) => {
+      if (ticket !== filterEpoch.current || host !== ipc.agentBaseUrl) return;
+      setFilteredHistory(result.occurrences.filter((row) => row.job_id === job.id));
+      setFilteredCursor(result.next_cursor ?? null);
+    }).catch((failure) => {
+      if (ticket === filterEpoch.current) setFilteredError(`读取筛选记录失败：${String(failure)}`);
+    }).finally(() => { if (ticket === filterEpoch.current) setFilteredBusy(false); });
+    const invalidate = () => { ++filterEpoch.current; setFilteredBusy(false); setFilteredError("运行状态或连接已变化，请重新读取筛选结果。"); };
+    const unsubs = [StreamEvent.RunUpdated, StreamEvent.RunCompleted, StreamEvent.TaskProgress, StreamEvent.ScheduleUpdated].map((event) => ipc.on(event, invalidate));
+    unsubs.push(ipc.onSideCar(invalidate));
+    return () => { ++filterEpoch.current; unsubs.forEach((unsubscribe) => unsubscribe()); };
+  }, [job.id, expanded, filter, filterRefresh]);
+  const loadMoreFiltered = async () => {
+    if (!filteredCursor || filteredBusy || filteredError || filterPaging.current) return;
+    const ticket = filterEpoch.current, host = ipc.agentBaseUrl;
+    filterPaging.current = true; setFilteredBusy(true);
+    try {
+      const result = await typedIPC.listScheduleOccurrences(job.id, filteredCursor, filter);
+      if (ticket !== filterEpoch.current || host !== ipc.agentBaseUrl) return;
+      setFilteredHistory((previous) => {
+        const ids = new Set(previous.map((row) => row.id));
+        return [...previous, ...result.occurrences.filter((row) => row.job_id === job.id && !ids.has(row.id))];
+      });
+      setFilteredCursor(result.next_cursor ?? null);
+    } catch (failure) {
+      if (ticket === filterEpoch.current) setFilteredError(`读取更早筛选记录失败：${String(failure)}`);
+    } finally {
+      if (ticket === filterEpoch.current) { filterPaging.current = false; setFilteredBusy(false); }
+    }
+  };
   const loadMore = async () => {
     if (!cursor || stale || paging.current) return;
     const ticket = pageEpoch.current, host = ipc.agentBaseUrl;
@@ -136,6 +179,8 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
   }, [expanded, targetOccurrenceId, initialLoaded, history, cursor, loadingMore, stale, error, autoLimitReached]);
   const active = history.find((occurrence) => occurrence.id === job.active_occurrence_id);
   const status = (occurrence: ScheduleOccurrence) => occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status;
+  const target = history.find((row) => row.id === targetOccurrenceId);
+  const visibleHistory = filter === "all" ? history : target && !filteredHistory.some((row) => row.id === target.id) ? [target, ...filteredHistory] : filteredHistory;
   const terminalReview = verified && ["failed", "cancelled", "interrupted", "budget_paused"].includes(verified.status);
   const enableFuture = async () => {
     if (!active || !serviceId || !verified || !terminalReview || !acknowledged || stale || enabling || enablingRef.current || !job.revision ||
@@ -188,7 +233,15 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
         {reviewError && <p role="alert" className="break-words text-status-warning">{reviewError}</p>}
       </> : <p>当前发生尚未确认；请刷新，不要重复执行。</p>}
     </div>}
-    {expanded && (history.length === 0 ? (error ? "无法读取发生记录" : "暂无发生记录") : history.map((occurrence) => <div key={occurrence.id} ref={occurrence.id === targetOccurrenceId ? targetRef : undefined} className={occurrence.id === targetOccurrenceId ? "rounded border border-accent p-2" : undefined}>
+    {expanded && <div className="flex flex-wrap items-center gap-2 py-1">
+      <label>筛选运行历史 <select aria-label="筛选定时运行历史" className="bg-surface-2" value={filter} onChange={(event) => setFilter(event.target.value)}>
+        <option value="all">全部状态</option><option value="attention">需要处理</option><option value="failed">失败、中断或取消</option><option value="completed">执行结束</option><option value="active">待接单或运行中</option><option value="other">其他状态</option>
+      </select></label>
+      <span role="status">已显示 {visibleHistory.length} 条{(filter === "all" ? cursor : filteredCursor) ? "；可加载更早记录" : ""}{target && filter !== "all" ? "；通知关联记录始终显示" : ""}</span>
+      {filter !== "all" && filteredBusy && <span role="status">正在读取…</span>}
+      {filter !== "all" && filteredError && <><span role="alert">{filteredError}</span><Button type="button" size="sm" onClick={() => setFilterRefresh((value) => value + 1)}>重新读取筛选结果</Button></>}
+    </div>}
+    {expanded && (visibleHistory.length === 0 ? (filter === "all" ? (error ? "无法读取发生记录" : "暂无发生记录") : filteredBusy || filteredError ? null : "没有匹配的发生记录。") : visibleHistory.map((occurrence) => <div key={occurrence.id} ref={occurrence.id === targetOccurrenceId ? targetRef : undefined} className={occurrence.id === targetOccurrenceId ? "rounded border border-accent p-2" : undefined}>
     {occurrence.id === targetOccurrenceId && <p className="font-medium">通知关联的发生记录</p>}
     <p>{label(occurrence.source)} · {occurrence.scheduled_for ?? occurrence.created_at} · {label(occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status)} · {occurrence.reason}</p>
     <VerificationBadge evidence={occurrence.verification} />
@@ -196,6 +249,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
     {!(job.binding_state === "requires_review" && occurrence.id === active?.id) && <ScheduleRunDetail occurrence={occurrence} />}
     <Button disabled={!occurrence.context?.project_id || !occurrence.session_id} onClick={() => open(occurrence)}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
   </div>))}
-    {expanded && cursor && <Button type="button" size="sm" disabled={stale || loadingMore} loading={loadingMore} onClick={() => void loadMore()}>加载更早记录</Button>}
+    {expanded && filter === "all" && cursor && <Button type="button" size="sm" disabled={stale || loadingMore} loading={loadingMore} onClick={() => void loadMore()}>加载更早记录</Button>}
+    {expanded && filter !== "all" && filteredCursor && <Button type="button" size="sm" disabled={!!filteredError || filteredBusy} loading={filteredBusy} onClick={() => void loadMoreFiltered()}>加载更早匹配记录</Button>}
   </div>;
 }

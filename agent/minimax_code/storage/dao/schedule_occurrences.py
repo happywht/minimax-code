@@ -36,8 +36,28 @@ class ScheduleOccurrencesDAO:
             )
         )
 
-    async def list(self, job_id=None, limit=100, before=None):
+    async def list(self, job_id=None, limit=100, before=None, status_group=None):
         clauses, args = [], []
+        groups = {
+            "attention": ("blocked", "awaiting_approval", "waiting_input", "budget_paused"),
+            "failed": ("failed", "interrupted", "cancelled"),
+            "completed": ("completed",),
+            "active": ("pending", "queued", "planning", "running"),
+        }
+        if status_group:
+            # Match the same status projection as the UI: blocked takes precedence,
+            # otherwise use the task's current run status when available.
+            status = "CASE WHEN status='blocked' THEN status ELSE COALESCE((SELECT r.status FROM tasks t JOIN agent_runs r ON r.id=t.run_id WHERE t.id=schedule_occurrences.task_id), status) END"
+            values = groups.get(status_group)
+            if status_group == "other":
+                values = tuple(value for group in groups.values() for value in group)
+                operator = "NOT IN"
+            elif values:
+                operator = "IN"
+            else:
+                raise ValueError("Invalid occurrence status group")
+            clauses.append(f"({status}) {operator} ({','.join('?' for _ in values)})")
+            args.extend(values)
         if job_id:
             clauses.append("job_id=?")
             args.append(job_id)

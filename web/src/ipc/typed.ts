@@ -335,7 +335,7 @@ export interface TypedIPC {
   listJobs(): Promise<ListJobsResult>;
   createJob(opts: ScheduleDefinition): Promise<{ job: ScheduledJob }>;
   updateJob(jobId: string, expectedRevision: number, opts: ScheduleDefinition, expectedService?: string): Promise<{job: ScheduledJob}>;
-  listScheduleOccurrences(jobId: string, before?: ScheduleOccurrenceCursor): Promise<{occurrences: ScheduleOccurrence[]; next_cursor?: ScheduleOccurrenceCursor | null}>;
+  listScheduleOccurrences(jobId: string, before?: ScheduleOccurrenceCursor, statusGroup?: string): Promise<{occurrences: ScheduleOccurrence[]; next_cursor?: ScheduleOccurrenceCursor | null}>;
   deleteJob(jobId: string): Promise<{ ok: true }>;
   enableJob(jobId: string, acknowledgeOccurrenceId?: string, expectedRevision?: number, expectedService?: string): Promise<{ job: ScheduledJob }>;
   disableJob(jobId: string): Promise<{ job: ScheduledJob }>;
@@ -875,7 +875,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       const result = await client.request<{job: WireScheduledJob}>("schedule.update", { job_id: jid, expected_revision: expectedRevision, name: opts.name, cron_expr: opts.cron, payload: {prompt:opts.prompt}, context: opts.context, ...(expectedService ? {expected_service_id: expectedService} : {}) });
       return {job:normalizeScheduledJob(result.job)};
     },
-    listScheduleOccurrences: (jid, before) => client.request<{occurrences: ScheduleOccurrence[]; next_cursor?: ScheduleOccurrenceCursor | null}>("schedule.occurrences",{job_id:jid, ...(before ? {before} : {})}),
+    listScheduleOccurrences: (jid, before, statusGroup) => client.request<{occurrences: ScheduleOccurrence[]; next_cursor?: ScheduleOccurrenceCursor | null}>("schedule.occurrences",{job_id:jid, ...(before ? {before} : {}), ...(statusGroup ? {status_group: statusGroup} : {})}),
     deleteJob: (jid) =>
       client.request<{ ok: true }>("schedule.delete", { job_id: jid }),
     enableJob: async (jid, acknowledgeOccurrenceId, expectedRevision, expectedService) => {

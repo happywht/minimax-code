@@ -218,12 +218,15 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             sched = await scheduler_factory()
             params = params or {}
             before = params.get("before")
+            status_group = params.get("status_group")
+            if status_group is not None and status_group not in ("attention", "failed", "completed", "active", "other"):
+                raise ValueError("Invalid occurrence status group")
             if before is not None and (not isinstance(before, dict) or
                     not isinstance(before.get("created_at"), str) or not before["created_at"] or
                     not isinstance(before.get("id"), str) or not before["id"]):
                 raise ValueError("Invalid occurrence cursor")
             await sched._reconcile_occurrences()
-            rows = await sched._occurrences.list(params.get("job_id"), limit=101, before=before)
+            rows = await sched._occurrences.list(params.get("job_id"), limit=101, before=before, status_group=status_group)
             page = rows[:100]
             next_cursor = ({"created_at": page[-1]["created_at"], "id": page[-1]["id"]}
                            if len(rows) > 100 else None)
