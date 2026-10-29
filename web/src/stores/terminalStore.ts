@@ -29,8 +29,9 @@ function upsertSession(
   session: TerminalSession,
 ): Pick<TerminalState, "sessions" | "order"> {
   const exists = session.id in state.sessions;
+  const current = state.sessions[session.id];
   return {
-    sessions: { ...state.sessions, [session.id]: session },
+    sessions: { ...state.sessions, [session.id]: current && current.updated_at > session.updated_at ? current : session },
     order: exists ? state.order : [session.id, ...state.order],
   };
 }
@@ -55,16 +56,27 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     })),
 
   list: async () => {
+    const before = get().sessions;
     set({ loading: true, error: null });
     try {
       const result = await typedIPC.listTerminals();
-      const sessions = Object.fromEntries(result.sessions.map((session) => [session.id, session]));
-      set((state) => ({
-        sessions,
-        order: result.sessions.map((session) => session.id),
-        activeId: state.activeId && sessions[state.activeId] ? state.activeId : result.sessions[0]?.id ?? null,
-        loading: false,
-      }));
+      set((state) => {
+        const sessions = Object.fromEntries(result.sessions.map((session) => {
+          const current = state.sessions[session.id];
+          return [session.id, current && current.updated_at > session.updated_at ? current : session];
+        }));
+        // A read or start completed while the list was in flight. Keep that
+        // newer observation until the next list can confirm server state.
+        const concurrent = state.order.filter((id) => !sessions[id] && state.sessions[id] !== before[id]);
+        for (const id of concurrent) sessions[id] = state.sessions[id];
+        const order = [...concurrent, ...result.sessions.map((session) => session.id)];
+        return {
+          sessions,
+          order,
+          activeId: state.activeId && sessions[state.activeId] ? state.activeId : order[0] ?? null,
+          loading: false,
+        };
+      });
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : String(err) });
     }
@@ -96,12 +108,15 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const afterSeq = get().lastSeq[sessionId] ?? 0;
     try {
       const result = await typedIPC.readTerminal({ session_id: sessionId, after_seq: afterSeq });
-      const maxSeq = result.chunks.reduce((max, chunk) => Math.max(max, chunk.seq), afterSeq);
       set((state) => {
         const current = state.chunks[sessionId] ?? [];
+        const chunks = new Map(current.map((chunk) => [chunk.seq, chunk]));
+        for (const chunk of result.chunks) chunks.set(chunk.seq, chunk);
+        const ordered = [...chunks.values()].sort((a, b) => a.seq - b.seq);
+        const maxSeq = ordered.reduce((max, chunk) => Math.max(max, chunk.seq), state.lastSeq[sessionId] ?? 0);
         return {
           ...upsertSession(state, result.session),
-          chunks: { ...state.chunks, [sessionId]: [...current, ...result.chunks] },
+          chunks: { ...state.chunks, [sessionId]: ordered },
           lastSeq: { ...state.lastSeq, [sessionId]: maxSeq },
           error: null,
         };

@@ -897,3 +897,18 @@ Schema048；核对测试会话标记和 webhook_deliveries 表，并通过升级
 脚本位于 `.verification/upgrade-real-b29df73.py`、`restart-real-b29df73.py`、
 `verify-real-b29-tunnel.py` 和 `browser-tunnel-reconnect.py`。未执行付费模型调用；
 没有模拟远端物理断网、整机重启，或在正式服务上验证执行中任务的恢复。
+
+### 正式服务断线与已完成结果恢复（2026-10-29）
+
+使用 Windows 产品 SSH 隧道在正式服务创建标记为验收的会话 `ses_168cb54c`，
+启动不写文件的 35 秒受控终端命令。确认命令正在执行且已输出开始标记后，终止
+本机 SSH 进程；隧道在原地址自动重连时命令仍在执行，最终完成标记写入运行
+`run_f902ba324044` 的持久步骤。命令完成后重启 systemd 用户服务，通过认证隧道
+重新读取 `run.steps`，确认同一 completed 运行及结束标记保留。验收会话保留供
+核查。脚本为 `.verification/formal-live-disconnect.py`、
+`.verification/restart-real-after-task.py` 和
+`.verification/verify-real-result-after-restart.py`。
+
+这是受控终端命令，不是付费模型或真实办公任务；进程重启后内存中的终端会话
+和完整输出不会恢复，本例恢复的是持久运行步骤中有限的输出尾部。未模拟远端
+物理网络断开、任务执行中的服务重启或机器重启。

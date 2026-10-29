@@ -37,6 +37,10 @@ export function TerminalPanel({ testId = "terminal-panel" }: TerminalPanelProps)
   }, [list]);
 
   useEffect(() => {
+    if (activeId) void read(activeId);
+  }, [activeId, read]);
+
+  useEffect(() => {
     if (!activeId || !running) return;
     const timer = window.setInterval(() => {
       void read(activeId);
