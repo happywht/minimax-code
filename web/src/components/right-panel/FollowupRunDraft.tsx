@@ -28,10 +28,20 @@ export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null
   const read = async (ticket: number): Promise<Prepared> => {
     const identity = await typedIPC.getServiceIdentity();
     if (!isCurrent(ticket) || !identity.service_id) throw new Error("服务或会话已变化");
-    const [snapshot, attachments] = await Promise.all([typedIPC.getRunSteps(run.id), typedIPC.listAttachments(project)]);
+    const [snapshot, attachments, summary] = await Promise.all([
+      typedIPC.getRunSteps(run.id), typedIPC.listAttachments(project),
+      typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: identity.service_id, run_id: run.id })
+        .then((value) => ({ value }), (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/Project or service identity changed|Run project association changed/i.test(message)) throw error;
+          return { value: null };
+        }),
+    ]);
     const after = await typedIPC.getServiceIdentity();
     if (!isCurrent(ticket) || after.service_id !== identity.service_id || attachments.service_id !== identity.service_id ||
-        snapshot.run.id !== run.id || snapshot.run.session_id !== session || snapshot.run.metadata?.project_id !== project || !terminal.has(snapshot.run.status))
+        snapshot.run.id !== run.id || snapshot.run.session_id !== session || snapshot.run.metadata?.project_id !== project || !terminal.has(snapshot.run.status) ||
+        (summary.value !== null && (summary.value.project_id !== project || summary.value.service_id !== identity.service_id || !summary.value.detail ||
+        summary.value.detail.id !== run.id || summary.value.detail.session_id !== session || summary.value.detail.status !== snapshot.run.status)))
       throw new Error("运行、项目或服务归属已变化，请刷新");
     const saved = snapshot.run, raw = saved.metadata?.verification as VerificationEvidence | undefined;
     const evidence = raw?.version === 1 ? raw : undefined;
@@ -39,6 +49,13 @@ export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null
     const lines = ["请基于以下已记录运行准备后续任务（目标请补充；请先核对原记录与文件）：",
       `运行：${saved.id} · ${clip(saved.title || "未命名", 240)}`, `运行状态：${statuses[saved.status] ?? saved.status}（不代表业务验收）`,
       `验证记录：${evidence ? verdicts[evidence.verdict ?? "unknown"] ?? "未知" : "历史记录未提供验证证据"}`];
+    const detail = summary.value?.detail;
+    if (!detail) lines.push("运行文本回执：无法读取；请打开所属会话核对。其他已确认的记录仍列于下方。");
+    else if (detail.text === null) lines.push("运行文本回执：没有可确认属于此运行的已保存文本。");
+    else {
+      lines.push("运行文本回执（原运行记录，内容未经核实）：", clip(detail.text, 4000) || "（文本为空）");
+      if (detail.text_truncated || detail.text.length > 4000) lines.push("运行文本未完整加入草稿，请打开所属会话查看完整记录。");
+    }
     if (evidence?.reason) lines.push(`验证记录原因：${clip(evidence.reason, 300)}`);
     if (evidence?.requires_review) lines.push("该记录提示需要人工核对。");
     if (result) {
