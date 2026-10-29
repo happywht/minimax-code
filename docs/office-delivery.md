@@ -47,7 +47,7 @@ CLI 完整重验包及全部单元格，输出报告 JSON，成功 exit 0；失�
 
 Schema046 只新增 `office_deliveries` 和索引，原表不重建。receipt 严格绑定项目/服务、唯一附件及版本化报告；完整输入 JSON 不存入数据库，需自行保存。附件仍使用原不可变 attachment-vault，清单中同一字节只计一次。
 
-bundle6 仅匹配 schema46，含严格 office 清单；当前 bundle10 对应 schema49 并保留该清单；历史 v1–v9 原样只读验证和精确恢复，冻结的历史 writer 不放宽未来版本。恢复是 data-only，不执行迁移、生成、解析器、MCP 或模型；启动新版应用的正常显式迁移另当别论。见 [bundle 协议](data-vault-bundle.md) 与 [存储结构](storage-schema.md)。
+bundle6 仅匹配 schema46，含严格 office 清单；当前 bundle11 对应 schema49 并保留该清单；历史 v1–v10 原样只读验证和精确恢复，冻结的历史 writer 不放宽未来版本。恢复是 data-only，不执行迁移、生成、解析器、MCP 或模型；启动新版应用的正常显式迁移另当别论。见 [bundle 协议](data-vault-bundle.md) 与 [存储结构](storage-schema.md)。
 
 既有 data.export JSON 只带数据库元数据，不复制 vault 原字节，不能作为完整办公成果备份。需要完整保全时使用上述离线 bundle；导入元数据也不重新执行内容验证或建立新的生成证据。
 

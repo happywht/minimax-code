@@ -360,7 +360,7 @@ async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_al
     assert bundle.create_bundle(target, new)["schema_version"] == 49
     with pytest.raises(ValueError):
         legacy_v2_writer().verify_bundle(new)
-    assert bundle.verify_bundle(new)["format_version"] == 10
+    assert bundle.verify_bundle(new)["format_version"] == 11
 
 
 async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_path, monkeypatch):
@@ -448,7 +448,7 @@ async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_p
     finally:
         await db.close()
     current = tmp_path / "current-v6.zip"
-    assert bundle.create_bundle(target, current)["format_version"] == 10
+    assert bundle.create_bundle(target, current)["format_version"] == 11
     assert bundle.verify_bundle(current)["schema_version"] == 49
     with pytest.raises(ValueError):
         old_writer.verify_bundle(current)
@@ -543,7 +543,7 @@ async def test_v2_restores_all_registered_originals_and_public_authenticated_dow
     archive = tmp_path / "v2.zip"
     report = cli("create", "--data-dir", data, "--output", archive)
     assert not list(tmp_path.glob(".bundle-pending-*"))
-    assert report["format_version"] == 10 and report["schema_version"] == 49
+    assert report["format_version"] == 11 and report["schema_version"] == 49
     assert report["artifact_count"] == 1 and report["attachment_count"] == 2
     assert report["excluded_attachment_entries"] == {"orphan": 1, "pending": 1}
     assert cli("verify", "--bundle", archive)["attachment_count"] == 2
@@ -614,7 +614,7 @@ async def test_v2_version_reference_member_rules_fail_closed(both_vaults, tmp_pa
         members = [(item.filename, archive.read(item)) for item in archive.infolist()]
     manifest = json.loads(members[0][1])
     if change == "unknown-version":
-        manifest["format_version"] = 11
+        manifest["format_version"] = 12
     elif change == "schema-format-mismatch":
         manifest["schema_version"] = 41
     elif change == "attachment-path":
@@ -668,7 +668,7 @@ async def test_v7_frozen_bundle_verify_restore_then_migrate(tmp_path, monkeypatc
     finally:
         await db.close()
     current = tmp_path / "v8.zip"
-    assert bundle.create_bundle(target, current)["format_version"] == 10
+    assert bundle.create_bundle(target, current)["format_version"] == 11
     assert bundle.verify_bundle(current)["schema_version"] == 49
     assert bundle.restore_bundle(current, tmp_path / "restored-v8")["schema_version"] == 49
 

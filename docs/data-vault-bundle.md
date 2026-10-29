@@ -1,7 +1,7 @@
 # SQLite、文本成果与附件原件的离线数据包
 
 此命令保存 **SQLite 数据库、已登记文本成果版本及附件原件**。当前新建包使用
-v10/Schema049；仍可校验、恢复旧 v9/Schema049、v8/Schema048、v7/Schema047、v6/Schema046 和 v1/Schema041、v2/Schema042、v3/Schema043、v4/Schema044、v5/Schema045，且不迁移或重新绑定旧库。
+v11/Schema049；仍可校验、恢复旧 v10/Schema049、v9/Schema049、v8/Schema048、v7/Schema047、v6/Schema046 和 v1/Schema041、v2/Schema042、v3/Schema043、v4/Schema044、v5/Schema045，且不迁移或重新绑定旧库。
 它生成 data-only 数据副本，不代表 M7 完整应用备份或可直接启动的迁移。
 PDF/XLSX预览沿用既有元数据；046/v6新增办公成果持久校验回执，文件仍复用附件vault。
 早期PDF切片沿用v2/inert_text和原因枚举，未改变其当时的Schema044/bundle4。
@@ -13,7 +13,7 @@ XLSX有界预览同样沿用v2/inert_text，另设精确declared=recognized=xlsx
 固定旧bundle4 raw writer及metadata/attachments字节与合法新XLSX行双向校验/恢复，
 保留DB与原件字节，不调用解析器、迁移或重新计算。公式/缓存只是未验证的存储文本；
 详见[XLSX预览边界](attachment-xlsx.md)。
-v10 保存数据库所列的检查点未跟踪文件副本，缺失或不安全文件会阻止创建；未登记的检查点副本和目录不会收录，请单独保全。以采集时的字节为准，不证明历史创建时的内容，外部进程仍可能在最终校验后更改文件。Git stash 对象不包含在数据包中，故不保证完整恢复；旧 v1–v9 也不包含检查点文件副本。
+v10 保存数据库所列的检查点未跟踪文件副本，缺失或不安全文件会阻止创建；未登记的检查点副本和目录不会收录，请单独保全。以采集时的字节为准，不证明历史创建时的内容，外部进程仍可能在最终校验后更改文件。v11 另保存已绑定检查点 stash 对象及其可达对象闭包，并在隔离裸仓库校验；这可能包含完整 Git 历史与敏感数据；子模块独立仓库和 Git LFS 外部对象不包含在内。创建时无法访问的来源或对象、浅克隆、alternates 和部分克隆会拒绝创建。旧 v1–v10 不包含这些 Git 对象，旧 v1–v9 也不包含检查点文件副本。
 现有设置页 `data.*` 导出、导入和立即备份仍是原有语义，不会自动保存独立 vault 字节。
 
 ## 操作
@@ -40,7 +40,7 @@ JSON。校验或 I/O 失败时返回非零退出码，不将失败当作备份�
 v1 数据包固定 Schema041，只允许版本化 `manifest.json`、SQLite backup API 产生的
 `data.db` 和数据库所有历史记录引用的 `text-artifact-vault/<snapshot_id>`。
 v2 固定 Schema042，额外纳入所有注册 `attachment-vault/<snapshot_id>` 原件，
-包括无法解析、类型异常、空文件和历史版本。v3固定Schema043，新增解析范围和稳定原因字段，保留历史v1元数据。v4固定Schema044，记录历史流式用量可信度迁移，不改变附件字段。v5固定Schema045，扩展MCP transport检查以保留显式streamable_http。v6固定Schema046，新增office_deliveries回执清单。v7固定Schema047，保存各主机的远端服务端口。v8固定Schema048，保存Webhook投递记录。v9固定Schema049，记录检查点来源路径。v10固定Schema049并保存检查点文件副本；当前工具只从049创建v10，历史v1–v9只供校验与恢复；
+包括无法解析、类型异常、空文件和历史版本。v3固定Schema043，新增解析范围和稳定原因字段，保留历史v1元数据。v4固定Schema044，记录历史流式用量可信度迁移，不改变附件字段。v5固定Schema045，扩展MCP transport检查以保留显式streamable_http。v6固定Schema046，新增office_deliveries回执清单。v7固定Schema047，保存各主机的远端服务端口。v8固定Schema048，保存Webhook投递记录。v9固定Schema049，记录检查点来源路径。v10固定Schema049并保存检查点文件副本；v11在相同 schema 上增加有界 Git 对象包。当前工具从049创建v11，历史v1–v10只供校验与恢复；
 未知版本、格式/schema组合或表结构拒绝。Schema041升级前可用旧工具先保全v1；
 本工具验证/恢复旧包不会调用迁移。没有042/043/044/045/046降级迁移，回退须使用匹配旧程序的升级前备份。
 它不受成果列表最新 200 条的显示限制。清单记录应用/格式/schema 版本、服务身份、
@@ -198,3 +198,13 @@ restore保持DB和每份原文件的精确字节，不调用迁移、XLSX生成�
 DDL与版本一起回滚。回退旧程序须还原该备份到新数据目录，不能删新表、手工将版本号
 改回45，或把v6数据库直接交给旧writer。本节说明合同；最终Windows/Linux执行证据由
 本批验收记录提供，不将历史v1–5测试回执冒用为v6结果。
+
+## 显式导入检查点 Git 对象
+
+恢复数据包不会修改任何 Git 仓库。确认恢复后的数据目录和原仓库均不再被应用或其他 Git 进程使用，并核实仓库内容与检查点来源后，可以运行：
+
+```bash
+uv run python -m minimax_code.bundle import-checkpoint-git --data-dir /absolute/restored-data --checkpoint-id ckpt_ID --repo /absolute/original-repo --confirm-source
+```
+
+命令要求路径与记录的 `source_root` 一致，工作树及 Git common 目录的文件系统身份与采集时一致，HEAD 等于 stash 的第一父提交，并在隔离裸仓库对 pack 和对象闭包进行校验；它只导入对象，不自动应用检查点或修改 refs、index 和工作区。随后可以使用常规检查点恢复操作并检查结果。路径、目录身份和相同提交只能证明采集以来观察到的关联，不能证明检查点创建时的原始仓库身份；复制、迁移或跨主机恢复通常改变目录身份，会被拒绝导入；外部进程和 GC 不受数据目录租约限制，操作不是原子事务。中断或失败可能留下不可达对象；保留数据包以便检查或重试。数据包散列只证明完整性，不能证明来源，务必只导入可信包。

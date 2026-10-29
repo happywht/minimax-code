@@ -42,6 +42,7 @@ from .attachments import (
 from .attachments import (
     VAULT as ATTACHMENT_VAULT,
 )
+from .checkpoint_git_bundle import capture_pack, import_pack, validate_pack
 from .managed_paths import managed_child
 from .office_metadata import RECORD_KEYS as OFFICE_RECORD_KEYS
 from .office_metadata import validate_record as validate_office_record
@@ -57,9 +58,9 @@ from .text_artifacts import (
 )
 
 FORMAT = "minimax-code-data-vault"
-FORMAT_VERSION = 10
+FORMAT_VERSION = 11
 SCHEMA_VERSION = 49
-SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46, 7: 47, 8: 48, 9: 49, 10: 49}
+SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46, 7: 47, 8: 48, 9: 49, 10: 49, 11: 49}
 MAX_FILES = 10_000
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 MAX_WAL_BYTES = MAX_DATABASE_BYTES
@@ -82,7 +83,7 @@ EXCLUSIONS = [
     "service locks, runtime markers and installation ownership files",
     "unregistered vault files and pending files",
     "unregistered checkpoint snapshot files and directories",
-    "Git stash objects (checkpoint tracked changes)",
+    "submodule repositories and external Git LFS objects",
 ]
 NOTICE = (
     "DATA-ONLY clone. Original host paths, credentials stored in SQLite, scheduling/run "
@@ -665,6 +666,43 @@ def _collect_checkpoints(root, stage, refs, remaining):
     return rows
 
 
+def _git_references(database):
+    with _database(database) as conn:
+        rows = conn.execute("SELECT id,git_stash_ref,source_root FROM session_checkpoints WHERE git_stash_ref IS NOT NULL AND git_stash_ref != '' ORDER BY id LIMIT ?", (MAX_FILES + 1,)).fetchall()
+    _require(len(rows) <= MAX_FILES, "Too many checkpoint Git objects")
+    refs = []
+    for identifier, oid, source in rows:
+        try:
+            managed_child(Path.cwd().absolute(), identifier)
+        except (ValueError, TypeError) as exc:
+            raise BundleError("Invalid checkpoint identity") from exc
+        _require(type(oid) is str and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid)
+                 and type(source) is str and source, "Checkpoint Git source or object is unknown")
+        refs.append((identifier, oid, source))
+    return refs
+
+
+def _git_member(identifier):
+    return "checkpoint-git/" + hashlib.sha256(identifier.encode("utf-8")).hexdigest()
+
+
+def _collect_git_packs(stage, refs, remaining):
+    stage.directory("checkpoint-git")
+    rows = []
+    for identifier, oid, source in refs:
+        name = _git_member(identifier)
+        try:
+            with stage.file(name) as output:
+                repository = capture_pack(source, oid, output, remaining)
+            metadata = _file_meta(stage.path / name, remaining)
+            remaining -= metadata["size_bytes"]
+            validate_pack(stage.path / name, oid)
+        except (OSError, ValueError) as exc:
+            raise BundleError(f"Checkpoint {identifier} Git pack unavailable or unsafe; verify source, object availability and repository storage") from exc
+        rows.append({"checkpoint_id": identifier, "oid": oid, "repository": repository, **metadata})
+    return rows
+
+
 def _report(manifest, operation):
     return {
         "operation": operation,
@@ -676,6 +714,11 @@ def _report(manifest, operation):
         "attachment_count": len(manifest.get("attachments", [])),
         **({"checkpoint_file_count": len(manifest["checkpoint_files"])}
            if manifest["format_version"] >= 10 else {}),
+        **({"checkpoint_git_pack_count": len(manifest["checkpoint_git_packs"])}
+           if manifest["format_version"] >= 11 else {}),
+        **({"checkpoint_git_notice": "Git packs are stored separately and are not imported into repositories during restore. "
+                                     "They can include repository history. Repository identity and concurrent Git operations are not proven."}
+           if manifest["format_version"] >= 11 else {}),
         **({"office_delivery_count": len(manifest["office_deliveries"])}
            if manifest["format_version"] >= 6 else {}),
         "excluded_vault_entries": manifest["excluded_vault_entries"],
@@ -683,7 +726,9 @@ def _report(manifest, operation):
            if manifest["format_version"] >= 2 else {}),
         "notice": NOTICE,
         "exclusions": EXCLUSIONS + (["checkpoint untracked-file snapshots"]
-                                    if manifest["format_version"] < 10 else []),
+                                    if manifest["format_version"] < 10 else [])
+                      + (["Git stash objects (checkpoint tracked changes)"]
+                         if manifest["format_version"] < 11 else []),
         "publication_durability": (
             "File payloads flushed and atomic no-overwrite publication; directory-entry "
             "power-loss durability is unverified on Windows"
@@ -739,11 +784,13 @@ def create_bundle(data_dir, output):
                 row["size_bytes"] for row in inventory["artifacts"] + inventory["attachments"]
             )
             checkpoint_files = _collect_checkpoints(root, stage, references, remaining)
-            _require(len(checkpoint_files) + len(inventory["artifacts"]) + len(inventory["attachments"]) <= MAX_FILES,
+            remaining -= sum(row["size_bytes"] for row in checkpoint_files)
+            git_packs = _collect_git_packs(stage, _git_references(stage.path / "data.db"), remaining)
+            _require(len(checkpoint_files) + len(git_packs) + len(inventory["artifacts"]) + len(inventory["attachments"]) <= MAX_FILES,
                      "Too many files in bundle")
             _require(
                 database["size_bytes"] + sum(row["size_bytes"] for row in
-                                             inventory["artifacts"] + inventory["attachments"] + checkpoint_files)
+                                             inventory["artifacts"] + inventory["attachments"] + checkpoint_files + git_packs)
                 <= MAX_TOTAL_BYTES,
                 "Bundle exceeds total size limit",
             )
@@ -757,6 +804,7 @@ def create_bundle(data_dir, output):
                 "excluded_vault_entries": excluded,
                 "excluded_attachment_entries": excluded_attachments,
                 "checkpoint_files": checkpoint_files,
+                "checkpoint_git_packs": git_packs,
             }
             payload = _json(manifest)
             _require(len(payload) <= MAX_MANIFEST_BYTES, "Manifest exceeds limit")
@@ -777,6 +825,7 @@ def create_bundle(data_dir, output):
                     *[f"{VAULT}/{row['snapshot_id']}" for row in inventory["artifacts"]],
                     *[f"{ATTACHMENT_VAULT}/{row['snapshot_id']}" for row in inventory["attachments"]],
                     *[_checkpoint_member(row["checkpoint_id"], row["path"]) for row in checkpoint_files],
+                    *[_git_member(row["checkpoint_id"]) for row in git_packs],
                 ]:
                     archive.write(stage.path / name, name)
             # Verify the complete archive with the same path used by restore.
@@ -839,6 +888,8 @@ def _manifest(payload):
         keys.add("office_deliveries")
     if version >= 10:
         keys.add("checkpoint_files")
+    if version >= 11:
+        keys.add("checkpoint_git_packs")
     _require(set(value) == keys, "Invalid manifest fields")
     _require(
         value["format"] == FORMAT
@@ -933,6 +984,28 @@ def _manifest(payload):
             _require(key not in paths and member not in members, "Duplicate checkpoint file")
             paths.add(key)
             members.add(member)
+            _metadata({key: row[key] for key in ("size_bytes", "sha256")}, MAX_TOTAL_BYTES)
+            total += row["size_bytes"]
+    if version >= 11:
+        packs = value["checkpoint_git_packs"]
+        _require(type(packs) is list and len(packs) + len(value["checkpoint_files"]) + len(value["artifacts"]) + len(value["attachments"]) <= MAX_FILES,
+                 "Invalid checkpoint Git pack count")
+        ids = set()
+        for row in packs:
+            _require(type(row) is dict and set(row) == {"checkpoint_id", "oid", "size_bytes", "sha256", "repository"},
+                     "Invalid checkpoint Git pack metadata")
+            try:
+                managed_child(Path.cwd().absolute(), row["checkpoint_id"])
+            except (ValueError, TypeError) as exc:
+                raise BundleError("Invalid checkpoint Git identity") from exc
+            _require(type(row["oid"]) is str and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", row["oid"])
+                     and row["checkpoint_id"].casefold() not in ids, "Invalid checkpoint Git reference")
+            ids.add(row["checkpoint_id"].casefold())
+            identity = row["repository"]
+            _require(type(identity) is dict and set(identity) == {"worktree_device", "worktree_inode", "git_device", "git_inode"}
+                     and all(type(value) is int and value >= 0 for value in identity.values())
+                     and identity["worktree_inode"] > 0 and identity["git_inode"] > 0,
+                     "Invalid checkpoint repository identity")
             _metadata({key: row[key] for key in ("size_bytes", "sha256")}, MAX_TOTAL_BYTES)
             total += row["size_bytes"]
     _require(total <= MAX_TOTAL_BYTES, "Bundle exceeds shared total size limit")
@@ -1094,6 +1167,10 @@ def _unpack_archive(bundle, stage, archive, stream, fd, before, central_offset, 
             for row in manifest.get("checkpoint_files", [])
         },
         **{
+            _git_member(row["checkpoint_id"]): {key: row[key] for key in ("size_bytes", "sha256")}
+            for row in manifest.get("checkpoint_git_packs", [])
+        },
+        **{
             f"{ATTACHMENT_VAULT}/{row['snapshot_id']}": {key: row[key] for key in ("size_bytes", "sha256")}
             for row in manifest.get("attachments", [])
         },
@@ -1107,6 +1184,10 @@ def _unpack_archive(bundle, stage, archive, stream, fd, before, central_offset, 
         "checkpoints/" + row["checkpoint_id"] + "/" + row["path"]
         for row in manifest.get("checkpoint_files", [])
     }
+    checkpoint_destinations.update({
+        _git_member(row["checkpoint_id"]): "checkpoint-git-packs/" + row["checkpoint_id"] + ".pack"
+        for row in manifest.get("checkpoint_git_packs", [])
+    })
     for name, metadata in expected.items():
         member = archive.getinfo(name)
         _require(member.file_size == metadata["size_bytes"], "Archive size mismatch")
@@ -1123,6 +1204,14 @@ def _unpack_archive(bundle, stage, archive, stream, fd, before, central_offset, 
         _require(_checkpoint_references(stage.path / "data.db") == sorted(
             (row["checkpoint_id"], row["path"]) for row in manifest["checkpoint_files"]),
             "SQLite and checkpoint manifest references differ")
+    if manifest["format_version"] >= 11:
+        _require([(row["checkpoint_id"], row["oid"]) for row in manifest["checkpoint_git_packs"]]
+                 == [(identifier, oid) for identifier, oid, _ in _git_references(stage.path / "data.db")],
+                 "SQLite and checkpoint Git references differ")
+        for row in manifest["checkpoint_git_packs"]:
+            validate_pack(stage.path / "checkpoint-git-packs" / (row["checkpoint_id"] + ".pack"), row["oid"])
+            with stage.file("checkpoint-git-packs/" + row["checkpoint_id"] + ".json") as target:
+                target.write(_json(row))
     with _database(stage.path / "data.db") as conn:
         for snapshot, source in conn.execute("SELECT snapshot_id,source_path FROM text_artifacts"):
             _parse((stage.path / VAULT / snapshot).read_bytes(), source)
@@ -1199,6 +1288,58 @@ def restore_bundle(bundle, new_data_dir):
         return _report(manifest, "restore")
 
 
+def import_checkpoint_git(data_dir, checkpoint_id, repo, *, confirmed=False):
+    """Explicitly import a verified pack into its recorded repository; do not apply it."""
+    _require(confirmed is True, "Explicit confirmation of the recorded repository is required")
+    root, target = _path(data_dir), _path(repo)
+    _directory(root)
+    try:
+        managed_child(root / "checkpoint-git-packs", checkpoint_id)
+    except (ValueError, TypeError) as exc:
+        raise BundleError("Invalid checkpoint identity") from exc
+    with _safe_open(root, directory=True), acquire_service_lease(root) as lease:
+        with _stage(Path(tempfile.gettempdir()).absolute(), owned_parent=False) as stage:
+            with stage.file("data.db"):
+                pass
+            _snapshot(root, stage, lease)
+            refs = _git_references(stage.path / "data.db")
+            selected = [(oid, source) for identifier, oid, source in refs if identifier == checkpoint_id]
+            _require(len(selected) == 1, "Checkpoint Git reference is unavailable")
+            oid, source = selected[0]
+            _require(str(target) == source, "Target does not match recorded checkpoint source")
+            pack = root / "checkpoint-git-packs" / (checkpoint_id + ".pack")
+            metadata_path = root / "checkpoint-git-packs" / (checkpoint_id + ".json")
+            with _safe_open(metadata_path) as fd:
+                info = os.fstat(fd)
+                _regular(info)
+                _require(info.st_size <= 8192, "Checkpoint Git metadata exceeds limit")
+                payload = os.read(fd, 8193)
+                _require(len(payload) == info.st_size and _identity(info) == _identity(os.fstat(fd))
+                         and _identity(info)[:4] == _identity(metadata_path.lstat())[:4],
+                         "Checkpoint Git metadata changed while reading")
+            try:
+                saved = json.loads(payload, object_pairs_hook=_pairs)
+            except (ValueError, UnicodeError, RecursionError) as exc:
+                raise BundleError("Invalid checkpoint Git metadata") from exc
+            _require(type(saved) is dict and set(saved) == {"checkpoint_id", "oid", "size_bytes", "sha256", "repository"}
+                     and saved["checkpoint_id"] == checkpoint_id and saved["oid"] == oid,
+                     "Checkpoint Git metadata differs from database")
+            _metadata({key: saved[key] for key in ("size_bytes", "sha256")}, MAX_TOTAL_BYTES)
+            identity = saved["repository"]
+            _require(type(identity) is dict and set(identity) == {"worktree_device", "worktree_inode", "git_device", "git_inode"}
+                     and all(type(value) is int and value >= 0 for value in identity.values())
+                     and identity["worktree_inode"] > 0 and identity["git_inode"] > 0,
+                     "Invalid checkpoint repository identity")
+            digest = import_pack(pack, oid, source, str(target), MAX_TOTAL_BYTES, saved)
+            lease.assert_owned(root)
+            return {"operation": "import-checkpoint-git", "checkpoint_id": checkpoint_id,
+                    "oid": oid, "pack_sha256": digest,
+                    "notice": "Objects imported without changing refs or applying the checkpoint. "
+                              "Repository path and base commit do not prove repository identity; "
+                              "concurrent Git operations and GC are not fenced. "
+                              "Failure or interruption may leave unreachable objects."}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1214,14 +1355,22 @@ def main(argv=None):
     )
     restore.add_argument("--bundle", required=True)
     restore.add_argument("--new-data-dir", required=True)
+    import_git = commands.add_parser("import-checkpoint-git", help="Explicitly import checkpoint objects; does not apply changes")
+    import_git.add_argument("--data-dir", required=True)
+    import_git.add_argument("--checkpoint-id", required=True)
+    import_git.add_argument("--repo", required=True)
+    import_git.add_argument("--confirm-source", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "create":
             result = create_bundle(args.data_dir, args.output)
         elif args.command == "verify":
             result = verify_bundle(args.bundle)
-        else:
+        elif args.command == "restore":
             result = restore_bundle(args.bundle, args.new_data_dir)
+        else:
+            result = import_checkpoint_git(args.data_dir, args.checkpoint_id, args.repo,
+                                           confirmed=args.confirm_source)
     except (
         BundleError,
         ServiceLeaseError,
@@ -1237,6 +1386,8 @@ def main(argv=None):
             if isinstance(exc, (BundleError, ServiceLeaseError))
             else "Bundle operation failed validation or I/O"
         )
+        if args.command == "import-checkpoint-git":
+            message += "; import may have left unreachable Git objects; refs and worktree were not intentionally changed"
         print(json.dumps({"ok": False, "error": message}), file=sys.stderr)
         return 1
     print(json.dumps({"ok": True, **result}, ensure_ascii=True))
