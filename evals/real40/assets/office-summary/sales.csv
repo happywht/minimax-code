@@ -1,0 +1,8 @@
+region,order_id,amount_cents,status
+North,N01,12000,paid
+South,S01,7500,paid
+North,N02,3500,refunded
+East,E01,1800,paid
+South,S02,2500,paid
+East,E02,2200,pending
+North,N03,500,paid

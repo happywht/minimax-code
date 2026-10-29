@@ -1,0 +1,12 @@
+{
+  "before": {
+    "deadline": "2026-11-01",
+    "owner": "Lin",
+    "scope": "A"
+  },
+  "after": {
+    "deadline": "2026-11-03",
+    "owner": "Lin",
+    "budget": 200
+  }
+}

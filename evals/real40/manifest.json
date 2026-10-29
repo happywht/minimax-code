@@ -1,0 +1,335 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "code-01",
+      "category": "code",
+      "title": "库存金额修复",
+      "readiness": "ready",
+      "asset": "code-stock",
+      "missing": []
+    },
+    {
+      "id": "code-02",
+      "category": "code",
+      "title": "折扣跨模块接线",
+      "readiness": "ready",
+      "asset": "code-discount",
+      "missing": []
+    },
+    {
+      "id": "code-03",
+      "category": "code",
+      "title": "修复错误测试",
+      "readiness": "ready",
+      "asset": "code-test",
+      "missing": []
+    },
+    {
+      "id": "code-04",
+      "category": "code",
+      "title": "抽取金额工具",
+      "readiness": "ready",
+      "asset": "code-money",
+      "missing": []
+    },
+    {
+      "id": "code-05",
+      "category": "code",
+      "title": "未知商品边界",
+      "readiness": "ready",
+      "asset": "code-lookup",
+      "missing": []
+    },
+    {
+      "id": "code-06",
+      "category": "code",
+      "title": "折扣档位回归",
+      "readiness": "ready",
+      "asset": "code-boundary",
+      "missing": []
+    },
+    {
+      "id": "code-07",
+      "category": "code",
+      "title": "订单取消状态",
+      "readiness": "ready",
+      "asset": "code-cancel",
+      "missing": []
+    },
+    {
+      "id": "code-08",
+      "category": "code",
+      "title": "库存并发扣减",
+      "readiness": "ready",
+      "asset": "code-stock-concurrency",
+      "missing": []
+    },
+    {
+      "id": "code-09",
+      "category": "code",
+      "title": "分页稳定排序",
+      "readiness": "ready",
+      "asset": "code-pagination",
+      "missing": []
+    },
+    {
+      "id": "code-10",
+      "category": "code",
+      "title": "导入数量校验",
+      "readiness": "ready",
+      "asset": "code-csv",
+      "missing": []
+    },
+    {
+      "id": "code-11",
+      "category": "code",
+      "title": "日期时区处理",
+      "readiness": "ready",
+      "asset": "code-time",
+      "missing": []
+    },
+    {
+      "id": "code-12",
+      "category": "code",
+      "title": "重复请求幂等",
+      "readiness": "ready",
+      "asset": "code-idempotency",
+      "missing": []
+    },
+    {
+      "id": "code-13",
+      "category": "code",
+      "title": "批量更新事务",
+      "readiness": "ready",
+      "asset": "code-batch",
+      "missing": []
+    },
+    {
+      "id": "code-14",
+      "category": "code",
+      "title": "请求头敏感信息脱敏",
+      "readiness": "ready",
+      "asset": "code-redact",
+      "missing": []
+    },
+    {
+      "id": "code-15",
+      "category": "code",
+      "title": "重试退避",
+      "readiness": "ready",
+      "asset": "code-backoff",
+      "missing": []
+    },
+    {
+      "id": "code-16",
+      "category": "code",
+      "title": "配置迁移",
+      "readiness": "ready",
+      "asset": "code-migrate",
+      "missing": []
+    },
+    {
+      "id": "code-17",
+      "category": "code",
+      "title": "文件路径边界",
+      "readiness": "ready",
+      "asset": "code-path",
+      "missing": []
+    },
+    {
+      "id": "code-18",
+      "category": "code",
+      "title": "缓存失效",
+      "readiness": "ready",
+      "asset": "code-cache",
+      "missing": []
+    },
+    {
+      "id": "code-19",
+      "category": "code",
+      "title": "API 兼容性",
+      "readiness": "ready",
+      "asset": "code-api",
+      "missing": []
+    },
+    {
+      "id": "code-20",
+      "category": "code",
+      "title": "性能退化定位",
+      "readiness": "ready",
+      "asset": "code-perf",
+      "missing": []
+    },
+    {
+      "id": "office-01",
+      "category": "office",
+      "title": "销售汇总表",
+      "readiness": "ready",
+      "asset": "office-summary",
+      "missing": []
+    },
+    {
+      "id": "office-02",
+      "category": "office",
+      "title": "来源核实简报",
+      "readiness": "ready",
+      "asset": "office-source-brief",
+      "missing": []
+    },
+    {
+      "id": "office-03",
+      "category": "office",
+      "title": "会议纪要行动项",
+      "readiness": "ready",
+      "asset": "office-minutes",
+      "missing": []
+    },
+    {
+      "id": "office-04",
+      "category": "office",
+      "title": "财务差异复核",
+      "readiness": "ready",
+      "asset": "office-reconcile",
+      "missing": []
+    },
+    {
+      "id": "office-05",
+      "category": "office",
+      "title": "文档变更对照",
+      "readiness": "ready",
+      "asset": "office-revisions",
+      "missing": []
+    },
+    {
+      "id": "office-06",
+      "category": "office",
+      "title": "演示提纲生成",
+      "readiness": "ready",
+      "asset": "office-slides",
+      "missing": []
+    },
+    {
+      "id": "office-07",
+      "category": "office",
+      "title": "图表汇总数据",
+      "readiness": "ready",
+      "asset": "office-chart-data",
+      "missing": []
+    },
+    {
+      "id": "office-08",
+      "category": "office",
+      "title": "跨来源事实核验",
+      "readiness": "ready",
+      "asset": "office-conflict",
+      "missing": []
+    },
+    {
+      "id": "office-09",
+      "category": "office",
+      "title": "报告数字一致性",
+      "readiness": "ready",
+      "asset": "office-report-check",
+      "missing": []
+    },
+    {
+      "id": "office-10",
+      "category": "office",
+      "title": "结构化数据清理",
+      "readiness": "ready",
+      "asset": "office-clean",
+      "missing": []
+    },
+    {
+      "id": "remote-01",
+      "category": "remote",
+      "title": "远程登录诊断",
+      "readiness": "not_ready",
+      "asset": null,
+      "missing": [
+        "固定输入、任务提示和独立验收器尚未实现"
+      ]
+    },
+    {
+      "id": "remote-02",
+      "category": "remote",
+      "title": "传输中断恢复",
+      "readiness": "not_ready",
+      "asset": null,
+      "missing": [
+        "固定输入、任务提示和独立验收器尚未实现"
+      ]
+    },
+    {
+      "id": "remote-03",
+      "category": "remote",
+      "title": "断线重连状态",
+      "readiness": "not_ready",
+      "asset": null,
+      "missing": [
+        "固定输入、任务提示和独立验收器尚未实现"
+      ]
+    },
+    {
+      "id": "remote-04",
+      "category": "remote",
+      "title": "失败任务恢复",
+      "readiness": "not_ready",
+      "asset": null,
+      "missing": [
+        "固定输入、任务提示和独立验收器尚未实现"
+      ]
+    },
+    {
+      "id": "remote-05",
+      "category": "remote",
+      "title": "远程执行证据核验",
+      "readiness": "not_ready",
+      "asset": null,
+      "missing": [
+        "固定输入、任务提示和独立验收器尚未实现"
+      ]
+    },
+    {
+      "id": "automation-01",
+      "category": "automation",
+      "title": "到期任务选择",
+      "readiness": "ready",
+      "asset": "automation-due",
+      "missing": []
+    },
+    {
+      "id": "automation-02",
+      "category": "automation",
+      "title": "定时任务停用",
+      "readiness": "ready",
+      "asset": "automation-disable",
+      "missing": []
+    },
+    {
+      "id": "automation-03",
+      "category": "automation",
+      "title": "失败重试与去重",
+      "readiness": "ready",
+      "asset": "automation-retry",
+      "missing": []
+    },
+    {
+      "id": "automation-04",
+      "category": "automation",
+      "title": "人工审批暂停",
+      "readiness": "ready",
+      "asset": "automation-approval",
+      "missing": []
+    },
+    {
+      "id": "automation-05",
+      "category": "automation",
+      "title": "审计与告警",
+      "readiness": "ready",
+      "asset": "automation-audit",
+      "missing": []
+    }
+  ]
+}

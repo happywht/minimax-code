@@ -991,3 +991,16 @@ SSH 检查标记和 cgroup，未再次终止服务。脚本为 `.verification/fo
 `.verification/verify-real-result-after-restart.py`、`.verification/verify-formal-crash-run.py`
 和 `.verification/browser-checkpoint-evidence.py`。本次没有调用模型，未重新模拟物理断网
 或整机重启；办公界面修复的表格生成流程未在远程实机上验证。
+
+### 办公依赖准备与服务更新（2026-10-29）
+
+核查发现 `fe03664` 的基础环境没有安装 openpyxl、python-docx 和 pypdf，因而不能
+据此认定办公功能可用。独立准备发行版 `bdc3b49dd3de69338e548705bb2c97374325aede`
+时使用 `uv sync --frozen --extra attachments`；在该版本独立环境中生成一份受控纯数据
+XLSX，结构验证通过，并由附件解析器解析出预期值。首次脚本误用了返回字段名而失败，
+改用实际 `parser_status` 后复验通过。这是 worker 级测试，不是完整 UI 交付验收。
+
+服务从 `fe03664` 升级到该版本，升级前采样无活动运行、计划、任务及已建立客户端
+连接；采样并非原子接单屏障。备份与交易保留在
+`/home/ubuntu/.local/share/minimax-code-remote-backups-bdc3b49/upgrade-wl7e6qgb`。
+升级后通过认证 SSH 隧道复查既有完成结果与中断待核对状态均可读取，没有调用模型。

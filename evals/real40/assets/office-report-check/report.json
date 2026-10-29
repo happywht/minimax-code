@@ -1,0 +1,12 @@
+{
+  "source": {
+    "revenue": 12000,
+    "orders": 42,
+    "refunds": 3
+  },
+  "report": {
+    "revenue": 12000,
+    "orders": 43,
+    "refunds": 2
+  }
+}

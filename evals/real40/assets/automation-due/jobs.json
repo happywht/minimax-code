@@ -1,0 +1,1 @@
+[{"id":"a","enabled":true,"interval_minutes":30,"last_run":"2026-10-29T09:00:00Z"},{"id":"b","enabled":true,"interval_minutes":60,"last_run":"2026-10-29T09:30:00Z"},{"id":"c","enabled":false,"interval_minutes":5,"last_run":"2026-10-29T08:00:00Z"},{"id":"d","enabled":true,"interval_minutes":15,"last_run":null}]

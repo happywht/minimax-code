@@ -1,0 +1,22 @@
+[
+  {
+    "source_id": "S2",
+    "field": "budget",
+    "value": 120
+  },
+  {
+    "source_id": "S1",
+    "field": "budget",
+    "value": 100
+  },
+  {
+    "source_id": "S3",
+    "field": "deadline",
+    "value": "2026-11-01"
+  },
+  {
+    "source_id": "S1",
+    "field": "deadline",
+    "value": "2026-11-01"
+  }
+]

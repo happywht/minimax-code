@@ -1,0 +1,19 @@
+[
+  {
+    "id": "S1",
+    "type": "primary",
+    "launch_date": "2026-02-01",
+    "capacity": 120
+  },
+  {
+    "id": "S2",
+    "type": "secondary",
+    "launch_date": "2026-02-01",
+    "capacity": 150
+  },
+  {
+    "id": "S3",
+    "type": "secondary",
+    "capacity": 120
+  }
+]

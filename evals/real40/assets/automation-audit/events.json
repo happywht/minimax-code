@@ -1,0 +1,18 @@
+[
+  {
+    "id": "a",
+    "status": "start"
+  },
+  {
+    "id": "b",
+    "status": "failed"
+  },
+  {
+    "id": "b",
+    "status": "success"
+  },
+  {
+    "id": "c",
+    "status": "failed"
+  }
+]

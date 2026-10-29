@@ -1,0 +1,1 @@
+实现 scheduler.py 的 due_jobs(jobs, now)：返回应运行任务 ID 的升序列表。jobs 的 enabled 为 false 时跳过；last_run 为 null 的启用任务立即到期；否则当 now 与 last_run 之差大于等于 interval_minutes 分钟时到期。时间均为 UTC ISO 8601 字符串，以 Z 结尾。不得执行任务或访问网络。jobs.json 是一个示例输入；函数需处理任意符合格式的输入。

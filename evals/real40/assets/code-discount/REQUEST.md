@@ -1,0 +1,1 @@
+订单创建未应用折扣。修改 orders.py，使 create_order(price_cents, quantity) 使用 discount.py 的 rate_percent(quantity)，返回字典 subtotal_cents、discount_cents、total_cents 和 rate_percent。金额均为整数分，折扣金额按整数整除向下取整。保留 discount.py 原样。
