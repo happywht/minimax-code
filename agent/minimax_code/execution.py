@@ -44,6 +44,11 @@ def is_read_only() -> bool:
 
 @contextlib.contextmanager
 def execution_scope(policy: ExecutionPolicy) -> Iterator[None]:
+    # A nested scope may select an independently managed child workspace, but
+    # it must never turn a read-only parent run into a writable one.
+    parent = _policy.get()
+    if parent is not None and parent.read_only and not policy.read_only:
+        policy = ExecutionPolicy(workspace=policy.workspace, read_only=True)
     token = _policy.set(policy)
     try:
         yield

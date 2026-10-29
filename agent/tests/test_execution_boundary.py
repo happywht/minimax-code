@@ -13,6 +13,8 @@ from minimax_code.execution import (
     ExecutionPolicy,
     communicate_bounded,
     execution_scope,
+    require_tool_access,
+    require_write_access,
     spawn_exec,
     spawn_shell,
 )
@@ -89,6 +91,33 @@ async def test_read_only_scope_is_inherited_by_child_tasks(tmp_path):
     proc = await spawn_exec(sys.executable, "-c", "print('allowed')", cwd=tmp_path,
                             stdout=asyncio.subprocess.PIPE)
     assert (await communicate_bounded(proc, timeout=5)).stdout.strip() == b"allowed"
+
+
+async def test_nested_scope_cannot_relax_read_only_and_restores_parent(tmp_path):
+    child = tmp_path / "child"
+    child.mkdir()
+    with execution_scope(ExecutionPolicy(tmp_path, read_only=True)):
+        with pytest.raises(RuntimeError, match="exit inner"):
+            with execution_scope(ExecutionPolicy(child)):
+                with pytest.raises(ExecutionDeniedError, match="read-only"):
+                    require_write_access()
+                with pytest.raises(ExecutionDeniedError, match="read-only"):
+                    require_tool_access("write_file")
+                task = asyncio.create_task(spawn_exec(sys.executable, "-c", "print('blocked')"))
+                with pytest.raises(ExecutionDeniedError, match="read-only"):
+                    await task
+                raise RuntimeError("exit inner")
+        with pytest.raises(ExecutionDeniedError, match="read-only"):
+            require_write_access()
+    require_write_access()
+
+
+async def test_nested_read_only_scope_does_not_restrict_parent_after_exit(tmp_path):
+    with execution_scope(ExecutionPolicy(tmp_path)):
+        with execution_scope(ExecutionPolicy(tmp_path, read_only=True)):
+            with pytest.raises(ExecutionDeniedError, match="read-only"):
+                require_write_access()
+        require_write_access()
 
 
 async def test_output_is_capped_while_draining_both_pipes(tmp_path):
