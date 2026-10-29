@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ...execution import capture_output, is_read_only, spawn_exec
-from ...workspace_ctx import current_sandbox
+from ...workspace_ctx import current_root, current_sandbox, env_or_cwd_root
 from .base import Tool, ToolResult, register_tool
 from .file_ops import PathSecurityError, safe_resolve
 from .sandbox import overlay_read_target, sandbox_mirror_files
@@ -266,12 +266,25 @@ def _python_search(
         for f in _walk_files(root, file_pattern):
             seen[_workspace_rel(f, root)] = f
         if sandbox is not None:
+            workspace = current_root() or env_or_cwd_root()
+            try:
+                prefix = root.relative_to(workspace).as_posix()
+            except ValueError:
+                prefix = None
             for rel in sandbox_mirror_files(sandbox):
+                if prefix is None:
+                    continue
+                if prefix != ".":
+                    if not rel.startswith(prefix + "/"):
+                        continue
+                    search_rel = rel[len(prefix) + 1:]
+                else:
+                    search_rel = rel
                 if file_pattern not in ("*", "") and not fnmatch.fnmatch(
-                    rel.rsplit("/", 1)[-1], file_pattern
+                    search_rel.rsplit("/", 1)[-1], file_pattern
                 ):
                     continue
-                seen[rel] = sandbox.joinpath(*rel.split("/"))
+                seen[search_rel] = sandbox.joinpath(*rel.split("/"))
         candidates = [(p, rel) for rel, p in seen.items()]
 
     matches: list[dict[str, Any]] = []
