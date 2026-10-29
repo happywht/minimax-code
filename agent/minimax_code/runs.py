@@ -36,6 +36,7 @@ class RunJob:
     task: asyncio.Task[Any] | None = None
     cancel_callback: Callable[[], None] | None = None
     cancel_requested: bool = False
+    finalizing: bool = False
     cleanup_completed: bool = False
     record: Any = None
     message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:8]}")
@@ -124,11 +125,13 @@ class RunService:
                     finally:
                         # Persistence remains inside the session lease.
                         finalized = True
+                        job.finalizing = True
                         if finalize:
                             await finalize(job, error)
                         job.cleanup_completed = True
             except BaseException as exc:
                 if not finalized:
+                    job.finalizing = True
                     if finalize:
                         await finalize(job, exc)
                     job.cleanup_completed = True
@@ -251,7 +254,9 @@ class RunService:
         return self._cancel(job) if job is not None else False
 
     def _cancel(self, job: RunJob) -> bool:
-        if job.cancel_requested or job.task is None or job.task.done():
+        # Once execution has ended, interrupting terminal persistence can leave
+        # the durable run active after its service-owned task has disappeared.
+        if job.finalizing or job.cancel_requested or job.task is None or job.task.done():
             return False
         job.cancel_requested = True
         if job.cancel_callback is not None:
