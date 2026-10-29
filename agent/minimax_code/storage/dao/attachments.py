@@ -37,18 +37,24 @@ class AttachmentDAO:
             raise ValueError("An existing project is required")
         return dict(row)
 
-    async def insert(self, fields, *, expected_project):
+    async def insert(self, fields, *, expected_project, expected_session=None):
         async with self.db.transaction() as conn:
-            row = await self.insert_in_transaction(conn, fields, expected_project=expected_project)
+            row = await self.insert_in_transaction(conn, fields, expected_project=expected_project,
+                                                   expected_session=expected_session)
         return metadata(row)
 
-    async def insert_in_transaction(self, conn, fields, *, expected_project):
+    async def insert_in_transaction(self, conn, fields, *, expected_project, expected_session=None):
         """Shared atomic insert for uploads and generated-office associations."""
         cursor = await conn.execute("SELECT id,root_path,created_at FROM projects WHERE id=?",
                                     (fields["project_id"],))
         project = await cursor.fetchone()
         if project is None or dict(project) != expected_project:
             raise ValueError("Attachment project binding changed during upload")
+        if expected_session is not None:
+            cursor = await conn.execute("SELECT project_id FROM sessions WHERE id=?", (expected_session,))
+            session = await cursor.fetchone()
+            if session is None or session[0] != fields["project_id"]:
+                raise ValueError("Session project binding changed during document generation")
         cursor = await conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1")
         service = await cursor.fetchone()
         if service is None or service[0] != fields["service_id"]:

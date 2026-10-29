@@ -9,6 +9,7 @@ interface AttachmentState {
   loading: boolean; busy: boolean; error: string | null;
   activate: (projectId: string | null) => Promise<void>;
   upload: (file: File) => Promise<void>;
+  generateDocx: (filename: string, title: string, paragraphs: string[]) => Promise<void>;
   select: (id: string) => Promise<void>;
   download: () => Promise<void>;
   clear: () => void;
@@ -67,6 +68,20 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
         set({ attachments: [row, ...get().attachments].slice(0, 200) });
         await get().select(row.id);
       } catch (error) { if (current(ticket, project, host)) set({ error: errorText(error) }); }
+      finally { if (current(ticket, project, host)) set({ busy: false }); }
+    },
+    generateDocx: async (filename, title, paragraphs) => {
+      const { projectId: project, host, serviceId } = get();
+      if (get().busy || !ready(project, host, serviceId) || !project || !serviceId) return;
+      const ticket = epoch;
+      set({ busy: true, error: null });
+      try {
+        const result = await typedIPC.generateDocx({ project_id: project, expected_service_id: serviceId, filename, title, paragraphs });
+        if (!current(ticket, project, host)) return;
+        validate(result.attachment, project, serviceId);
+        set({ attachments: [result.attachment, ...get().attachments].slice(0, 200) });
+        await get().select(result.attachment.id);
+      } catch (error) { if (current(ticket, project, host)) set({ error: `${errorText(error)}；如响应丢失，请先刷新检查是否已生成。` }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
     },
     select: async (id) => {

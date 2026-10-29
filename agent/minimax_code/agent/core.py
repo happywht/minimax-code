@@ -1499,6 +1499,15 @@ class AgentCore:
 
         # 1. Permission check (configurable, default-allow).
         action = _check_rule(self._permission_store, name)
+        if name == "generate_report_docx":
+            # A generated document is a write: existing write_file restrictions
+            # cannot be bypassed by allowing the new tool name.
+            write_action = _check_rule(self._permission_store, "write_file")
+            actions = {action, write_action}
+            action = ("deny" if "deny" in actions else "ask" if "ask" in actions
+                      else "allow" if "allow" in actions else "ask")
+            if action == "ask" and self._permission_gater is None:
+                action = "deny"
         if action == "deny":
             denied = ToolResult.fail(
                 f"tool '{name}' denied by permission policy (action=deny)",

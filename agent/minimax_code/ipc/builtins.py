@@ -1236,6 +1236,15 @@ async def _handle_agent_send_message(
         except Exception:
             logger.exception("failed to register search_codebase tool")
 
+    # Only ordinary chat gets the run-bound attachment tools. Scheduled and
+    # skill/agent runs retain their frozen tool capabilities.
+    if internal_skill is None and internal_schedule is None:
+        from ..agent.tools.generate_report_docx import register_report_docx_tool
+        from ..agent.tools.project_attachments import register_project_attachment_tools
+
+        register_project_attachment_tools(registry, db, session_id, project_id)
+        register_report_docx_tool(registry, db, session_id, project_id)
+
     if internal_skill is not None:
         internal_skill.install(registry)
         from ..run_ownership import owned_runtime

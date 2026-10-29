@@ -6,7 +6,13 @@ import logging
 from pydantic import ValidationError
 
 from ..attachments import get_attachment_service
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS, AttachmentGetParams, AttachmentListParams
+from .protocol import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    AttachmentGenerateDocxParams,
+    AttachmentGetParams,
+    AttachmentListParams,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,5 +32,6 @@ def register_attachment_handlers(server):
                 logger.exception("attachment.%s failed", operation)
                 await ctx.reply_error(INTERNAL_ERROR, "Attachment storage operation failed")
         return handle
+    server.register("attachment.generate_docx", handler(AttachmentGenerateDocxParams, "generate_docx"))
     server.register("attachment.list", handler(AttachmentListParams, "list"))
     server.register("attachment.get", handler(AttachmentGetParams, "get"))

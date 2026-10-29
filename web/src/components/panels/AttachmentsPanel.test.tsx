@@ -69,6 +69,23 @@ describe("project attachment panel and dispatch epochs", () => {
     expect(container.querySelector("script")).toBeNull();
     expect(screen.getByRole("button", { name: "下载附件原始字节" })).toBeTruthy();
   });
+  it("generates a DOCX from entered paragraphs and exposes the saved preview and download", async () => {
+    const docx: AttachmentOriginal = { ...row, original_name: "报告.docx", declared_type: "docx", recognized_type: "docx", parser_version: 2, parser_scope: "docx_body_paragraphs_tables", parser_reason: "ok" };
+    wire.request.mockImplementation(async (method: string) => {
+      if (method === "attachment.list") return { attachments: [], service_id: "svc_test" };
+      if (method === "attachment.generate_docx" || method === "attachment.get") return { attachment: docx, preview_text: "资料报告\n第一段\n来源" };
+      throw new Error("Unexpected method");
+    });
+    render(<AttachmentsPanel onClose={vi.fn()} />);
+    await screen.findByText("当前项目还没有附件原件。");
+    fireEvent.change(screen.getByLabelText("报告标题"), { target: { value: "资料报告" } });
+    fireEvent.change(screen.getByLabelText("报告正文（每行一个段落）"), { target: { value: "第一段\n来源" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成 DOCX" }));
+    await screen.findByLabelText("附件纯文本预览");
+    expect(wire.request).toHaveBeenCalledWith("attachment.generate_docx", { project_id: "p", expected_service_id: "svc_test", filename: "报告.docx", title: "资料报告", paragraphs: ["第一段", "来源"] });
+    expect(screen.getByLabelText("附件纯文本预览")).toHaveTextContent("第一段");
+    expect(screen.getByRole("button", { name: "下载附件原始字节" })).toBeEnabled();
+  });
   it("uploads selected raw file, escapes preview, separates quality and downloads original", async () => {
     const createURL = vi.fn().mockReturnValue("blob:original");
     vi.stubGlobal("URL", { createObjectURL: createURL, revokeObjectURL: vi.fn() });

@@ -1586,6 +1586,7 @@ document the migration in this file.
 
 | 方法 | 参数 | 返回 |
 |------|------|------|
+| `attachment.generate_docx` | `{project_id, expected_service_id, filename, title, paragraphs}` | `{attachment, preview_text}`，生成并保存有界纯文本 DOCX；不验证版式或事实 |
 | `attachment.list` | `{project_id}` | `{attachments, service_id}`，最近 200 条元数据，不含预览 |
 | `attachment.get` | `{project_id, attachment_id}` | `{attachment, preview_text}`，核对原件后返回有界纯文本 |
 
@@ -1633,6 +1634,8 @@ attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）�
 上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
 原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，Schema046/bundle v6新增办公成果关联表；Schema047/bundle v7保存各主机远端服务端口；Schema048/bundle v8保存Webhook投递记录；Schema049/bundle v9记录检查点来源，bundle v10 保存检查点未跟踪文件副本，当前 v11 增加 Git 对象包，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
 旧v1/041至v7/047仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
+
+`attachment.generate_docx` 接受安全 `.docx` 显示名、单行标题（最多 200 字）和 1–100 个段落（每段最多 4096 字，总 UTF-8 最多 256 KiB）。使用本地 python-docx 创建，回读并比较全部段落，再经现有 DOCX 有界解析与不可变附件 vault 登记。不会读取或修改项目文件、调用模型或抓取资料；用户提供的来源文本需自行核实。不保证版式、分页、事实或业务质量。响应丢失时先刷新附件列表；重试会创建新版本。文件与现有附件共享备份协议及未验证状态，不作为已完成报告的质量证明。 普通聊天 Agent 可通过 `generate_report_docx` 生成当前会话项目的文档；提交时复核会话项目绑定，遵循规划模式与写入权限规则。该工具默认要求确认，拒绝规则优先，无法确认时拒绝。
 
 ### office.* — 手动生成纯数据 XLSX（Schema046）
 

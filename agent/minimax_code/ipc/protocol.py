@@ -72,6 +72,13 @@ class AttachmentListParams(ArtifactListParams):
     """Project association only; caller host/path authority is not accepted."""
 
 
+class AttachmentGenerateDocxParams(AttachmentListParams):
+    expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
+    filename: str = Field(min_length=6, max_length=120)
+    title: str = Field(min_length=1, max_length=200)
+    paragraphs: list[str] = Field(min_length=1, max_length=100)
+
+
 class AttachmentGetParams(AttachmentListParams):
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
 

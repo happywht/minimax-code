@@ -57,6 +57,9 @@ export interface AttachmentOriginal {
   created_at: string;
 }
 export interface AttachmentListResult { attachments: AttachmentOriginal[]; service_id: string }
+export interface AttachmentGenerateDocxParams {
+  project_id: string; expected_service_id: string; filename: string; title: string; paragraphs: string[];
+}
 export interface AttachmentGetResult { attachment: AttachmentOriginal; preview_text: string }
 
 export interface OfficeTableSpec {

@@ -276,7 +276,7 @@ class AttachmentService:
         if hasattr(os, "getuid") and self.vault.stat().st_uid != os.getuid():
             raise ValueError("Attachment vault must belong to this operator")
 
-    async def upload(self, project_id, name, expected_service, chunks):
+    async def upload(self, project_id, name, expected_service, chunks, *, require_parsed=False, expected_session=None):
         name = display_name(name)
         project = await self.dao.project(project_id)
         if expected_service != await self.dao.service_id():
@@ -309,6 +309,8 @@ class AttachmentService:
                           **await inspect_xlsx(original)}
             else:
                 parsed = await _blocking(_inspect_pending, self.vault / upload.name, name)
+            if require_parsed and parsed["parser_status"] not in {"parsed", "truncated"}:
+                raise ValueError("Generated document could not be parsed")
             await _blocking(upload.publish)
             published = await _blocking(read_original, self.vault / upload.snapshot)
             if len(published) != upload.size or hashlib.sha256(published).hexdigest() != upload.hash.hexdigest():
@@ -320,9 +322,27 @@ class AttachmentService:
                 "service_id": expected_service, "snapshot_id": upload.snapshot,
                 "original_name": name, "size_bytes": upload.size,
                 "sha256": upload.hash.hexdigest(), **parsed,
-            }, expected_project=project)
+            }, expected_project=project, expected_session=expected_session)
         finally:
             await _blocking(upload.close)
+
+    async def generate_docx(self, project_id, expected_service_id, filename, title, paragraphs,
+                            *, expected_session=None):
+        from .execution import require_write_access
+        from .report_docx import generate_document
+
+        require_write_access()
+        await self.dao.project(project_id)
+        if expected_service_id != await self.dao.service_id():
+            raise ValueError("Attachment service identity changed; refresh")
+        data = await _blocking(generate_document, filename, title, paragraphs)
+
+        async def chunks():
+            yield data
+
+        row = await self.upload(project_id, filename, expected_service_id, chunks(), require_parsed=True,
+                                expected_session=expected_session)
+        return await self.get(project_id, row["id"])
 
     async def list(self, project_id):
         await self.dao.project(project_id)

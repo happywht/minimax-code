@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ipc } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
-import { Button } from "../../ui";
+import { Button, Input, Textarea } from "../../ui";
 import type { AttachmentParserStatus } from "../../types/ipc";
 
 const labels: Record<AttachmentParserStatus, string> = {
@@ -14,8 +14,10 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
   const state = useAttachmentStore(), host = ipc.agentBaseUrl;
   const scoped = state.projectId === projectId && state.host === host;
   const [file, setFile] = useState<File | null>(null);
+  const [docName, setDocName] = useState("报告.docx"), [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
   useEffect(() => {
-    setFile(null); void useAttachmentStore.getState().activate(projectId);
+    setFile(null); setTitle(""); setBody(""); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
@@ -31,6 +33,17 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       <input aria-label="选择附件原件" type="file" disabled={state.busy} onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
       <Button type="submit" disabled={!scoped || !file || file.size > 10485760 || !state.serviceId || state.busy || state.loading}>上传原件</Button>
       <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(projectId)}>刷新</Button>
+    </form>
+    <form className="flex flex-col gap-2 rounded border border-line p-3" onSubmit={(event) => {
+      event.preventDefault(); void state.generateDocx(docName, title, body.split(/\r?\n/));
+    }}>
+      <h3>生成 DOCX 报告</h3>
+      <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
+      <Input aria-label="DOCX 文件名" value={docName} onChange={(event) => setDocName(event.target.value)} />
+      <Input aria-label="报告标题" value={title} onChange={(event) => setTitle(event.target.value)} />
+      <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />
+      <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !body.trim()}>生成 DOCX</Button>
+      {ipc.isMock && <p role="status">演示模式不能生成 DOCX。</p>}
     </form>
     {file && file.size > 10485760 && <p role="alert">文件超过 10 MiB，未上传。</p>}
     {scoped && state.error && <p role="alert" className="text-status-error">{state.error}</p>}
