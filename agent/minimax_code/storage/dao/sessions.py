@@ -188,6 +188,23 @@ class SessionsDAO:
         params.append(session_id)
         sql = f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?"
         async with self._db.transaction() as conn:
+            if project_id is not None:
+                cursor = await conn.execute(
+                    "SELECT id FROM sessions WHERE id = ? AND project_id IS NOT ? "
+                    "AND (workspace_mode = 'worktree' OR trim(coalesce(workspace_path, '')) != '')",
+                    (session_id, project_id),
+                )
+                if await cursor.fetchone():
+                    raise ValueError("Cannot move a session with an explicit workspace; create a new session in the target project")
+                cursor = await conn.execute(
+                    "SELECT s.id FROM sessions s WHERE s.id = ? AND s.project_id IS NOT ? "
+                    "AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.session_id = s.id "
+                    "AND r.status IN ('queued', 'planning', 'running', 'awaiting_approval', "
+                    "'waiting_input'))",
+                    (session_id, project_id),
+                )
+                if await cursor.fetchone():
+                    raise ValueError("Finish or cancel the session's active runs before moving it")
             await conn.execute(sql, params)
         return await self.get(session_id)
 
@@ -284,6 +301,22 @@ class SessionsDAO:
             f"WHERE id IN ({placeholders})"
         )
         async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({placeholders}) AND project_id IS NOT ? "
+                "AND (workspace_mode = 'worktree' OR trim(coalesce(workspace_path, '')) != '') LIMIT 1",
+                (*session_ids, project_id),
+            )
+            if await cursor.fetchone():
+                raise ValueError("Cannot move a session with an explicit workspace; create a new session in the target project")
+            cursor = await conn.execute(
+                f"SELECT s.id FROM sessions s WHERE s.id IN ({placeholders}) AND s.project_id IS NOT ? "
+                "AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.session_id = s.id "
+                "AND r.status IN ('queued', 'planning', 'running', 'awaiting_approval', "
+                "'waiting_input')) LIMIT 1",
+                (*session_ids, project_id),
+            )
+            if await cursor.fetchone():
+                raise ValueError("Finish or cancel the session's active runs before moving it")
             await conn.execute(sql, (project_id, now, *session_ids))
         rows = await self._db.fetchall(
             f"SELECT * FROM sessions WHERE id IN ({placeholders})",

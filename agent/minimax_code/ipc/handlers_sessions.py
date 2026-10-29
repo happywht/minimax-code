@@ -387,7 +387,10 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                     INVALID_PARAMS, f"unknown project_id: {project_id!r}"
                 )
 
-            row = await sess_dao.update(session_id, project_id=project_id)
+            try:
+                row = await sess_dao.update(session_id, project_id=project_id)
+            except ValueError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             if row is None:
                 raise HandlerError(
                     INVALID_PARAMS, f"unknown session_id: {session_id!r}"
@@ -473,7 +476,10 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                     INVALID_PARAMS, f"unknown project_id: {project_id!r}"
                 )
 
-            rows = await sess_dao.batch_update_project(session_ids, project_id)
+            try:
+                rows = await sess_dao.batch_update_project(session_ids, project_id)
+            except ValueError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             await ctx.reply(
                 {
                     "ok": True,
