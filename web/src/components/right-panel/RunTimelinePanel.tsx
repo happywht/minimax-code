@@ -13,6 +13,7 @@ import { usePermissionStore, useRunTimelineStore, useSessionStore } from "../../
 import type { AgentRunStep, AgentRunStepKind, AgentRunStepStatus } from "../../types/ipc";
 import { buildPermissionPatchFiles } from "../../lib/permissionPatchPreview";
 import { PermissionPatchPreview } from "../modals/PermissionPatchPreview";
+import { CodexFileChangePreview, permissionArgsWithoutCodexPreview } from "../modals/CodexFileChangePreview";
 import { strings } from "../../ui/strings";
 import { Button } from "../../ui";
 import { RunRecoveryActions } from "./RunRecoveryActions";
@@ -163,11 +164,12 @@ export function RunTimelinePanel({
                   <span className="break-all">等待授权 · {request.tool}</span>
                 </div>
                 <ExpandablePre
-                  text={formatArgs(request.args)}
-                  collapsedText={summarizeArgs(request.args)}
+                  text={formatArgs(permissionArgsWithoutCodexPreview(request.args))}
+                  collapsedText={summarizeArgs(permissionArgsWithoutCodexPreview(request.args))}
                   className="mt-1 text-amber-100/80"
                   testId="run-timeline-approval-args"
                 />
+                <CodexFileChangePreview tool={request.tool} args={request.args} />
                 <PermissionPatchPreview
                   files={patchFiles}
                   testId="run-timeline-approval-patch-preview"

@@ -27,6 +27,7 @@ import { useFocusTrap } from "../../lib/useFocusTrap";
 import { buildPermissionPatchFiles } from "../../lib/permissionPatchPreview";
 import { Button, IconButton } from "../../ui";
 import { PermissionPatchPreview } from "./PermissionPatchPreview";
+import { CodexFileChangePreview, permissionArgsWithoutCodexPreview } from "./CodexFileChangePreview";
 
 export interface PermissionRequestModalProps {
   testId?: string;
@@ -101,7 +102,7 @@ export function PermissionRequestModal({
 
   if (!current) return null;
 
-  const argsPreview = formatArgs(current.args);
+  const argsPreview = formatArgs(permissionArgsWithoutCodexPreview(current.args));
   const patchFiles = buildPermissionPatchFiles(current.tool, current.args);
   const resolving = currentResolving;
 
@@ -167,6 +168,8 @@ export function PermissionRequestModal({
         >
           <pre className="whitespace-pre-wrap break-words font-mono">{argsPreview}</pre>
         </div>
+
+        <CodexFileChangePreview tool={current.tool} args={current.args} />
 
         {patchFiles.length > 0 && (
           <div className="mb-4 rounded-md border border-line bg-surface-2/40 px-2 pb-2">

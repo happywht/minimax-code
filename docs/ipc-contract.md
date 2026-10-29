@@ -543,6 +543,13 @@ session and still-live connection. A new internal request ID is bound to each
 external request; the original JSON-RPC response retains its original ID.
 Closing, cancellation, timeout and process loss invalidate the wait. Recovering
 a request never auto-approves it; neither projection survives a process restart.
+For `codex:item/fileChange/requestApproval`, `args.grantRoot` carries the
+requested extra write root when supplied. `args.file_change_preview` contains
+bounded `changes` entries (`path`, `diff`) matched to the same thread, turn,
+and item from an App Server item notification. `truncated` indicates omitted
+content; `unavailable` means no matching preview was received. This is an
+informational preview, not a complete or independently verified patch. Command
+approvals also expose the supplied `kind` and `networkApprovalContext`.
 
 For a live service-owned run, `run.steps` may also include `live_stream`:
 `{complete, messages:[{message_id, text, seq, done}]}`. It is a bounded

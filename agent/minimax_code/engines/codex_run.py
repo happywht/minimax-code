@@ -151,6 +151,10 @@ async def drive_codex_run(
     budget_interrupt_requested = False
     budget_interrupt_failed = False
     event_errors: list[BaseException] = []
+    # File-change approvals identify an item but do not include its diff.
+    # Retain bounded previews keyed by the full external identity, so an
+    # approval can never display changes from another thread or turn.
+    file_previews: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     async def interrupt() -> None:
         if turn_id and thread_id:
@@ -264,6 +268,30 @@ async def drive_codex_run(
                 queue.task_done()
 
     def receive_notification(n: dict[str, Any]) -> None:
+        if n.get("method") in {"item/started", "item/completed"}:
+            params = n.get("params")
+            if isinstance(params, dict):
+                item = params.get("item")
+                tid, turn = params.get("threadId"), params.get("turnId")
+                if (isinstance(item, dict) and item.get("type") == "fileChange"
+                        and all(isinstance(v, str) and v for v in (tid, turn, item.get("id")))
+                        and isinstance(item.get("changes"), list)):
+                    changes = item["changes"]
+                    remaining = 16000
+                    preview = []
+                    truncated = len(changes) > 20
+                    for change in changes[:20]:
+                        if not isinstance(change, dict) or not isinstance(change.get("path"), str) or not isinstance(change.get("diff"), str):
+                            truncated = True
+                            continue
+                        path, diff = change["path"][:1000], change["diff"][:remaining]
+                        truncated |= len(path) < len(change["path"]) or len(diff) < len(change["diff"])
+                        remaining -= len(diff)
+                        preview.append({"path": path, "diff": diff})
+                    key = (tid, turn, item["id"])
+                    if key not in file_previews and len(file_previews) >= 100:
+                        file_previews.pop(next(iter(file_previews)))
+                    file_previews[key] = {"changes": preview, "truncated": truncated}
         if not turn_ready.is_set():
             early.append(n)
         queue.put_nowait(n)
@@ -293,9 +321,16 @@ async def drive_codex_run(
             request_id = f"codex:{job.run_id}:{uuid.uuid4().hex[:12]}:{req['id']}"
             fut: asyncio.Future[bool] = loop.create_future()
             deadline = loop.time() + _APPROVAL_TIMEOUT_S
+            args = {k: params.get(k) for k in ("command", "cwd", "reason", "grantRoot",
+                    "networkApprovalContext", "kind") if params.get(k) is not None}
+            if method == "item/fileChange/requestApproval":
+                item_id = params.get("itemId")
+                preview = (file_previews.get((thread_id, turn_id, item_id))
+                           if isinstance(item_id, str) and params.get("threadId") == thread_id
+                           and params.get("turnId") == turn_id else None)
+                args["file_change_preview"] = preview or {"changes": [], "unavailable": True}
             payload = {"request_id": request_id, "session_id": job.session_id, "run_id": job.run_id,
-                       "tool": f"codex:{method}", "args": {k: params.get(k) for k in
-                       ("command", "cwd", "reason") if params.get(k) is not None},
+                       "tool": f"codex:{method}", "args": args,
                        "remaining_ms": max(0, int((deadline - loop.time()) * 1000))}
             gate._pending[request_id] = _CodexApproval(fut, payload, deadline)
             spawn_notify(emit("permission.request", payload))
