@@ -206,6 +206,7 @@ export function RunTimelinePanel({
               </div>
               <RunStatusBadge status={run.status} />
             </div>
+            {run.status === "queued" && run.metadata?.cancel_requested === true && <p role="status" className="rounded border border-status-warning/30 bg-surface-1 p-2 text-xs text-status-warning">已请求取消，等待前一个任务完成清理；此任务不会开始执行。</p>}
             {run.status === "awaiting_approval" && <p className="rounded border border-status-warning/30 bg-surface-1 p-2 text-xs text-status-warning">此任务等待授权；请在当前会话的授权请求中处理。</p>}
             {run.status === "waiting_input" && <p className="rounded border border-status-warning/30 bg-surface-1 p-2 text-xs text-status-warning">此任务等待回答；请查看聊天中的问题卡片。</p>}
             {run.status === "budget_paused" && <p className="rounded border border-status-warning/30 bg-surface-1 p-2 text-xs text-status-warning">预算已暂停；请查看预算记录及下方可用操作。</p>}

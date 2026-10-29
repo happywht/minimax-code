@@ -204,13 +204,30 @@ class AgentRunsDAO:
         """A committed queued record can be claimed once; no implicit retry."""
         async with self._db.transaction() as conn:
             cursor = await conn.execute(
-                "UPDATE agent_runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
+                "UPDATE agent_runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued' "
+                "AND COALESCE(json_extract(metadata, '$.cancel_requested'), 0) != 1",
                 (now_iso(), run_id))
             if cursor.rowcount != 1:
                 return None
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
             await _append_event(conn, run_id, "status", {"run": run})
             return run
+
+    async def request_queued_cancel(self, run_id: str) -> dict[str, Any] | None:
+        """Persist a cancellation fence without ending the session lease."""
+        async with self._db.transaction() as conn:
+            row = await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,))
+            if row is None or row["status"] != "queued":
+                return None
+            metadata = loads_json(row["metadata"]) or {}
+            if metadata.get("cancel_requested") is not True:
+                metadata["cancel_requested"] = True
+                await conn.execute("UPDATE agent_runs SET metadata = ? WHERE id = ?",
+                                   (dumps_json(metadata), run_id))
+                run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
+                await _append_event(conn, run_id, "status", {"run": run})
+                return run
+            return _hydrate_run(row)
 
     async def request_payload(self, run_id: str) -> dict[str, Any] | None:
         row = await self._db.fetchone("SELECT request FROM agent_runs WHERE id = ?", (run_id,))
@@ -639,13 +656,48 @@ class AgentRunsDAO:
                 from .budgets import BudgetsDAO
                 await BudgetsDAO(self._db).recover_in_transaction(conn)
             async with conn.execute(
-                "SELECT id, session_id, status FROM agent_runs "
+                "SELECT id, session_id, status, metadata, assistant_message_id FROM agent_runs "
                 "WHERE status IN ('queued', 'planning', 'running', 'awaiting_approval', "
                 "'waiting_input', 'budget_paused')"
             ) as cursor:
                 rows = await cursor.fetchall()
             for row in rows:
                 run_id, session_id = row["id"], row["session_id"]
+                metadata = loads_json(row["metadata"]) or {}
+                if row["status"] == "queued" and metadata.get("cancel_requested") is True:
+                    from ...verification import verification_evidence
+                    engine = metadata.get("engine", "native")
+                    result = {"session_id": session_id, "run_id": run_id,
+                              "message_id": row["assistant_message_id"], "text": "",
+                              "cancelled": True, "run_status": "cancelled", "budget_paused": False,
+                              "verification": verification_evidence(status="cancelled", engine=engine)}
+                    if engine == "codex":
+                        result["engine"] = engine
+                    profile = metadata.get("agent_execution")
+                    if profile is not None:
+                        from ...agent_execution import terminal_receipt
+                        current = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (run_id,)))
+                        result = terminal_receipt(profile, current, result, "cancelled")
+                    metadata["verification"] = result["verification"]
+                    await conn.execute(
+                        "UPDATE agent_runs SET status='cancelled', error=?, completed_at=?, metadata=?, result=? WHERE id=?",
+                        ("Cancelled before execution started", ts, dumps_json(metadata), dumps_json(result), run_id))
+                    async with conn.execute(
+                        "SELECT id FROM agent_run_steps WHERE run_id=? AND status IN ('pending', 'running')",
+                        (run_id,),
+                    ) as cursor:
+                        pending_steps = await cursor.fetchall()
+                    for pending in pending_steps:
+                        await conn.execute(
+                            "UPDATE agent_run_steps SET status='cancelled', error=?, completed_at=? WHERE id=?",
+                            ("Cancelled before execution started", ts, pending["id"]))
+                        step = _hydrate_step(await _fetchone(conn,
+                            "SELECT * FROM agent_run_steps WHERE id=?", (pending["id"],)))
+                        await _append_event(conn, run_id, "step_updated", {"step": step})
+                    run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (run_id,)))
+                    await _save_message_verification(conn, run, result["verification"])
+                    await _append_event(conn, run_id, "status", {"run": run})
+                    continue
                 await conn.execute(
                     "UPDATE agent_runs SET status = 'interrupted', error = ?, "
                     "completed_at = COALESCE(completed_at, ?) WHERE id = ?",
