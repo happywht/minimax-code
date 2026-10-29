@@ -1609,8 +1609,8 @@ mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可�
 核对大小/hash/身份，缺失/损坏拒绝，没有 source fallback。返回 application/octet-stream、
 attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）、no-store、nosniff、sandbox CSP、
 上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
-原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，Schema046/bundle v6新增办公成果关联表；当前Schema047/bundle v7保存各主机远端服务端口，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
-旧v1/041至v5/045仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
+原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，Schema046/bundle v6新增办公成果关联表；Schema047/bundle v7保存各主机远端服务端口；当前Schema048/bundle v8保存Webhook投递记录，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
+旧v1/041至v7/047仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
 
 ### office.* — 手动生成纯数据 XLSX（Schema046）
 
@@ -1844,15 +1844,23 @@ UI 依据 `cancel_supported` 禁用动作，不能只改任务账本制造已停
 
 ### webhook.* — Webhook
 
-Inbound `POST /hooks/{path}` awaits the mapped action. An action failure returns
-HTTP 500 with `ok: false` and an `error_id` that can be correlated with server
-logs; exception details and payloads are not returned. Existing validation
-responses (including signature mismatch) retain their HTTP 200 behavior. A
-sender may retry a 500, but this endpoint has no delivery deduplication: an
-earlier notification or other side effect may already have succeeded, so a
-retry can duplicate it. Eligible push events mapped to code-review currently
-fail closed because webhook execution is not admitted through the authorized
-skill execution boundary; non-push or empty-commit events are skipped.
+Inbound `POST /hooks/{path}` requires a configured HMAC secret; hooks without
+one return HTTP 403 without dispatch. Signature mismatch retains its HTTP 200
+validation response. After verification, the receiver durably claims the SHA-256
+body digest per hook before awaiting the mapped action. GitHub/Gitee delivery IDs
+are untrusted correlation hints: the signature covers the body, not those headers.
+A completed claim with the same ID and digest returns `ok: true, duplicate: true`
+without dispatch. A repeated body with a different or missing ID, or a reused ID
+with a different body, returns HTTP 409 for review; identical bodies from independent
+events may therefore require review. Pending or failed claims also return 409 on
+retry. A dispatch failure returns HTTP 500 with `ok: false` and an `error_id` for
+server-log correlation; exception details and payloads are not returned. A failure
+or interruption can follow partial side effects, so reconcile the persisted
+`webhook_deliveries` state before manual intervention. Restoring an older backup
+rolls the ledger back to its snapshot and cannot protect against deliveries executed
+since then; reconcile before reopening hooks. Eligible push events mapped to
+code-review currently fail closed because webhook execution is not admitted through
+the authorized skill execution boundary; non-push or empty-commit events are skipped.
 
 
 | 方法 | 说明 |

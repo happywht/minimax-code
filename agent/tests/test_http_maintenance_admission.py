@@ -26,7 +26,7 @@ async def setup(monkeypatch):
 
 
 @pytest.mark.parametrize("path", ["/attachments?project_id=p&filename=a.txt", "/complete", "/hooks/example"])
-async def test_inflight_and_rejection(setup, monkeypatch, path):
+async def test_inflight_and_rejection(setup, monkeypatch, path, tmp_path):
     server, client = setup
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -53,21 +53,28 @@ async def test_inflight_and_rejection(setup, monkeypatch, path):
         monkeypatch.setattr(completion_routes, "complete", complete)
     else:
         from minimax_code import webhooks as webhook_module
-        from minimax_code.storage.dao import webhooks
-        server._app_state = {"db": object()}
-        async def config(self, path):
-            return {"id": "w", "action_type": "send-message", "action_config": {}}
-        async def receive(self, *args):
-            return object()
+        from minimax_code.storage.dao.webhooks import WebhookDAO
+        from minimax_code.storage.db import AsyncDatabase
+        db = AsyncDatabase(tmp_path / "data.db")
+        await db.connect()
+        await db.migrate()
+        await WebhookDAO(db).create(name="test", source="custom", url_path=path, secret="secret")
+        server._app_state = {"db": db}
         async def dispatch(*args, **kwargs):
             entered.set()
             await release.wait()
-        monkeypatch.setattr(webhooks.WebhookDAO, "get_by_path", config)
-        monkeypatch.setattr(webhook_module.WebhookReceiver, "handle_request", receive)
         monkeypatch.setattr(webhook_module, "dispatch_webhook_action", dispatch)
 
     headers = {"X-Attachment-Service-Id": "service"}
-    task = asyncio.create_task(client.post(path, json={"file_path": "x"}, headers=headers))
+    if path.startswith("/hooks/"):
+        import hashlib
+        import hmac
+        body = b'{"file_path":"x"}'
+        headers["X-Hub-Signature-256"] = "sha256=" + hmac.new(
+            b"secret", body, hashlib.sha256).hexdigest()
+        task = asyncio.create_task(client.post(path, content=body, headers=headers))
+    else:
+        task = asyncio.create_task(client.post(path, json={"file_path": "x"}, headers=headers))
     await asyncio.wait_for(entered.wait(), 3)
     drain = asyncio.create_task(drain_for_maintenance(server))
     await asyncio.sleep(0)
@@ -78,6 +85,9 @@ async def test_inflight_and_rejection(setup, monkeypatch, path):
     release.set()
     assert (await task).status_code in (200, 201)
     assert not (await drain).upgrade_ready
+    if path.startswith("/hooks/"):
+        assert (await db.fetchone("SELECT state FROM webhook_deliveries"))["state"] == "completed"
+        await db.close()
 
 
 async def test_cancelled_upload_retains_thread_until_worker_finishes(setup, monkeypatch):

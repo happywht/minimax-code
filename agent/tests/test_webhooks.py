@@ -367,7 +367,7 @@ async def test_http_reports_dispatch_failure_without_secrets(async_db, monkeypat
     from minimax_code.http_server import build_app
     from minimax_code.ipc.server import IPCServer
 
-    row = await WebhookDAO(async_db).create(name="hook", source="custom")
+    row = await WebhookDAO(async_db).create(name="hook", source="custom", secret="secret")
     server = IPCServer(Config(), stdin=io.StringIO(), stdout=io.StringIO())
     server._app_state = {"db": async_db}
     app = build_app(server)
@@ -379,7 +379,9 @@ async def test_http_reports_dispatch_failure_without_secrets(async_db, monkeypat
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
             base_url="http://localhost",
             headers={"Authorization": f"Bearer {app.state.auth.token}"}) as client:
-        response = await client.post(row["url_path"], json={})
+        body = b"{}"
+        signature = "sha256=" + hmac.new(b"secret", body, hashlib.sha256).hexdigest()
+        response = await client.post(row["url_path"], content=body, headers={"X-Hub-Signature-256": signature})
     assert response.status_code == 500
     result = response.json()
     assert result["ok"] is False and result["error"] == "action failed"
@@ -414,7 +416,88 @@ async def test_http_success_and_signature_failure(async_db, monkeypatch):
         rejected = await client.post(row["url_path"], content=body)
         accepted = await client.post(row["url_path"], content=body,
                                      headers={"X-Hub-Signature-256": signature})
+        duplicate = await client.post(row["url_path"], content=body,
+                                      headers={"X-Hub-Signature-256": signature})
     assert rejected.status_code == 200 and rejected.json()["ok"] is False
     assert accepted.status_code == 200 and accepted.json() == {"ok": True}
     assert calls == [row["id"]]
+    assert duplicate.status_code == 409
+    server.listeners.clear()
+
+async def test_delivery_claims_reject_ambiguous_and_persist(async_db):
+    from minimax_code.webhooks.deliveries import claim, finish
+
+    assert await claim(async_db, "wh", "hash1", "id1") == "claimed"
+    assert await claim(async_db, "wh", "hash1", "id1") == "pending"
+    await finish(async_db, "wh", "hash1", "completed")
+    assert await claim(async_db, "wh", "hash1", "id1") == "completed"
+    assert await claim(async_db, "wh", "hash1", "id2") == "conflict"
+    assert await claim(async_db, "wh", "hash2", "id1") == "conflict"
+    assert await claim(async_db, "wh", "hash1", None) == "conflict"
+    assert await claim(async_db, "wh", "hash3", None) == "claimed"
+    await finish(async_db, "wh", "hash3", "review", "error1", "notification")
+    row = await async_db.fetchone("SELECT state, error_id, stage FROM webhook_deliveries WHERE body_sha256=?", ("hash3",))
+    assert tuple(row) == ("review", "error1", "notification")
+
+async def test_concurrent_claim_and_interrupted_dispatch(async_db):
+    import asyncio
+
+    from minimax_code.webhooks.deliveries import claim
+
+    states = await asyncio.gather(*(claim(async_db, "wh", "hash", "id") for _ in range(8)))
+    assert states.count("claimed") == 1
+    assert states.count("pending") == 7
+    assert await claim(async_db, "wh", "hash", "id") == "pending"
+
+
+async def test_finish_requires_existing_pending_claim(async_db):
+    from minimax_code.webhooks.deliveries import finish
+
+    with pytest.raises(RuntimeError, match="claim was lost"):
+        await finish(async_db, "missing", "hash", "completed")
+
+async def test_http_cancellation_after_claim_blocks_retry(async_db, monkeypatch):
+    import asyncio
+    import io
+
+    import httpx
+
+    from minimax_code import webhooks
+    from minimax_code.config import Config
+    from minimax_code.http_server import build_app
+    from minimax_code.ipc.server import IPCServer
+
+    row = await WebhookDAO(async_db).create(name="hook", source="github", secret="secret")
+    server = IPCServer(Config(), stdin=io.StringIO(), stdout=io.StringIO())
+    server._app_state = {"db": async_db}
+    app = build_app(server)
+    entered = asyncio.Event()
+    calls = []
+
+    async def dispatch(*args, **kwargs):
+        calls.append(1)
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(webhooks, "dispatch_webhook_action", dispatch)
+    body = b"{}"
+    signature = "sha256=" + hmac.new(b"secret", body, hashlib.sha256).hexdigest()
+    headers = {"X-Hub-Signature-256": signature, "X-GitHub-Delivery": "delivery-1"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": f"Bearer {app.state.auth.token}"}) as client:
+        request = asyncio.create_task(client.post(row["url_path"], content=body, headers=headers))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        record = await async_db.fetchone(
+            "SELECT state FROM webhook_deliveries WHERE webhook_id=?", (row["id"],))
+        assert record["state"] == "pending"
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        record = await async_db.fetchone(
+            "SELECT state FROM webhook_deliveries WHERE webhook_id=?", (row["id"],))
+        assert record["state"] == "pending"
+        retry = await client.post(row["url_path"], content=body, headers=headers)
+        assert retry.status_code == 409
+        assert calls == [1]
     server.listeners.clear()

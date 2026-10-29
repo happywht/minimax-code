@@ -739,12 +739,31 @@ def build_app(
             logger.warning("webhook not found for path=%s", url_path)
             return JSONResponse(content={"ok": False, "error": "not found"}, status_code=200)
 
+        # An unsigned request cannot establish a trustworthy delivery identity.
+        if not cfg.get("secret"):
+            return JSONResponse(content={"ok": False, "error": "authentication required"}, status_code=403)
+
         receiver = WebhookReceiver()
         payload = await receiver.handle_request(cfg, headers, body)
         if payload is None:
             return JSONResponse(content={"ok": False, "error": "signature mismatch"}, status_code=200)
 
-        # Dispatch is awaited; a failure may follow a partial side effect.
+        import hashlib
+
+        from .webhooks.deliveries import claim, finish
+
+        digest = hashlib.sha256(body).hexdigest()
+        webhook_id = cfg["id"]
+        delivery_id = headers.get("x-github-delivery") or headers.get("x-gitee-delivery")
+        if delivery_id and (len(delivery_id) > 200 or not delivery_id.isascii()):
+            return JSONResponse(content={"ok": False, "error": "invalid delivery id"}, status_code=400)
+        state = await claim(db, webhook_id, digest, delivery_id)
+        if state == "completed":
+            return JSONResponse(content={"ok": True, "duplicate": True}, status_code=200)
+        if state != "claimed":
+            return JSONResponse(content={"ok": False, "error": "delivery requires review"}, status_code=409)
+
+        # A durable pending claim is retained if execution or completion is interrupted.
         try:
             await dispatch_webhook_action(
                 payload,
@@ -760,11 +779,13 @@ def build_app(
             error_id = uuid4().hex
             stage = exc.stage if isinstance(exc, WebhookDispatchError) else "dispatch"
             logger.error("webhook action failed: error_id=%s stage=%s", error_id, stage)
+            await finish(db, webhook_id, digest, "review", error_id, stage)
             return JSONResponse(
                 content={"ok": False, "error": "action failed", "error_id": error_id},
                 status_code=500,
             )
 
+        await finish(db, webhook_id, digest, "completed")
         return JSONResponse(content={"ok": True}, status_code=200)
 
     # ---- POST /complete — inline code completion (v0.6.0) ---------------

@@ -1,7 +1,7 @@
 # SQLite、文本成果与附件原件的离线数据包
 
 此命令保存 **SQLite 数据库、已登记文本成果版本及附件原件**。当前新建包使用
-v7/Schema047；仍可校验、恢复旧 v6/Schema046 和 v1/Schema041、v2/Schema042、v3/Schema043、v4/Schema044、v5/Schema045，且不迁移或重新绑定旧库。
+v8/Schema048；仍可校验、恢复旧 v7/Schema047、v6/Schema046 和 v1/Schema041、v2/Schema042、v3/Schema043、v4/Schema044、v5/Schema045，且不迁移或重新绑定旧库。
 它生成 data-only 数据副本，不代表 M7 完整应用备份或可直接启动的迁移。
 PDF/XLSX预览沿用既有元数据；046/v6新增办公成果持久校验回执，文件仍复用附件vault。
 早期PDF切片沿用v2/inert_text和原因枚举，未改变其当时的Schema044/bundle4。
@@ -39,7 +39,7 @@ JSON。校验或 I/O 失败时返回非零退出码，不将失败当作备份�
 v1 数据包固定 Schema041，只允许版本化 `manifest.json`、SQLite backup API 产生的
 `data.db` 和数据库所有历史记录引用的 `text-artifact-vault/<snapshot_id>`。
 v2 固定 Schema042，额外纳入所有注册 `attachment-vault/<snapshot_id>` 原件，
-包括无法解析、类型异常、空文件和历史版本。v3固定Schema043，新增解析范围和稳定原因字段，保留历史v1元数据。v4固定Schema044，记录历史流式用量可信度迁移，不改变附件字段。v5固定Schema045，扩展MCP transport检查以保留显式streamable_http。v6固定Schema046，新增office_deliveries回执清单。v7固定Schema047，保存各主机的远端服务端口。当前工具只从047创建v7；冻结历史writer分别只从原041–046创建v1–6，均拒绝新v7/047；
+包括无法解析、类型异常、空文件和历史版本。v3固定Schema043，新增解析范围和稳定原因字段，保留历史v1元数据。v4固定Schema044，记录历史流式用量可信度迁移，不改变附件字段。v5固定Schema045，扩展MCP transport检查以保留显式streamable_http。v6固定Schema046，新增office_deliveries回执清单。v7固定Schema047，保存各主机的远端服务端口。v8固定Schema048，保存Webhook投递记录。当前工具只从048创建v8；冻结历史writer分别只从原041–047创建v1–7，均拒绝新v8/048；
 未知版本、格式/schema组合或表结构拒绝。Schema041升级前可用旧工具先保全v1；
 本工具验证/恢复旧包不会调用迁移。没有042/043/044/045/046降级迁移，回退须使用匹配旧程序的升级前备份。
 它不受成果列表最新 200 条的显示限制。清单记录应用/格式/schema 版本、服务身份、

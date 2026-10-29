@@ -282,7 +282,7 @@ def test_schema_40_upgrade_preserves_existing_rows(tmp_path, monkeypatch):
         assert db.migrate()[-1] == 40
         db.execute("INSERT INTO projects(id,name,created_at,updated_at) VALUES('old','old','now','now')")
         monkeypatch.setattr(storage, "discover_migrations", discover)
-        assert db.migrate() == [41, 42, 43, 44, 45, 46, 47]
+        assert db.migrate() == [41, 42, 43, 44, 45, 46, 47, 48]
         assert db.fetchone("SELECT name FROM projects WHERE id='old'")[0] == "old"
         assert db.fetchone("SELECT COUNT(*) FROM text_artifacts")[0] == 0
         assert db.migrate() == []

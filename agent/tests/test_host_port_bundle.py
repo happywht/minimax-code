@@ -25,14 +25,14 @@ def test_old_bundle_restore_migrate_and_new_bundle_roundtrip(tmp_path, monkeypat
     assert frozen.create_bundle(restored, tmp_path / "old-again.zip")["schema_version"] == 46
     assert frozen.verify_bundle(tmp_path / "old-again.zip")["format_version"] == 6
     with Database(restored / "data.db") as db:
-        assert db.migrate() == [47]
+        assert db.migrate() == [47, 48]
         assert db.fetchone("SELECT name,remote_port FROM hosts WHERE id='h'")[:] == ("old", 8765)
         db.execute("UPDATE hosts SET remote_port=9999 WHERE id='h'")
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("UPDATE hosts SET remote_port=0 WHERE id='h'")
     new = tmp_path / "new.zip"
-    assert bundle.create_bundle(restored, new)["format_version"] == 7
-    assert bundle.verify_bundle(new)["schema_version"] == 47
+    assert bundle.create_bundle(restored, new)["format_version"] == 8
+    assert bundle.verify_bundle(new)["schema_version"] == 48
     target = tmp_path / "new-restored"
     bundle.restore_bundle(new, target)
     with Database(target / "data.db") as db:
