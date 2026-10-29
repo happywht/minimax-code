@@ -148,6 +148,8 @@ async def drive_codex_run(
     cancelled = False
     turn_requested = False
     closing = False
+    budget_interrupt_requested = False
+    budget_interrupt_failed = False
     event_errors: list[BaseException] = []
 
     async def interrupt() -> None:
@@ -161,13 +163,26 @@ async def drive_codex_run(
             if not turn_done.done():
                 turn_done.set_exception(RuntimeError(f"Codex cancellation interrupt failed; turn outcome unknown: {exc}"))
 
+    async def interrupt_budget_turn() -> None:
+        nonlocal budget_interrupt_failed
+        try:
+            await interrupt()
+        except Exception as exc:
+            # A terminal notification already establishes the turn outcome.
+            if turn_done.done():
+                return
+            budget_interrupt_failed = True
+            error = RuntimeError(f"Codex budget interrupt failed; turn outcome unknown: {exc}")
+            event_errors.append(error)
+            turn_done.set_exception(error)
+
     def close_approvals() -> None:
         for request_id in gate.close_all():
             spawn_notify(emit("permission.closed", {"request_id": request_id,
                          "session_id": job.session_id, "run_id": job.run_id}))
 
     async def process(n: dict[str, Any]) -> None:
-        nonlocal uncertain, watermark, ledger_exceeded
+        nonlocal uncertain, watermark, ledger_exceeded, budget_interrupt_requested
         if "exit_error" in n:
             raise RuntimeError(n["exit_error"])
         method, params = n.get("method", ""), n.get("params") or {}
@@ -214,8 +229,10 @@ async def drive_codex_run(
                     usage.update(prompt_tokens=info["inputTokens"], completion_tokens=info["outputTokens"],
                                  total_tokens=info["totalTokens"])
                     budget.used_tokens = info["totalTokens"]
-            if not closing and (ledger_exceeded or (bounded and (uncertain or budget.would_exceed(1)))):
-                spawn_notify(interrupt())
+            if (not closing and not budget_interrupt_requested
+                    and (ledger_exceeded or (bounded and (uncertain or budget.would_exceed(1))))):
+                budget_interrupt_requested = True
+                spawn_notify(interrupt_budget_turn())
         elif method == "turn/completed":
             close_approvals()
             if not turn_done.done():
@@ -404,7 +421,7 @@ async def drive_codex_run(
                 cleanup_error = exc
             finally:
                 turn_ready.set()
-            if failure is not None and turn_id and thread_id and not cancelled:
+            if failure is not None and turn_id and thread_id and not cancelled and not budget_interrupt_failed:
                 spawn_notify(interrupt())
             if background_tasks:
                 await asyncio.gather(*list(background_tasks), return_exceptions=True)

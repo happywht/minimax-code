@@ -74,3 +74,10 @@ grandchild process handles become signaled, with heartbeat activity stopped.
 Protocol replay tests independently verify each turn's sandbox policy; they do
 not establish real Codex provider or network behavior. The protocol pin stays
 at `codex-cli 0.163.0`.
+
+Budget enforcement remains reactive: observed usage can trigger a single turn
+interrupt after the limit has already been reached. If that request fails before
+a terminal notification is observed, the run fails with an unknown external
+outcome and closes the connection; it must not be presented as a confirmed budget
+pause. A terminal notification already observed remains authoritative. This
+change has not been verified by a test run or a real provider call.
