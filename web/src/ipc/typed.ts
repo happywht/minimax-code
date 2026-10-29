@@ -131,6 +131,7 @@ export interface TypedIPC {
   registerArtifact(params: import("../types/ipc").ArtifactRegisterParams): Promise<{ artifact: import("../types/ipc").TextArtifact }>;
   listArtifacts(projectId: string): Promise<import("../types/ipc").ArtifactListResult>;
   getArtifact(projectId: string, artifactId: string): Promise<import("../types/ipc").ArtifactGetResult>;
+  generatePdf(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   generateDocx(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   listAttachments(projectId: string): Promise<import("../types/ipc").AttachmentListResult>;
   getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
@@ -614,6 +615,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     registerArtifact: (params) => client.request("artifact.register", params),
     listArtifacts: (projectId) => client.request("artifact.list", { project_id: projectId }),
     getArtifact: (projectId, artifactId) => client.request("artifact.get", { project_id: projectId, artifact_id: artifactId }),
+    generatePdf: (params) => client.request("attachment.generate_pdf", params),
     generateDocx: (params) => client.request("attachment.generate_docx", params),
     listAttachments: (projectId) => client.request("attachment.list", { project_id: projectId }),
     // Preview results retain versioned parser scope/reason independently of quality.

@@ -21,10 +21,11 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
   const [file, setFile] = useState<File | null>(null);
   const [docName, setDocName] = useState("报告.docx"), [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [format, setFormat] = useState<"docx" | "pdf">("docx");
   const [structured, setStructured] = useState(false), [sections, setSections] = useState(sectionExample);
   const [formError, setFormError] = useState<string | null>(null);
   useEffect(() => {
-    setFile(null); setTitle(""); setBody(""); setStructured(false); setSections(sectionExample); setFormError(null); void useAttachmentStore.getState().activate(projectId);
+    setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setSections(sectionExample); setFormError(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
@@ -43,16 +44,21 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
     </form>
     <form className="flex flex-col gap-2 rounded border border-line p-3" onSubmit={(event) => {
       event.preventDefault(); setFormError(null);
-      if (!structured) { void state.generateDocx(docName, title, { paragraphs: body.split(/\r?\n/) }); return; }
+      if (!structured) { void state.generateDocx(docName, title, { paragraphs: body.split(/\r?\n/) }, format); return; }
       try {
         const value: unknown = JSON.parse(sections);
         if (!Array.isArray(value)) throw new Error("章节必须是 JSON 数组");
-        void state.generateDocx(docName, title, { sections: value as DocxSection[] });
+        void state.generateDocx(docName, title, { sections: value as DocxSection[] }, format);
       } catch { setFormError("章节 JSON 无效，请使用示例格式。"); }
     }}>
-      <h3>生成 DOCX 报告</h3>
+      <h3>生成报告</h3>
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
-      <Input aria-label="DOCX 文件名" value={docName} onChange={(event) => setDocName(event.target.value)} />
+      <label>文件格式 <select aria-label="报告文件格式" value={format} onChange={(event) => {
+        const next = event.target.value as "docx" | "pdf"; setFormat(next);
+        setDocName((name) => name.replace(/\.(docx|pdf)$/i, `.${next}`));
+      }}><option value="docx">DOCX</option><option value="pdf">PDF</option></select></label>
+      {format === "pdf" && <p>PDF 需要已安装的中文 TrueType 字体；缺失或字符不受支持时请按提示配置。表格最多 10 列、每表 1000 格。</p>}
+      <Input aria-label="报告文件名" value={docName} onChange={(event) => setDocName(event.target.value)} />
       <Input aria-label="报告标题" value={title} onChange={(event) => setTitle(event.target.value)} />
       <label>内容形式 <select aria-label="报告内容形式" value={structured ? "sections" : "plain"} onChange={(event) => { setStructured(event.target.value === "sections"); setFormError(null); }}>
         <option value="plain">普通段落</option><option value="sections">章节和表格 JSON</option>
@@ -61,8 +67,8 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
         <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => setSections(event.target.value)} /></> :
         <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />}
       {formError && <p role="alert">{formError}</p>}
-      <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim())}>生成 DOCX</Button>
-      {ipc.isMock && <p role="status">演示模式不能生成 DOCX。</p>}
+      <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim())}>生成 {format.toUpperCase()}</Button>
+      {ipc.isMock && <p role="status">演示模式不能生成报告。</p>}
     </form>
     {file && file.size > 10485760 && <p role="alert">文件超过 10 MiB，未上传。</p>}
     {scoped && state.error && <p role="alert" className="text-status-error">{state.error}</p>}

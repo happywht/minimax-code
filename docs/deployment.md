@@ -222,3 +222,8 @@ python3 scripts/upgrade-linux-user-service.py \
 ### Inbound webhook delivery safety
 
 Inbound hooks require a configured HMAC secret; previously configured unsigned hooks now return 403 and do not dispatch. The signature covers the body, not provider headers. The receiver durably claims the SHA-256 digest per hook before dispatch. GitHub or Gitee delivery IDs are untrusted correlation hints. A completed claim with the same ID, body, source and interpreted event returns a duplicate success without dispatch. Changed events and older completed claims without an event fingerprint return 409 for review; a matching fingerprint does not authenticate the event header. The same body with a different or missing ID, or the same ID with a different body, also returns 409. Identical bodies from independent events can require review. Failed or interrupted dispatch remains blocked, because notification and session writes can have partially succeeded. Inspect `webhook_deliveries` state, error ID and stage and reconcile side effects before any manual intervention; no automatic retry or resolution is provided. Unsigned requests never reserve IDs. Online JSON import rejects webhook configuration and the delivery ledger. Backup restoration reverts this ledger to the snapshot and cannot protect against deliveries executed after that snapshot; reconcile before reopening inbound hooks after restore.
+
+
+### PDF 报告生成
+
+安装报告与附件依赖：在 `agent` 目录执行 `uv sync --frozen --extra attachments`。报告生成自动尝试常见 Windows/Linux 中文字体并嵌入 PDF；如果字体缺失、格式不支持或无法覆盖报告字符，安装可用的中文 TrueType 字体并在启动服务前设置 `MINIMAX_CODE_PDF_FONT` 为字体文件的绝对路径，重启服务后重试。字体文件不会被修改。PDF 文字可解析不代表排版视觉、事实或业务已验收。

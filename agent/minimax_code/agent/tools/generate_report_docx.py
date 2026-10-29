@@ -50,6 +50,8 @@ class GenerateReportDocxTool(Tool):
         self.db, self.session_id, self.project_id = db, session_id, project_id
         self.service = AttachmentService(db, db.path.parent)
 
+    operation = "generate_docx"
+
     async def run(self, filename: str, title: str, paragraphs: list[str] | None = None,
                   sections: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
@@ -64,7 +66,7 @@ class GenerateReportDocxTool(Tool):
                 "project_id": self.project_id, "expected_service_id": identity,
                 "filename": filename, "title": title, "paragraphs": paragraphs, "sections": sections,
             })
-            result = await self.service.generate_docx(**params.model_dump(), expected_session=self.session_id)
+            result = await getattr(self.service, self.operation)(**params.model_dump(), expected_session=self.session_id)
             attachment = result["attachment"]
             return ToolResult.ok({
                 "attachment_id": attachment["id"], "filename": attachment["original_name"],
@@ -77,6 +79,23 @@ class GenerateReportDocxTool(Tool):
             return ToolResult.fail(str(error))
 
 
+
+class GenerateReportPdfTool(GenerateReportDocxTool):
+    name = "generate_report_pdf"
+    operation = "generate_pdf"
+    description = (
+        "Create and register a PDF report in the current project using a title and either "
+        "paragraphs or structured sections with ordered paragraph/table blocks. Include source "
+        "citations where available. A Chinese TrueType font is embedded; missing dependencies "
+        "or font coverage cause an explicit error. Facts and visual layout are not verified. "
+        "If the outcome is uncertain, inspect project attachments before retrying."
+    )
+    parameters = {**GenerateReportDocxTool.parameters, "properties": {
+        **GenerateReportDocxTool.parameters["properties"],
+        "filename": {"type": "string", "description": "A .pdf display filename"},
+    }}
+
 def register_report_docx_tool(registry: Any, db: Any, session_id: str,
                               project_id: str | None) -> None:
     registry.register(GenerateReportDocxTool(db, session_id, project_id))
+    registry.register(GenerateReportPdfTool(db, session_id, project_id))

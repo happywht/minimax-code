@@ -100,6 +100,19 @@ describe("project attachment panel and dispatch epochs", () => {
     await screen.findByLabelText("附件纯文本预览");
     expect(wire.request).toHaveBeenCalledWith("attachment.generate_docx", { project_id: "p", expected_service_id: "svc_test", filename: "报告.docx", title: "资料报告", sections });
   });
+  it("generates a PDF report through the selected format", async () => {
+    const pdf: AttachmentOriginal = { ...row, original_name: "报告.pdf", declared_type: "pdf", recognized_type: "pdf", parser_version: 2, parser_scope: "inert_text", parser_reason: "ok" };
+    wire.request.mockImplementation(async (method: string) => method === "attachment.list"
+      ? { attachments: [], service_id: "svc_test" } : { attachment: pdf, preview_text: "报告内容" });
+    render(<AttachmentsPanel onClose={vi.fn()} />);
+    await screen.findByText("当前项目还没有附件原件。");
+    fireEvent.change(screen.getByLabelText("报告文件格式"), { target: { value: "pdf" } });
+    fireEvent.change(screen.getByLabelText("报告标题"), { target: { value: "报告" } });
+    fireEvent.change(screen.getByLabelText("报告正文（每行一个段落）"), { target: { value: "中文正文" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成 PDF" }));
+    await screen.findByLabelText("附件纯文本预览");
+    expect(wire.request).toHaveBeenCalledWith("attachment.generate_pdf", { project_id: "p", expected_service_id: "svc_test", filename: "报告.pdf", title: "报告", paragraphs: ["中文正文"] });
+  });
   it("uploads selected raw file, escapes preview, separates quality and downloads original", async () => {
     const createURL = vi.fn().mockReturnValue("blob:original");
     vi.stubGlobal("URL", { createObjectURL: createURL, revokeObjectURL: vi.fn() });

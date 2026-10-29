@@ -9,7 +9,7 @@ interface AttachmentState {
   loading: boolean; busy: boolean; error: string | null;
   activate: (projectId: string | null) => Promise<void>;
   upload: (file: File) => Promise<void>;
-  generateDocx: (filename: string, title: string, content: DocxContent) => Promise<void>;
+  generateDocx: (filename: string, title: string, content: DocxContent, format?: "docx" | "pdf") => Promise<void>;
   select: (id: string) => Promise<void>;
   download: () => Promise<void>;
   clear: () => void;
@@ -70,13 +70,14 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
       } catch (error) { if (current(ticket, project, host)) set({ error: errorText(error) }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
     },
-    generateDocx: async (filename, title, content) => {
+    generateDocx: async (filename, title, content, format = "docx") => {
       const { projectId: project, host, serviceId } = get();
       if (get().busy || !ready(project, host, serviceId) || !project || !serviceId) return;
       const ticket = epoch;
       set({ busy: true, error: null });
       try {
-        const result = await typedIPC.generateDocx({ project_id: project, expected_service_id: serviceId, filename, title, ...content });
+        const params = { project_id: project, expected_service_id: serviceId, filename, title, ...content };
+        const result = await (format === "pdf" ? typedIPC.generatePdf(params) : typedIPC.generateDocx(params));
         if (!current(ticket, project, host)) return;
         validate(result.attachment, project, serviceId);
         set({ attachments: [result.attachment, ...get().attachments].slice(0, 200) });

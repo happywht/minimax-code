@@ -1499,7 +1499,7 @@ class AgentCore:
 
         # 1. Permission check (configurable, default-allow).
         action = _check_rule(self._permission_store, name)
-        if name in {"generate_report_docx", "generate_table_xlsx"}:
+        if name in {"generate_report_docx", "generate_report_pdf", "generate_table_xlsx"}:
             # Generated documents are writes: existing write_file restrictions
             # cannot be bypassed by allowing the new tool name.
             write_action = _check_rule(self._permission_store, "write_file")

@@ -1588,6 +1588,7 @@ document the migration in this file.
 
 | 方法 | 参数 | 返回 |
 |------|------|------|
+| `attachment.generate_pdf` | `{project_id, expected_service_id, filename, title, paragraphs?, sections?}` | `{attachment, preview_text}`，生成并保存 PDF 文本报告，业务及视觉未验证 |
 | `attachment.generate_docx` | `{project_id, expected_service_id, filename, title, paragraphs}` | `{attachment, preview_text}`，生成并保存有界纯文本 DOCX；不验证版式或事实 |
 | `attachment.list` | `{project_id}` | `{attachments, service_id}`，最近 200 条元数据，不含预览 |
 | `attachment.get` | `{project_id, attachment_id}` | `{attachment, preview_text}`，核对原件后返回有界纯文本 |
@@ -1638,6 +1639,8 @@ attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）�
 旧v1/041至v7/047仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
 
 `attachment.generate_docx` 接受安全 `.docx` 显示名和单行标题（最多 200 字），内容使用两种互斥格式之一：`paragraphs` 为 1–100 个段落；或 `sections` 为 1–50 个 `{heading, blocks}`，每个 block 为 `{kind:"paragraph",text}` 或 `{kind:"table",rows:[[文本,...],...]}`，顺序保留。合计最多 100 块、2000 个单元格，每表最多 100 行、20 列且各行等宽；每段/格最多 4096 字，总 UTF-8 最多 256 KiB。章节标题也限单行 200 字。使用本地 python-docx 创建，回读并比较全部章节、段落、表格单元格及顺序，再经现有 DOCX 有界解析与不可变附件 vault 登记。不会读取或修改项目文件、调用模型或抓取资料；用户提供的来源文本需自行核实。不保证版式、分页、事实或业务质量。响应丢失时先刷新附件列表；重试会创建新版本。文件与现有附件共享备份协议及未验证状态，不作为已完成报告的质量证明。 普通聊天 Agent 可通过 `generate_report_docx` 生成当前会话项目的文档；提交时复核会话项目绑定，遵循规划模式与写入权限规则。该工具默认要求确认，拒绝规则优先，无法确认时拒绝。
+
+`attachment.generate_pdf` 与 DOCX 使用相同互斥的段落或章节结构；PDF 表格每表最多 10 列、1000 格。使用 attachments extra 中锁定的 ReportLab 本地生成并嵌入中文 TrueType 字体；Windows 自动尝试系统黑体/等线，Linux 尝试常见文泉驿、文鼎或 Noto 字体，找不到或不覆盖文字时拒绝并提示配置 `MINIMAX_CODE_PDF_FONT` 绝对字体文件路径。字体需为 ReportLab 支持的 TrueType 轮廓，超出字体覆盖的字符拒绝；生成失败时缩短过高的表格行。通过有界 PDF 文本解析后保存，预览可能截断，不等同完整视觉检查。`generate_report_pdf` 仅普通聊天可调用，沿用当前会话项目绑定及 DOCX 的写入权限和规划模式约束；不调用模型生成或访问外网，响应不明时先检查附件列表。
 
 ### office.* — 生成纯数据 XLSX（Schema046）
 

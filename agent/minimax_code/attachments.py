@@ -344,6 +344,24 @@ class AttachmentService:
                                 expected_session=expected_session)
         return await self.get(project_id, row["id"])
 
+    async def generate_pdf(self, project_id, expected_service_id, filename, title, paragraphs=None,
+                           sections=None, *, expected_session=None):
+        from .execution import require_write_access
+        from .report_pdf import generate_pdf
+
+        require_write_access()
+        await self.dao.project(project_id)
+        if expected_service_id != await self.dao.service_id():
+            raise ValueError("Attachment service identity changed; refresh")
+        data = await _blocking(generate_pdf, filename, title, paragraphs, sections)
+
+        async def chunks():
+            yield data
+
+        row = await self.upload(project_id, filename, expected_service_id, chunks(), require_parsed=True,
+                                expected_session=expected_session)
+        return await self.get(project_id, row["id"])
+
     async def list(self, project_id):
         await self.dao.project(project_id)
         return {"attachments": await self.dao.list(project_id), "service_id": await self.dao.service_id()}
