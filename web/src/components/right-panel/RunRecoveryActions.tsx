@@ -16,6 +16,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   const [resumed, setResumed] = useState(false), [budgetTokens, setBudgetTokens] = useState("");
   const [changeBudget, setChangeBudget] = useState(false);
   const [review, setReview] = useState<Review | null>(null), [attempt, setAttempt] = useState<Attempt | null>(null);
+  const [foundRun, setFoundRun] = useState<AgentRun | null>(null);
   const [loading, setLoading] = useState(false);
   const epoch = useRef(0), inFlight = useRef(false);
   const session = useSessionStore((state) => state.currentSessionId);
@@ -26,7 +27,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   const resumable = ["interrupted", "failed", "cancelled", "budget_paused"].includes(run.status);
   const active = ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status);
   useEffect(() => {
-    ++epoch.current; setReview(null); setAttempt(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens(""); setChangeBudget(false);
+    ++epoch.current; setReview(null); setAttempt(null); setFoundRun(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens(""); setChangeBudget(false);
     return () => { ++epoch.current; };
   }, [run.id, run.status, session, project, selectedProject, host]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setReview(null); setAttempt(null); setReviewed(false); setPending(false); setLoading(false); setError("连接变化，请重新读取运行和待确认请求。"); }), []);
@@ -117,6 +118,32 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
     try { localStorage.removeItem(retryStorage(attempt)); setAttempt(null); setReviewed(false); setError("本地记录已移除；实际运行和文件未改变。"); }
     catch { setError("无法移除本地记录，请检查浏览器存储。"); }
   };
+  const findAccepted = async () => {
+    if (!attempt || inFlight.current || !session || session !== run.session_id || !sameProject) return;
+    const ticket = ++epoch.current;
+    inFlight.current = true; setPending(true); setError(null); setFoundRun(null);
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current(ticket) || identity.service_id !== attempt.service) throw new Error("服务或会话已变化，请重新核对");
+      const source = await typedIPC.getRunSteps(run.id);
+      const childId = source.run.metadata?.recovery_child_id;
+      const candidates = typeof childId === "string"
+        ? [(await typedIPC.getRun(childId)).run]
+        : (await typedIPC.listRuns({ session_id: session, limit: 100, include_active: true })).runs;
+      const finalIdentity = await typedIPC.getServiceIdentity();
+      if (!current(ticket) || finalIdentity.service_id !== attempt.service || source.run.id !== run.id ||
+          source.run.session_id !== session || (source.run.metadata?.project_id ?? null) !== project) {
+        throw new Error("服务、会话或项目已变化，请重新核对");
+      }
+      const matches = candidates.filter((item) => item.session_id === session && item.resumed_from_id === run.id &&
+        item.request_key === attempt.key && (item.metadata?.project_id ?? null) === project);
+      if (matches.length !== 1) throw new Error("未能确认此请求是否已接收；请检查完整时间线，保留待确认记录");
+      setFoundRun(matches[0]);
+      localStorage.removeItem(retryStorage(attempt)); setAttempt(null); setResumed(true);
+      await refresh();
+    } catch (failure) { if (current(ticket)) setError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { inFlight.current = false; if (current(ticket)) setPending(false); }
+  };
   return <div className="mt-2 space-y-2 text-xs text-ink-1" data-testid="run-recovery-actions">
     {resumable ? <>
       <p>恢复会创建关联的新运行，不会自动重放工具步骤，也不是从精确执行位置继续。请先核对记录、当前文件和可能的外部副作用。</p>
@@ -140,9 +167,11 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
           {changeBudget && <label className="block">恢复 token 上限（累计含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} disabled={pending || !!attempt} onChange={(event) => setBudgetTokens(event.target.value)} /></label>}
         </div>}
         {attempt && <p>存在待确认恢复请求；重试保留原请求 ID 和预算，不会创建新的重试身份。请先核对时间线。</p>}
+        {foundRun && <p role="status" className="break-all">已找到该请求接收的关联运行 {foundRun.id}，当前记录状态：{foundRun.status}。请在时间线查看其结果。</p>}
         {attempt && attempt.cursor !== review.snapshot.cursor && <p role="status">原记录版本已变化，不能直接重试；请先核对是否已创建接续运行。</p>}
         <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" onClick={() => void act()} disabled={pending || resumed || !reviewed || (budgetPaused && changeBudget && !attempt && !validBudget) || (!!attempt && attempt.cursor !== review.snapshot.cursor)}>
           {pending ? "处理中…" : resumed ? "已创建接续运行" : attempt ? "重试同一恢复请求" : "确认恢复为新运行"}</Button>
+          {attempt && <Button type="button" size="sm" variant="secondary" disabled={pending} onClick={() => void findAccepted()}>查找已接收的接续运行</Button>}
           {attempt && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={forget}>移除本地待确认记录</Button>}</div>
       </div>}
     </> : <Button size="sm" variant="secondary" onClick={() => void act()} disabled={pending || cancelRequested}>{pending ? "处理中…" : cancelRequested ? "正在取消…" : "取消此任务"}</Button>}
