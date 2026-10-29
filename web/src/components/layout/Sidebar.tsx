@@ -38,7 +38,7 @@ import { Button, Checkbox, IconButton, Input, Modal, DropdownMenu } from "../../
 import { strings } from "../../ui/strings";
 import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../../lib/defaultTitles";
 import { typedIPC } from "../../ipc";
-import { useChat, useSessionStore, type SessionFilter, type SessionMeta } from "../../stores";
+import { useChat, useSessionStore, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
 import { APP_VERSION } from "../../version";
 
@@ -46,26 +46,12 @@ export interface SidebarProps {
   testId?: string;
   onMobileClick?: () => void;
   /** Current top-level view — drives which NavItem is highlighted. */
-  view?: "chat" | "skills" | "settings" | "scheduled" | "agents" | "preview" | "artifacts" | "attachments";
+  view?: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research";
   /** Toggle between top-level views. */
-  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "agents" | "preview" | "artifacts" | "attachments") => void;
+  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research") => void;
 }
 
-type PrimaryNavId = SessionFilter | "skills" | "agents" | "chat";
-
-const NAV_ITEMS: Array<{
-  id: PrimaryNavId;
-  label: string;
-  icon: JSX.Element;
-  group: "primary" | "history";
-}> = [
-  { id: "chat", label: "工作台", icon: <LayoutDashboard size={14} />, group: "primary" },
-  { id: "skills", label: "技能", icon: <Wrench size={14} />, group: "primary" },
-  { id: "scheduled", label: "定时任务", icon: <CalendarClock size={14} />, group: "primary" },
-  { id: "history", label: "任务历史", icon: <History size={14} />, group: "primary" },
-  { id: "agents", label: "Agents", icon: <Bot size={14} />, group: "primary" },
-  { id: "archived", label: "已归档", icon: <Plug size={14} />, group: "history" },
-];
+type NavigationGroup = "projects" | "work" | "deliveries" | "automation";
 
 function projectIcon(project: Project, size = 14): JSX.Element {
   if (project.id === "inbox") return <Inbox size={size} />;
@@ -106,6 +92,12 @@ export function Sidebar({
   const selectAllVisible = useSessionStore((s) => s.selectAllVisible);
   const batchArchiveSessions = useSessionStore((s) => s.batchArchiveSessions);
   const batchMoveToProject = useSessionStore((s) => s.batchMoveToProject);
+  const [navigationGroup, setNavigationGroup] = useState<NavigationGroup | null>("projects");
+  useEffect(() => {
+    if (["artifacts", "attachments", "office", "research"].includes(view)) setNavigationGroup("deliveries");
+    else if (["scheduled", "workflows", "webhooks"].includes(view)) setNavigationGroup("automation");
+    else if (["skills", "agents", "preview"].includes(view)) setNavigationGroup("work");
+  }, [view]);
   const [historyQuery, setHistoryQuery] = useState("");
   const [batchMoveOpen, setBatchMoveOpen] = useState(false);
   const [remoteSearchSessions, setRemoteSearchSessions] = useState<SessionMeta[] | null>(null);
@@ -523,7 +515,7 @@ export function Sidebar({
   return (
     <aside
       data-testid={testId}
-      className="flex h-full w-60 shrink-0 flex-col border-r border-line bg-surface-1"
+      className="flex h-full w-60 max-w-full shrink-0 flex-col border-r border-line bg-surface-1"
     >
       {/* Brand */}
       <div className="flex items-center gap-2.5 border-b border-line px-3 py-3">
@@ -584,70 +576,41 @@ export function Sidebar({
         </IconButton>
       </div>
 
-      {/* Primary nav */}
-      <nav className="space-y-0.5 px-2" data-testid="sidebar-nav">
-        {onViewChange && <NavItem icon={<Folder size={14} />} label="文本成果" selected={view === "artifacts"} onClick={() => onViewChange("artifacts")} testId="sidebar-nav-artifacts" />}
-        {onViewChange && <NavItem icon={<Folder size={14} />} label="项目附件" selected={view === "attachments"} onClick={() => onViewChange("attachments")} testId="sidebar-nav-attachments" />}
-        {NAV_ITEMS.filter((n) => n.group === "primary").map((n) => (
-          <NavItem
-            key={n.id}
-            icon={n.icon}
-            label={n.label}
-            selected={
-              n.id === "chat"
-                ? view === "chat" && filter === "all"
-                : n.id === "skills"
-                ? view === "skills"
-                : n.id === "scheduled" || n.id === "agents"
-                ? view === n.id
-                : view === "chat" && filter === n.id
-            }
-            onClick={() => {
-              if (n.id === "chat") {
-                onViewChange?.("chat");
-                setFilter("all");
-                return;
-              }
-              if (n.id === "skills") {
-                onViewChange?.("skills");
-                setFilter("skills");
-                return;
-              }
-              if (n.id === "scheduled" || n.id === "agents") {
-                onViewChange?.(n.id);
-                setFilter("all");
-                return;
-              }
-              onViewChange?.("chat");
-              setFilter(n.id as SessionFilter);
-            }}
-            testId={`sidebar-nav-${n.id}`}
-          />
-        ))}
-        <div className="pt-2">
-          {NAV_ITEMS.filter((n) => n.group === "history").map((n) => (
-            <NavItem
-              key={n.id}
-              icon={n.icon}
-              label={n.label}
-              selected={view === "chat" && filter === n.id}
-              onClick={() => {
-                onViewChange?.("chat");
-                setFilter(n.id as SessionFilter);
-              }}
-              testId={`sidebar-nav-${n.id}`}
-            />
-          ))}
-        </div>
-        {onViewChange && (
-          <NavItem
-            icon={<SettingsIcon size={14} />}
-            label="设置"
-            selected={view === "settings"}
-            onClick={() => onViewChange("settings")}
-            testId="sidebar-nav-settings"
-          />
-        )}
+      {/* Four daily areas; each child retains the existing view/filter behavior. */}
+      <nav aria-label="日常导航" className="max-h-[42%] shrink-0 space-y-1 overflow-y-auto px-2" data-testid="sidebar-nav">
+        {([
+          { id: "projects" as const, label: "项目与任务", icon: <Folder size={14} />, items: <>
+            <NavItem icon={<Folder size={14} />} label="项目与任务列表" selected={navigationGroup === "projects" && view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-projects" />
+            <NavItem icon={<History size={14} />} label="任务历史" selected={view === "chat" && filter === "history"} onClick={() => { onViewChange?.("chat"); setFilter("history"); }} testId="sidebar-nav-history" />
+            <NavItem icon={<Archive size={14} />} label="已归档" selected={view === "chat" && filter === "archived"} onClick={() => { onViewChange?.("chat"); setFilter("archived"); }} testId="sidebar-nav-archived" />
+          </> },
+          { id: "work" as const, label: "当前工作", icon: <LayoutDashboard size={14} />, items: <>
+            <NavItem icon={<LayoutDashboard size={14} />} label="当前会话" selected={navigationGroup === "work" && view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-chat" />
+            <NavItem icon={<Search size={14} />} label="工作区预览" selected={view === "preview"} onClick={() => onViewChange?.("preview")} testId="sidebar-nav-preview" />
+            <NavItem icon={<Wrench size={14} />} label="技能" selected={view === "skills"} onClick={() => { onViewChange?.("skills"); setFilter("skills"); }} testId="sidebar-nav-skills" />
+            <NavItem icon={<Bot size={14} />} label="Agent 管理" selected={view === "agents"} onClick={() => { onViewChange?.("agents"); setFilter("all"); }} testId="sidebar-nav-agents" />
+          </> },
+          { id: "deliveries" as const, label: "交付物", icon: <Archive size={14} />, items: <>
+            <NavItem icon={<Folder size={14} />} label="文本成果" selected={view === "artifacts"} onClick={() => onViewChange?.("artifacts")} testId="sidebar-nav-artifacts" />
+            <NavItem icon={<Folder size={14} />} label="项目附件与报告" selected={view === "attachments"} onClick={() => onViewChange?.("attachments")} testId="sidebar-nav-attachments" />
+            <NavItem icon={<Folder size={14} />} label="办公成果与表格" selected={view === "office"} onClick={() => onViewChange?.("office")} testId="sidebar-nav-office" />
+            <NavItem icon={<Search size={14} />} label="研究来源" selected={view === "research"} onClick={() => onViewChange?.("research")} testId="sidebar-nav-research" />
+          </> },
+          { id: "automation" as const, label: "自动化", icon: <CalendarClock size={14} />, items: <>
+            <NavItem icon={<CalendarClock size={14} />} label="定时任务" selected={view === "scheduled"} onClick={() => { onViewChange?.("scheduled"); setFilter("all"); }} testId="sidebar-nav-scheduled" />
+            <NavItem icon={<Wrench size={14} />} label="工作流" selected={view === "workflows"} onClick={() => onViewChange?.("workflows")} testId="sidebar-nav-workflows" />
+            <NavItem icon={<Plug size={14} />} label="Webhook" selected={view === "webhooks"} onClick={() => onViewChange?.("webhooks")} testId="sidebar-nav-webhooks" />
+          </> },
+        ]).map((group) => <div key={group.id}>
+          <button type="button" aria-expanded={navigationGroup === group.id} aria-controls={`sidebar-group-${group.id}`}
+            onClick={() => setNavigationGroup((current) => current === group.id ? null : group.id)}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs font-semibold text-ink-0 hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            data-testid={`sidebar-area-${group.id}`}>
+            <span className="text-ink-2">{group.icon}</span><span className="flex-1">{group.label}</span>{navigationGroup === group.id ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+          {navigationGroup === group.id && <div id={`sidebar-group-${group.id}`} className="ml-2 border-l border-line pl-1">{group.items}</div>}
+        </div>)}
+        {onViewChange && <NavItem icon={<SettingsIcon size={14} />} label="设置" selected={view === "settings"} onClick={() => onViewChange("settings")} testId="sidebar-nav-settings" />}
       </nav>
 
       {/* Project / Session list */}
@@ -812,7 +775,7 @@ export function Sidebar({
           </div>
         )}
         <div className="border-t border-line p-2">
-          <UserBadge name="本地用户" email="数据仅保存在本机" plan="个人版" />
+          <UserBadge name="当前用户" email="数据属于当前服务" plan="个人版" />
         </div>
       </div>
 

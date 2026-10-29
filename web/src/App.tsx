@@ -53,9 +53,15 @@ const ArtifactsPanel = lazy(() =>
 const AttachmentsPanel = lazy(() =>
   import("./components/panels/AttachmentsPanel").then((module) => ({ default: module.AttachmentsPanel })),
 );
+const OfficeDeliveryPanel = lazy(() =>
+  import("./components/panels/OfficeDeliveryPanel").then((module) => ({ default: module.OfficeDeliveryPanel })),
+);
+const ResearchSourcesPanel = lazy(() =>
+  import("./components/panels/ResearchSourcesPanel").then((module) => ({ default: module.ResearchSourcesPanel })),
+);
 
 type MainView = "chat" | "preview";
-type OverlayView = "skills" | "settings" | "scheduled" | "agents" | "artifacts" | "attachments";
+type OverlayView = "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "artifacts" | "attachments" | "office" | "research";
 type SidebarView = MainView | OverlayView;
 
 /** Connection status derived from sidecar events. */
@@ -87,6 +93,7 @@ export default function App() {
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [connState, setConnState] = useState<ConnectionState>(agentReady ? "connected" : "connecting");
   const [retryAttempt, setRetryAttempt] = useState(0);
@@ -150,9 +157,9 @@ export default function App() {
   }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport, probeStorageHealth, initializeNotifications]);
 
   const handleViewChange = useCallback((next: SidebarView) => {
-    if (next === "skills" || next === "settings" || next === "scheduled" || next === "agents" || next === "artifacts" || next === "attachments") {
+    if (next === "skills" || next === "settings" || next === "scheduled" || next === "workflows" || next === "webhooks" || next === "agents" || next === "artifacts" || next === "attachments" || next === "office" || next === "research") {
       if (next === "settings") setSettingsInitialTab("models");
-      if (next === "scheduled") setSettingsInitialTab("scheduled");
+      if (next === "scheduled" || next === "workflows" || next === "webhooks") setSettingsInitialTab(next);
       if (next === "agents") setSettingsInitialTab("agents");
       setOverlayView(next);
       return;
@@ -230,6 +237,13 @@ export default function App() {
     return () => {
       document.body.style.overflow = "";
     };
+  }, [sidebarOpen]);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    mobileSidebarRef.current?.querySelector<HTMLButtonElement>("button:not([disabled])")?.focus();
+    return () => { if (previous?.isConnected) previous.focus(); };
   }, [sidebarOpen]);
 
   // ── 4.7: Live connection status via sidecar events ──
@@ -319,8 +333,14 @@ export default function App() {
             <div
               className="fixed inset-0 z-40 md:hidden"
               role="dialog"
+              ref={mobileSidebarRef}
               aria-modal="true"
               aria-label={strings.a11y.navigation}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && event.target instanceof HTMLElement && event.target.closest('[role="dialog"]') === event.currentTarget) {
+                  event.preventDefault(); event.stopPropagation(); setSidebarOpen(false);
+                }
+              }}
             >
               <div
                 className="absolute inset-0 bg-surface-overlay"
@@ -352,7 +372,11 @@ export default function App() {
             {overlayView && (
               <WorkspaceOverlay onClose={() => setOverlayView(null)}>
                 <Suspense fallback={<DeferredPanelFallback />}>
-                  {overlayView === "attachments" ? (
+                  {overlayView === "office" ? (
+                    <OfficeDeliveryPanel onClose={() => setOverlayView(null)} onText={() => setOverlayView("artifacts")} />
+                  ) : overlayView === "research" ? (
+                    <ResearchSourcesPanel onClose={() => setOverlayView(null)} onText={() => setOverlayView("artifacts")} />
+                  ) : overlayView === "attachments" ? (
                     <AttachmentsPanel onClose={() => setOverlayView(null)} />
                   ) : overlayView === "artifacts" ? (
                     <ArtifactsPanel onClose={() => setOverlayView(null)} />
