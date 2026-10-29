@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import type { HostTransferResult, RemoteHost } from "../../types/ipc";
-import { Button, Input } from "../../ui";
+import { Button, Input, Textarea } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 
 type UploadReceipt = { hostSignature: string; remotePath: string; transferId: string };
@@ -13,11 +13,12 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
   const [local, setLocal] = useState(""), [remote, setRemote] = useState("");
   const [receipt, setReceipt] = useState<UploadReceipt | null>(null), [status, setStatus] = useState<HostTransferResult | null>(null);
   const [manualId, setManualId] = useState(""), [manualRemote, setManualRemote] = useState("");
+  const [recoveryInput, setRecoveryInput] = useState("");
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const epoch = useRef(0), base = ipc.agentBaseUrl, hostSignature = signature(host);
   const storageKey = `minimax:host-transfer:${base}:${host.id}`;
   useEffect(() => {
-    epoch.current++; setBusy(false); setMessage(""); setStatus(null); setReceipt(null); setManualId(""); setManualRemote("");
+    epoch.current++; setBusy(false); setMessage(""); setStatus(null); setReceipt(null); setManualId(""); setManualRemote(""); setRecoveryInput("");
     try { const saved = JSON.parse(sessionStorage.getItem(storageKey) || "null") as UploadReceipt | null;
       if (saved?.hostSignature === hostSignature && /^[0-9a-f]{32}$/.test(saved.transferId) && isRemoteAbsolute(saved.remotePath)) {
         setReceipt(saved); setManualId(saved.transferId); setManualRemote(saved.remotePath);
@@ -26,6 +27,32 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     return () => { epoch.current++; };
   }, [storageKey, hostSignature]);
   const valid = (ticket: number) => epoch.current === ticket && ipc.agentBaseUrl === base;
+  const recoveryRecord = receipt ? JSON.stringify({
+    version: 1, service: base, host_id: host.id, hostname: host.hostname,
+    username: host.username, port: host.port, remote_path: receipt.remotePath, transfer_id: receipt.transferId,
+  }, null, 2) : "";
+  const copyRecovery = async () => {
+    try { await navigator.clipboard.writeText(recoveryRecord); setMessage("恢复记录已复制，请自行保存。"); }
+    catch { setMessage("无法访问剪贴板，请手动选择并复制下方恢复记录。"); }
+  };
+  const applyRecovery = () => {
+    try {
+      if (recoveryInput.length > 8192) throw new Error("恢复记录过长");
+      const saved: unknown = JSON.parse(recoveryInput);
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) throw new Error("恢复记录格式无效");
+      const record = saved as Record<string, unknown>;
+      if (record.version !== 1 || record.service !== base || record.host_id !== host.id ||
+          record.hostname !== host.hostname || record.username !== host.username || record.port !== host.port) {
+        throw new Error("记录与当前服务或主机连接信息不匹配");
+      }
+      if (typeof record.remote_path !== "string" || !isRemoteAbsolute(record.remote_path) ||
+          typeof record.transfer_id !== "string" || !/^[0-9a-f]{32}$/.test(record.transfer_id)) {
+        throw new Error("记录中的远端路径或传输编号无效");
+      }
+      setManualRemote(record.remote_path); setManualId(record.transfer_id); setStatus(null);
+      setMessage("已填入查询信息；请核对后点击查询上传状态。未发起远程操作。");
+    } catch (e) { setMessage(e instanceof Error ? e.message : "恢复记录格式无效"); }
+  };
   const confirm = async (action: "upload" | "download") => requestConfirmation({
     title: action === "upload" ? "确认上传到远端？" : "确认下载到本机？",
     description: action === "upload" ? `主机 ${host.name} (${host.username}@${host.hostname})：将本机 ${local} 发送到 ${remote}。若目标存在，将在校验和未变化确认后替换，并保留远端备份。` : `主机 ${host.name} (${host.username}@${host.hostname})：将 ${remote} 下载到本机 ${local}。目标已存在时会在校验后替换，不自动备份。`,
@@ -79,6 +106,13 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     <label className="block text-xs">查询用远端路径<Input aria-label={`${host.name} 上传查询路径`} value={manualRemote} disabled={busy} onChange={(e) => setManualRemote(e.target.value)} /></label>
     <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void inspect()}>查询上传状态</Button>
     {receipt && <p className="break-all text-xs">本标签页记录的上传编号：{receipt.transferId}。可复制编号和远端路径以便之后查询；本机路径不保存。</p>}
+    {receipt && <div className="space-y-1">
+      <label className="block text-xs">保存上传恢复记录<Textarea aria-label={`${host.name} 上传恢复记录`} readOnly value={recoveryRecord} rows={7} /></label>
+      <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void copyRecovery()}>复制恢复记录</Button>
+    </div>}
+    <label className="block text-xs">粘贴已保存的恢复记录<Textarea aria-label={`${host.name} 粘贴恢复记录`} value={recoveryInput} disabled={busy} rows={4} onChange={(e) => setRecoveryInput(e.target.value)} /></label>
+    <Button type="button" size="sm" variant="secondary" disabled={busy || !recoveryInput.trim()} onClick={applyRecovery}>填入查询信息</Button>
+    <p className="text-xs text-ink-2">恢复记录包含服务地址、主机和远端路径，请自行妥善保存；不包含私钥或本机文件路径。填入不会自动查询或上传，也不会替换本标签页的未决上传记录。</p>
     {busy && <p role="status">传输或查询进行中；请勿重复提交。</p>}{message && <p role="status" className="break-words text-xs">{message}</p>}
     {status && <p className="break-all text-xs">状态：{status.publication_state ?? "未知"} · 远端路径：{status.remote_path}{status.backup_path ? ` · 备份：${status.backup_path}` : ""}{status.stderr ? ` · 信息：${status.stderr}` : ""}</p>}
   </details>;
