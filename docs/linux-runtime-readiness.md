@@ -975,3 +975,19 @@ SSH 检查标记和 cgroup，未再次终止服务。脚本为 `.verification/fo
 本次没有调用模型，也不证明任意输出或脱离 cgroup 的进程完全恢复；检查点之间尚未
 提交的输出仍可能丢失。脚本为 `.verification/formal-checkpoint-crash.py` 和
 `.verification/browser-checkpoint-evidence.py`，验收会话及独立标记目录保留供核查。
+
+### 办公交付界面更新后的恢复复核（2026-10-29）
+
+正式用户服务从 `627fff5` 升级至
+`/home/ubuntu/.local/share/minimax-code-releases/fe036648e7c52d63b9c217fe7b8aa439a77e5c04`，
+包含办公表格交付输入快照界面修复。源码和前端包的校验通过；切换前采样没有活动运行、
+计划、任务或已建立客户端连接，采样不是原子接单屏障。升级工具备份并校验已有数据，
+备份与交易保留在
+`/home/ubuntu/.local/share/minimax-code-remote-backups-fe03664/upgrade-1uqynvwg`。
+
+升级后通过产品的认证 SSH 隧道再次读取完成运行 `run_f902ba324044` 的结果及标记，
+并确认中断运行 `run_e7e2e24dc663` 仍显示结果未知、需要核对；真实浏览器也重新显示
+`run_1c84f89adce8` 的持久输出检查点及不完整提示。复核脚本分别为
+`.verification/verify-real-result-after-restart.py`、`.verification/verify-formal-crash-run.py`
+和 `.verification/browser-checkpoint-evidence.py`。本次没有调用模型，未重新模拟物理断网
+或整机重启；办公界面修复的表格生成流程未在远程实机上验证。
