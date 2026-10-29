@@ -89,6 +89,14 @@ def register_run_handlers(server: Any) -> None:
                 await ctx.reply_error(INVALID_PARAMS, f"unknown run_id: {run_id!r}")
                 return
             snapshot["pending_ask_user"] = None
+            snapshot["pending_native_permissions"] = []
+            from ..perm_consent import PermissionGater
+
+            session_id = snapshot["run"]["session_id"]
+            registry = getattr(ctx.server, "_permission_gaters", {})
+            gater = registry.get(session_id) if isinstance(registry, dict) else None
+            if isinstance(gater, PermissionGater):
+                snapshot["pending_native_permissions"] = gater.live_requests(session_id, run_id)
             live = getattr(ctx.server, "_live_ask_users", {}).get(run_id)
             if live:
                 event, future, deadline = live

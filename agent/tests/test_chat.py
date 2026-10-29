@@ -355,7 +355,7 @@ class TestPermissionGater:
 
     @pytest.mark.asyncio
     async def test_resolve_during_pending_is_idempotent(self) -> None:
-        """A second resolve on the same in-flight request returns True but doesn't raise."""
+        """A second resolve does not claim or alter an already decided request."""
         emit = RecordingEmit()
         gater = PermissionGater(emit=emit)
 
@@ -367,8 +367,7 @@ class TestPermissionGater:
         rid = gater.pending_ids()[0]
         # First resolve unblocks the future.
         assert gater.resolve(rid, True) is True
-        # Second resolve (future already done) returns True (no-op).
-        assert gater.resolve(rid, False) is True
+        assert gater.resolve(rid, False) is False
         assert await task is True
 
     @pytest.mark.asyncio

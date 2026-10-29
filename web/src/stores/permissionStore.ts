@@ -42,6 +42,7 @@ export interface PendingPermission {
   args: Record<string, unknown>;
   /** v1.2.0 — which session asked (parallel prompts used to be indistinguishable). */
   session_id?: string;
+  run_id?: string;
   /** Wall-clock timestamp (Date.now()) the request arrived. */
   received_at: number;
 }
@@ -66,12 +67,46 @@ export interface PermissionState {
   _enqueueRequest: (data: PermissionRequestData) => void;
   /** Internal — called by the IPC `permission.resolved` listener. */
   _markResolved: (data: PermissionResolvedData) => void;
+  recoveryVersion: (sessionId: string) => number;
+  reconcileNative: (sessionId: string, runIds: string[], requests: PermissionRequestData[], version: number) => void;
   /** User-driven resolve: POSTs to the sidecar and clears local state. */
   resolve: (request_id: string, decision: Decision) => Promise<void>;
 }
 
 let reqUnsub: (() => void) | null = null;
 let resUnsub: (() => void) | null = null;
+let closedUnsub: (() => void) | null = null;
+const versions = new Map<string, number>();
+function bump(sessionId?: string): void {
+  if (sessionId) versions.set(sessionId, (versions.get(sessionId) ?? 0) + 1);
+}
+const closedIds = new Set<string>();
+const timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function retire(requestId: string): void {
+  bump(usePermissionStore.getState().pending[requestId]?.session_id);
+  closedIds.add(requestId);
+  const timer = timers.get(requestId);
+  if (timer) clearTimeout(timer);
+  timers.delete(requestId);
+  usePermissionStore.setState((state) => {
+    const pending = { ...state.pending }, resolving = { ...state.resolving };
+    delete pending[requestId]; delete resolving[requestId];
+    return { pending, resolving };
+  });
+}
+
+function enqueue(data: PermissionRequestData): void {
+  if (closedIds.has(data.request_id)) return;
+  if (data.remaining_ms !== undefined && data.remaining_ms <= 0) { retire(data.request_id); return; }
+  const existing = usePermissionStore.getState().pending[data.request_id];
+  if (existing) return;
+  bump(data.session_id);
+  usePermissionStore.setState((state) => ({ pending: { ...state.pending, [data.request_id]: {
+    ...data, received_at: Date.now(),
+  } } }));
+  if (data.remaining_ms !== undefined) timers.set(data.request_id, setTimeout(() => retire(data.request_id), data.remaining_ms));
+}
 
 function ensureListeners(): void {
   if (reqUnsub || resUnsub) return;
@@ -83,6 +118,7 @@ function ensureListeners(): void {
     reqUnsub = ipc.on<PermissionRequestData>(StreamEvent.PermissionRequest, (env) => {
       const data = env.data;
       if (!data) return;
+      if (closedIds.has(data.request_id)) return;
       const state = usePermissionStore.getState();
       // Native convenience settings cannot grant external-engine approvals.
       if (state.alwaysAllow && !data.tool.startsWith("codex:") && data.approval_policy !== "explicit_once") {
@@ -90,35 +126,19 @@ function ensureListeners(): void {
         void state.resolve(data.request_id, "allow").catch(() => undefined);
         return;
       }
-      usePermissionStore.setState((s) => ({
-        pending: {
-          ...s.pending,
-          [data.request_id]: {
-            request_id: data.request_id,
-            tool: data.tool,
-            approval_policy: data.approval_policy,
-            args: data.args,
-            session_id: data.session_id,
-            received_at: Date.now(),
-          },
-        },
-      }));
+      enqueue(data);
     });
     resUnsub = ipc.on<PermissionResolvedData>(
       StreamEvent.PermissionResolved,
       (env) => {
         const data = env.data;
         if (!data) return;
-        usePermissionStore.setState((s) => {
-          if (!s.pending[data.request_id] && !s.resolving[data.request_id]) return {};
-          const next = { ...s.pending };
-          const resolving = { ...s.resolving };
-          delete next[data.request_id];
-          delete resolving[data.request_id];
-          return { pending: next, resolving };
-        });
+        retire(data.request_id);
       },
     );
+    closedUnsub = ipc.on<{ request_id: string }>(StreamEvent.PermissionClosed, (env) => {
+      if (env.data?.request_id) retire(env.data.request_id);
+    });
   } catch {
     // ipc.on may throw in unit tests where the client is constructed
     // late; that's fine — the modal will still work via direct calls.
@@ -131,6 +151,17 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
   loading: false,
   pending: {},
   resolving: {},
+  recoveryVersion: (sessionId) => versions.get(sessionId) ?? 0,
+  reconcileNative: (sessionId, runIds, requests, version) => {
+    if (version !== (versions.get(sessionId) ?? 0)) return;
+    const active = new Set(requests.map((request) => request.request_id));
+    for (const item of Object.values(get().pending)) {
+      if (item.session_id === sessionId && item.run_id && runIds.includes(item.run_id)
+          && !item.tool.startsWith("codex:") && !active.has(item.request_id)) retire(item.request_id);
+    }
+    requests.filter((item) => item.session_id === sessionId && item.run_id && !item.tool.startsWith("codex:"))
+      .forEach(enqueue);
+  },
 
   refresh: async () => {
     set({ loading: true });
@@ -175,43 +206,20 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
   },
 
   _enqueueRequest: (data) => {
-    set((s) => ({
-      pending: {
-        ...s.pending,
-        [data.request_id]: {
-          request_id: data.request_id,
-          tool: data.tool,
-          approval_policy: data.approval_policy,
-          args: data.args,
-          received_at: Date.now(),
-        },
-      },
-    }));
+    enqueue(data);
   },
 
   _markResolved: (data) => {
-    set((s) => {
-      if (!s.pending[data.request_id] && !s.resolving[data.request_id]) return {};
-      const next = { ...s.pending };
-      const resolving = { ...s.resolving };
-      delete next[data.request_id];
-      delete resolving[data.request_id];
-      return { pending: next, resolving };
-    });
+    retire(data.request_id);
   },
 
   resolve: async (request_id, decision) => {
     if (get().resolving[request_id]) return;
+    bump(get().pending[request_id]?.session_id);
     set((s) => ({ resolving: { ...s.resolving, [request_id]: decision } }));
     try {
       await typedIPC.resolvePermission({ request_id, decision });
-      set((s) => {
-        const pending = { ...s.pending };
-        const resolving = { ...s.resolving };
-        delete pending[request_id];
-        delete resolving[request_id];
-        return { pending, resolving };
-      });
+      retire(request_id);
     } catch (err) {
       set((s) => {
         const resolving = { ...s.resolving };
@@ -233,6 +241,9 @@ ensureListeners();
 export function _resetPermissionStoreListeners(): void {
   reqUnsub?.();
   resUnsub?.();
+  closedUnsub?.();
   reqUnsub = null;
   resUnsub = null;
+  closedUnsub = null;
+  timers.forEach(clearTimeout); timers.clear(); closedIds.clear(); versions.clear();
 }

@@ -850,6 +850,8 @@ export interface PermissionRequestData {
   /** v1.2.0 — the conversation the gated tool call belongs to (omitted
    *  when the gater has no session context, e.g. bare CLI runs). */
   session_id?: string;
+  run_id?: string;
+  remaining_ms?: number;
 }
 
 export interface PermissionResolvedData {
@@ -979,6 +981,7 @@ export interface RunStepsResult {
   steps: AgentRunStep[];
   cursor: number;
   pending_ask_user?: AskUserData | null;
+  pending_native_permissions?: PermissionRequestData[];
 }
 
 export interface RunEvent {
@@ -1723,6 +1726,7 @@ export const StreamEvent = {
   AskUserClosed: "agent.ask_user_closed",
   PermissionRequest: "permission.request",
   PermissionResolved: "permission.resolved",
+  PermissionClosed: "permission.closed",
   TaskProgress: "task.progress",
   SubAgentProgress: "agent.subagent_progress",
   NotificationNew: "notification.new",

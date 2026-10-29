@@ -85,6 +85,26 @@ async def test_registry_keeps_concurrent_gaters_resolvable() -> None:
     assert resolve_any_gater(server, rid_a, True) is True
 
 
+async def test_native_timeout_and_cancel_close_without_late_authorization() -> None:
+    events = []
+    async def emit(event, payload):
+        events.append((event, payload))
+    gater = PermissionGater(emit=emit, run_id="r")
+    assert await gater.request_consent(tool="exec", args={}, session_id="s", timeout=0.01) is False
+    request_id = events[0][1]["request_id"]
+    assert events[-1] == ("permission.closed", {"request_id": request_id, "run_id": "r", "session_id": "s"})
+    assert not gater.resolve(request_id, True)
+    events.clear()
+    task = asyncio.create_task(gater.request_consent(tool="exec", args={}, session_id="s", timeout=10))
+    while not events:
+        await asyncio.sleep(0)
+    request_id = events[0][1]["request_id"]
+    gater.cancel_all()
+    assert not gater.resolve(request_id, True)
+    assert await task is False
+    assert events[-1][0] == "permission.closed"
+
+
 @pytest.mark.asyncio
 async def test_concurrent_gaters_resolve_their_own_requests() -> None:
     """Each resolve lands on the owning gater only — no cross-talk."""
@@ -98,7 +118,7 @@ async def test_concurrent_gaters_resolve_their_own_requests() -> None:
     rid_b = await _park(gater_b)
 
     assert resolve_any_gater(server, rid_a, True) is True
-    assert gater_a.resolve(rid_a, False) is True  # already done → still claims
+    assert gater_a.resolve(rid_a, False) is False  # already decided
     # B untouched by A's resolve.
     assert gater_b.has_pending(rid_b)
     assert resolve_any_gater(server, rid_b, False) is True

@@ -21,6 +21,7 @@ vi.mock("../../ipc", () => ({
 import { useRunTimelineStore as store } from "../runStore";
 import { useSessionStore } from "../sessionStore";
 import { useChat } from "../chat";
+import { usePermissionStore } from "../permissionStore";
 import { StreamEvent } from "../../types/ipc";
 
 const run: AgentRun = {
@@ -40,6 +41,7 @@ beforeEach(async () => {
   await idle();
   store.getState().reset();
   useChat.getState().reset();
+  usePermissionStore.setState({ pending: {}, resolving: {} });
   vi.resetAllMocks();
   useSessionStore.setState({ currentSessionId: "s1" });
   api.listRuns.mockResolvedValue({ runs: [run] });
@@ -91,6 +93,43 @@ describe("durable run recovery", () => {
       : { ...snapshot(older), pending_ask_user: question });
     await store.getState().loadForSession("s1");
     expect(useChat.getState().askUser).toEqual(question);
+  });
+
+  it("restores only this session's live Native permissions while retaining other sessions and Codex", async () => {
+    const native = { request_id: "perm-native", session_id: "s1", run_id: "r1", tool: "write_file", args: {}, remaining_ms: 60000 };
+    usePermissionStore.getState()._enqueueRequest({ request_id: "other", session_id: "s2", run_id: "other-run", tool: "exec", args: {} });
+    usePermissionStore.getState()._enqueueRequest({ request_id: "codex", session_id: "s1", run_id: "r-codex", tool: "codex:exec", args: {} });
+    usePermissionStore.getState()._enqueueRequest({ request_id: "outside-window", session_id: "s1", run_id: "old-run", tool: "exec", args: {} });
+    api.getRunSteps.mockResolvedValue({ ...snapshot(run), pending_native_permissions: [native] });
+    await store.getState().loadForSession("s1");
+    expect(Object.keys(usePermissionStore.getState().pending).sort()).toEqual(["codex", "other", "outside-window", "perm-native"]);
+    api.getRunSteps.mockResolvedValue({ ...snapshot(run), pending_native_permissions: [] });
+    api.sidecar?.({ status: "started" });
+    await idle();
+    expect(Object.keys(usePermissionStore.getState().pending).sort()).toEqual(["codex", "other", "outside-window"]);
+  });
+
+  it("does not revive an approval resolved while the snapshot is in flight", async () => {
+    const pending = deferred<RunStepsResult>();
+    api.getRunSteps.mockReturnValueOnce(pending.promise);
+    const loading = store.getState().loadForSession("s1");
+    await waitFor(() => expect(api.getRunSteps).toHaveBeenCalled());
+    usePermissionStore.getState()._markResolved({ request_id: "perm-closed", decision: "deny" });
+    pending.resolve({ ...snapshot(run), pending_native_permissions: [{ request_id: "perm-closed", session_id: "s1",
+      run_id: "r1", tool: "exec", args: {}, remaining_ms: 60000 }] });
+    await loading;
+    expect(usePermissionStore.getState().pending["perm-closed"]).toBeUndefined();
+  });
+
+  it("keeps a newer live approval when an older empty snapshot returns", async () => {
+    const pending = deferred<RunStepsResult>();
+    api.getRunSteps.mockReturnValueOnce(pending.promise);
+    const loading = store.getState().loadForSession("s1");
+    await waitFor(() => expect(api.getRunSteps).toHaveBeenCalled());
+    usePermissionStore.getState()._enqueueRequest({ request_id: "new-live", session_id: "s1", run_id: "r1", tool: "exec", args: {} });
+    pending.resolve({ ...snapshot(run), pending_native_permissions: [] });
+    await loading;
+    expect(usePermissionStore.getState().pending["new-live"]).toBeDefined();
   });
 
   it("pages ordered events and applies the final state rather than a stale notification", async () => {

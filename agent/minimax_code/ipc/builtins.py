@@ -1159,7 +1159,8 @@ async def _handle_agent_send_message(
             raise RuntimeError("Saved execution permission policy is unavailable")
         saved_permissions = internal_skill.data["permission_rules"] if internal_skill is not None else internal_schedule["context"]["permission_rules"]
         perm_store = FrozenPermissions(saved_permissions, perm_store)
-    gater = PermissionGater(emit=approval_emit)
+    gater = PermissionGater(emit=approval_emit, run_id=job.run_id,
+                            explicit_once=internal_schedule is not None or internal_skill is not None)
     if internal_schedule is not None:
         from ..schedule_context import scheduled_runtime
         scheduled_runtime.set({**(scheduled_runtime.get() or {}),"context":internal_schedule["context"],"permissions":perm_store,"gater":gater})

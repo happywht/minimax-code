@@ -8,6 +8,7 @@ import {
 } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 import { useChat } from "./chat";
+import { usePermissionStore } from "./permissionStore";
 
 export interface RunTimelineEntry extends AgentRun {
   steps: AgentRunStep[];
@@ -38,7 +39,8 @@ function validateSnapshot(snapshot: RunStepsResult, runId: string, sessionId: st
   if (snapshot.run.id !== runId || snapshot.run.session_id !== sessionId ||
       !Number.isSafeInteger(snapshot.cursor) || snapshot.cursor < 0 ||
       snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId) ||
-      (snapshot.pending_ask_user != null && (snapshot.pending_ask_user.run_id !== runId || snapshot.pending_ask_user.session_id !== sessionId))) {
+      (snapshot.pending_ask_user != null && (snapshot.pending_ask_user.run_id !== runId || snapshot.pending_ask_user.session_id !== sessionId)) ||
+      snapshot.pending_native_permissions?.some((item) => item.run_id !== runId || item.session_id !== sessionId || item.tool.startsWith("codex:"))) {
     throw new Error("Invalid run snapshot; refresh the timeline.");
   }
   return snapshot;
@@ -83,6 +85,7 @@ async function drain(): Promise<void> {
     const askVersion = useChat.getState().askRecoveryVersion();
     forceSnapshot = false;
     if (!current) continue;
+    const permissionVersion = usePermissionStore.getState().recoveryVersion(current);
     const isCurrent = () => epoch === generation && current === useSessionStore.getState().currentSessionId;
     try {
       const { runs } = await typedIPC.listRuns({ session_id: current, limit: MAX_RUNS });
@@ -100,6 +103,10 @@ async function drain(): Promise<void> {
       if (refresh && entries.length && entries.every((entry) => "pending_ask_user" in entry)) {
         const question = entries.map((entry) => entry.pending_ask_user).find((value) => value != null) ?? null;
         useChat.getState().reconcileAskUser(question, askVersion, current);
+      }
+      if (refresh && entries.every((entry) => "pending_native_permissions" in entry)) {
+        usePermissionStore.getState().reconcileNative(current, entries.map((entry) => entry.run.id),
+          entries.flatMap((entry) => entry.pending_native_permissions ?? []), permissionVersion);
       }
       const stamp = entries.map((entry) => `${entry.run.id}:${entry.cursor}`).join("|");
       if (refresh || stamp !== conversationStamp) {

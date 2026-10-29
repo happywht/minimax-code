@@ -80,6 +80,8 @@ class PendingRequest:
     tool: str
     args: dict[str, Any]
     future: asyncio.Future[bool]
+    session_id: str | None
+    deadline: float
 
 
 class PermissionGater:
@@ -99,8 +101,10 @@ class PermissionGater:
     request).
     """
 
-    def __init__(self, *, emit: EmitFn) -> None:
+    def __init__(self, *, emit: EmitFn, run_id: str | None = None, explicit_once: bool = False) -> None:
         self._emit = emit
+        self.run_id = run_id
+        self.explicit_once = explicit_once
         self._pending: dict[str, PendingRequest] = {}
         self._lock = asyncio.Lock()
         # 5 minutes — long enough for the user to think about a
@@ -119,6 +123,17 @@ class PermissionGater:
 
     def pending_ids(self) -> list[str]:
         return list(self._pending.keys())
+
+    def live_requests(self, session_id: str, run_id: str) -> list[dict[str, Any]]:
+        if self.run_id != run_id:
+            return []
+        now = asyncio.get_running_loop().time()
+        return [{"request_id": request.request_id, "tool": request.tool, "args": dict(request.args),
+                 "session_id": session_id, "run_id": run_id,
+                 "remaining_ms": max(0, int((request.deadline - now) * 1000)),
+                 **({"approval_policy": "explicit_once"} if self.explicit_once else {})}
+                for request in self._pending.values()
+                if request.session_id == session_id and not request.future.done() and request.deadline > now]
 
     # -- request flow -------------------------------------------------------
 
@@ -145,10 +160,12 @@ class PermissionGater:
         request_id = f"perm_{uuid.uuid4().hex[:12]}"
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
+        deadline = loop.time() + (timeout if timeout is not None else self.default_timeout)
 
         async with self._lock:
             self._pending[request_id] = PendingRequest(
-                request_id=request_id, tool=tool, args=dict(args), future=future
+                request_id=request_id, tool=tool, args=dict(args), future=future,
+                session_id=session_id, deadline=deadline,
             )
 
         payload: dict[str, Any] = {
@@ -158,21 +175,20 @@ class PermissionGater:
         }
         if session_id:
             payload["session_id"] = session_id
+        if self.run_id:
+            payload["run_id"] = self.run_id
+            payload["remaining_ms"] = max(0, int((deadline - loop.time()) * 1000))
+            if self.explicit_once:
+                payload["approval_policy"] = "explicit_once"
 
         try:
-            await self._emit("permission.request", payload)
-        except Exception:  # pragma: no cover — defensive
-            logger.exception(
-                "emit permission.request failed for tool=%s (denying)", tool
-            )
-            await self._forget(request_id)
-            if not future.done():
-                future.set_result(False)
-            return False
-
-        try:
+            try:
+                await self._emit("permission.request", payload)
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("emit permission.request failed for tool=%s (denying)", tool)
+                return False
             decision = await asyncio.wait_for(
-                future, timeout=timeout if timeout is not None else self.default_timeout
+                future, timeout=max(0, deadline - loop.time())
             )
             return bool(decision)
         except TimeoutError:
@@ -184,6 +200,12 @@ class PermissionGater:
             return False
         finally:
             await self._forget(request_id)
+            if self.run_id and session_id:
+                try:
+                    await self._emit("permission.closed", {"request_id": request_id,
+                        "session_id": session_id, "run_id": self.run_id})
+                except Exception:
+                    logger.exception("permission close notification failed for %s", request_id)
 
     async def _forget(self, request_id: str) -> None:
         async with self._lock:
@@ -195,14 +217,13 @@ class PermissionGater:
         """Resolve a pending request.
 
         Returns ``True`` if a pending future was set, ``False`` if
-        the id is unknown (already resolved, expired, or never
-        existed). Idempotent.
+        the id is unknown, already resolved or expired.
         """
         pending = self._pending.get(request_id)
         if pending is None:
             return False
-        if pending.future.done():
-            return True
+        if pending.future.done() or asyncio.get_running_loop().time() >= pending.deadline:
+            return False
         pending.future.set_result(bool(decision))
         return True
 

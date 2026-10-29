@@ -242,6 +242,41 @@ async def test_run_steps_only_exposes_live_matching_question(database, monkeypat
     assert (await client.request("run.steps", {"run_id": run["id"]}))["pending_ask_user"] is None
 
 
+async def test_run_steps_restores_only_live_native_consent(database, monkeypatch):
+    import asyncio
+
+    from minimax_code import app
+    from minimax_code.ipc.client import IPCClient
+    from minimax_code.perm_consent import PermissionGater, register_gater
+
+    monkeypatch.setattr(app, "_DB_SINGLETON", database)
+    dao = AgentRunsDAO(database)
+    run = await dao.create_run(session_id="session")
+    other = await dao.create_run(session_id="session")
+    client = IPCClient()
+    events = []
+
+    async def emit(event, payload):
+        events.append((event, payload))
+
+    gater = PermissionGater(emit=emit, run_id=run["id"], explicit_once=True)
+    register_gater(client.server, "session", gater)
+    task = asyncio.create_task(gater.request_consent(tool="write_file", args={"path": "a"}, session_id="session", timeout=10))
+    while not events:
+        await asyncio.sleep(0)
+    request_id = events[0][1]["request_id"]
+    snapshot = await client.request("run.steps", {"run_id": run["id"]})
+    assert snapshot["pending_native_permissions"][0] | {"remaining_ms": 0} == {
+        "request_id": request_id, "tool": "write_file", "args": {"path": "a"},
+        "session_id": "session", "run_id": run["id"], "remaining_ms": 0, "approval_policy": "explicit_once"}
+    assert (await client.request("run.steps", {"run_id": other["id"]}))["pending_native_permissions"] == []
+    assert gater.resolve(request_id, True)
+    assert not gater.resolve(request_id, False)
+    assert (await client.request("run.steps", {"run_id": run["id"]}))["pending_native_permissions"] == []
+    assert await task is True
+    assert events[-1] == ("permission.closed", {"request_id": request_id, "session_id": "session", "run_id": run["id"]})
+
+
 async def test_export_import_roundtrip_and_legacy_import_clear_stale_events(database):
     from minimax_code.ipc.handlers_data import dump_database, restore_database
 
