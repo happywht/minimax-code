@@ -1,31 +1,73 @@
 import { useEffect, useState } from "react";
 import { Button } from "../../ui";
+import type { OfficeTableSpec } from "../../types/ipc";
 import type { CsvTable } from "./officeCsv";
 
 const PAGE_SIZE = 20;
 
-export function CsvTableEditor({ table, original, onChange }: { table: CsvTable; original: CsvTable; onChange: (next: CsvTable) => void }): JSX.Element {
+type Kind = OfficeTableSpec["columns"][number]["kind"];
+
+export function CsvTableEditor({ table, original, kinds, onChange }: { table: CsvTable; original: CsvTable; kinds: Kind[]; onChange: (next: CsvTable, nextKinds?: Kind[]) => void }): JSX.Element {
   const [page, setPage] = useState(0);
   const lastPage = Math.max(0, Math.ceil(table.rows.length / PAGE_SIZE) - 1);
   useEffect(() => { setPage((current) => Math.min(current, lastPage)); }, [lastPage]);
+  useEffect(() => { setPage(0); }, [original]);
   const edit = (row: number, column: number, value: string) => onChange({ ...table, rows: table.rows.map((cells, i) =>
     i === row ? cells.map((old, j) => j === column ? value : old) : cells) });
   const remove = (row: number) => onChange({ ...table, rows: table.rows.filter((_, i) => i !== row) });
+  const rename = (column: number, value: string) => onChange({ ...table, headers: table.headers.map((old, i) => i === column ? value : old) });
+  const move = (column: number, direction: -1 | 1) => {
+    const target = column + direction;
+    if (target < 0 || target >= table.headers.length) return;
+    const swap = <T,>(items: T[]): T[] => {
+      const next = [...items]; [next[column], next[target]] = [next[target], next[column]]; return next;
+    };
+    onChange({ headers: swap(table.headers), rows: table.rows.map(swap) }, swap(kinds));
+  };
+  const removeColumn = (column: number) => {
+    if (table.headers.length <= 1) return;
+    onChange({ headers: table.headers.filter((_, i) => i !== column),
+      rows: table.rows.map((cells) => cells.filter((_, i) => i !== column)) }, kinds.filter((_, i) => i !== column));
+  };
+  const addColumn = () => {
+    if (table.headers.length >= 20 || (table.rows.length + 1) * (table.headers.length + 1) > 5000) return;
+    let index = 1;
+    const existing = new Set(table.headers.map((name) => name.toLowerCase()));
+    while (existing.has(`新列 ${index}`.toLowerCase())) index++;
+    onChange({ headers: [...table.headers, `新列 ${index}`], rows: table.rows.map((cells) => [...cells, ""]) }, [...kinds, "text"]);
+  };
+  const addRow = () => {
+    if (table.rows.length >= 1000 || (table.rows.length + 2) * table.headers.length > 5000) return;
+    onChange({ ...table, rows: [...table.rows, table.headers.map(() => "")] });
+    setPage(Math.floor(table.rows.length / PAGE_SIZE));
+  };
+  const trimColumn = (column: number) => onChange({ ...table, rows: table.rows.map((cells) =>
+    cells.map((value, i) => i === column ? value.trim() : value)) });
   const empty = table.rows.filter((cells) => cells.every((cell) => cell === "")).length;
   return <div className="space-y-2" data-testid="csv-table-editor">
-    <p>编辑的数据仅在本页面；行号以当前表格为准（含表头），源 CSV 不变。可以恢复到本次读取的原始表格。</p>
-    <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" disabled={!empty} onClick={() =>
+    <p>编辑的数据仅在本页面；行号以当前表格为准（含表头），源 CSV 不变。恢复会还原本次读取的表格并将列类型重置为文本。</p>
+    <p>列清理会去除该列每个数据单元格的首尾空白，可能改变文本；不会自动清理。</p>
+    <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" disabled={table.rows.length >= 1000 || (table.rows.length + 2) * table.headers.length > 5000} onClick={addRow}>新增空行</Button>
+      <Button type="button" variant="secondary" disabled={table.headers.length >= 20 || (table.rows.length + 1) * (table.headers.length + 1) > 5000} onClick={addColumn}>新增文本列</Button>
+      <Button type="button" variant="secondary" disabled={!empty} onClick={() =>
       onChange({ ...table, rows: table.rows.filter((cells) => cells.some((cell) => cell !== "")) })}>移除全空行（{empty}）</Button>
-      <Button type="button" variant="secondary" onClick={() => { onChange(original); setPage(0); }}>恢复读取时的表格</Button></div>
-    {table.rows.length ? <div className="overflow-auto"><table className="text-xs"><thead><tr><th scope="col">表格行</th>
-      {table.headers.map((header, index) => <th key={index} scope="col">{header}</th>)}<th scope="col">操作</th></tr></thead>
+      <Button type="button" variant="secondary" onClick={() => { onChange(original, original.headers.map(() => "text" as const)); setPage(0); }}>恢复读取时的表格</Button></div>
+    <div className="overflow-auto"><table className="text-xs"><thead><tr><th scope="col">表格行</th>
+      {table.headers.map((header, index) => <th key={index} scope="col" className="min-w-40 align-top">
+        <input aria-label={`第 ${index + 1} 列名称`} className="w-full rounded border border-line bg-surface-2 p-1" value={header} onChange={(event) => rename(index, event.target.value)} />
+        <div className="flex flex-wrap gap-1"><button type="button" disabled={index === 0} onClick={() => move(index, -1)} aria-label={`第 ${index + 1} 列左移`}>左移</button>
+          <button type="button" disabled={index === table.headers.length - 1} onClick={() => move(index, 1)} aria-label={`第 ${index + 1} 列右移`}>右移</button>
+          <button type="button" disabled={table.headers.length === 1} onClick={() => removeColumn(index)} aria-label={`删除第 ${index + 1} 列`}>删列</button>
+          <button type="button" disabled={!table.rows.some((cells) => cells[index] !== cells[index].trim())} onClick={() => trimColumn(index)} aria-label={`去除第 ${index + 1} 列首尾空白`}>去首尾空白</button></div>
+      </th>)}<th scope="col">操作</th></tr></thead>
       <tbody>{table.rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((cells, local) => {
         const index = page * PAGE_SIZE + local;
         return <tr key={index}><th scope="row">{index + 2}</th>{cells.map((value, column) => <td key={column}>
           <textarea aria-label={`表格第 ${index + 2} 行第 ${column + 1} 列`} className="min-w-32 rounded border border-line bg-surface-2 p-1" rows={2} value={value}
             onChange={(event) => edit(index, column, event.target.value)} />
         </td>)}<td><button type="button" onClick={() => remove(index)} aria-label={`删除表格第 ${index + 2} 行`}>删除行</button></td></tr>;
-      })}</tbody></table></div> : <p>没有数据行，仍可生成只有表头的表格。</p>}
+      })}</tbody></table></div>
+    {!table.rows.length && <p>没有数据行，仍可生成只有表头的表格。</p>}
     <div className="flex items-center gap-2"><Button type="button" variant="ghost" disabled={page === 0} onClick={() => setPage(page - 1)}>上一页</Button>
       <span>第 {page + 1} / {lastPage + 1} 页 · {table.rows.length} 行</span>
       <Button type="button" variant="ghost" disabled={page >= lastPage} onClick={() => setPage(page + 1)}>下一页</Button></div>

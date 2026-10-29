@@ -107,10 +107,10 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
       <Textarea aria-label="粘贴 CSV" rows={6} value={csv} readOnly={tableDirty} onChange={(event) => { csvRef.current = event.target.value; setCsv(event.target.value); setCsvTable(null); setOriginalCsvTable(null); setFormError(null); }} />
       {tableDirty && <p role="status">表格有编辑，CSV 草稿暂为只读；恢复读取时的表格后可修改原稿。</p>}
       <Button type="button" variant="secondary" disabled={tableDirty} onClick={() => { try { const table = parseOfficeCsv(csv); setCsvTable(table); setOriginalCsvTable(table); setTableDirty(false); setKinds(table.headers.map(() => "text")); setFormError(null); } catch (error) { setCsvTable(null); setOriginalCsvTable(null); setFormError(error instanceof Error ? error.message : "CSV 无效"); } }}>读取 CSV 列</Button>
-      {csvTable && <div className="space-y-2"><p>已读取 {csvTable.rows.length} 行，{csvTable.headers.length} 列。数字须在支持的精度内；布尔只接受 true / false。</p>
+      {csvTable && <div className="space-y-2"><p>当前表格包含 {csvTable.rows.length} 行，{csvTable.headers.length} 列。数字须在支持的精度内；布尔只接受 true / false。</p>
         {csvTable.headers.map((name, index) => <label key={index} className="flex items-center gap-2">{name}<select aria-label={`第 ${index + 1} 列类型`} value={kinds[index]} onChange={(event) => setKinds((old) => old.map((kind, i) => i === index ? event.target.value as typeof kind : kind))}>
           <option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option></select></label>)}
-        {originalCsvTable && <CsvTableEditor table={csvTable} original={originalCsvTable} onChange={(next) => { setCsvTable(next); setTableDirty(next !== originalCsvTable); setFormError(null); }} />}
+        {originalCsvTable && <CsvTableEditor table={csvTable} original={originalCsvTable} kinds={kinds} onChange={(next, nextKinds) => { setCsvTable(next); if (nextKinds) setKinds(nextKinds); setTableDirty(next !== originalCsvTable); setFormError(null); }} />}
         <Button type="button" variant="secondary" onClick={() => { try { setSource(JSON.stringify(csvToOfficeSpec(csvTable, kinds), null, 2)); edited(); } catch (error) { setFormError(error instanceof Error ? error.message : "转换失败"); } }}>转换为表格输入</Button>
       </div>}
     </details>

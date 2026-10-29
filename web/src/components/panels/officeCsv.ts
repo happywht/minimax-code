@@ -49,6 +49,11 @@ function decimalParts(input: string): string | null {
 
 export function csvToOfficeSpec(table: CsvTable, kinds: Kind[]): OfficeTableSpec {
   if (new TextEncoder().encode(JSON.stringify(table)).length > 1048576) throw new Error("编辑后的表格超过 1 MiB");
+  if (table.headers.length < 1 || table.headers.length > 20 || table.headers.some((name) => !name.trim() || [...name].length > 80)) throw new Error("表头须有 1–20 个非空列名，每个最多 80 字符");
+  if (new Set(table.headers.map((name) => name.toLowerCase())).size !== table.headers.length) throw new Error("列名不能重复（不区分大小写）");
+  if (kinds.length !== table.headers.length || kinds.some((kind) => !["text", "number", "boolean"].includes(kind))) throw new Error("每列都必须选择有效类型");
+  if (table.rows.length > 1000 || (table.rows.length + 1) * table.headers.length > 5000) throw new Error("最多 1000 数据行、含表头最多 5000 格");
+  if (table.rows.some((row) => row.length !== table.headers.length)) throw new Error("每行的列数须与表头一致");
   const rows = table.rows.map((row, index) => row.map((value, column) => {
     if ([...value].length > 4096) throw new Error(`表格第 ${index + 2} 行「${table.headers[column]}」超过 4096 字符`);
     if (value === "") return null;
