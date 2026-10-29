@@ -4,6 +4,17 @@ import { useSessionStore } from "../../stores";
 import type { AgentRun, RunWorkspaceDiffResult } from "../../types/ipc";
 import { Button } from "../../ui";
 
+/** Keep matching file patches intact so their context and headers remain visible. */
+function filterDiff(diff: string, query: string): string {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return diff;
+  // An unexpected format may not have reliable file boundaries. Keep it intact.
+  if (diff && !diff.startsWith("diff --git ")) return diff;
+  return diff.split(/(?=^diff --git )/m)
+    .filter((block) => block.toLocaleLowerCase().includes(needle))
+    .join("");
+}
+
 export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const projectId = useSessionStore((state) => state.currentProjectId) ?? "inbox";
@@ -13,12 +24,13 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [comparison, setComparison] = useState<Record<string, unknown> | null>(null);
+  const [search, setSearch] = useState("");
   const version = useRef(0);
   const available = !!workspace && !!runProject && run.session_id === sessionId && runProject === projectId;
 
   useEffect(() => {
     const revision = version;
-    ++revision.current; setResult(null); setComparison(null); setError(null); setLoading(false);
+    ++revision.current; setResult(null); setComparison(null); setError(null); setLoading(false); setSearch("");
     return () => { ++revision.current; };
   }, [run.id, sessionId, projectId]);
   useEffect(() => ipc.onSideCar(() => {
@@ -81,9 +93,17 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
     {result && <div className="mt-2 space-y-2">
       <p className="break-all">当前工作区：{result.workspace}</p>
       <p>这是当前共享工作区的状态，可能包含用户或其他任务的修改，不能归因于此任务。未跟踪文件只列名称，不显示内容；已提交变更不在此视图中。</p>
-      <details open><summary>未暂存的已跟踪文件差异</summary><pre aria-label="未暂存差异" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{result.diff || "无未暂存差异"}</pre></details>
-      <details><summary>已暂存的差异</summary><pre aria-label="已暂存差异" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{result.staged_diff || "无已暂存差异"}</pre></details>
-      <details><summary>未跟踪文件（{result.untracked.length}）</summary><pre aria-label="未跟踪文件" className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{result.untracked.join("\n") || "无未跟踪文件"}</pre></details>
+      <label className="block">搜索文件名或差异内容
+        <input value={search} onChange={(event) => setSearch(event.target.value)}
+          className="mt-1 block w-full rounded border border-line bg-surface-1 px-2 py-1 text-ink-0"
+          placeholder="输入关键词筛选" />
+      </label>
+      {search.trim() && <p className="text-ink-2">显示包含关键词的完整文件差异；未跟踪文件只按名称筛选。</p>}
+      {search.trim() && ((result.diff && !result.diff.startsWith("diff --git ")) || (result.staged_diff && !result.staged_diff.startsWith("diff --git "))) &&
+        <p className="text-ink-2">部分差异格式无法按文件筛选，已保留完整原文。</p>}
+      <details open><summary>未暂存的已跟踪文件差异</summary><pre aria-label="未暂存差异" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{filterDiff(result.diff, search) || (result.diff ? "没有匹配的未暂存差异" : "无未暂存差异")}</pre></details>
+      <details><summary>已暂存的差异</summary><pre aria-label="已暂存差异" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{filterDiff(result.staged_diff, search) || (result.staged_diff ? "没有匹配的已暂存差异" : "无已暂存差异")}</pre></details>
+      <details><summary>未跟踪文件（{result.untracked.length}）</summary><pre aria-label="未跟踪文件" className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{result.untracked.filter((path) => path.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).join("\n") || (result.untracked.length ? "没有匹配的未跟踪文件" : "无未跟踪文件")}</pre></details>
     </div>}
   </div>;
 }
