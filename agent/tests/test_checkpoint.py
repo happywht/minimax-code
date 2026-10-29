@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -567,9 +568,8 @@ class TestCheckpointProjectRoot:
     """``checkpoint.*`` resolves cwd from the session's project root.
 
     create/restore/diff resolve the workdir via ``resolve_root_for_session``
-    when no explicit ``cwd`` is given; an explicit ``cwd`` still wins
-    (legacy semantics), and a session without a project root keeps the
-    git-toplevel fallback untouched.
+    when no explicit ``cwd`` is given; explicit paths must stay within
+    the session root and repository-wide stash must not cross that root.
     """
 
     @pytest.fixture
@@ -658,7 +658,7 @@ class TestCheckpointProjectRoot:
         assert spy.cwds == [str(git_repo.resolve())]
 
     @pytest.mark.asyncio
-    async def test_session_without_project_keeps_git_toplevel(
+    async def test_session_without_project_rejects_parent_git_toplevel(
         self, ckpt_dao: CheckpointDAO, async_db: AsyncDatabase, git_repo: Path
     ) -> None:
         sessions = SessionsDAO(async_db)
@@ -673,12 +673,8 @@ class TestCheckpointProjectRoot:
             resp = await self._call(
                 server, "checkpoint.create", {"session_id": "ses_plain"}
             )
-            assert "result" in resp, resp
-            # Fallback = the process git toplevel (the agent repo), NOT
-            # the fixture repo — proves the legacy path is untouched.
-            cwd = Path(spy.cwds[0])
-            assert cwd != git_repo.resolve()
-            assert (cwd / ".git").exists()
+            assert resp["error"]["message"] == "Git repository extends outside the session workspace"
+            assert not spy.cwds
         finally:
             set_sessions_dao(None)
             set_projects_dao(None)
@@ -744,3 +740,65 @@ def test_checkpoint_deletion_rejects_symlinked_snapshot(tmp_path):
     with pytest.raises(ValueError):
         manager.delete_snapshot("ckpt_link")
     assert marker.read_text(encoding="utf-8") == "preserve"
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("session_id", [None, "bound"])
+async def test_checkpoint_rejects_repository_above_session_workspace(monkeypatch, git_repo, explicit, session_id):
+    from minimax_code.ipc import handlers_checkpoint
+    from minimax_code.ipc.handler_utils import HandlerError
+
+    workspace = git_repo / "nested"
+    workspace.mkdir()
+    monkeypatch.setattr(handlers_checkpoint, "resolve_root_for_session", AsyncMock(return_value=workspace))
+    params = {"cwd": str(workspace)} if explicit else {}
+    with pytest.raises(HandlerError, match="Git repository extends outside"):
+        await handlers_checkpoint._resolve_cwd(params, session_id=session_id)
+
+async def test_unbound_checkpoint_allows_workspace_at_repository_root(monkeypatch, git_repo):
+    from minimax_code.ipc import handlers_checkpoint
+
+    monkeypatch.setattr(handlers_checkpoint, "resolve_root_for_session", AsyncMock(return_value=git_repo))
+    assert await handlers_checkpoint._resolve_cwd({}, session_id=None) == git_repo
+
+async def test_checkpoint_rejects_subdirectory_with_repository_wide_stash(monkeypatch, git_repo):
+    from minimax_code.ipc import handlers_checkpoint
+    from minimax_code.ipc.handler_utils import HandlerError
+
+    nested = git_repo / "nested"
+    nested.mkdir()
+    (git_repo / "README.md").write_text("changed outside nested\n", encoding="utf-8")
+    (git_repo / "untracked-root.txt").write_text("root", encoding="utf-8")
+    (nested / "untracked-nested.txt").write_text("nested", encoding="utf-8")
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"], cwd=nested,
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert untracked == ["untracked-nested.txt"]
+    stash = subprocess.run(["git", "stash", "create"], cwd=nested,
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert stash
+    changed = subprocess.run(["git", "stash", "show", "--name-only", stash], cwd=git_repo,
+                             capture_output=True, text=True, check=True).stdout.splitlines()
+    assert "README.md" in changed
+    monkeypatch.setattr(handlers_checkpoint, "resolve_root_for_session", AsyncMock(return_value=git_repo))
+    # The same resolver is used for create, restore and diff. Rejecting the
+    # subdirectory preserves old snapshot path semantics instead of rebasing.
+    with pytest.raises(HandlerError, match="must be the Git repository root"):
+        await handlers_checkpoint._resolve_cwd({"cwd": str(nested)}, session_id="bound")
+
+async def test_old_subdirectory_checkpoint_is_not_rebased_on_restore(monkeypatch, git_repo):
+    from minimax_code.ipc import handlers_checkpoint
+
+    nested = git_repo / "nested"
+    nested.mkdir()
+    monkeypatch.setattr(handlers_checkpoint, "resolve_root_for_session", AsyncMock(return_value=git_repo))
+    dao = AsyncMock()
+    dao.get.return_value = {"id": "old", "session_id": "bound", "untracked_files": ["file.txt"]}
+    manager = AsyncMock()
+    server = IPCServer(config=Config.from_env(), stdin=sys.stdin, stdout=sys.stdout)
+    register_checkpoint_handlers(server, dao=dao, manager=manager)
+    response = await server.handle_request({"id": 1, "method": "checkpoint.restore",
+                                            "params": {"checkpoint_id": "old", "cwd": str(nested)}})
+    assert response["error"]["message"] == "Checkpoint working directory must be the Git repository root"
+    manager.restore.assert_not_awaited()

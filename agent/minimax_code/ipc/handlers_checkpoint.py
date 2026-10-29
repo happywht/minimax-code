@@ -35,7 +35,6 @@ from ..storage.db import ensure_data_dir
 from ..workspace import Checkpoint, CheckpointManager, CheckpointRestoreResult
 from ..workspace_ctx import (
     WorkspaceUnavailableError,
-    env_or_cwd_root,
     require_directory,
     resolve_root_for_session,
 )
@@ -316,9 +315,9 @@ async def _resolve_cwd(
 ) -> Path:
     """Resolve the working tree to snapshot/rewind.
 
-    Explicit paths must stay inside the verified session root. Legacy
-    unbound sessions retain the process git-toplevel default; invalid
-    bindings never fall back to another checkout.
+    Both the working directory and Git repository root must stay inside
+    the verified session root. Invalid bindings never fall back to another
+    checkout. Git stash operates on the whole repository.
     """
     try:
         root = await resolve_root_for_session(session_id)
@@ -326,18 +325,31 @@ async def _resolve_cwd(
         raise HandlerError(INVALID_PARAMS, str(exc)) from exc
     explicit = _string_param(params, "cwd")
     if explicit:
-        return require_directory(ensure_cwd_within_root(explicit, root))
-    if session_id:
-        if root != env_or_cwd_root():
-            return root
-    return await _git_repo_root()
+        target = require_directory(ensure_cwd_within_root(explicit, root))
+    else:
+        target = root
+
+    # Git stash operates on the entire repository, even from a subdirectory.
+    # The repository must therefore be inside the session workspace, not just
+    # the directory supplied to Git.
+    repo = await _git_repo_root(target)
+    if not repo.is_relative_to(root):
+        raise HandlerError(INVALID_PARAMS, "Git repository extends outside the session workspace")
+    # Existing checkpoint records store untracked paths relative to their
+    # original cwd, without recording that cwd. Silently changing it to the
+    # repository root could restore old files into the wrong directory.
+    if target != repo:
+        raise HandlerError(INVALID_PARAMS, "Checkpoint working directory must be the Git repository root")
+    return repo
 
 
-async def _git_repo_root() -> Path:
+
+async def _git_repo_root(cwd: Path | None = None) -> Path:
     proc = await spawn_exec(
         "git",
         "rev-parse",
         "--show-toplevel",
+        cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
