@@ -3,6 +3,7 @@ import { ipc, typedIPC } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
 import type { AttachmentParserStatus, DocxSection, ReportSource, ResearchSource } from "../../types/ipc";
+import { AttachmentDocumentReader } from "./AttachmentDocumentReader";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
 import { SearchableTextPreview } from "./SearchableTextPreview";
@@ -195,6 +196,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
       <p className="text-xs text-ink-2">默认仅追加附件身份；可选择加入解析摘录。不会发送或上传原件到对话，也不代表模型已读取完整文件。</p>
       {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>
+      <AttachmentDocumentReader key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
       <PdfOriginalPreview attachment={state.selected} />
       <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)

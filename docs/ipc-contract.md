@@ -1719,6 +1719,7 @@ document the migration in this file.
 | `attachment.generate_report_pair` | `{project_id, expected_service_id, filename, title, paragraphs?, sections?, formats?}` | `{status, results}`，共享内容逐格式保存并返回各自状态 |
 | `attachment.generate_pdf` | `{project_id, expected_service_id, filename, title, paragraphs?, sections?}` | `{attachment, preview_text}`，生成并保存 PDF 文本报告，业务及视觉未验证 |
 | `attachment.generate_docx` | `{project_id, expected_service_id, filename, title, paragraphs}` | `{attachment, preview_text}`，生成并保存有界纯文本 DOCX；不验证版式或事实 |
+| `attachment.read_document` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, unit, offset}` | 读取匹配原件的 PDF 物理页或 DOCX 正文段落的有界文本片段，返回来源、位置与下一游标 |
 | `attachment.extract_xlsx` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, sheet_name}` | 复核会话、服务与附件后返回受控完整工作表行及日期、百分比、货币列；不计算公式 |
 | `attachment.list` | `{project_id, cursor?, query?}` | `{attachments, service_id, next_cursor}`，每页最多 200 条元数据，不含预览。可选 query（1–240 字符）按名称区分大小写作字面子串匹配，不读取或搜索原件；搜索游标绑定项目、服务和 query，继续时必须使用相同参数。无 query 保持原游标行为 |
 | `attachment.get` | `{project_id, attachment_id}` | `{attachment, preview_text}`，核对原件后返回有界纯文本 |
@@ -1789,6 +1790,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 `run.output_page({run_id,session_id,output_ref,expected_service_id,offset?,limit?})` 按字符分页读取该运行的捕获输出 JSON；最多 8000 字符，返回当前/下一偏移、总字符数和绑定标识。输出仅包含工具捕获到的内容，命令捕获上限和截断标记仍然适用；引用不跨项目、会话或服务使用。
 
 `run.output_inventory({session_id,offset?})` 返回全库与当前会话逻辑用量、当前会话按页 50 条已绑定的输出记录及服务身份；全库统计包括其他会话和不可访问的旧记录，但不暴露其详情。`run.output_clear({run_id,session_id,output_ref,expected_service_id,expected_sha256})` 仅清理明确指定、已终结且不再清理中的运行的正文，保留不可读取的清理标记；调用不会删除运行、摘要或原文件，重试同一记录幂等。清理与新读请求按数据库事务排序，已取出的并发页可能仍被返回；通知供客户端清除已显示或在途页面。数据库文件、旧备份与存储介质可能保留原始字节，并非安全擦除。
+
+`attachment.read_document` 仅在会话归属项目、服务及附件 SHA-256 匹配时读取原件，复用隔离解析器；单次最多 4000 字符，初始游标为 unit=1、offset=0，按返回的 next_cursor 继续。PDF 为物理页已有文本（最多 200 页），DOCX 为正文与表格段落；不读取页眉页脚、脚注、文本框、修订或图像文字，不执行 OCR，不还原版式。空文本不代表原件无内容；文字未经核验。原件不修改，也不自动加入对话。缺依赖或资源限制不可用时返回错误。
 
 `attachment.extract_xlsx` 仅在会话归属项目、服务和附件校验值匹配时读取不可变原件，使用现有隔离解析器完整提取一个可见工作表；上限 2 MiB、A1:T1001、5000 格及 1 MiB 提取数据。公式、隐藏行列、复杂表和不明确数字格式等拒绝；日期转 ISO，百分比和货币为底层数值，不保留格式。返回前再次核对会话和服务；不会修改原件。
 

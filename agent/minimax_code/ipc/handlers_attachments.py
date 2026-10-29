@@ -14,6 +14,7 @@ from .protocol import (
     AttachmentGetParams,
     AttachmentExtractXlsxParams,
     AttachmentListParams,
+    AttachmentReadDocumentParams,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,52 @@ def register_attachment_handlers(server):
             logger.exception("attachment.extract_xlsx failed")
             await ctx.reply_error(INTERNAL_ERROR, "XLSX extraction failed")
 
+    async def read_document(params, ctx):
+        try:
+            from ..attachment_parser import read_document_segment
+            from .host_session_gate import require_host_session
+
+            request = AttachmentReadDocumentParams.model_validate(params)
+            service = await get_attachment_service()
+
+            async def check_scope():
+                await require_host_session(request.session_id)
+                session = await service.dao.db.fetchone(
+                    "SELECT project_id FROM sessions WHERE id=?", (request.session_id,))
+                if (not session or session["project_id"] != request.project_id
+                        or await service.dao.service_id() != request.expected_service_id):
+                    raise ValueError("Session, project or service binding changed")
+
+            await check_scope()
+            row, data = await service.content(request.project_id, request.attachment_id)
+            kind = row["recognized_type"]
+            if (kind not in {"pdf", "docx"} or row["declared_type"] != kind
+                    or row["sha256"] != request.expected_sha256):
+                raise ValueError("Select the same PDF or DOCX attachment")
+            result = await read_document_segment(data, kind, request.unit, request.offset)
+            if not result["ok"]:
+                messages = {
+                    "missing_dependency": "Document parser dependency is unavailable; install the attachments extra",
+                    "parser_timeout": "Document parser timed out",
+                    "queue_timeout": "Document parser is busy; try again",
+                    "limits_unavailable": "Document parser resource limits are unavailable",
+                    "cursor_out_of_range": "Cursor is outside this document",
+                    "text_limit": "This page or paragraph exceeds the text limit",
+                }
+                raise ValueError(messages.get(result["reason"], "Document cannot be safely parsed"))
+            await check_scope()
+            await ctx.reply({**result, "project_id": request.project_id, "session_id": request.session_id,
+                             "service_id": request.expected_service_id, "attachment_id": request.attachment_id,
+                             "sha256": request.expected_sha256})
+        except ValidationError:
+            await ctx.reply_error(INVALID_PARAMS, "Invalid document reading parameters")
+        except (ValueError, OSError) as exc:
+            await ctx.reply_error(-32000, str(exc))
+        except Exception:
+            logger.exception("attachment.read_document failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Document reading failed")
+
+    server.register("attachment.read_document", read_document)
     server.register("attachment.extract_xlsx", extract_xlsx)
     server.register("attachment.generate_report_pair", handler(AttachmentGeneratePairWithResearchParams, "generate_report_pair"))
     server.register("attachment.generate_pdf", handler(AttachmentGenerateWithResearchParams, "generate_pdf"))

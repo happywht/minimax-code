@@ -136,6 +136,7 @@ export interface TypedIPC {
   generatePdf(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   generateDocx(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   extractAttachmentXlsx(params: { project_id: string; session_id: string; expected_service_id: string; attachment_id: string; expected_sha256: string; sheet_name: string }): Promise<{ ok: true; project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; sheet_name: string; rows: string[][]; date_columns: string[]; percentage_columns: string[]; currency_columns: string[] }>;
+  readAttachmentDocument(params: import("../types/ipc").AttachmentDocumentParams): Promise<import("../types/ipc").AttachmentDocumentResult>;
   listAttachments(projectId: string, cursor?: string, query?: string): Promise<import("../types/ipc").AttachmentListResult>;
   getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
   generateOfficeXlsx(params: import("../types/ipc").OfficeGenerateParams): Promise<import("../types/ipc").OfficeGetResult>;
@@ -643,6 +644,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     generatePdf: (params) => client.request("attachment.generate_pdf", params),
     generateDocx: (params) => client.request("attachment.generate_docx", params),
     extractAttachmentXlsx: (params) => client.request("attachment.extract_xlsx", params),
+    readAttachmentDocument: (params) => client.request("attachment.read_document", params),
     listAttachments: (projectId, cursor, query) => client.request("attachment.list", { project_id: projectId, ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) }),
     // Preview results retain versioned parser scope/reason independently of quality.
     getAttachment: (projectId, attachmentId) => client.request("attachment.get", { project_id: projectId, attachment_id: attachmentId }),
