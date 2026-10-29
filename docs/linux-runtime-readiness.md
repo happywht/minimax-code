@@ -992,6 +992,20 @@ SSH 检查标记和 cgroup，未再次终止服务。脚本为 `.verification/fo
 和 `.verification/browser-checkpoint-evidence.py`。本次没有调用模型，未重新模拟物理断网
 或整机重启；办公界面修复的表格生成流程未在远程实机上验证。
 
+### Windows 到 Linux 检查点迁移演练（2026-10-29）
+
+使用源码 `61f5446`、Windows 独立临时 Git 仓库与数据目录生成 v11 数据包，再传输至
+Linux 独立临时环境；两端源码归档 SHA-256 均为
+`ffab48a6d561394afdd43a03c50bd2c293e3fccdd61d95664d5d9088c38717fb`。
+在 Linux 完成包验证、独立目录恢复和人工确认的迁移对象导入，再通过公开 `project.update`、
+`checkpoint.rebind` 与 `checkpoint.restore` 完成普通项目会话的恢复：已跟踪文件和未跟踪
+文件内容均与原快照一致；导入对象前后 HEAD 和工作区状态未改变。未使用正式服务或模型。
+
+同次测试发现：带显式 Windows `workspace_path` 的旧会话不能通过现有 `session.update`
+更改该路径，项目重新绑定后仍会优先使用失效的旧路径，重绑定被拒绝。该类会话的跨机
+恢复尚未通过；Git worktree 的归属、外部并发与 LFS/子模块也不在本次证明范围内。
+本地审计日志保存在 `.verification/checkpoint-cross-machine-61f5446.log`，临时测试数据保留。
+
 ### 办公依赖准备与服务更新（2026-10-29）
 
 核查发现 `fe03664` 的基础环境没有安装 openpyxl、python-docx 和 pypdf，因而不能
