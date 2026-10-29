@@ -8,7 +8,7 @@ import { useSessionStore } from "./sessionStore";
 import { useRunTimelineStore } from "./runStore";
 
 export interface SubAgentState {
-  runs: Record<string, SubAgentRun>; subscribed: boolean; error: string | null;
+  runs: Record<string, SubAgentRun>; subscribed: boolean; error: string | null; recoveryError: string | null;
   init: () => Promise<void>;
   register: (run: SubAgentRun) => void;
   applyProgress: (progress: SubAgentProgress) => void;
@@ -53,7 +53,7 @@ function statusView(status: AgentRunStatus, partial = false): SubAgentStatus {
   return terminal.has(status) ? "failed" : "thinking";
 }
 export const useSubAgentStore = create<SubAgentState>((set, get) => ({
-  runs: {}, subscribed: false, error: null,
+  runs: {}, subscribed: false, error: null, recoveryError: null,
   init: async () => {
     if (get().subscribed) { await get().refresh(); return; }
     set({ runs: { ...restore(), ...get().runs } });
@@ -166,7 +166,7 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
     const scope = JSON.stringify([host, sessionId, project]);
     if (scope !== childScope) {
       childScope = scope;
-      set((s) => ({ runs: Object.fromEntries(Object.entries(s.runs).filter(([, row]) => !!row.request)) }));
+      set((s) => ({ runs: Object.fromEntries(Object.entries(s.runs).filter(([, row]) => !!row.request)), recoveryError: null }));
     }
     const ticket = ++childEpoch;
     const current = () => ticket === childEpoch && childScope === scope && ipc.agentBaseUrl === host
@@ -192,10 +192,15 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
             text: child.text || undefined, text_truncated: child.text_truncated, started_at: started, updated_at: Date.now(),
             finished_at: terminal.has(child.status) ? (Date.parse(child.completed_at || "") || Date.now()) : undefined };
         }
-        return { runs: next };
+        return { runs: next, recoveryError: null };
       });
     } catch (err) {
-      if (current()) set({ error: err instanceof Error ? err.message : String(err) });
+      if (current()) set((s) => ({
+        recoveryError: err instanceof Error ? err.message : String(err),
+        runs: Object.fromEntries(Object.entries(s.runs).map(([id, row]) =>
+          [id, row.recovery_service_id && row.parent_session_id === sessionId && row.run_status && !terminal.has(row.run_status)
+            ? { ...row, status: "unknown" as const, summary: "恢复失败，运行状态待核对" } : row])),
+      }));
     }
   },
   refresh: async () => {
@@ -250,7 +255,7 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
       row.admission_unknown || row.run_status === "interrupted" || row.run_status === "budget_paused"));
     persist(runs); return { runs };
   }),
-  reset: () => { childEpoch++; childScope = ""; set({ runs: {}, subscribed: false, error: null }); },
+  reset: () => { childEpoch++; childScope = ""; set({ runs: {}, subscribed: false, error: null, recoveryError: null }); },
 }));
 export function runsForSession(state: SubAgentState, sessionId: string | null | undefined): SubAgentRun[] {
   return Object.values(state.runs).filter((row) => !sessionId || row.parent_session_id === sessionId);

@@ -101,6 +101,7 @@ export function SubAgentPanel({
   const currentSession = useSessionStore((s) => s.currentSessionId);
   const currentProject = useSessionStore((s) => s.sessions.find((row) => row.id === (sessionId === undefined ? s.currentSessionId : sessionId))?.project_id);
   const recoverChildren = useSubAgentStore((s) => s.recoverChildren);
+  const recoveryError = useSubAgentStore((s) => s.recoveryError);
   const visibleSession = sessionId === undefined ? currentSession : sessionId;
 
   useEffect(() => {
@@ -133,6 +134,9 @@ export function SubAgentPanel({
             ? strings.rightPanel.subagents.idle
             : strings.rightPanel.subagents.runCount(runs.length)}
         </span>
+        <div className="flex items-center gap-2">
+        {visibleSession && <button type="button" onClick={() => void recoverChildren(visibleSession)}
+          className="text-[11px] text-minimax-muted hover:text-minimax-fg">刷新子任务</button>}
         {completedCount > 0 && (
           <button
             type="button"
@@ -144,7 +148,9 @@ export function SubAgentPanel({
             {strings.rightPanel.subagents.clearDone}
           </button>
         )}
+        </div>
       </div>
+      {recoveryError && <div role="alert" className="mb-2 text-[11px] text-status-error">子任务恢复失败：{recoveryError}。请刷新后核对状态。</div>}
       {runs.length === 0 ? (
         <div
           data-testid={`${testId}-empty`}
