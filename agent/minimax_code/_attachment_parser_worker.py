@@ -68,7 +68,7 @@ def establish_limits():
 
 def main():
     try:
-        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx", "xlsx_extract"}:
+        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx", "xlsx_extract", "pdf_page", "docx_segment"}:
             raise RuntimeError("Invalid fixed parser kind")
         job = establish_limits()
     except Exception:
@@ -84,7 +84,17 @@ def main():
     data = sys.stdin.buffer.read(10 * 1024 * 1024 + 256)
     if len(data) > 10 * 1024 * 1024 + 255:
         return 127
-    if sys.argv[-3] == "xlsx_extract":
+    if sys.argv[-3] in {"pdf_page", "docx_segment"}:
+        from minimax_code.attachment_document_page import read_docx_segment, read_pdf_page
+
+        if len(data) < 8 or len(data) - 8 > 10 * 1024 * 1024:
+            return 127
+        unit, offset = int.from_bytes(data[:4], "big"), int.from_bytes(data[4:8], "big")
+        if not 1 <= unit <= 10000 or offset > 1024 * 1024:
+            return 127
+        operation = read_pdf_page if sys.argv[-3] == "pdf_page" else read_docx_segment
+        result = operation(data[8:], unit, offset)
+    elif sys.argv[-3] == "xlsx_extract":
         from minimax_code.attachment_xlsx import extract_sheet
 
         if len(data) < 4:

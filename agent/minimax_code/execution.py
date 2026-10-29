@@ -62,7 +62,7 @@ def require_tool_access(name: str) -> None:
     if policy is not None and policy.read_only and name not in {
         "read_file", "list_directory", "list_dir", "search_files", "grep", "glob",
         "search_codebase", "summarize_codebase", "find_symbol", "navigate_codebase",
-        "list_project_attachments", "read_project_attachment",
+        "list_project_attachments", "read_project_attachment", "read_project_document",
         "search_public_web", "read_public_page",
         "ask_user", "check_subagent", "list_agents",
     }:

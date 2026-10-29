@@ -31,7 +31,7 @@ def _environment():
 
 
 def _command(kind):
-    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract"}:
+    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "pdf_page", "docx_segment"}:
         raise ValueError("Invalid fixed parser kind")
     # Windows venv python.exe is a redirector. Kill/wait must target the actual
     # parser PID, so launch the base interpreter and add only trusted venv libs
@@ -52,7 +52,7 @@ def _command(kind):
 
 def _run(data, cancelled, scope=SCOPE, kind="docx"):
     def failed(reason, **kwargs):
-        return {"ok": False, "reason": reason} if kind == "xlsx_extract" else failure(reason, scope=scope, **kwargs)
+        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "pdf_page", "docx_segment"} else failure(reason, scope=scope, **kwargs)
 
     if sys.platform not in {"linux", "win32"}:
         return failed("limits_unavailable", unavailable=True)
@@ -129,6 +129,45 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
             return failed("parser_crash")
         try:
             result = json.loads(output)
+            if kind in {"pdf_page", "docx_segment"}:
+                if type(result) is not dict:
+                    raise ValueError
+                errors = {"invalid_package", "unsafe_package", "unsupported_feature", "missing_dependency",
+                          "package_limit", "text_limit", "cursor_out_of_range"}
+                if result.get("ok") is False and set(result) == {"ok", "reason"} and result["reason"] in errors:
+                    return result
+                keys = {"ok", "kind", "unit", "unit_total", "location", "start", "end", "text", "truncated", "next_cursor", "status", "ocr"}
+                if (set(result) != keys or result["ok"] is not True
+                        or result["kind"] != ("pdf" if kind == "pdf_page" else "docx")
+                        or type(result["unit"]) is not int or type(result["unit_total"]) is not int
+                        or not 0 <= result["unit"] <= result["unit_total"] <= (200 if kind == "pdf_page" else 10000)
+                        or type(result["start"]) is not int or type(result["end"]) is not int
+                        or not 0 <= result["start"] <= result["end"] <= 1024 * 1024
+                        or type(result["text"]) is not str or len(result["text"]) > 4000
+                        or result["end"] - result["start"] != len(result["text"])
+                        or type(result["location"]) is not str or len(result["location"]) > 256
+                        or type(result["truncated"]) is not bool or result["status"] not in {"text", "empty"}
+                        or result["ocr"] != "not_attempted"):
+                    raise ValueError
+                requested_unit = int.from_bytes(data[:4], "big")
+                requested_offset = int.from_bytes(data[4:8], "big")
+                empty_document = kind == "docx_segment" and result["unit_total"] == 0 and result["unit"] == 0
+                if (not empty_document and result["unit"] != requested_unit
+                        or result["start"] != requested_offset
+                        or empty_document and (requested_unit != 1 or requested_offset != 0 or result["text"])):
+                    raise ValueError
+                cursor = result["next_cursor"]
+                if cursor is not None and (type(cursor) is not dict or set(cursor) != {"unit", "offset"}
+                        or type(cursor["unit"]) is not int or type(cursor["offset"]) is not int
+                        or not 1 <= cursor["unit"] <= result["unit_total"]
+                        or not 0 <= cursor["offset"] <= 1024 * 1024):
+                    raise ValueError
+                expected = ({"unit": result["unit"], "offset": result["end"]} if result["truncated"]
+                            else {"unit": result["unit"] + 1, "offset": 0}
+                            if result["unit"] < result["unit_total"] else None)
+                if cursor != expected:
+                    raise ValueError
+                return result
             if kind == "xlsx_extract":
                 reasons = {"sheet_name", "sheet_not_found", "hidden_sheet", "hidden_rows", "hidden_columns",
                            "complex_sheet", "import_limit", "formula", "unsupported_cell", "formatted_number",
@@ -183,6 +222,16 @@ async def extract_xlsx(data, sheet_name):
         return {"ok": False, "reason": "import_limit"}
     framed = len(encoded).to_bytes(4, "big") + encoded + data
     return await _inspect(framed, PDF_SCOPE, "xlsx_extract")
+
+
+async def read_document_segment(data, kind, unit=1, offset=0):
+    if (kind not in {"pdf", "docx"} or type(unit) is not int or not 1 <= unit <= 10000
+            or type(offset) is not int or not 0 <= offset <= 1024 * 1024
+            or len(data) > 10 * 1024 * 1024):
+        return {"ok": False, "reason": "cursor_out_of_range"}
+    framed = unit.to_bytes(4, "big") + offset.to_bytes(4, "big") + data
+    return await _inspect(framed, PDF_SCOPE if kind == "pdf" else SCOPE,
+                          "pdf_page" if kind == "pdf" else "docx_segment")
 
 
 async def _inspect(data, scope, kind):
