@@ -858,6 +858,10 @@ HostTunnelManager 使用真实 Windows OpenSSH 隧道打开浏览器，页面加
 全局升级就绪：HTTP/stdio、子 Agent、外部写入及终端后代进程仍未得到完整隔离和
 验证。终端进程树清理现阶段只能确认已尝试，不能保证所有后代进程已经退出。
 
+本地维护排空已追踪通过子 Agent 工具启动的交接、后台执行和收尾；等待期间，
+已接收的受限父运行可以派生其有明确归属的子运行。它不覆盖直接 runtime 入口、
+脱离受管边界的外部进程或所有其他生产者，仍不能作为全局升级就绪证明。
+
 内部维护排空现已接入 HTTP 和 stdio 的 RPC 共享接单门禁：先等待围栏之前已接收
 的请求，维护期间只允许经过审查的审批、取消和状态查询，再关闭并等待这些控制
 请求。stdio 的串行读取意味着长请求执行时仍无法通过同一连接接收后续控制。
@@ -876,3 +880,20 @@ Schema048；核对测试会话标记和 webhook_deliveries 表，并通过升级
 升级前 v6 数据包恢复至独立新目录，确认 Schema046 和测试会话标记保留。测试单元
 已停止并移除，事务与隔离数据保留于 `/tmp/minimax-upgrade-accept-8ad6e8af40`。
 本次未切换正式服务，也未验证整机重启、真实模型或工作区的备份恢复。
+
+### 正式用户服务升级和重启（2026-10-29）
+
+用户服务 `minimax-code-remote.service` 已从原有 Schema046 源码切换至发布目录
+`/home/ubuntu/.local/share/minimax-code-releases/b29df73b0ab07ff738dc664e4eb7dfcf5ff73daa`。
+前端来源与该提交一致；源码和前端包上传后校验 SHA-256，依赖安装与 CLI 检查通过。
+切换前检查到 session、agent run、定时计划、任务及 occurrence 均为零，服务 cgroup
+只有主进程、没有已建立的客户端连接；这只是切换前采样，并非防止新请求的原子屏障。
+升级工具完成旧数据包备份和校验、单元切换、Schema048 迁移与健康检查；交易和
+备份保留于 `/home/ubuntu/.local/share/minimax-code-remote-backups-b29df73/upgrade-lug72ezu`。
+
+再次检查空闲后执行 systemd 用户服务重启，重启前后 Schema048 和上述零记录保持
+一致，健康检查报告 db、web、auth_required 均可用。Windows 产品隧道经认证的
+`session.list` 读取成功；真实浏览器在本机 SSH 进程断开后使用原地址恢复。测试
+脚本位于 `.verification/upgrade-real-b29df73.py`、`restart-real-b29df73.py`、
+`verify-real-b29-tunnel.py` 和 `browser-tunnel-reconnect.py`。未执行付费模型调用；
+没有模拟远端物理断网、整机重启，或在正式服务上验证执行中任务的恢复。

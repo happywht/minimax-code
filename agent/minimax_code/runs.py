@@ -64,15 +64,24 @@ class RunService:
         self._draining = False
         self._shutdown_started = False
         self._drain_task: asyncio.Task[None] | None = None
+        self._drain_jobs: set[RunJob] = set()
 
     def submit(
         self, session_id: str, operation: Callable[[RunJob], Awaitable[Any]], *,
         job: RunJob | None = None,
         finalize: Callable[[RunJob, BaseException | None], Awaitable[None]] | None = None,
     ) -> RunJob:
+        return self._submit(session_id, operation, job=job, finalize=finalize)
+
+    def _submit(
+        self, session_id: str, operation: Callable[[RunJob], Awaitable[Any]], *,
+        job: RunJob | None = None,
+        finalize: Callable[[RunJob, BaseException | None], Awaitable[None]] | None = None,
+        _owned_child: bool = False,
+    ) -> RunJob:
         """Atomically enqueue before the first await; same-session jobs are FIFO."""
         accepted = asyncio.current_task() in self._accepted_admissions
-        if self._closing and not (accepted and self._draining and not self._shutdown_started):
+        if self._closing and not ((accepted or _owned_child) and self._draining and not self._shutdown_started):
             raise RunServiceClosing("Run service is shutting down")
         queue = self._jobs.setdefault(session_id, [])
         if job is None and len(queue) >= 32:
@@ -80,6 +89,8 @@ class RunService:
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         job = job or RunJob(session_id)
         queue.append(job)
+        if self._draining:
+            self._drain_jobs.add(job)
         if job.run_id:
             self._by_run[job.run_id] = job
 
@@ -114,6 +125,21 @@ class RunService:
         job.task = asyncio.create_task(drive(), name=f"native-run:{session_id}")
         job.task.add_done_callback(lambda task: self._finished(job, task))
         return job
+
+    def submit_owned_child(self, session_id: str, operation: Callable[[RunJob], Awaitable[Any]],
+                           *, job: RunJob) -> RunJob:
+        """Submit a restricted child only while its bound parent job is live."""
+        from .process_context import current_process_target
+        from .run_ownership import owned_runtime
+
+        target = current_process_target()
+        context = owned_runtime.get()
+        parent = self._by_run.get(target.owner.run_id) if target and target.owner else None
+        if (not context or context.get("run_service") is not self or parent is None
+                or parent.task is None or parent.task.done() or not job.run_id
+                or job.run_id == parent.run_id):
+            raise RunServiceClosing("Restricted child has no live service-owned parent")
+        return self._submit(session_id, operation, job=job, _owned_child=True)
 
     async def admit(
         self, *, dao: Any, session_id: str, request: dict[str, Any], title: str,
@@ -235,6 +261,7 @@ class RunService:
             self._closing = True
             self._draining = True
             jobs = {job for queue in self._jobs.values() for job in queue}
+            self._drain_jobs.update(jobs)
             admissions = list(self._admissions)
 
             async def finish_drain() -> None:
@@ -246,17 +273,19 @@ class RunService:
                             failures.append(result)
                     elif result[1] is not None:
                         jobs.add(result[1])
-                jobs.update(job for queue in self._jobs.values() for job in queue)
-                active_jobs = [job for job in jobs if job.task]
-                results = await asyncio.gather(
-                    *(job.task for job in active_jobs), return_exceptions=True)
-                for job, value in zip(active_jobs, results, strict=True):
-                    if isinstance(value, asyncio.CancelledError):
-                        # Only service-requested cancellation entered the normal teardown path.
-                        if not job.cancel_requested or not job.cleanup_completed:
+                self._drain_jobs.update(jobs)
+                seen: set[RunJob] = set()
+                while pending := self._drain_jobs - seen:
+                    seen.update(pending)
+                    active_jobs = [job for job in pending if job.task]
+                    results = await asyncio.gather(
+                        *(job.task for job in active_jobs), return_exceptions=True)
+                    for job, value in zip(active_jobs, results, strict=True):
+                        if isinstance(value, asyncio.CancelledError):
+                            if not job.cancel_requested or not job.cleanup_completed:
+                                failures.append(value)
+                        elif isinstance(value, BaseException):
                             failures.append(value)
-                    elif isinstance(value, BaseException):
-                        failures.append(value)
                 if failures:
                     raise RunShutdownError("Run drain ended with an error") from failures[0]
 

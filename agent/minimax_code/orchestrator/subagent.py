@@ -41,6 +41,7 @@ import asyncio
 import logging
 import os
 import uuid
+import weakref
 from collections.abc import Awaitable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -230,6 +231,75 @@ async def resolve_subagent_emit(session_id: str | None) -> Any:
 _BACKGROUND_RUNS: dict[str, asyncio.Task] = {}
 
 
+class _SpawnLease:
+    active = True
+
+
+_spawn_lease: ContextVar[_SpawnLease | None] = ContextVar("subagent_spawn_lease", default=None)
+
+
+class _SpawnFence:
+    def __init__(self) -> None:
+        self.closed = False
+        self.active = 0
+        self.tasks: set[asyncio.Task] = set()
+        self.failures: list[BaseException] = []
+        self.changed = asyncio.Event()
+
+    @contextmanager
+    def enter(self, *, drive: bool = False):
+        parent = _spawn_lease.get()
+        if self.closed and not drive and not (parent and parent.active):
+            raise RuntimeError("Sub-agent admission closed for maintenance")
+        lease = _SpawnLease()
+        self.active += 1
+        token = _spawn_lease.set(lease)
+        try:
+            yield
+        finally:
+            lease.active = False
+            _spawn_lease.reset(token)
+            self.active -= 1
+            self.changed.set()
+
+    def track(self, task: asyncio.Task) -> None:
+        if task in self.tasks:
+            return
+        self.tasks.add(task)
+        def done(completed: asyncio.Task) -> None:
+            self.tasks.discard(completed)
+            if self.closed:
+                if completed.cancelled():
+                    self.failures.append(asyncio.CancelledError())
+                elif (error := completed.exception()) is not None:
+                    self.failures.append(error)
+            self.changed.set()
+        task.add_done_callback(done)
+
+    async def drain(self) -> None:
+        self.closed = True
+        while self.active or self.tasks:
+            self.changed.clear()
+            await self.changed.wait()
+        if self.failures:
+            raise RuntimeError("Background sub-agent cleanup was not confirmed") from self.failures[0]
+
+
+_SPAWN_FENCES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def subagent_spawn_fence() -> _SpawnFence:
+    loop = asyncio.get_running_loop()
+    if loop not in _SPAWN_FENCES:
+        _SPAWN_FENCES[loop] = _SpawnFence()
+    return _SPAWN_FENCES[loop]
+
+
+async def drain_background_subagents() -> None:
+    """Fence new tool spawns and wait for admitted handoffs and descendants."""
+    await subagent_spawn_fence().drain()
+
+
 def _on_background_run_done(run_id: str, task: asyncio.Task) -> None:
     """Discard the finished task; log crashes nobody else will see."""
     _BACKGROUND_RUNS.pop(run_id, None)
@@ -243,6 +313,7 @@ def _on_background_run_done(run_id: str, task: asyncio.Task) -> None:
 def register_background_run(run_id: str, task: asyncio.Task) -> None:
     """Hold a strong reference to a background sub-agent run task."""
     _BACKGROUND_RUNS[run_id] = task
+    subagent_spawn_fence().track(task)
     from ..run_ownership import owned_runtime
     from ..schedule_context import scheduled_runtime
     schedule = owned_runtime.get() or scheduled_runtime.get()

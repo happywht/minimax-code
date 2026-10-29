@@ -327,7 +327,16 @@ async def _ensure_session_row(session_id: str, title: str, *, required: bool = F
         logger.debug("ensure_session_row(%s) failed; continuing", session_id)
 
 
-async def _drive_run(
+async def _drive_run(**kwargs):
+    from ...orchestrator.subagent import subagent_spawn_fence
+
+    # The registered task can begin after the fence closes; it owns its
+    # entire lifecycle and can still launch descendants while active.
+    with subagent_spawn_fence().enter(drive=True):
+        return await _drive_run_impl(**kwargs)
+
+
+async def _drive_run_impl(
     *,
     runtime: Any,
     handle: Any,
@@ -784,6 +793,25 @@ class SpawnSubagentTool(Tool):
         sandbox: bool | None = None,
         depends_on: list[str] | None = None,
     ) -> ToolResult:
+        from ...orchestrator.subagent import subagent_spawn_fence
+
+        try:
+            with subagent_spawn_fence().enter():
+                return await self._run(agent_name, prompt, parent_session_id, wait, sandbox, depends_on)
+        except RuntimeError as exc:
+            if str(exc) == "Sub-agent admission closed for maintenance":
+                return ToolResult.fail(str(exc))
+            raise
+
+    async def _run(
+        self,
+        agent_name: str,
+        prompt: str,
+        parent_session_id: str | None = None,
+        wait: bool = True,
+        sandbox: bool | None = None,
+        depends_on: list[str] | None = None,
+    ) -> ToolResult:
         if sandbox is not None and type(sandbox) is not bool:
             return ToolResult.fail("sandbox must be a boolean or omitted")
         # P0-4 v1.5.3 — depends_on validation. A DAG branch only makes
@@ -1043,7 +1071,7 @@ class SpawnSubagentTool(Tool):
             if not isinstance(service, RunService):
                 raise RuntimeError("Restricted child requires its parent's RunService")
             try:
-                restricted_job = service.submit(sub_session,
+                restricted_job = service.submit_owned_child(sub_session,
                     lambda job: _drive_run(**drive_kwargs),
                     job=RunJob(sub_session, run_id=run_id, dao=run_dao))
             except BaseException:

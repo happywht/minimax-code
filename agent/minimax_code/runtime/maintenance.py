@@ -123,7 +123,7 @@ class MaintenanceResult:
         "direct handler calls and other unaudited entry points are not fenced",
         "uncovered producer paths may require controls beyond the audited RPC allowlist",
         "stdio processes requests serially and cannot receive controls during a long handler",
-        "sub-agent and other independent producer lifecycles are not fenced",
+        "direct sub-agent runtime calls and other independent producer lifecycles are not fenced",
         "terminal descendant processes cannot be confirmed terminated",
         "shared resources and external writers are not exclusively owned",
     )
@@ -136,6 +136,7 @@ class MaintenanceResult:
 async def _drain(server: Any) -> MaintenanceResult:
     from ..app import begin_codebase_shutdown, drain_codebase_shutdown
     from ..ipc.handlers_terminal import drain_terminal_sessions
+    from ..orchestrator.subagent import drain_background_subagents
     from ..runs import get_run_service
     from ..scheduler import quiesce_scheduler
 
@@ -152,6 +153,10 @@ async def _drain(server: Any) -> MaintenanceResult:
             await admission.wait_ordinary_empty()
         await get_run_service(server).drain()
         await quiesce_scheduler(wait=True)
+        # Existing run owners can spawn children until their own drain ends.
+        # Background children and their descendants then finish naturally
+        # before terminal and index access is fenced.
+        await drain_background_subagents()
         begin_codebase_shutdown()
         results = await asyncio.gather(
             drain_terminal_sessions(),
@@ -170,7 +175,8 @@ async def _drain(server: Any) -> MaintenanceResult:
         if admission is not None:
             admission.close_controls()
             await admission.wait_empty()
-    drained = ("scheduler", "runs", "local terminal tasks and main processes", "codebase index")
+    drained = ("scheduler", "runs", "spawn_subagent tool lifecycles",
+               "local terminal tasks and main processes", "codebase index")
     if admission is not None:
         drained += ("admitted RPC and HTTP requests",)
     if preview is not None:
