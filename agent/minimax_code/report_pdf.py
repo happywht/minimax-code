@@ -39,7 +39,7 @@ def generate_pdf(filename: str, title: str, paragraphs=None, sections=None, sour
 
 def _generate_pdf(filename, title, paragraphs, sections, sources):
     blocks = report_blocks(filename, title, paragraphs, sections, ".pdf", sources)
-    if any(kind == "table" and (len(value[0]) > 10 or sum(len(row) for row in value) > 1000)
+    if any(kind in {"table", "table_header"} and (len(value[0]) > 10 or sum(len(row) for row in value) > 1000)
            for kind, value in blocks):
         raise ValueError("PDF tables support at most 10 columns and 1000 cells each")
     try:
@@ -59,7 +59,7 @@ def _generate_pdf(filename, title, paragraphs, sections, sources):
         try:
             candidate = TTFont("MiniMaxReportCJK", str(path))
             chars = {ord(c) for kind, value in blocks for text in (
-                [c for row in value for c in row] if kind == "table" else [value])
+                [c for row in value for c in row] if kind in {"table", "table_header"} else [value])
                 for c in text if c not in "\t\n"}
             if not all(code in candidate.face.charWidths for code in chars):
                 continue
@@ -86,11 +86,12 @@ def _generate_pdf(filename, title, paragraphs, sections, sources):
                                  topMargin=42, bottomMargin=42, title=title, author="MiniMax Code")
     story = []
     for kind, value in blocks:
-        if kind != "table":
+        if kind not in {"table", "table_header"}:
             story.append(paragraph(value, kind))
         else:
             table = LongTable([[paragraph(cell, "cell") for cell in row] for row in value],
-                              colWidths=[document.width / len(value[0])] * len(value[0]), hAlign="LEFT")
+                              colWidths=[document.width / len(value[0])] * len(value[0]), hAlign="LEFT",
+                              repeatRows=1 if kind == "table_header" else 0)
             table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), .4, colors.grey),
                                        ("VALIGN", (0, 0), (-1, -1), "TOP")]))
             story.extend([table, Spacer(1, 8)])

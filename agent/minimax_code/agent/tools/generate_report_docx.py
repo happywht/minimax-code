@@ -41,6 +41,7 @@ class GenerateReportDocxTool(Tool):
                         "type": "object", "properties": {
                             "kind": {"type": "string", "enum": ["paragraph", "table"]},
                             "text": {"type": "string"},
+                            "repeat_header": {"type": "boolean", "description": "For a table, repeat its first row on subsequent pages"},
                             "rows": {"type": "array", "items": {
                                 "type": "array", "items": {"type": "string"},
                             }},

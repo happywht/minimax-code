@@ -33,7 +33,8 @@ def report_blocks(filename, title, paragraphs, sections, extension, sources=None
             if not section.heading.strip() or "\n" in section.heading or "\r" in section.heading:
                 raise ValueError("Section heading must be a nonempty single line")
             blocks.append(("heading1", section.heading))
-            blocks.extend((block.kind, block.text if block.kind == "paragraph" else block.rows)
+            blocks.extend(("table_header" if block.kind == "table" and block.repeat_header else block.kind,
+                           block.text if block.kind == "paragraph" else block.rows)
                           for block in section.blocks)
     if validated.sources:
         blocks.append(("heading1", "参考来源（由提供者填写，未自动核验）"))
@@ -50,7 +51,7 @@ def report_blocks(filename, title, paragraphs, sections, extension, sources=None
                 blocks.append(("paragraph", "页面内容或摘录已截断，不能代表全文。"))
     strings = []
     for kind, value in blocks:
-        if kind == "table":
+        if kind in {"table", "table_header"}:
             strings.extend(cell for row in value for cell in row)
         else:
             strings.append(value)

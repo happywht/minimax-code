@@ -61,7 +61,7 @@ export interface AttachmentOriginal {
   created_at: string;
 }
 export interface AttachmentListResult { attachments: AttachmentOriginal[]; service_id: string; next_cursor?: string | null }
-export type DocxBlock = { kind: "paragraph"; text: string } | { kind: "table"; rows: string[][] };
+export type DocxBlock = { kind: "paragraph"; text: string } | { kind: "table"; rows: string[][]; repeat_header?: boolean };
 export interface DocxSection { heading: string; blocks: DocxBlock[] }
 export interface ReportSource { title: string; url: string; accessed_at?: string; excerpt?: string | null; excerpt_truncated?: boolean; title_truncated?: boolean }
 export type DocxContent = ({ paragraphs: string[]; sections?: never } | { sections: DocxSection[]; paragraphs?: never }) & { sources?: ReportSource[]; session_id?: string; page_source_ids?: string[] };

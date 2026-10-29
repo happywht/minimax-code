@@ -24,6 +24,7 @@ def _generate_document(filename: str, title: str, paragraphs, sections, sources)
     try:
         from docx import Document
         from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
         from docx.table import Table
         from docx.text.paragraph import Paragraph
     except ImportError as exc:
@@ -39,6 +40,8 @@ def _generate_document(filename: str, title: str, paragraphs, sections, sources)
         else:
             table = document.add_table(rows=len(value), cols=len(value[0]))
             table.style = "Table Grid"
+            if kind == "table_header":
+                table.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
             for document_row, row in zip(table.rows, value, strict=True):
                 for document_cell, cell in zip(document_row.cells, row, strict=True):
                     document_cell.text = cell
@@ -59,7 +62,10 @@ def _generate_document(filename: str, title: str, paragraphs, sections, sources)
                 actual.append((kind, paragraph.text))
             elif element.tag == qn("w:tbl"):
                 table = Table(element, reopened)
-                actual.append(("table", [[cell.text for cell in row.cells] for row in table.rows]))
+                first_properties = table.rows[0]._tr.trPr
+                header = first_properties is not None and first_properties.find(qn("w:tblHeader")) is not None
+                actual.append(("table_header" if header else "table",
+                               [[cell.text for cell in row.cells] for row in table.rows]))
             elif element.tag != qn("w:sectPr"):
                 raise ValueError("Unexpected document body element")
     except Exception as exc:

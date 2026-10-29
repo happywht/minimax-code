@@ -15,7 +15,8 @@ export function readEditableSections(text: string): DocxSection[] | null {
         if (block.kind === "paragraph") {
           if (Object.keys(block).some((k) => !["kind", "text"].includes(k)) || typeof block.text !== "string") return null;
         } else if (block.kind === "table") {
-          if (Object.keys(block).some((k) => !["kind", "rows"].includes(k)) || !Array.isArray(block.rows) || !block.rows.length || block.rows.length > 100 ||
+          if (Object.keys(block).some((k) => !["kind", "rows", "repeat_header"].includes(k)) ||
+              (block.repeat_header !== undefined && typeof block.repeat_header !== "boolean") || !Array.isArray(block.rows) || !block.rows.length || block.rows.length > 100 ||
               !Array.isArray(block.rows[0]) || !block.rows[0].length || block.rows[0].length > 10 ||
               block.rows.some((row: unknown) => !Array.isArray(row) || row.length !== block.rows[0].length || row.some((cell: unknown) => typeof cell !== "string"))) return null;
         } else return null;
@@ -55,14 +56,15 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
           <p>{block.kind === "paragraph" ? "段落" : "表格"} {bi + 1}</p>
           {block.kind === "paragraph" ? <Textarea aria-label={`章节 ${si + 1} 段落 ${bi + 1}`} rows={3} value={block.text} onChange={(e) => updateBlock(bi, { kind: "paragraph", text: e.target.value })} /> : <>
             <div className="overflow-x-auto"><table><tbody>{block.rows.map((row, ri) => <tr key={ri}>{row.map((cell, ci) => <td key={ci}>
-              <Input aria-label={`章节 ${si + 1} 表格 ${bi + 1} 第 ${ri + 1} 行第 ${ci + 1} 列`} value={cell} onChange={(e) => updateBlock(bi, { kind: "table", rows: block.rows.map((r, rix) => rix === ri ? r.map((c, cix) => cix === ci ? e.target.value : c) : r) })} />
+              <Input aria-label={`章节 ${si + 1} 表格 ${bi + 1} 第 ${ri + 1} 行第 ${ci + 1} 列`} value={cell} onChange={(e) => updateBlock(bi, { ...block, rows: block.rows.map((r, rix) => rix === ri ? r.map((c, cix) => cix === ci ? e.target.value : c) : r) })} />
             </td>)}</tr>)}</tbody></table></div>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="secondary" disabled={block.rows.length >= 100 || (block.rows.length + 1) * block.rows[0].length > 1000} onClick={() => updateBlock(bi, { kind: "table", rows: [...block.rows, block.rows[0].map(() => "")] })}>添加行</Button>
-              <Button type="button" variant="secondary" disabled={block.rows.length <= 1} onClick={() => updateBlock(bi, { kind: "table", rows: block.rows.slice(0, -1) })}>删除末行</Button>
-              <Button type="button" variant="secondary" disabled={block.rows[0].length >= 10 || block.rows.length * (block.rows[0].length + 1) > 1000} onClick={() => updateBlock(bi, { kind: "table", rows: block.rows.map((r) => [...r, ""]) })}>添加列</Button>
-              <Button type="button" variant="secondary" disabled={block.rows[0].length <= 1} onClick={() => updateBlock(bi, { kind: "table", rows: block.rows.map((r) => r.slice(0, -1)) })}>删除末列</Button>
+              <Button type="button" variant="secondary" disabled={block.rows.length >= 100 || (block.rows.length + 1) * block.rows[0].length > 1000} onClick={() => updateBlock(bi, { ...block, rows: [...block.rows, block.rows[0].map(() => "")] })}>添加行</Button>
+              <Button type="button" variant="secondary" disabled={block.rows.length <= 1} onClick={() => updateBlock(bi, { ...block, rows: block.rows.slice(0, -1) })}>删除末行</Button>
+              <Button type="button" variant="secondary" disabled={block.rows[0].length >= 10 || block.rows.length * (block.rows[0].length + 1) > 1000} onClick={() => updateBlock(bi, { ...block, rows: block.rows.map((r) => [...r, ""]) })}>添加列</Button>
+              <Button type="button" variant="secondary" disabled={block.rows[0].length <= 1} onClick={() => updateBlock(bi, { ...block, rows: block.rows.map((r) => r.slice(0, -1)) })}>删除末列</Button>
             </div>
+            <label><input type="checkbox" checked={block.repeat_header ?? false} onChange={(e) => updateBlock(bi, { ...block, repeat_header: e.target.checked })} /> 首行作为表头并在跨页时重复</label>
           </>}
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="secondary" disabled={bi === 0} onClick={() => update(si, { ...section, blocks: move(section.blocks, bi, bi - 1) })}>内容上移</Button>

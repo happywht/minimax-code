@@ -1813,6 +1813,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 `attachment.generate_pdf` 与 DOCX 使用相同互斥的段落或章节结构；PDF 表格每表最多 10 列、1000 格。使用 attachments extra 中锁定的 ReportLab 本地生成并嵌入中文 TrueType 字体；Windows 自动尝试系统黑体/等线，Linux 尝试常见文泉驿、文鼎或 Noto 字体，找不到或不覆盖文字时拒绝并提示配置 `MINIMAX_CODE_PDF_FONT` 绝对字体文件路径。字体需为 ReportLab 支持的 TrueType 轮廓，超出字体覆盖的字符拒绝；生成失败时缩短过高的表格行。通过有界 PDF 文本解析后保存，预览可能截断，不等同完整视觉检查。`generate_report_pdf` 仅普通聊天可调用，沿用当前会话项目绑定及 DOCX 的写入权限和规划模式约束；不调用模型生成或访问外网，响应不明时先检查附件列表。
 
+表格块可选 `repeat_header: true`，将首行标记为跨页重复表头；省略或为 `false` 保持原有行为。DOCX 保存并回读表头标记，PDF 使用表格重复首行设置。实际分页和呈现仍需人工检查；此设置不核验内容或版式。
+
 ### office.* — 生成纯数据 XLSX（Schema046）
 
 | 方法 | 参数 | 返回 |

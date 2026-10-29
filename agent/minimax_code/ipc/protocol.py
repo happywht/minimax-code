@@ -132,11 +132,12 @@ class DocxBlock(BaseModel):
     kind: Literal["paragraph", "table"]
     text: str | None = Field(default=None, max_length=4096)
     rows: list[list[str]] | None = Field(default=None, min_length=1, max_length=100)
+    repeat_header: bool = False
 
     @model_validator(mode="after")
     def check_content(self):
         if self.kind == "paragraph":
-            if self.text is None or self.rows is not None:
+            if self.text is None or self.rows is not None or self.repeat_header:
                 raise ValueError("Paragraph requires text only")
         else:
             if self.text is not None or not self.rows:
