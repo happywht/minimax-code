@@ -221,8 +221,12 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
     bump(get().pending[request_id]?.session_id);
     set((s) => ({ resolving: { ...s.resolving, [request_id]: decision } }));
     try {
-      await typedIPC.resolvePermission({ request_id, decision });
+      const result = await typedIPC.resolvePermission({ request_id, decision });
       retire(request_id);
+      if (!result.ok) {
+        toast.error(strings.toasts.permissionResolveFailed,
+          result.reason ?? "请求已失效，决定未被接受；请查看运行状态。 ");
+      }
     } catch (err) {
       set((s) => {
         const resolving = { ...s.resolving };

@@ -1617,35 +1617,40 @@ async def _handle_agent_send_message(
 
     core.on_tool_call = _on_tool_call
 
-    async def _on_ask_user(payload: dict) -> None:
-        """Push ``agent.ask_user`` so the frontend renders an inline
-        question card and can answer via ``agent.answer_user``."""
-        event = {**payload, "run_id": job.run_id}
-        deadline = core._ask_user_deadlines[payload["request_id"]]
-        event["remaining_ms"] = max(0, int((deadline - asyncio.get_running_loop().time()) * 1000))
-        future = core._pending_ask_user.get(payload["request_id"])
-        registry = getattr(ctx.server, "_live_ask_users", None)
-        if registry is None:
-            registry = ctx.server._live_ask_users = {}
-        registry[job.run_id] = (event, future, deadline)
-        try:
+    def _bind_ask_user(question_core, question_session, source=None):
+        if question_session != session_id:
+            raise ValueError("Sub-agent question session does not match its owning run")
+
+        async def _on_ask_user(payload: dict) -> None:
+            """Publish the live question owned by this core and run."""
+            if payload.get("session_id") != session_id:
+                raise ValueError("Question session changed")
+            event = {**payload, "run_id": job.run_id, **({"agent_name": source} if source else {})}
+            deadline = question_core._ask_user_deadlines[payload["request_id"]]
+            event["remaining_ms"] = max(0, int((deadline - asyncio.get_running_loop().time()) * 1000))
+            future = question_core._pending_ask_user.get(payload["request_id"])
+            registry = getattr(ctx.server, "_live_ask_users", None)
+            if registry is None:
+                registry = ctx.server._live_ask_users = {}
+            registry[payload["request_id"]] = (event, future, deadline)
             await ctx.emit("agent.ask_user", event)
             await scheduled_attention("question", event)
-        except Exception:
-            logger.exception("on_ask_user emit failed")
 
-    core.on_ask_user = _on_ask_user
+        async def _on_ask_user_closed(payload: dict) -> None:
+            registry = getattr(ctx.server, "_live_ask_users", {})
+            registry.pop(payload["request_id"], None)
+            event = {**payload, "run_id": job.run_id}
+            await ctx.emit("agent.ask_user_closed", event)
+            await scheduled_attention("question", event, closed=True)
 
-    async def _on_ask_user_closed(payload: dict) -> None:
-        registry = getattr(ctx.server, "_live_ask_users", {})
-        entry = registry.get(job.run_id)
-        if entry and entry[0]["request_id"] == payload["request_id"]:
-            registry.pop(job.run_id, None)
-        event = {**payload, "run_id": job.run_id}
-        await ctx.emit("agent.ask_user_closed", event)
-        await scheduled_attention("question", event, closed=True)
+        question_core.on_ask_user = _on_ask_user
+        question_core.on_ask_user_closed = _on_ask_user_closed
 
-    core.on_ask_user_closed = _on_ask_user_closed
+    _bind_ask_user(core, session_id)
+    from ..orchestrator.subagent import get_run_subagent_runtime
+    child_runtime = get_run_subagent_runtime()
+    if child_runtime is not None:
+        child_runtime.bind_interaction = _bind_ask_user
 
     async def _on_tool_result(call: dict, result: Any) -> None:
         """Push ``agent.tool_result`` events with the tool output."""

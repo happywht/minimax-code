@@ -475,6 +475,9 @@ class SubAgentRuntime:
         # the ``stub`` flag is set to ``False`` and ``text`` is
         # the model's actual answer.
         self._llm = llm
+        # Installed only for the owning interactive run, never for a
+        # process-wide/headless runtime.
+        self.bind_interaction = None
         # R62: the persisted reasoning-effort override (loaded from
         # ``model_prefs`` by ``_rebuild_subagent_llm`` into the
         # process-wide ``_REASONING_EFFORT_OVERRIDE`` singleton, then
@@ -693,6 +696,9 @@ class SubAgentRuntime:
             raise SubAgentConfigError(
                 f"session_id must be a non-empty string, got {session_id!r}"
             )
+
+        if self.bind_interaction is not None:
+            self.bind_interaction(handle.core, session_id, handle.config.name)
 
         # Stub path — keeps backwards compatibility for callers
         # that haven't yet wired an LLM (legacy unit tests, docs
@@ -923,6 +929,11 @@ def get_subagent_runtime() -> SubAgentRuntime | None:
     a default :class:`SubAgentRuntime` themselves.
     """
     return _RUN_RUNTIME.get() or _SUBAGENT_RUNTIME
+
+
+def get_run_subagent_runtime() -> SubAgentRuntime | None:
+    """Return only the runtime scoped to this run, never the global fallback."""
+    return _RUN_RUNTIME.get()
 
 
 def set_subagent_runtime(runtime: SubAgentRuntime | None) -> None:

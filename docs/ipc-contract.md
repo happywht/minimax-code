@@ -1604,7 +1604,7 @@ so the frontend can route them by name without a regex.
 | `agent.message_chunk`   | `{session_id, message_id, delta, done}`             |
 | `agent.tool_call`       | `{session_id, tool_call_id, name, args, message_id}` (Phase 1.2) |
 | `agent.tool_result`     | `{session_id, tool_call_id, name?, result, error?, message_id}` |
-| `agent.ask_user`        | `{request_id, session_id, questions[], timeout_s}` — the model paused with structured clarification questions (v1.1.1); the UI renders an inline question card and answers via `agent.answer_user` |
+| `agent.ask_user`        | `{request_id, session_id, run_id, questions[], timeout_s, remaining_ms?, agent_name?}` — the model paused with structured clarification questions; `agent_name` identifies a child agent when present. The UI answers via `agent.answer_user`. Concurrent questions are surfaced one at a time from live run snapshots. Requests are valid only while their original in-process wait is alive; a service restart invalidates them. |
 | `agent.ask_user_closed` | `{request_id, session_id, run_id}` — a Native question wait ended, timed out or was cancelled; late snapshots must not revive it. |
 | `permission.closed` | `{request_id, session_id, run_id}` — a Native or Codex consent wait ended, timed out or was cancelled; late snapshots must not revive it. |
 | `agent.status`          | `{session_id, status, detail?}`                     |

@@ -548,14 +548,15 @@ def register_run_handlers(server: Any) -> None:
                 for candidate in registry.values():
                     if isinstance(candidate, PermissionGater) and candidate is not gater and candidate.run_id == run_id:
                         snapshot["pending_native_permissions"].extend(candidate.live_requests(session_id, run_id))
-            live = getattr(ctx.server, "_live_ask_users", {}).get(run_id)
-            if live:
+            for live in getattr(ctx.server, "_live_ask_users", {}).values():
                 event, future, deadline = live
                 if (future is not None and not future.done()
+                        and event.get("run_id") == run_id
                         and event.get("session_id") == snapshot["run"]["session_id"]
                         and deadline > asyncio.get_running_loop().time()):
                     snapshot["pending_ask_user"] = {**event, "remaining_ms": max(0, int(
                         (deadline - asyncio.get_running_loop().time()) * 1000))}
+                    break
             await ctx.reply(snapshot)
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

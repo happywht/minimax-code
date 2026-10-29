@@ -569,9 +569,9 @@ export const useChat = create<ChatState>((set, get) => ({
         if (!data) return;
         if (!isCurrentSessionEvent(data)) return;
         if (closedAskIds.has(data.request_id)) return;
-        // A fresh questionnaire always replaces any stale one — the
-        // backend serialises ask_user suspensions per run, so at most
-        // one card is live at a time.
+        // Concurrent descendants can ask at once. Keep the displayed
+        // question stable; the run snapshot surfaces the next on close.
+        if (get().askUser && get().askUser?.request_id !== data.request_id) return;
         noteStreamActivity(data);
         ++askVersion;
         setLiveQuestion(data);
@@ -583,6 +583,16 @@ export const useChat = create<ChatState>((set, get) => ({
         if (!data || data.session_id !== useSessionStore.getState().currentSessionId) return;
         ++askVersion; closedAskIds.add(data.request_id);
         if (get().askUser?.request_id === data.request_id) setLiveQuestion(null);
+        // Other children may already be waiting. Their earlier events may
+        // have been ignored while this card was visible, so fetch a fresh
+        // live snapshot after every close. The session check prevents a late
+        // import from refreshing a conversation the user has left.
+        const sessionId = data.session_id;
+        void import("./runStore").then(({ useRunTimelineStore }) => {
+          if (useSessionStore.getState().currentSessionId === sessionId) {
+            void useRunTimelineStore.getState().loadForSession(sessionId);
+          }
+        });
       });
     }
 

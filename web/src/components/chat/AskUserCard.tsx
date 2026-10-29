@@ -179,6 +179,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
           </h2>
           <p className="mt-0.5 text-xs text-ink-2">
             {strings.chat.askUser.subtitle}
+            {askUser.agent_name && <span> · 子 Agent：{askUser.agent_name}</span>}
             <span className="ml-1.5 text-ink-2/80">
               {remainingSeconds !== null && `剩余 ${Math.floor(remainingSeconds / 60)} 分 ${remainingSeconds % 60} 秒`}
             </span>

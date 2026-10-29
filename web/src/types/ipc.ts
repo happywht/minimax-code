@@ -856,6 +856,8 @@ export interface AskUserData extends RunStreamContext {
   expires_at_ms?: number;
   remaining_ms?: number;
   tool_call_id?: string | null;
+  /** Name of the child agent asking on behalf of the owning run. */
+  agent_name?: string;
 }
 
 /** Result shape for `agent.answer_user`. */
