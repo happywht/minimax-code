@@ -11,6 +11,15 @@ const reasons: Record<string, string> = {
   budget_storage_unavailable: "预算存储或恢复失败；请重启并确认恢复成功后再发送付费请求",
 };
 
+const attemptStates: Record<string, string> = {
+  reserved: "已预留，尚未发送",
+  sent: "已发送，尚未结算",
+  settled: "已结算",
+  released: "已释放",
+  unknown: "结果不明，需核对",
+  reconciled: "已核定责任",
+};
+
 export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
   const [loaded, setLoaded] = useState<{runId: string; state: BudgetStateResult} | null>(null);
   const runId = useRef(run.id);
@@ -73,6 +82,7 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
       <p>{budget.enforcement === "reactive" ? "Codex · 用量通知驱动中断" : "Native · 请求发送前估算预留"}</p>
       <p>任务累计已知{budget.usage_complete ? "" : "至少"} {budget.known_tokens} · 预留/核定责任 {budget.reserved_tokens} · 结果不明请求 {budget.unknown_attempts}</p>
       <p>剩余估算 {budget.remaining_estimate ?? "未设置上限"} · 累计上限 {budget.limit_tokens ?? "未设置"}</p>
+      <p>此额度由同一预算家族的父子任务及恢复运行共享，以下合计并非当前运行独占。</p>
       <p>本机 {budget.day.day} · 已知{budget.day.usage_complete === true ? "" : "至少"} {budget.day.known_tokens} · 预留/核定责任 {budget.day.reserved_tokens} · 当日上限 {budget.daily_limit ?? "未设置"}</p>
       <p data-testid="daily-budget-completeness">{budget.day.usage_complete === true
         ? "当日用量证据完整（截至当前快照）"
@@ -80,6 +90,15 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
         {budget.day.accounting_resolved === true ? " · 无待核对的未知责任；活动请求可能尚未结束。" : ""}</p>
       <p>{budget.enforcement === "reactive" ? "引擎内部调用无法预先预留；通知缺失或重置时暂停核对。" : "按当前请求与输出上限估算；实际用量可能超过估算。"} 价格/币种未知。</p>
       {budget.pause_reason && <p role="status">{reasons[budget.pause_reason] ?? budget.pause_reason}</p>}
+      <details>
+        <summary>查看共享预算请求明细（{state?.attempts.length ?? 0} 项）</summary>
+        <p>展示前 50 项；预留估算和核定责任不是测得用量。旧记录缺少归属时显示未知。</p>
+        {state?.attempts.slice(0, 50).map((attempt) => <div key={attempt.id} className="mt-1 rounded border border-minimax-border p-1">
+          <p>请求 {attempt.id} · {attemptStates[attempt.state] ?? attempt.state}</p>
+          <p>归属运行：{attempt.run_id ? <>{attempt.run_id}{attempt.run_id === run.id ? "（当前运行）" : "（共享预算的其他运行）"}</> : "未知"}</p>
+          <p>已知用量 {attempt.known_tokens ?? "未知"} · 请求预留估算 {attempt.estimated_tokens} · 核定责任 {attempt.liability_tokens ?? "未核定"}</p>
+        </div>)}
+      </details>
     </> : !error && <p>{state ? "该旧任务没有完整预算家族；恢复前需核对历史责任。" : "正在读取，未知用量尚未确认为零。"}</p>}
     {!!state?.day_blockers?.total && <div>
       <p>当日结果不明请求共 {state.day_blockers.total} 项，显示前 20 项；须逐项核对，核定历史日账不会清除这些请求。</p>
