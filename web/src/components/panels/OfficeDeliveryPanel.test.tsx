@@ -45,6 +45,36 @@ beforeEach(() => {
 afterEach(() => { cleanup(); useOfficeDeliveryStore.getState().clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("manual Office delivery", () => {
+  it("converts pasted CSV with selected types into a generation request", async () => {
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("生成并登记 XLSX")).not.toBeDisabled());
+    fireEvent.click(screen.getByText("从粘贴的 CSV 创建表格输入"));
+    fireEvent.change(screen.getByLabelText("粘贴 CSV"), { target: { value: "编号,数量,有效\n00123,12,true\n=literal,3,false" } });
+    fireEvent.click(screen.getByText("读取 CSV 列"));
+    fireEvent.change(screen.getByLabelText("第 2 列类型"), { target: { value: "number" } });
+    fireEvent.change(screen.getByLabelText("第 3 列类型"), { target: { value: "boolean" } });
+    fireEvent.click(screen.getByText("转换为表格输入"));
+    fireEvent.click(screen.getByText("生成并登记 XLSX"));
+    await screen.findByLabelText("办公成果纯文本预览");
+    const sent = wire.request.mock.calls.find(([method]) => method === "office.generate_xlsx")![1];
+    expect(sent.spec.rows).toEqual([["00123", 12, true], ["=literal", 3, false]]);
+  });
+
+  it("identifies a conversion error without overwriting the editor", async () => {
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("生成并登记 XLSX")).not.toBeDisabled());
+    const editor = screen.getByLabelText("结构化表格 JSON") as HTMLTextAreaElement;
+    const original = editor.value;
+    fireEvent.click(screen.getByText("从粘贴的 CSV 创建表格输入"));
+    fireEvent.change(screen.getByLabelText("粘贴 CSV"), { target: { value: "编号\n1234567890123456" } });
+    fireEvent.click(screen.getByText("读取 CSV 列"));
+    fireEvent.change(screen.getByLabelText("第 1 列类型"), { target: { value: "number" } });
+    fireEvent.click(screen.getByText("转换为表格输入"));
+    expect(screen.getByRole("alert")).toHaveTextContent("第 2 行「编号」");
+    expect(editor.value).toBe(original);
+    expect(wire.request.mock.calls.some(([method]) => method === "office.generate_xlsx")).toBe(false);
+  });
+
   it("sends explicit structured intent, escapes preview, downloads verified attachment and preserves retry key", async () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     vi.stubGlobal("URL", { createObjectURL: vi.fn().mockReturnValue("blob:office"), revokeObjectURL: vi.fn() });

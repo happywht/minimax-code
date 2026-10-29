@@ -4,6 +4,7 @@ import { useSessionStore } from "../../stores";
 import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
 import type { OfficeTableSpec } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
+import { csvToOfficeSpec, parseOfficeCsv, type CsvTable } from "./officeCsv";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
   { name: "名称", kind: "text" }, { name: "数量", kind: "number" },
@@ -23,6 +24,9 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
   const generationScope = useRef({ active: false });
   const [inputs, setInputs] = useState<Record<string, OfficeTableSpec>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const [csv, setCsv] = useState("");
+  const [csvTable, setCsvTable] = useState<CsvTable | null>(null);
+  const [kinds, setKinds] = useState<OfficeTableSpec["columns"][number]["kind"][]>([]);
   const scoped = state.projectId === project && state.host === host;
   useEffect(() => {
     const scope = { active: true }; generationScope.current = scope;
@@ -53,6 +57,17 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
     <p>不生成或计算公式、宏、外链。不做 PDF/OCR、版式、打印分页或业务核验；文本预览不还原 Excel 排版。</p>
     <p>在当前 Agent 服务登记不可变新文件；关联已有 run 只作来源引用，不改变其状态。切换页面只停止本页等待，已提交结果可刷新找回。</p>
     {ipc.isMock && <p role="status">演示模式不生成 Office 文件；请连接真实后端及 attachments 可选依赖。</p>}
+    <details className="rounded border border-line p-3">
+      <summary>从粘贴的 CSV 创建表格输入</summary>
+      <p>首行为列名，逗号分隔；支持引号内逗号和换行。默认全部为文本，保留前导零和公式样文字；空字符串变空白。转换会替换下方 JSON，源 CSV 不会被修改。</p>
+      <Textarea aria-label="粘贴 CSV" rows={6} value={csv} onChange={(event) => { setCsv(event.target.value); setCsvTable(null); setFormError(null); }} />
+      <Button type="button" variant="secondary" onClick={() => { try { const table = parseOfficeCsv(csv); setCsvTable(table); setKinds(table.headers.map(() => "text")); setFormError(null); } catch (error) { setCsvTable(null); setFormError(error instanceof Error ? error.message : "CSV 无效"); } }}>读取 CSV 列</Button>
+      {csvTable && <div className="space-y-2"><p>已读取 {csvTable.rows.length} 行，{csvTable.headers.length} 列。数字须在支持的精度内；布尔只接受 true / false。</p>
+        {csvTable.headers.map((name, index) => <label key={index} className="flex items-center gap-2">{name}<select aria-label={`第 ${index + 1} 列类型`} value={kinds[index]} onChange={(event) => setKinds((old) => old.map((kind, i) => i === index ? event.target.value as typeof kind : kind))}>
+          <option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option></select></label>)}
+        <Button type="button" variant="secondary" onClick={() => { try { setSource(JSON.stringify(csvToOfficeSpec(csvTable, kinds), null, 2)); edited(); } catch (error) { setFormError(error instanceof Error ? error.message : "转换失败"); } }}>转换为表格输入</Button>
+      </div>}
+    </details>
     <form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); submit(key); }}>
       <Input aria-label="XLSX 文件名" value={filename} onChange={(event) => { setFilename(event.target.value); edited(); }} />
       <Input aria-label="关联已有 Run ID（可选）" value={runId} onChange={(event) => { setRunId(event.target.value); edited(); }} placeholder="可留空，仅支持本项目普通 native host run" />
