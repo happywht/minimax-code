@@ -83,6 +83,8 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const [structured, setStructured] = useState(initialDraft?.structured ?? false), [sections, setSections] = useState(initialDraft?.sections ?? sectionExample);
   const [visualSections, setVisualSections] = useState(initialDraft?.visualSections ?? false);
   const [excerptSection, setExcerptSection] = useState("");
+  const [bodySection, setBodySection] = useState("");
+  const [bodyTransferNotice, setBodyTransferNotice] = useState("");
   const [tableSection, setTableSection] = useState("");
   const [tableNotice, setTableNotice] = useState("");
   const [sources, setSources] = useState<ReportSource[]>(initialDraft?.sources ?? []);
@@ -161,7 +163,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     setResearchSources([]);
   }, [projectId, sessionId, host, state.serviceId]);
   useEffect(() => {
-    ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); setExcerptNotice(""); setExcerptSection("");
+    ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); setExcerptNotice(""); setExcerptSection(""); setBodySection(""); setBodyTransferNotice("");
   }, [projectId, sessionId, host, state.serviceId, state.selected?.id]);
   useEffect(() => ipc.onSideCar(() => { ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); }), []);
   const addAttachmentContext = async () => {
@@ -332,7 +334,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           return draft;
         }}
         apply={(draft) => {
-          setExcerptSection(""); setDocName(draft.docName); setTitle(draft.title); setBody(draft.body); setFormat(draft.format); setStructured(draft.structured);
+          setExcerptSection(""); setBodySection(""); setBodyTransferNotice(""); setDocName(draft.docName); setTitle(draft.title); setBody(draft.body); setFormat(draft.format); setStructured(draft.structured);
           setSections(draft.sections); setVisualSections(draft.visualSections); setSources(draft.sources); setFormError(null);
           setResearchSources(importedSources.current); setResearchNeedsReview(false);
           const restoredMarkers = reportMarkers(draft.body, draft.sections, draft.structured);
@@ -385,15 +387,47 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <label>内容形式 <select aria-label="报告内容形式" value={!structured ? "plain" : visualSections ? "visual" : "sections"} onChange={(event) => {
         const next = event.target.value; setFormError(null);
         if (next === "visual" && !readEditableSections(sections)) { setFormError("当前 JSON 无法无损显示为可视编辑，请先修正 JSON。原内容已保留。"); return; }
-        setStructured(next !== "plain"); setVisualSections(next === "visual"); setExcerptSection("");
+        setStructured(next !== "plain"); setVisualSections(next === "visual"); setExcerptSection(""); setBodySection(""); setBodyTransferNotice("");
       }}>
         <option value="plain">普通段落</option><option value="visual">章节可视编辑</option><option value="sections">章节和表格 JSON</option>
       </select></label>
+      {structured && <div className="space-y-2 rounded border border-line p-2">
+        <p>将普通正文逐行复制到章节末尾，可继续整理段落和添加表格。普通正文及现有章节都会保留；重复操作会再次追加。</p>
+        <label>正文目标章节 <select aria-label="普通正文目标章节" value={bodySection} onChange={(event) => setBodySection(event.target.value)}>
+          <option value="">选择目标章节</option>
+          {readEditableSections(sections)?.map((section, index) => <option key={index} value={index}>章节 {index + 1}{section.heading ? `：${section.heading}` : ""}</option>)}
+        </select></label>
+        <Button type="button" variant="secondary" onClick={() => {
+          const editable = readEditableSections(sections);
+          const index = bodySection === "" ? -1 : Number(bodySection);
+          if (!editable || !Number.isInteger(index) || index < 0 || index >= editable.length) {
+            setBodyTransferNotice("请先选择可无损编辑的章节；草稿未更改。"); return;
+          }
+          if (!body.trim()) { setBodyTransferNotice("普通正文为空；草稿未更改。"); return; }
+          const paragraphs = body.split(/\r?\n/);
+          const validText = (value: string) => [...value].length <= 4096 && [...value].every((character) => {
+            const code = character.codePointAt(0)!;
+            return code === 9 || code === 10 || (code >= 32 && code <= 0xd7ff) || (code >= 0xe000 && code <= 0xfffd) || (code >= 0x10000 && code <= 0x10ffff);
+          });
+          if (paragraphs.some((text) => !validText(text))) { setBodyTransferNotice("正文段落含不支持字符或超过 4096 字符；草稿未更改。"); return; }
+          if (editable[index].blocks.length + paragraphs.length > 100 || editable.reduce((count, section) => count + section.blocks.length, 0) + paragraphs.length > 100) {
+            setBodyTransferNotice("追加后超过报告的 100 个内容块限制；草稿未更改。"); return;
+          }
+          const next = editable.map((section, i) => i === index ? { ...section, blocks: [...section.blocks,
+            ...paragraphs.map((text) => ({ kind: "paragraph" as const, text }))] } : section);
+          const serialized = JSON.stringify(next, null, 2);
+          if (new TextEncoder().encode(serialized).length > 256 * 1024) { setBodyTransferNotice("追加后章节超过 256 KiB；草稿未更改。"); return; }
+          setSections(serialized); setBodySection(""); setExcerptSection("");
+          if (paragraphs.some((text) => /\[[1-9][0-9]*\]/.test(text))) setCitationNeedsReview(true);
+          setBodyTransferNotice(`已复制 ${paragraphs.length} 个段落；请核对正文和来源，尚未生成文件。`);
+        }}>复制普通正文到章节</Button>
+        {bodyTransferNotice && <p role="status">{bodyTransferNotice}</p>}
+      </div>}
       {structured ? visualSections ? (() => {
         const editable = readEditableSections(sections);
-        return editable ? <ReportSectionsEditor value={editable} onChange={(value) => { setSections(JSON.stringify(value, null, 2)); setExcerptSection(""); }} /> : <p role="alert">章节内容无法显示，请切换 JSON 查看。</p>;
+        return editable ? <ReportSectionsEditor value={editable} onChange={(value) => { setSections(JSON.stringify(value, null, 2)); setExcerptSection(""); setBodySection(""); }} /> : <p role="alert">章节内容无法显示，请切换 JSON 查看。</p>;
       })() : <><p>按示例填写章节标题与依次排列的段落、表格；表格每行列数必须一致，单元格均为文本。</p>
-        <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => { setSections(event.target.value); setExcerptSection(""); }} /></> :
+        <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => { setSections(event.target.value); setExcerptSection(""); setBodySection(""); }} /></> :
         <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />}
       <div className="space-y-2">
         <p>参考来源（可选，最多 30 条；正文可用 [1]、[2] 对应来源顺序。只保存提供的信息，不自动核验）</p>
