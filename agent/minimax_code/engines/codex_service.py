@@ -142,9 +142,15 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         job.codex_conversation = conversation
         # Re-read after waiting for the previous job, never capture an empty thread ID at admission.
         await conversation.load()
+        current_session = await sessions.get(job.session_id)
         current_workspace = str(await resolve_root_for_session(job.session_id))
-        if current_workspace != job.workspace:
-            raise ValueError("Codex workspace changed while queued")
+        latest_session = await sessions.get(job.session_id)
+        if (not current_session or not latest_session
+                or current_session.get("engine") != "codex" or latest_session.get("engine") != "codex"
+                or current_session.get("project_id") != job.project_id
+                or latest_session.get("project_id") != job.project_id
+                or current_workspace != job.workspace):
+            raise ValueError("Codex session project, engine or workspace changed while queued; start a new task")
         if expected_snapshot and conversation.thread_id != expected_snapshot["codex_thread_id"]:
             raise ValueError("Codex recovery thread binding changed while queued")
         # A queued task must not bypass an earlier task's uncertain outcome.

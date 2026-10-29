@@ -775,6 +775,19 @@ async def handle_agent_send_message(
             except HandlerError as exc:
                 job.error = {"code": exc.code, "message": exc.message, "data": exc.data}
                 raise
+            if internal_agent is None:
+                # A queued request keeps its admitted project and workspace.
+                # A different project can resolve to the same directory, so
+                # comparing paths alone does not protect project ownership.
+                current = await sessions.get(session_id)
+                current_root = str(await resolve_root_for_session(session_id))
+                latest = await sessions.get(session_id)
+                if (not current or not latest or current.get("project_id") != job.project_id
+                        or latest.get("project_id") != job.project_id
+                        or (current.get("engine") or "native") != "native"
+                        or (latest.get("engine") or "native") != "native"
+                        or current_root != job.workspace):
+                    raise ValueError("Session project, engine or workspace changed while queued; start a new task")
 
         await check_dispatch()
         job.budget_handle = await BudgetHandle.for_run(db, job.run_id, daily_limit=daily_limit)
