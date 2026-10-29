@@ -366,6 +366,20 @@ class RunIdParams(BaseModel):
     run_id: str = Field(min_length=1)
 
 
+class ScheduledRunCancelScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    service_id: str = Field(min_length=1)
+    job_id: str = Field(min_length=1)
+    occurrence_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+
+
+class RunCancelParams(RunIdParams):
+    schedule_scope: ScheduledRunCancelScope | None = None
+
+
 class RunSteerParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     run_id: str = Field(min_length=1)

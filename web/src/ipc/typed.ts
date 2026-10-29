@@ -255,7 +255,7 @@ export interface TypedIPC {
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number; include_active?: boolean; recovery_lookup?: RunRecoveryLookup }): Promise<ListRunsResult>;
   startRun(params: RunStartParams): Promise<RunAdmissionResult>;
   getRun(runId: string): Promise<RunGetResult>;
-  cancelRun(runId: string): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
+  cancelRun(runId: string, scheduleScope?: { service_id: string; job_id: string; occurrence_id: string; session_id: string; project_id: string; revision: number }): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
   resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number, scope?: { service: string; session: string; project: string | null; cursor: number }): Promise<RunAdmissionResult>;
   getBudget(runId?: string, day?: string): Promise<BudgetStateResult>;
   getDailyBudgetSettings(): Promise<import("../types/ipc").DailyBudgetSettings>;
@@ -783,7 +783,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<ListRunsResult>("run.list", opts ?? {}),
     startRun: (params) => client.request<RunAdmissionResult>("run.start", params),
     getRun: (runId) => client.request<RunGetResult>("run.get", { run_id: runId }),
-    cancelRun: (runId) => client.request("run.cancel", { run_id: runId }),
+    cancelRun: (runId, scheduleScope) => client.request("run.cancel", { run_id: runId, ...(scheduleScope ? { schedule_scope: scheduleScope } : {}) }),
     getDailyBudgetSettings: () => client.request("budget.settings_get", {}),
     setDailyBudgetSettings: (service, limit, expectedSavedLimit) => client.request("budget.settings_set", { expected_service_id: service, limit_tokens: limit, ...(expectedSavedLimit !== undefined ? { expected_saved_limit: expectedSavedLimit } : {}) }),
     getBudget: (runId, day) => client.request<BudgetStateResult>("budget.get", { ...(runId ? {run_id: runId} : {}), ...(day ? {day} : {}) }),

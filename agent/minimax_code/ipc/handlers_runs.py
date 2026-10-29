@@ -14,6 +14,7 @@ from .protocol import (
     INVALID_PARAMS,
     RunChildListParams,
     RunChildWorkspaceParams,
+    RunCancelParams,
     RunEventsParams,
     RunIdParams,
     RunOutputClearParams,
@@ -627,11 +628,36 @@ def register_run_handlers(server: Any) -> None:
         from ..runs import get_run_service
 
         try:
-            request = RunIdParams.model_validate(params)
+            request = RunCancelParams.model_validate(params)
             dao = await _get_read_control_dao(ctx)
             run = await dao.get_run(request.run_id)
             if run is None:
                 raise HandlerError(INVALID_PARAMS, "unknown run_id")
+            if request.schedule_scope:
+                from ..storage.dao.schedule_occurrences import ScheduleOccurrencesDAO
+                from ..storage.dao.text_artifacts import ArtifactDAO
+
+                scope = request.schedule_scope
+                occurrence = await ScheduleOccurrencesDAO(dao._db).get(scope.occurrence_id)
+                metadata = run.get("metadata") or {}
+                schedule = metadata.get("schedule") or {}
+                context = (occurrence or {}).get("context") or {}
+                if (await ArtifactDAO(dao._db).service_id() != scope.service_id
+                        or not occurrence or occurrence["job_id"] != scope.job_id
+                        or occurrence["run_id"] != request.run_id
+                        or occurrence["session_id"] != scope.session_id
+                        or occurrence["revision"] != scope.revision
+                        or run["session_id"] != scope.session_id
+                        or context.get("project_id") != scope.project_id
+                        or context.get("host") != "local" or context.get("engine") != "native"
+                        or not context.get("workspace")
+                        or metadata.get("project_id") != scope.project_id
+                        or metadata.get("workspace_snapshot") != context["workspace"]
+                        or (metadata.get("model_snapshot") or {}).get("engine") != "native"
+                        or schedule.get("job_id") != scope.job_id
+                        or schedule.get("occurrence_id") != scope.occurrence_id
+                        or schedule.get("revision") != scope.revision):
+                    raise HandlerError(INVALID_PARAMS, "Schedule run binding changed; refresh before cancellation")
             service = get_run_service(ctx.server)
             # Wait for an admission already committing before looking up its job.
             # The service fences queued work before yielding and shields the durable

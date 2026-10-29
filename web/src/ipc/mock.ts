@@ -782,6 +782,7 @@ function mockHandle(
       return { run: structuredClone(entry.run), result: structuredClone(mockRunReceipts.get(runId) ?? null) };
     }
     case "run.cancel": {
+      if ((params as { schedule_scope?: unknown }).schedule_scope) throw new Error("Mock 模式不执行定时运行控制");
       const runId = (params as { run_id: string }).run_id;
       const entry = mockRuns.get(runId);
       if (!entry) throw new Error("unknown run_id");

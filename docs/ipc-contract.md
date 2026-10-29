@@ -211,7 +211,7 @@ on the next `readline() == ""`.
 | `run.events`               | req/res   | Read persisted changes after a run-scoped sequence, independent of WS replay. |
 | `run.start` | req/res | Durably admit a native request; return `{run, created}` immediately. Requires session, content and idempotency key. |
 | `run.get` | req/res | Read `{run, result}`; result is a committed reply, an error envelope, or null. |
-| `run.cancel` | req/res | Request cancellation of one run; `requested` is acknowledgement, not completed teardown. |
+| `run.cancel` | req/res | Request cancellation of one run; `requested` is acknowledgement, not completed teardown. Optional `schedule_scope` binds the request to the service, job, occurrence, session, project and occurrence revision; the server checks the recorded Native run and workspace binding before cancellation. Existing requests with only `run_id` remain supported. |
 | `run.resume` | req/res | Create a linked run from saved input after review, using the original model and workspace; never replay tool steps. |
 | `run.steer` | req/res | Record idempotent in-flight input against a Native or Codex run. |
 | `run.child_workspace` | req/res | Review or explicitly collect a directly owned child workspace with binding and conflict checks. |
