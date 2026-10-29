@@ -250,7 +250,7 @@ def _xml(parts, fromstring):
     return trees, overrides, relationships
 
 
-def _preflight(parts, fromstring):
+def _preflight(parts, fromstring, *, full_sheet=None):
     trees, overrides, relationships = _xml(parts, fromstring)
     strings = []
     if "xl/sharedStrings.xml" in trees:
@@ -296,6 +296,16 @@ def _preflight(parts, fromstring):
         tree = trees.get(target)
         require(tree is not None and tree.tag == f"{{{NS}}}worksheet", "unsupported_feature")
         selected = {}
+        capture = full_sheet is not None and name == full_sheet
+        full_cells = {} if capture else None
+        max_row, max_column = 0, 0
+        if capture:
+            require(state == "visible", "hidden_sheet")
+            for feature in ("mergeCells", "drawing", "legacyDrawing", "tableParts", "hyperlinks",
+                            "conditionalFormatting", "dataValidations", "autoFilter", "sheetProtection"):
+                require(tree.find(f"{{{NS}}}{feature}") is None, "complex_sheet")
+            for cols in tree.findall(f"{{{NS}}}cols"):
+                require(all(item.get("hidden") not in {"1", "true"} for item in cols), "hidden_columns")
         data_sets = tree.findall(f"{{{NS}}}sheetData")
         require(len(data_sets) == 1)
         data = data_sets[0]
@@ -309,6 +319,10 @@ def _preflight(parts, fromstring):
                 and len(row.get("r")) <= 7
             )
             row_number = int(row.get("r"))
+            if capture:
+                require(row.get("hidden") not in {"1", "true"}, "hidden_rows")
+                require(row_number <= 1001, "import_limit")
+                max_row = max(max_row, row_number)
             require(previous_row < row_number <= 1048576)
             previous_row = row_number
             previous_column = 0
@@ -318,6 +332,9 @@ def _preflight(parts, fromstring):
                 require(cell.tag == f"{{{NS}}}c")
                 coordinate = cell.get("r", "")
                 actual_row, column = _coordinate(coordinate)
+                if capture:
+                    require(column <= 20, "import_limit")
+                    max_column = max(max_column, column)
                 require(actual_row == row_number and column > previous_column)
                 previous_column = column
                 style = cell.get("s", "0")
@@ -342,6 +359,11 @@ def _preflight(parts, fromstring):
                 value = values[0] if values else None
                 require(value is None or not list(value))
                 raw = value.text or "" if value is not None else None
+                if capture:
+                    require(not formulae, "formula")
+                    require(kind not in {"e", "d"}, "unsupported_cell")
+                    if kind == "n" and value is not None and raw not in {None, ""} and xfs is not None:
+                        require(xfs[int(style)].get("numFmtId", "0") == "0", "formatted_number")
                 if formulae:
                     formula = formulae[0]
                     require(
@@ -388,6 +410,10 @@ def _preflight(parts, fromstring):
                         "stored_type": kind,
                         "raw": decoded,
                     }
+                if capture and has_value:
+                    require(record["kind"] in {"string", "number", "boolean"}, "unsupported_cell")
+                    require(len(record["raw"]) <= 4096, "import_limit")
+                    full_cells[(actual_row, column)] = record
                 if has_value:
                     populated += 1
                     if actual_row <= ROWS and column <= COLUMNS and displayed < MAX_DISPLAY:
@@ -395,10 +421,53 @@ def _preflight(parts, fromstring):
                         displayed += 1
                     else:
                         clipped = True
-        result.append({"name": name, "state": state, "epoch": epoch, "selected": selected})
+        item = {"name": name, "state": state, "epoch": epoch, "selected": selected}
+        if capture:
+            require(max_row >= 1 and max_column >= 1 and max_row * max_column <= 5000, "import_limit")
+            item["full_cells"] = full_cells
+            item["full_rows"] = max_row
+            item["full_columns"] = max_column
+        result.append(item)
     require(targets == {name for name, mime in overrides.items() if mime == SHEET})
     return result, populated, clipped
 
+
+
+def extract_sheet(data, sheet_name):
+    """Return complete bounded raw cells, never computed or cached formulas."""
+    try:
+        from defusedxml.ElementTree import fromstring
+
+        require(isinstance(sheet_name, str) and 1 <= len(sheet_name) <= 31, "sheet_name")
+        parts = package_parts(data)
+        sheets, _, _ = _preflight(parts, fromstring, full_sheet=sheet_name)
+        selected = next((sheet for sheet in sheets if sheet["name"] == sheet_name), None)
+        require(selected is not None, "sheet_not_found")
+        cells = selected["full_cells"]
+        rows = []
+        for row in range(1, selected["full_rows"] + 1):
+            values = []
+            for column in range(1, selected["full_columns"] + 1):
+                record = cells.get((row, column))
+                if record is None:
+                    values.append("")
+                elif record["kind"] == "boolean":
+                    values.append("true" if record["raw"] == "1" else "false")
+                else:
+                    values.append(record["raw"])
+            rows.append(values)
+        result = {"ok": True, "rows": rows}
+        require(len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= 1024 * 1024,
+                "import_limit")
+        return result
+    except ImportError:
+        return {"ok": False, "reason": "missing_dependency"}
+    except Reject as error:
+        return {"ok": False, "reason": error.reason}
+    except (MemoryError, RecursionError):
+        return {"ok": False, "reason": "import_limit"}
+    except Exception:
+        return {"ok": False, "reason": "invalid_package"}
 
 def parse_xlsx(data):
     try:

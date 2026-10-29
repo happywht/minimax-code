@@ -68,7 +68,7 @@ def establish_limits():
 
 def main():
     try:
-        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx"}:
+        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx", "xlsx_extract"}:
             raise RuntimeError("Invalid fixed parser kind")
         job = establish_limits()
     except Exception:
@@ -81,10 +81,25 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import json
 
-    data = sys.stdin.buffer.read(10 * 1024 * 1024 + 1)
-    if len(data) > 10 * 1024 * 1024:
+    data = sys.stdin.buffer.read(10 * 1024 * 1024 + 256)
+    if len(data) > 10 * 1024 * 1024 + 255:
         return 127
-    if sys.argv[-3] == "pdf":
+    if sys.argv[-3] == "xlsx_extract":
+        from minimax_code.attachment_xlsx import extract_sheet
+
+        if len(data) < 4:
+            return 127
+        length = int.from_bytes(data[:4], "big")
+        if not 1 <= length <= 124 or len(data) < 4 + length or len(data) - 4 - length > 2 * 1024 * 1024:
+            return 127
+        try:
+            sheet = data[4:4 + length].decode("utf-8", errors="strict")
+        except UnicodeError:
+            return 127
+        result = extract_sheet(data[4 + length:], sheet)
+    elif len(data) > 10 * 1024 * 1024:
+        return 127
+    elif sys.argv[-3] == "pdf":
         from minimax_code.attachment_pdf import parse_pdf
 
         result = parse_pdf(data)

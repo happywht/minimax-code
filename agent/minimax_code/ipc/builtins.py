@@ -1242,6 +1242,7 @@ async def _handle_agent_send_message(
         from ..agent.tools.generate_report_docx import register_report_docx_tool
         from ..agent.tools.generate_table_xlsx import register_table_xlsx_tool
         from ..agent.tools.generate_xlsx_from_csv import register_csv_xlsx_tool
+        from ..agent.tools.generate_xlsx_from_xlsx import register_xlsx_import_tool
         from ..agent.tools.project_attachments import register_project_attachment_tools
         from ..agent.tools.public_research import register_public_research_tools
 
@@ -1249,6 +1250,7 @@ async def _handle_agent_send_message(
         register_report_docx_tool(registry, db, session_id, project_id)
         register_table_xlsx_tool(registry, db, session_id, project_id)
         register_csv_xlsx_tool(registry, db, session_id, project_id)
+        register_xlsx_import_tool(registry, db, session_id, project_id)
         register_public_research_tools(registry)
 
     if internal_skill is not None:
