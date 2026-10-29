@@ -321,6 +321,37 @@ class AgentRunsDAO:
         rows = await self._db.fetchall(sql, tuple(params))
         return [_hydrate_run(r) for r in rows]
 
+    async def find_recovery_request(self, *, run_id: str, idempotency_key: str,
+                                    session_id: str, project_id: str | None,
+                                    service_id: str) -> list[dict[str, Any]]:
+        """Read an exact admission and its scope from a single SQLite snapshot."""
+        rows = await self._db.fetchall(
+            """SELECT child.*, source.metadata AS _source_metadata,
+                      session.project_id AS _session_project, service.service_id AS _service_id
+               FROM agent_runs source JOIN sessions session ON session.id=source.session_id
+               LEFT JOIN artifact_service service ON service.singleton=1
+               LEFT JOIN agent_runs child ON child.session_id=source.session_id
+                   AND child.resumed_from_id=source.id AND child.request_key=?
+               WHERE source.id=? AND source.session_id=?""",
+            (idempotency_key, run_id, session_id),
+        )
+        if not rows or rows[0]["_service_id"] != service_id or rows[0]["_session_project"] != project_id:
+            raise ValueError("Recovery lookup scope changed")
+        source_metadata = loads_json(rows[0]["_source_metadata"])
+        if not isinstance(source_metadata, dict) or source_metadata.get("project_id") != project_id:
+            raise ValueError("Recovery source project changed")
+        matches = []
+        for row in rows:
+            data = dict(row)
+            for key in ("_source_metadata", "_session_project", "_service_id"):
+                data.pop(key)
+            if data["id"] is not None:
+                child = _hydrate_run(data)
+                if (child.get("metadata") or {}).get("project_id") != project_id:
+                    raise ValueError("Recovery child project changed")
+                matches.append(child)
+        return matches
+
     async def list_recovery_runs(self, session_id: str, *, limit: int = 20) -> dict[str, Any]:
         """Read recent and active runs from one SQLite snapshot, with a bounded active set."""
         if not session_id or not 1 <= limit <= 100:

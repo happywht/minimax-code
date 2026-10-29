@@ -516,6 +516,15 @@ offset filters. One database read returns the union of recent runs and up to
 101 active runs (queued, planning, running, awaiting approval, or waiting
 input), ordered newest first. `active_truncated` is true when more than 100
 active runs exist; clients must not treat that response as a complete recovery.
+For confirmation of a pending recovery admission, `run.list` also accepts only
+`recovery_lookup: {run_id, idempotency_key, session_id, project_id, service_id}`,
+where `run_id` is the original run and `project_id` may be null. It reads the
+service, session, original run and matching child in one database snapshot and
+rejects mismatched bindings. It returns `{runs: [...]}` with exact request-key and
+`resumed_from_id` matches, independent of recency and status. An empty result is
+not proof that an in-flight request cannot still be accepted. This lookup is
+read-only and does not admit, retry or execute a run. Existing list filters must
+not accompany it.
 New Native generation-tool results may also add completed observation steps
 with `payload.source:"run_attachment_v1"`, containing the verified attachment
 ID, project and service IDs, SHA-256, filename and generating tool. These mean

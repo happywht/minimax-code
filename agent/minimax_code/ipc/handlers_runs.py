@@ -25,6 +25,7 @@ from .protocol import (
     RunResearchReadParams,
     RunResearchListParams,
     RunResumeParams,
+    RunRecoveryLookupParams,
     RunStartParams,
     RunSteerParams,
     RunVerifyCollectedParams,
@@ -444,6 +445,13 @@ def register_run_handlers(server: Any) -> None:
             if params is None:
                 params = {}
             check_params(params, expected_keys=set())
+            if "recovery_lookup" in params:
+                if set(params) != {"recovery_lookup"}:
+                    raise ValueError("recovery_lookup cannot be combined with list filters")
+                request = RunRecoveryLookupParams.model_validate(params["recovery_lookup"])
+                dao = await _get_dao(initialize=False)
+                await ctx.reply({"runs": await dao.find_recovery_request(**request.model_dump())})
+                return
             dao = await _get_read_control_dao(ctx)
             session_id = params.get("session_id")
             status = params.get("status")
@@ -471,7 +479,7 @@ def register_run_handlers(server: Any) -> None:
             await ctx.reply({"runs": runs})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, ValidationError) as exc:
             await ctx.reply_error(INVALID_PARAMS, f"invalid run.list params: {exc}")
         except Exception:
             logger.exception("run.list failed")

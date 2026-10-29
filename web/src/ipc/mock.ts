@@ -672,7 +672,18 @@ function mockHandle(
     case "run.project_summary":
       throw new Error("演示模式不提供持久项目运行摘要");
     case "run.list": {
-      const p = params as { session_id?: string; status?: string; mode?: string; limit?: number; offset?: number; include_active?: boolean } | undefined;
+      const p = params as { session_id?: string; status?: string; mode?: string; limit?: number; offset?: number; include_active?: boolean; recovery_lookup?: import("../types/ipc").RunRecoveryLookup } | undefined;
+      if (p?.recovery_lookup) {
+        if (Object.keys(p).length !== 1) throw new Error("recovery_lookup cannot be combined with list filters");
+        const q = p.recovery_lookup, source = mockRuns.get(q.run_id)?.run, session = mockSessions.get(q.session_id);
+        if (q.service_id !== "mock" || !q.idempotency_key || !source || source.session_id !== q.session_id ||
+            !session || (session.project_id ?? null) !== q.project_id || (source.metadata?.project_id ?? null) !== q.project_id)
+          throw new Error("Recovery lookup scope changed");
+        const runs = Array.from(mockRuns.values()).map((entry) => entry.run).filter((run) =>
+          run.session_id === q.session_id && run.resumed_from_id === q.run_id && run.request_key === q.idempotency_key);
+        if (runs.some((run) => (run.metadata?.project_id ?? null) !== q.project_id)) throw new Error("Recovery child project changed");
+        return { runs: structuredClone(runs) } satisfies ListRunsResult;
+      }
       let runs = Array.from(mockRuns.values()).reverse().map((r) => r.run);
       if (p?.session_id) runs = runs.filter((r) => r.session_id === p.session_id);
       runs.sort((a, b) => b.created_at.localeCompare(a.created_at));

@@ -486,6 +486,15 @@ class ContinueRunParams(_Base):
     run_id: str | None = Field(default=None, min_length=1)
 
 
+class RunRecoveryLookupParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str | None = Field(max_length=128)
+    service_id: str = Field(min_length=1, max_length=128)
+
+
 class RunResumeParams(RunIdParams):
     idempotency_key: str = Field(min_length=1, max_length=128)
     reviewed: bool = False

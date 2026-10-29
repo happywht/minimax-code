@@ -1008,6 +1008,14 @@ export interface ProjectRunSummaryResult {
   history?: { items: ProjectRunSummaryItem[]; offset: number; has_more: boolean };
 }
 
+export interface RunRecoveryLookup {
+  run_id: string;
+  idempotency_key: string;
+  session_id: string;
+  project_id: string | null;
+  service_id: string;
+}
+
 export interface ListRunsResult {
   runs: AgentRun[];
   active_truncated?: boolean;

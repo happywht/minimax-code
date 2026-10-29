@@ -125,14 +125,12 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
     try {
       const identity = await typedIPC.getServiceIdentity();
       if (!current(ticket) || identity.service_id !== attempt.service) throw new Error("服务或会话已变化，请重新核对");
-      const source = await typedIPC.getRunSteps(run.id);
-      const childId = source.run.metadata?.recovery_child_id;
-      const candidates = typeof childId === "string"
-        ? [(await typedIPC.getRun(childId)).run]
-        : (await typedIPC.listRuns({ session_id: session, limit: 100, include_active: true })).runs;
+      const candidates = (await typedIPC.listRuns({ recovery_lookup: {
+        run_id: run.id, idempotency_key: attempt.key, session_id: session,
+        project_id: project, service_id: attempt.service,
+      } })).runs;
       const finalIdentity = await typedIPC.getServiceIdentity();
-      if (!current(ticket) || finalIdentity.service_id !== attempt.service || source.run.id !== run.id ||
-          source.run.session_id !== session || (source.run.metadata?.project_id ?? null) !== project) {
+      if (!current(ticket) || finalIdentity.service_id !== attempt.service) {
         throw new Error("服务、会话或项目已变化，请重新核对");
       }
       const matches = candidates.filter((item) => item.session_id === session && item.resumed_from_id === run.id &&
