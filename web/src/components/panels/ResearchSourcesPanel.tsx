@@ -90,7 +90,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
         `所属运行：${source.run_id}`, `摘录${shortened || source.excerpt_truncated || source.truncated ? "（已截断，不代表全文）" : ""}：`,
         excerpt.slice(0, 600).join("") || "（无提取文本）"].join("\n");
       const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project, session, text };
-      window.dispatchEvent(new CustomEvent("minimax:append-research-source", { detail }));
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
       setNotice(detail.result ?? "当前聊天输入区未打开；请先切换到聊天，再重新选择来源。");
       setAdded(detail.result === "已添加到当前会话草稿，尚未发送。");
     } catch (reason) { if (current(revision)) setNotice(`未添加来源：${reason instanceof Error ? reason.message : String(reason)}`); }

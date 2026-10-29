@@ -120,14 +120,14 @@ export function useComposerDraft(sessionId: string | null): ComposerDraft {
           current.currentProjectId !== detail.project || current.currentSessionId !== detail.session ||
           previous.id !== detail.session || sessionId !== detail.session) return;
       const next = previous.text ? `${previous.text}\n\n${detail.text}` : detail.text;
-      if (next.length > MAX_INPUT_CHARS) { detail.result = "草稿加上来源后超过输入上限，请先精简草稿。"; return; }
+      if (next.length > MAX_INPUT_CHARS) { detail.result = "草稿加上内容后超过输入上限，请先精简草稿。"; return; }
       // Update the ref immediately so two rapid selections cannot overwrite one another.
       draftRef.current = { id: previous.id, text: next };
       setDraft((state) => state.id === detail.session ? { ...state, text: next } : state);
       detail.result = "已添加到当前会话草稿，尚未发送。";
     };
-    window.addEventListener("minimax:append-research-source", appendSource);
-    return () => window.removeEventListener("minimax:append-research-source", appendSource);
+    window.addEventListener("minimax:append-context", appendSource);
+    return () => window.removeEventListener("minimax:append-context", appendSource);
   }, [sessionId]);
 
   const clear = useCallback(() => setValue(""), [setValue]);

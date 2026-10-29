@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ipc } from "../../ipc";
+import { useEffect, useRef, useState } from "react";
+import { ipc, typedIPC } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
 import type { AttachmentParserStatus, DocxSection, ReportSource, ResearchSource } from "../../types/ipc";
@@ -24,6 +24,10 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
   const state = useAttachmentStore(), host = ipc.agentBaseUrl;
   const scoped = state.projectId === projectId && state.host === host;
   const [file, setFile] = useState<File | null>(null);
+  const [addingContext, setAddingContext] = useState(false);
+  const [contextNotice, setContextNotice] = useState("");
+  const [contextAdded, setContextAdded] = useState(false);
+  const contextEpoch = useRef(0);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const filteredAttachments = (scoped ? state.attachments : []).filter((row) => `${row.original_name} ${row.id}`.toLowerCase().includes(query.trim().toLowerCase()) && (typeFilter === "all" || row.recognized_type === typeFilter));
@@ -42,6 +46,48 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   useEffect(() => { setResearchSources([]); }, [projectId, sessionId, host, state.serviceId]);
+  useEffect(() => {
+    ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false);
+  }, [projectId, sessionId, host, state.serviceId, state.selected?.id]);
+  useEffect(() => ipc.onSideCar(() => { ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); }), []);
+  const addAttachmentContext = async () => {
+    const selected = state.selected, service = state.serviceId;
+    if (!scoped || !projectId || !sessionId || !service || !selected || addingContext) return;
+    const ticket = ++contextEpoch.current, id = selected.id, hash = selected.sha256;
+    const current = () => {
+      const session = useSessionStore.getState(), attachments = useAttachmentStore.getState();
+      return ticket === contextEpoch.current && ipc.agentBaseUrl === host && session.currentProjectId === projectId &&
+        session.currentSessionId === sessionId && attachments.projectId === projectId && attachments.host === host &&
+        attachments.serviceId === service && attachments.selected?.id === id && attachments.selected.sha256 === hash;
+    };
+    setAddingContext(true); setContextNotice(""); setContextAdded(false);
+    try {
+      const result = await typedIPC.getAttachment(projectId, id);
+      if (!current()) return;
+      const row = result.attachment;
+      if (row.id !== id || row.project_id !== projectId || row.service_id !== service || row.sha256 !== hash ||
+          row.version !== selected.version || row.original_name !== selected.original_name ||
+          row.parser_status !== selected.parser_status || row.parser_scope !== selected.parser_scope ||
+          row.preview_truncated !== selected.preview_truncated || typeof result.preview_text !== "string" ||
+          new TextEncoder().encode(result.preview_text).length > 65536) throw new Error("附件身份或解析状态已变化，请重新选择");
+      const supportsPreview = ["parsed", "empty", "truncated"].includes(row.parser_status);
+      const preview = supportsPreview ? Array.from(result.preview_text) : [];
+      const clipped = preview.length > 1200 || row.preview_truncated || row.parser_status === "truncated";
+      const details = ["项目附件（仅以下元数据及摘录加入草稿，尚未发送；内容未经核验）：",
+        `文件名：${row.original_name} · 版本：${row.version}`, `附件 ID：${row.id}`, `SHA-256：${row.sha256}`,
+        `声明类型：${row.declared_type} · 识别类型：${row.recognized_type}`,
+        `解析状态：${labels[row.parser_status]} · 范围：${row.parser_scope} · 原因：${row.parser_reason}`,
+        `文本预览${clipped ? "（已截断，不代表原文件全文）" : "（有界解析内容，不保证覆盖原文件全文）"}：`,
+        supportsPreview ? (preview.slice(0, 1200).join("") || "（没有可用的提取文本）") : "（解析不可用，未提供文本摘录）",
+        "如当前运行环境支持项目附件读取工具，可按附件 ID 进一步读取其支持的内容；请区分原件、解析预览和未验证事实。"].join("\n");
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project: projectId, session: sessionId, text: details };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      if (!current()) return;
+      setContextNotice(detail.result ?? "当前聊天输入区未打开；请先切换到聊天，再重新选择附件。");
+      setContextAdded(detail.result === "已添加到当前会话草稿，尚未发送。");
+    } catch (error) { if (current()) setContextNotice(`未添加附件：${error instanceof Error ? error.message : String(error)}`); }
+    finally { if (current()) setAddingContext(false); }
+  };
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
     <div className="flex items-center justify-between">
       <h2 className="text-lg font-semibold">项目附件 · {project?.name ?? "选择项目"}</h2>
@@ -77,7 +123,11 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
       {state.selected.recognized_type === "xlsx" && state.selected.parser_status === "empty" && <p role="status">有界扫描未发现非空单元格；不等于文件没有其他内容。</p>}
       {state.selected.preview_truncated && <p role="status">{state.selected.recognized_type === "xlsx" ? "预览已达到单元格窗口、数量或 64 KiB / 2000 行展示上限，部分存储内容未显示；可下载完整原件。" : "预览已达到 64 KiB / 2000 行展示上限，后续内容未显示；可下载完整原件。"}</p>}
       <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
+      <div className="flex flex-wrap gap-2"><Button type="button" disabled={state.busy || state.loading || addingContext || !sessionId || !state.serviceId} loading={addingContext} onClick={() => void addAttachmentContext()}>加入当前会话草稿</Button>
       <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
+      {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
+      <p className="text-xs text-ink-2">仅追加附件身份与最多 1200 字解析预览，不发送、不上传原件到对话，也不代表模型已读取完整文件。</p>
+      {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>
       <PdfOriginalPreview attachment={state.selected} />
       <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
