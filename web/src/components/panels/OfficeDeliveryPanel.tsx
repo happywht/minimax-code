@@ -11,6 +11,7 @@ import { OfficeAnalysisControls, type OfficeAnalysisOptions } from "./OfficeAnal
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ProjectXlsxImport } from "./ProjectXlsxImport";
 import { DraftFileControl } from "./DraftFileControl";
+import { OfficeFollowupDraft } from "./OfficeFollowupDraft";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
   { name: "名称", kind: "text" }, { name: "数量", kind: "number" },
@@ -212,6 +213,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <p>校验范围 {state.selected.delivery.validation_report.scope} · 全部 {state.selected.delivery.validation_report.cell_count} 格（含表头） · 未做版式或业务验收</p>
       <p>来源 run: {state.selected.delivery.run_id ?? "未关联 run"}</p>
       <p className="break-all text-xs">SHA-256: {state.selected.attachment.sha256}</p>
+      <OfficeFollowupDraft selected={state.selected} />
       <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
         <Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>
         <Button variant="secondary" disabled={state.busy || ipc.isMock || !!analysis.chart} onClick={() => { const next = crypto.randomUUID(); setKey(next); submit(next); }}>按当前输入生成同名新版本</Button></div>
