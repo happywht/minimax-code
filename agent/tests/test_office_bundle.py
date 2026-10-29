@@ -20,9 +20,10 @@ from test_attachment_bundle import (
 from xlsx_fixture import cell, worksheet, xlsx_bytes
 
 from minimax_code import office_metadata
-bundle = legacy_v6_writer()
 from minimax_code.storage import db as db_module
 from minimax_code.storage.db import AsyncDatabase, Database
+
+bundle = legacy_v6_writer()
 
 STAMP = "2026-10-29T10:00:00+00:00"
 SERVICE = "svc_" + "1" * 32
