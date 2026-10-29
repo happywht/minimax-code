@@ -27,6 +27,7 @@ from .protocol import (
     RunResumeParams,
     RunStartParams,
     RunSteerParams,
+    RunVerifyCollectedParams,
 )
 from .server import Context
 
@@ -253,13 +254,108 @@ def register_run_handlers(server: Any) -> None:
                     await ctx.reply({"report": report, "session_id": req.session_id,
                                      "project_id": project_id, "service_id": identity})
                 else:
-                    await ctx.reply({**reviewed, "session_id": req.session_id,
+                    command = None
+                    if req.team_run_id and project_id:
+                        from ..storage.dao.projects import ProjectsDAO
+                        from ..verification import normalize_validate_command
+                        project = await ProjectsDAO(dao._db).get(project_id)
+                        command = normalize_validate_command((project or {}).get("validate_command"))
+                    await ctx.reply({**reviewed, "validate_command": command, "session_id": req.session_id,
                                      "project_id": project_id, "service_id": identity})
         except (ValidationError, ValueError, HandlerError, OSError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception:
             logger.exception("child workspace review failed")
             await ctx.reply_error(INTERNAL_ERROR, "Child workspace review or collection failed; some files may have been collected")
+
+    async def handle_verify_collected(params: Any, ctx: Context) -> None:
+        from pathlib import Path
+        from ..execution import ExecutionPolicy, execution_scope
+        from ..runs import get_run_service
+        from ..storage.dao.projects import ProjectsDAO
+        from ..storage.dao.text_artifacts import ArtifactDAO
+        from ..verification import normalize_validate_command, resolve_validate_timeout, run_validate_command, verification_evidence
+        from ..workspace.child import load_child
+        from ..workspace.child_review import preview
+        from ..workspace_ctx import resolve_root_for_session
+        from .handlers_permissions import _ensure_permission_store
+        from .host_session_gate import require_host_session
+
+        try:
+            req = RunVerifyCollectedParams.model_validate(params)
+            dao = await _get_dao()
+            service = get_run_service(ctx.server)
+
+            async def binding():
+                await require_host_session(req.session_id)
+                team = await dao.get_run(req.team_run_id)
+                metadata = (team or {}).get("metadata") or {}
+                result = metadata.get("team_result") if isinstance(metadata, dict) else None
+                agents = result.get("agents_run") if isinstance(result, dict) else None
+                session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
+                if (not team or team["mode"] != "team" or team["session_id"] != req.session_id
+                        or team["status"] not in {"completed", "failed"} or not session or not session["project_id"]
+                        or metadata.get("project_id") != session["project_id"] or not isinstance(agents, list)
+                        or not any(isinstance(a, dict) and isinstance(a.get("workspace"), dict)
+                                   and a["workspace"].get("run_id") == req.child_run_id for a in agents)):
+                    raise ValueError("Team, member or project binding changed")
+                root = await resolve_root_for_session(req.session_id)
+                identity = await ArtifactDAO(dao._db).service_id()
+                project = await ProjectsDAO(dao._db).get(session["project_id"])
+                command = normalize_validate_command((project or {}).get("validate_command"))
+                if (identity != req.expected_service_id or str(root) != metadata.get("workspace_snapshot")
+                        or command != req.expected_command):
+                    raise ValueError("Service, workspace or validation command changed; review again")
+                child = load_child(root, req.child_run_id)
+                if child is None:
+                    raise ValueError("Collected workspace is unavailable")
+                review = await asyncio.to_thread(preview, child)
+                if review["state"] != "collected" or review["revision"] != req.revision:
+                    raise ValueError("Collected workspace or parent files changed; review again")
+                permissions = await _ensure_permission_store(ctx.server)
+                if permissions.is_denied("project_validation") or permissions.is_denied("exec_command"):
+                    raise ValueError("Project validation is denied by the current permission rules")
+                return str(root), session["project_id"]
+
+            workspace, project_id = await binding()
+            async def operation(job):
+                if await binding() != (workspace, project_id):
+                    raise ValueError("Project binding changed while queued")
+                await dao.update_run_status(job.run_id, status="running")
+                with execution_scope(ExecutionPolicy(workspace=Path(workspace))):
+                    output = await run_validate_command(req.expected_command, cwd=workspace,
+                                                        timeout_s=resolve_validate_timeout())
+                evidence = verification_evidence(configured=True, validation=output)
+                job.result = {"run_id": job.run_id, "session_id": req.session_id,
+                              "team_run_id": req.team_run_id, "child_run_id": req.child_run_id,
+                              "verification": evidence}
+
+            async def finalize(job, error):
+                status = "completed" if error is None and job.result else "interrupted" if isinstance(error, asyncio.CancelledError) else "failed"
+                result = job.result or {"run_id": job.run_id, "session_id": req.session_id,
+                    "team_run_id": req.team_run_id, "child_run_id": req.child_run_id,
+                    "verification": {"verdict": "unknown", "reason": "validation_interrupted_or_failed", "requires_review": True}}
+                saved = await dao.update_run_status(job.run_id, status=status,
+                    error=str(error) if error and not isinstance(error, asyncio.CancelledError) else None, result=result)
+                if saved:
+                    await ctx.emit("run.updated", {"run": saved})
+
+            request = {"mode": "execute", "kind": "team_collection_validation", "team_run_id": req.team_run_id,
+                       "child_run_id": req.child_run_id, "command": req.expected_command,
+                       "revision": req.revision, "service_id": req.expected_service_id}
+            run, _, _ = await service.admit(dao=dao, session_id=req.session_id, request=request,
+                request_key=req.idempotency_key, title="团队收集后的项目验证",
+                metadata={"manual_team_validation": True, "team_run_id": req.team_run_id,
+                          "child_run_id": req.child_run_id, "project_id": project_id,
+                          "workspace_snapshot": workspace, "validate_command": req.expected_command},
+                workspace=workspace, project_id=project_id, operation=operation, finalize=finalize)
+            await ctx.reply({"run": run, "session_id": req.session_id, "project_id": project_id,
+                             "service_id": req.expected_service_id})
+        except (ValidationError, ValueError, HandlerError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("manual team validation admission failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Could not start validation; inspect the run list before retrying")
 
     async def handle_run_list(params: Any, ctx: Context) -> None:
         try:
@@ -431,6 +527,8 @@ def register_run_handlers(server: Any) -> None:
                 raise HandlerError(INVALID_PARAMS, "Only interrupted, failed, cancelled or budget-paused runs can be resumed")
             if run.get("mode") == "team":
                 raise HandlerError(INVALID_PARAMS, "Team runs cannot be resumed; review their results and start a new run explicitly")
+            if (run.get("metadata") or {}).get("manual_team_validation"):
+                raise HandlerError(INVALID_PARAMS, "Review validation results before starting a new explicit validation")
             bound = {"expected_service_id", "expected_session_id", "expected_project_id", "expected_cursor"}
             if bound & request.model_fields_set:
                 if not bound <= request.model_fields_set or not request.expected_service_id or not request.expected_session_id or request.expected_cursor is None:
@@ -733,6 +831,7 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.research_list", research_handler(RunResearchListParams))
     server.register("run.research_get", research_handler(RunResearchGetParams, detail=True))
     server.register("run.child_workspace", handle_child_workspace)
+    server.register("run.verify_collected", handle_verify_collected)
     server.register("run.child_list", handle_child_list)
     server.register("run.output_page", handle_output_page)
     server.register("run.output_inventory", handle_output_inventory)

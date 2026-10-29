@@ -342,6 +342,18 @@ class RunChildListParams(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
 
 
+class RunVerifyCollectedParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+    team_run_id: str = Field(min_length=1, max_length=128)
+    child_run_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    revision: str = Field(min_length=64, max_length=64)
+    expected_command: str = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    confirmed: Literal[True]
+
+
 class RunOutputPageParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     run_id: str = Field(min_length=1, max_length=128)

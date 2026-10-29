@@ -31,6 +31,7 @@ import { StructuredErrorCallout } from "../StructuredErrorCallout";
 import { strings } from "../../ui/strings";
 import { useSessionStore } from "../../stores/sessionStore";
 import { ipc } from "../../ipc";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
 
 export interface SubAgentPanelProps {
   testId?: string;
@@ -331,14 +332,28 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId }: { runId: s
   const [receipt, setReceipt] = useState<{ report: ChildWorkspaceReceipt; root: string; service: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [validation, setValidation] = useState<{ id: string; status: string; result?: Record<string, unknown> | null } | null>(null);
+  const validationKey = useRef<string | null>(null);
   const generation = useRef(0);
   const projectId = useSessionStore((s) => s.sessions.find((s) => s.id === sessionId)?.project_id ?? null);
   useEffect(() => {
-    setReview(null); setReceipt(null); setMessage(""); setBusy(false);
+    setReview(null); setReceipt(null); setMessage(""); setBusy(false); setValidation(null); validationKey.current = null;
     const epoch = generation;
     return () => { epoch.current++; };
   }, [runId, sessionId, projectId, teamRunId]);
-  useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setValidation(null); validationKey.current = null; setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
+  useEffect(() => {
+    if (!teamRunId) return;
+    let cancelled = false;
+    const host = ipc.agentBaseUrl;
+    void ipc.request<{ runs: Array<{ id: string; session_id: string; status: string; metadata?: Record<string, unknown> }> }>("run.list", { session_id: sessionId, limit: 100 }).then(({ runs }) => {
+      if (cancelled || host !== ipc.agentBaseUrl || useSessionStore.getState().currentSessionId !== sessionId) return;
+      const latest = runs.find((run) => run.session_id === sessionId && run.metadata?.manual_team_validation === true &&
+        run.metadata?.team_run_id === teamRunId && run.metadata?.child_run_id === runId);
+      if (latest) setValidation({ id: latest.id, status: latest.status });
+    }).catch(() => { /* History is optional; an absent result is not a pass. */ });
+    return () => { cancelled = true; };
+  }, [runId, sessionId, teamRunId, projectId]);
   const invoke = async (collect: boolean) => {
     const ticket = ++generation.current, host = ipc.agentBaseUrl;
     const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
@@ -398,6 +413,52 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId }: { runId: s
     } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
     finally { if (current()) setBusy(false); }
   };
+  const startValidation = async () => {
+    if (!teamRunId || !receipt?.report.complete || busy) return;
+    const ticket = ++generation.current, host = ipc.agentBaseUrl, expected = receipt;
+    const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
+      useSessionStore.getState().currentSessionId === sessionId && useSessionStore.getState().currentProjectId === projectId;
+    setBusy(true); setMessage("");
+    try {
+      const snapshot = await ipc.request<ReviewResult & { validate_command?: string | null }>("run.child_workspace", {
+        run_id: runId, session_id: sessionId, team_run_id: teamRunId, action: "preview",
+      });
+      if (!current()) return;
+      if (snapshot.service_id !== expected.service || snapshot.session_id !== sessionId || snapshot.project_id !== projectId ||
+          snapshot.root !== expected.root || snapshot.state !== "collected" || !snapshot.validate_command ||
+          !validReceipt(snapshot.receipt, runId) || JSON.stringify(snapshot.receipt) !== JSON.stringify(expected.report)) {
+        throw new Error("收集回执、项目或验证命令不可用，请重新查看并配置项目验证命令。");
+      }
+      const accepted = await requestConfirmation({ title: "运行项目验证命令", confirmLabel: "运行验证",
+        description: `将在 ${snapshot.root} 执行：\n${snapshot.validate_command}\n该命令可修改文件或访问网络。结果只代表此次命令，不代表验收。` });
+      if (!accepted || !current()) return;
+      validationKey.current ??= crypto.randomUUID();
+      const started = await ipc.request<{ run: { id: string; status: string }; service_id: string; session_id: string; project_id: string }>("run.verify_collected", {
+        session_id: sessionId, team_run_id: teamRunId, child_run_id: runId, expected_service_id: expected.service,
+        revision: snapshot.revision, expected_command: snapshot.validate_command, idempotency_key: validationKey.current, confirmed: true,
+      });
+      if (!current()) return;
+      if (started.service_id !== expected.service || started.session_id !== sessionId || started.project_id !== projectId) throw new Error("验证绑定已变化，请查看任务列表。");
+      setValidation({ id: started.run.id, status: started.run.status });
+      setMessage("验证已接单；可刷新结果或请求停止。网络异常时请先查任务列表，避免重复执行。");
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { if (current()) setBusy(false); }
+  };
+  const refreshValidation = async (stop: boolean) => {
+    if (!validation || busy) return;
+    const ticket = ++generation.current, host = ipc.agentBaseUrl;
+    const current = () => ticket === generation.current && host === ipc.agentBaseUrl && useSessionStore.getState().currentSessionId === sessionId;
+    setBusy(true);
+    try {
+      if (stop) await ipc.request("run.cancel", { run_id: validation.id });
+      const data = await ipc.request<{ run: { id: string; session_id: string; status: string; metadata?: Record<string, unknown> }; result?: Record<string, unknown> | null }>("run.get", { run_id: validation.id });
+      if (!current()) return;
+      if (data.run.session_id !== sessionId || data.run.metadata?.team_run_id !== teamRunId || data.run.metadata?.child_run_id !== runId) throw new Error("验证运行绑定已变化");
+      setValidation({ id: data.run.id, status: data.run.status, result: data.result });
+      if (stop) setMessage("已请求停止；请刷新以确认最终状态。");
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { if (current()) setBusy(false); }
+  };
   return <div className="space-y-2 border-t border-line pt-2 text-xs">
     <button type="button" disabled={busy} onClick={() => void invoke(false)}>查看子任务工作区结果</button>
     {message && <p role="status" className="break-words text-ink-1">{message}</p>}
@@ -409,6 +470,13 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId }: { runId: s
       {!!receipt.report.conflicts.length && <details open><summary>未处理冲突</summary><ul>{receipt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
       <p>回执记录当时结果，文件可能后来发生变化。请核对父目录并通过后续任务按权限执行需要的验证。</p>
       {receipt.report.complete && <button type="button" disabled={busy || !projectId} onClick={() => void addFollowup()}>将收集回执加入后续任务草稿</button>}
+      {teamRunId && receipt.report.complete && <button type="button" disabled={busy || !projectId || !!validation} onClick={() => void startValidation()}>审阅并运行项目验证</button>}
+      {validation && <div className="rounded border border-line p-2">
+        <p>验证运行 {validation.id} · {validation.status}</p>
+        {validation.result ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(validation.result.verification ?? validation.result, null, 2)}</pre> : <p>结果尚未读取或仍未知。</p>}
+        <button type="button" disabled={busy} onClick={() => void refreshValidation(false)}>刷新结果</button>{" "}
+        {["queued", "running", "planning"].includes(validation.status) && <button type="button" disabled={busy} onClick={() => void refreshValidation(true)}>停止验证</button>}
+      </div>}
     </div>}
     {review && <div className="space-y-1">
       <p>父目录：{review.root} · {review.kind} · {review.state}</p>
