@@ -31,7 +31,6 @@ import {
 import type { SettingsTab } from "./components/settings/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
 import type { CommandPaletteHandle } from "./components/layout/CommandPalette";
-import { registerScopeChangeGuard } from "./lib/scopeChangeGuard";
 import { tunnelPage } from "./ipc/tunnelPage";
 
 const MobilePairingModal = lazy(() =>
@@ -171,18 +170,7 @@ export default function App() {
     settingsEdited.current = false;
     return true;
   }, []);
-  const leaveDelivery = useCallback(() => {
-    if (!deliveryEdited.current) return true;
-    if (!window.confirm("交付物工作区可能有未保存的报告草稿。离开会丢失报告草稿，确定离开吗？")) return false;
-    deliveryEdited.current = false;
-    return true;
-  }, []);
-  useEffect(() => registerScopeChangeGuard(() => {
-    if (!deliveryEdited.current) return true;
-    if (!window.confirm("切换项目或会话会清除交付物中可能未保存的报告草稿。留在当前页面，或确定继续切换？")) return false;
-    deliveryEdited.current = false;
-    return true;
-  }), []);
+  const leaveDelivery = useCallback(() => true, []);
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (!deliveryEdited.current && !officeEdited.current && !automationEdited.current && !settingsEdited.current) return;

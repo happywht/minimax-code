@@ -18,7 +18,7 @@ const labels: Record<AttachmentParserStatus, string> = {
   parsed: "已解析", empty: "空文本", truncated: "预览已截断", parse_failed: "解析失败",
   type_mismatch: "类型不匹配", parser_unavailable: "解析器不可用", ocr_not_attempted: "未尝试 OCR",
 };
-type ReportDraft = { docName: string; title: string; body: string; format: "docx" | "pdf" | "both";
+export type ReportDraft = { docName: string; title: string; body: string; format: "docx" | "pdf" | "both";
   structured: boolean; sections: string; visualSections: boolean; sources: ReportSource[]; researchIds: string[] };
 function readReportDraft(value: unknown): ReportDraft {
   if (!value || typeof value !== "object") throw new Error("报告草稿格式无效");
@@ -33,13 +33,15 @@ function readReportDraft(value: unknown): ReportDraft {
   return data as ReportDraft;
 }
 
-export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }): JSX.Element {
+export type RetainedReportDraft = Omit<ReportDraft, "researchIds"> & { researchNeedsReview: boolean; file: File | null };
+
+export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
   const state = useAttachmentStore(), host = ipc.agentBaseUrl;
   const scoped = state.projectId === projectId && state.host === host;
-  const [file, setFile] = useState<File | null>(null);
+  const [file, setFile] = useState<File | null>(initialDraft?.file ?? null);
   const [addingContext, setAddingContext] = useState(false);
   const [contextNotice, setContextNotice] = useState("");
   const [contextAdded, setContextAdded] = useState(false);
@@ -47,22 +49,29 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const filteredAttachments = (scoped ? state.attachments : []).filter((row) => `${row.original_name} ${row.id}`.toLowerCase().includes(query.trim().toLowerCase()) && (typeFilter === "all" || row.recognized_type === typeFilter));
-  const [docName, setDocName] = useState("报告.docx"), [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [format, setFormat] = useState<"docx" | "pdf" | "both">("docx");
-  const [structured, setStructured] = useState(false), [sections, setSections] = useState(sectionExample);
-  const [visualSections, setVisualSections] = useState(false);
-  const [sources, setSources] = useState<ReportSource[]>([]);
+  const [docName, setDocName] = useState(initialDraft?.docName ?? "报告.docx"), [title, setTitle] = useState(initialDraft?.title ?? "");
+  const [body, setBody] = useState(initialDraft?.body ?? "");
+  const [format, setFormat] = useState<"docx" | "pdf" | "both">(initialDraft?.format ?? "docx");
+  const [structured, setStructured] = useState(initialDraft?.structured ?? false), [sections, setSections] = useState(initialDraft?.sections ?? sectionExample);
+  const [visualSections, setVisualSections] = useState(initialDraft?.visualSections ?? false);
+  const [sources, setSources] = useState<ReportSource[]>(initialDraft?.sources ?? []);
   const [researchSources, setResearchSources] = useState<ResearchSource[]>([]);
+  const [researchNeedsReview, setResearchNeedsReview] = useState(initialDraft?.researchNeedsReview ?? false);
+  const draftRef = useRef<RetainedReportDraft>({ docName, title, body, format, structured, sections, visualSections, sources, researchNeedsReview, file });
+  draftRef.current = { docName, title, body, format, structured, sections, visualSections, sources, researchNeedsReview: researchNeedsReview || researchSources.length > 0, file };
+  useEffect(() => () => { onRetainDraft?.(draftRef.current); }, []);
   const importedSources = useRef<ResearchSource[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
   const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources, researchSources.map((item) => item.page_source_id), sessionId]);
   useEffect(() => {
-    setQuery(""); setTypeFilter("all"); setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setVisualSections(false); setSections(sectionExample); setSources([]); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
+    setQuery(""); setTypeFilter("all"); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
-  useEffect(() => { setResearchSources([]); }, [projectId, sessionId, host, state.serviceId]);
+  useEffect(() => {
+    if (researchSources.length) setResearchNeedsReview(true);
+    setResearchSources([]);
+  }, [projectId, sessionId, host, state.serviceId]);
   useEffect(() => {
     ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false);
   }, [projectId, sessionId, host, state.serviceId, state.selected?.id]);
@@ -115,7 +124,9 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
     <p className="text-sm text-ink-1">原件保存、可解析、质量验证与交付是不同状态；当前质量均为未验证。附件不会自动加入对话上下文。</p>
     {ipc.isMock && <p role="status">演示模式：原件仅保存在本页内存，刷新后清空；Office 容器只标记候选 ZIP。PDF / DOCX / XLSX 解析需要真实后端可选依赖。</p>}
     <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (file) void state.upload(file); }}>
-      <input aria-label="选择附件原件" type="file" disabled={state.busy} onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+      <input aria-label="选择附件原件" type="file" disabled={state.busy} onChange={(event) => { setFile(event.target.files?.[0] ?? null); event.target.value = ""; }} />
+      {file && <span className="break-all text-xs text-ink-1">待上传：{file.name}（{file.size} 字节）</span>}
+      {file && <Button type="button" variant="secondary" disabled={state.busy} onClick={() => setFile(null)}>清除待上传文件</Button>}
       <Button type="submit" disabled={!scoped || !file || file.size > 10485760 || !state.serviceId || state.busy || state.loading}>上传原件</Button>
       <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(projectId)}>刷新</Button>
     </form>
@@ -154,6 +165,7 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
     </div>
     <form className="flex flex-col gap-2 rounded border border-line p-3" onSubmit={(event) => {
       event.preventDefault(); setFormError(null);
+      if (researchNeedsReview) { setFormError("请先核对研究来源和正文引用编号。"); return; }
       if (sources.some((source) => !source.title.trim() || !source.url.trim())) {
         setFormError("请填写每条来源的标题和网址，或删除空来源。"); return;
       }
@@ -201,7 +213,7 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
         apply={(draft) => {
           setDocName(draft.docName); setTitle(draft.title); setBody(draft.body); setFormat(draft.format); setStructured(draft.structured);
           setSections(draft.sections); setVisualSections(draft.visualSections); setSources(draft.sources); setFormError(null);
-          setResearchSources(importedSources.current);
+          setResearchSources(importedSources.current); setResearchNeedsReview(false);
         }} />
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
       <label>文件格式 <select aria-label="报告文件格式" value={format} onChange={(event) => {
@@ -235,10 +247,14 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
         </div>)}
         <Button type="button" variant="secondary" disabled={sources.length + researchSources.length >= 30} onClick={() => setSources((current) => [...current, { title: "", url: "" }])}>添加来源</Button>
       </div>
+      {researchNeedsReview && <div role="alert" className="rounded border border-line p-2">
+        <p>恢复的草稿未保留所选研究来源。请重新选择所需来源，并核对正文中的引用编号；来源记录可能已变化或删除。</p>
+        <Button type="button" variant="secondary" onClick={() => setResearchNeedsReview(false)}>已核对研究来源和引用编号</Button>
+      </div>}
       <ReportResearchPicker project={projectId} session={sessionId} service={scoped ? state.serviceId : null}
         selected={researchSources} onChange={setResearchSources} manualCount={sources.length} />
       {formError && <p role="alert">{formError}</p>}
-      <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
+      <Button type="submit" disabled={researchNeedsReview || !scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
       {ipc.isMock && <p role="status">演示模式不能生成报告。</p>}
     </form>
     {scoped && state.reportBatch && <div role="status" className="rounded border border-line p-2">

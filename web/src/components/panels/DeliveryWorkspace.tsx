@@ -6,7 +6,7 @@ import { Button } from "../../ui";
 import { RunAttachments } from "../right-panel/RunAttachments";
 import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 import { ArtifactsPanel } from "./ArtifactsPanel";
-import { AttachmentsPanel } from "./AttachmentsPanel";
+import { AttachmentsPanel, type RetainedReportDraft } from "./AttachmentsPanel";
 import { OfficeDeliveryPanel, type TableDraft } from "./OfficeDeliveryPanel";
 import { ResearchSourcesPanel } from "./ResearchSourcesPanel";
 
@@ -17,6 +17,7 @@ const tabs: Array<{ id: DeliveryTab; label: string }> = [
   { id: "run-artifacts", label: "当前会话成果" },
 ];
 const officeDrafts = new Map<string, TableDraft>();
+const reportDrafts = new Map<string, RetainedReportDraft>();
 type Binding = { project: string; session: string | null; host: string; service: string };
 
 export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: DeliveryTab; onSelect: (tab: DeliveryTab) => void; onClose: () => void; onEdit?: (kind: "report" | "table") => void }): JSX.Element {
@@ -78,7 +79,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: Del
         <Button size="sm" variant="ghost" onClick={onClose}>关闭</Button></div>
       <nav aria-label="交付物类型" className="flex flex-wrap gap-1">{tabs.map((item) => <Button key={item.id} type="button" size="sm"
         variant={item.id === tab ? "primary" : "ghost"} aria-current={item.id === tab ? "page" : undefined} onClick={() => switchTab(item.id)}>{item.label}</Button>)}</nav>
-      <p className="text-xs text-ink-2">不同类型保存在各自的项目记录中；仅当前会话的明确关联显示为任务成果。内容和版式需自行核对。办公表格草稿在当前页面内按服务地址、服务身份、项目和会话分别保留；只有返回相同身份才会恢复。刷新或关闭页面会丢失内存草稿，请导出草稿文件。报告等其他未保存编辑离开时会丢失。</p>
+      <p className="text-xs text-ink-2">不同类型保存在各自的项目记录中；仅当前会话的明确关联显示为任务成果。内容和版式需自行核对。办公表格和报告编辑草稿在当前页面内按服务地址、服务身份、项目和会话分别保留；只有返回相同身份才会恢复。报告的研究来源需要重新选择并核对引用；待上传文件也仅在相同身份的页面内保留，需手动上传。刷新或关闭页面会丢失内存草稿和待上传文件，请先导出草稿文件并重新选择文件。</p>
       {!ready && <p role="status" className="text-xs text-status-warning">{error || (!project ? "请先选择项目。" : "正在确认当前服务身份…")}</p>}
       {!!error && project && <Button type="button" size="sm" variant="secondary" onClick={() => void refreshScope(true)}>重新确认</Button>}
     </header>
@@ -93,7 +94,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: Del
         if ((tab === "attachments" || tab === "office") && /添加|删除|新增|插入|移动|转换|恢复/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
       }}>
         {visited.has("artifacts") && <div className="h-full" hidden={tab !== "artifacts"}><ArtifactsPanel embedded onClose={onClose} /></div>}
-        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} /></div>}
+        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} /></div>}
         {visited.has("office") && <div className="h-full" hidden={tab !== "office"}><OfficeDeliveryPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} initialDraft={officeDrafts.get(scopeKey)} onRetainDraft={(draft) => officeDrafts.set(scopeKey, draft)} /></div>}
         {visited.has("research") && <div className="h-full" hidden={tab !== "research"}><ResearchSourcesPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} /></div>}
         {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} /></div>}
