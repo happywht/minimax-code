@@ -22,6 +22,7 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
   const ordered = order.map((id) => runs[id]).filter((run) => run && run.session_id === session && !run.metadata?.manual_research);
   const run = ordered.find((item) => active.has(item.status)) ?? ordered.find((item) => item.status === "queued") ?? ordered[0];
   const [budget, setBudget] = useState<{ scope: string; value: BudgetStateResult | null; error?: string } | null>(null);
+  const [planDraftMessage, setPlanDraftMessage] = useState("");
   const generation = useRef(0), runRef = useRef<string | null>(null);
   runRef.current = run?.id ?? null;
   const host = ipc.agentBaseUrl, scope = JSON.stringify([host, session, run?.id]);
@@ -66,6 +67,28 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       window.dispatchEvent(new CustomEvent("minimax:open-run-question", { detail: { host, session, run: run.id, request: requestId } }));
     }
   };
+  const prepareStructuredPlan = () => {
+    const sessions = useSessionStore.getState();
+    const timeline = useRunTimelineStore.getState();
+    const current = run && timeline.runs[run.id];
+    const plan = current?.metadata?.codex_plan;
+    if (!run || !session || ipc.agentBaseUrl !== host || sessions.currentSessionId !== session ||
+        timeline.loading || timeline.error || current?.session_id !== session || current.mode !== "plan" ||
+        current.status !== "completed" || !plan || plan.truncated || (!plan.explanation && !plan.steps.length) ||
+        ["sending", "streaming", "cancelling"].includes(useChat.getState().status)) {
+      setPlanDraftMessage("计划或会话状态已变化，请刷新后重试。");
+      return;
+    }
+    const detail: { host: string; project: string | null; session: string; text: string; result?: string } = {
+      host, project: sessions.currentProjectId, session,
+      text: `请执行以下我选择的计划；执行前核对当前工作区和必要授权。遇到需要我决定的事项请先询问。\n\n所选规划运行：${current.id}\n\n${plan.explanation ?? ""}\n${plan.steps.map((step, index) => `${index + 1}. ${step.step} (${step.status})`).join("\n")}`,
+    };
+    window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+    if (detail.result === "已添加到当前会话草稿，尚未发送。") {
+      useChat.getState().setExecutionMode("execute");
+      setPlanDraftMessage("计划已加入草稿并切换到执行模式；请核对、设置预算后发送。");
+    } else setPlanDraftMessage(detail.result ?? "聊天输入区未就绪，请稍后重试。");
+  };
   return <div className="shrink-0 border-b border-line bg-surface-1 px-4 py-2 text-xs">
     {requestId && <div className="mb-2 flex flex-wrap items-center justify-between gap-2" role="status">
       <span className="font-medium text-status-warning">{run?.status === "awaiting_approval" ? "当前任务等待授权" : "当前任务等待回答"}</span>
@@ -89,6 +112,11 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
           </li>)}
         </ol> : <p>当前没有计划步骤。</p>}
         {md.codex_plan.truncated && <p>计划内容过长，显示已截断。</p>}
+        {run.mode === "plan" && run.status === "completed" && !md.codex_plan.truncated &&
+          (md.codex_plan.explanation || md.codex_plan.steps.length > 0) && <div className="space-y-1">
+            <Button type="button" size="sm" variant="secondary" disabled={stale} onClick={prepareStructuredPlan}>准备执行此计划</Button>
+            {planDraftMessage && <p role="status">{planDraftMessage}</p>}
+          </div>}
       </div>}
       <p>预算快照：{stale ? "状态待刷新" : data ? `累计已知${data.usage_complete === true ? "" : "至少 "}${data.known_tokens} · 预留/责任 ${data.reserved_tokens} · 上限 ${data.limit_tokens ?? "未设置"} · 剩余估算 ${data.remaining_estimate ?? "未知"}` : budget?.scope === scope && budget.error ? "读取失败" : record ? "该运行没有预算记录" : "读取中或未知"}</p>
       {data && data.unknown_attempts > 0 && <p>存在 {data.unknown_attempts} 个结果不明的请求，需在预算账本核对。</p>}

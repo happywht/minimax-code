@@ -116,7 +116,7 @@ export function useComposerDraft(sessionId: string | null): ComposerDraft {
   // This event is acknowledged only by the composer for the same live scope.
   useEffect(() => {
     const appendSource = (event: Event) => {
-      const detail = (event as CustomEvent<{ host: string; project: string; session: string; text: string; result?: string }>).detail;
+      const detail = (event as CustomEvent<{ host: string; project: string | null; session: string; text: string; result?: string }>).detail;
       const current = useSessionStore.getState(), previous = draftRef.current;
       if (!detail || typeof detail.text !== "string" || ipc.agentBaseUrl !== detail.host ||
           current.currentProjectId !== detail.project || current.currentSessionId !== detail.session ||
@@ -127,6 +127,7 @@ export function useComposerDraft(sessionId: string | null): ComposerDraft {
       draftRef.current = { id: previous.id, text: next };
       setDraft((state) => state.id === detail.session ? { ...state, text: next } : state);
       detail.result = "已添加到当前会话草稿，尚未发送。";
+      ref.current?.focus();
     };
     window.addEventListener("minimax:append-context", appendSource);
     return () => window.removeEventListener("minimax:append-context", appendSource);

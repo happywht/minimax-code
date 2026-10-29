@@ -23,7 +23,8 @@
  */
 import React, { useMemo, useState, type ChangeEvent } from "react";
 import type { Message, MessageStatus } from "../../types/ipc";
-import { useChat, useThemeStore, useSessionStore } from "../../stores";
+import { useChat, useThemeStore, useSessionStore, useRunTimelineStore } from "../../stores";
+import { ipc } from "../../ipc";
 import { extractFileReferences } from "./fileReferences";
 import { normalizeMarkdownForRender } from "./markdown";
 import { summarizeTurn, type TurnSummary } from "./turnSummary";
@@ -51,6 +52,7 @@ export const MessageItem = React.memo(function MessageItem({
 }: MessageItemProps): JSX.Element {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message.text);
+  const [planActionMessage, setPlanActionMessage] = useState("");
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
   const isSystem = message.role === "system";
@@ -73,6 +75,10 @@ export const MessageItem = React.memo(function MessageItem({
   const deleteMessage = useChat((s) => s.deleteMessage);
   const continueRun = useChat((s) => s.continueRun);
   const sessionEngine = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId)?.engine);
+  const sessionId = useSessionStore((s) => s.currentSessionId);
+  const projectId = useSessionStore((s) => s.currentProjectId);
+  const host = ipc.agentBaseUrl;
+  const planRun = useRunTimelineStore((s) => message.metadata?.run_id ? s.runs[message.metadata.run_id] : undefined);
   const codex = message.metadata?.engine === "codex" || sessionEngine === "codex";
   const chatBusy = useChat(
     (s) => s.status === "sending" || s.status === "streaming" || s.status === "cancelling",
@@ -111,6 +117,36 @@ export const MessageItem = React.memo(function MessageItem({
               : "border-line bg-surface-2 text-ink-0");
   const canEdit = !codex && isUser && !message.streaming;
   const canDelete = !codex && !isSystem && !message.streaming;
+  const canPreparePlan = isAssistant && !!sessionId && planRun?.session_id === sessionId &&
+    planRun.mode === "plan" && planRun.status === "completed" && planRun.assistant_message_id === message.id &&
+    !planRun.metadata?.truncated && !planRun.metadata?.codex_plan?.truncated &&
+    !message.metadata?.truncated && !message.metadata?.partial && !!message.text.trim();
+  const preparePlan = () => {
+    const state = useSessionStore.getState();
+    const liveRun = planRun && useRunTimelineStore.getState().runs[planRun.id];
+    const liveMessage = useChat.getState().messages.find((item) => item.id === message.id);
+    const timeline = useRunTimelineStore.getState();
+    if (!sessionId || ipc.agentBaseUrl !== host || timeline.loading || timeline.error ||
+        state.currentSessionId !== sessionId || state.currentProjectId !== projectId ||
+        !liveRun || liveRun.session_id !== sessionId || liveRun.mode !== "plan" || liveRun.status !== "completed" ||
+        liveRun.assistant_message_id !== message.id || liveRun.metadata?.truncated || liveRun.metadata?.codex_plan?.truncated ||
+        !liveMessage || liveMessage.text !== message.text || liveMessage.metadata?.truncated || liveMessage.metadata?.partial ||
+        ["sending", "streaming", "cancelling"].includes(useChat.getState().status)) {
+      setPlanActionMessage("计划或会话状态已变化，请刷新后重试。");
+      return;
+    }
+    const plan = liveRun.metadata?.codex_plan;
+    const structuredPlan = plan ? `\n\n引擎报告的计划：\n${plan.explanation ?? ""}\n${plan.steps.map((step, index) => `${index + 1}. ${step.step} (${step.status})`).join("\n")}` : "";
+    const detail: { host: string; project: string | null; session: string; text: string; result?: string } = {
+      host, project: projectId, session: sessionId,
+      text: `请执行以下我选择的计划；执行前核对当前工作区和必要授权。遇到需要我决定的事项请先询问。\n\n所选规划运行：${liveRun.id}\n\n${liveMessage.text}${structuredPlan}`,
+    };
+    window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+    if (detail.result === "已添加到当前会话草稿，尚未发送。") {
+      useChat.getState().setExecutionMode("execute");
+      setPlanActionMessage("计划已加入草稿并切换到执行模式；请核对、设置预算后发送。");
+    } else setPlanActionMessage(detail.result ?? "聊天输入区未就绪，请稍后重试。");
+  };
 
   return (
     <div
@@ -238,6 +274,10 @@ export const MessageItem = React.memo(function MessageItem({
           </div>
         )}
         {isAssistant && !message.streaming && <VerificationBadge evidence={message.metadata?.verification} />}
+        {canPreparePlan && <div className="mt-2 space-y-1">
+          <Button type="button" size="sm" variant="secondary" disabled={chatBusy} onClick={preparePlan}>准备执行此计划</Button>
+          {planActionMessage && <p role="status" className="text-xs text-ink-2">{planActionMessage}</p>}
+        </div>}
         {isFailed && !codex && <FailedMessageFooter message={message} />}
         {codex && message.metadata?.partial && <p className="text-xs text-status-warning">未完成输出；请核对工作区后使用运行恢复入口。</p>}
         {codex && isAssistant && message.metadata?.usage_certainty !== "observed" && <p className="text-xs text-ink-2">用量{message.metadata?.usage_certainty === "recovery_interval" ? "包含恢复期间的观测区间，不能精确归属本轮" : "未知或不确定"}</p>}
