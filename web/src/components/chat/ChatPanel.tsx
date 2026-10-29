@@ -23,6 +23,7 @@ import {
 import { MessageList } from "./MessageList";
 import { ProviderReadinessBanner } from "./ProviderReadinessBanner";
 import { WorkspaceDiagnostic } from "./WorkspaceDiagnostic";
+import { CurrentRunOverview } from "./CurrentRunOverview";
 import { AskUserCard } from "./AskUserCard";
 import { useChat, useSessionStore } from "../../stores";
 import { DropdownMenu, type DropdownMenuItem } from "../../ui/DropdownMenu";
@@ -40,12 +41,16 @@ export interface ChatPanelProps {
   testId?: string;
   onOpenProviderSettings?: () => void;
   onOpenModelSettings?: () => void;
+  connectionState?: "connecting" | "connected" | "disconnected" | "error";
+  onOpenTimeline?: () => void;
 }
 
 export function ChatPanel({
   testId = "chat-panel",
   onOpenProviderSettings = () => {},
   onOpenModelSettings = () => {},
+  connectionState = "connecting",
+  onOpenTimeline = () => {},
 }: ChatPanelProps): JSX.Element {
   const sessions = useSessionStore((s) => s.sessions);
   const currentId = useSessionStore((s) => s.currentSessionId);
@@ -323,6 +328,8 @@ export function ChatPanel({
           />
         </div>
       </header>
+
+      <CurrentRunOverview connection={connectionState} onOpenTimeline={onOpenTimeline} />
 
       {/* Search bar */}
       {searchOpen && (

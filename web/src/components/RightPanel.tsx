@@ -14,7 +14,7 @@
  * roster loading). All building blocks use the shared design-system
  * primitives from ``src/ui``.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AgentInfo } from "../types/ipc";
 import { CollapsedStrip } from "./right-panel/CollapsedStrip";
 import { FollowRunBar } from "./right-panel/FollowRunBar";
@@ -46,6 +46,11 @@ export function RightPanel({
 }: RightPanelProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
   const { activeTab, followRun, selectTab, resumeFollow } = useInspectorFollow(defaultTab);
+  useEffect(() => {
+    const openTimeline = () => { setCollapsed(false); selectTab("timeline"); };
+    window.addEventListener("minimax:open-timeline", openTimeline);
+    return () => window.removeEventListener("minimax:open-timeline", openTimeline);
+  }, [selectTab]);
   const { agents, agentsLoading, agentsError, fetchAgents } = useAgentTeam(
     initialAgents,
     loadAgents,

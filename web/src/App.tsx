@@ -363,6 +363,8 @@ export default function App() {
             ) : (
               <>
                 <ChatPanel
+                  connectionState={connState}
+                  onOpenTimeline={() => { setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline")); }}
                   onOpenProviderSettings={() => openSettings("providers")}
                   onOpenModelSettings={() => openSettings("models")}
                 />
