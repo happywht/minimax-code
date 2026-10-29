@@ -101,10 +101,12 @@ class RunService:
             self._by_run[job.run_id] = job
 
         async def drive() -> Any:
-            job.started = True
             finalized = False
             try:
                 async with lock:
+                    # Waiting jobs must not be task-cancelled: their finalizer
+                    # writes session state and must run under this same lease.
+                    job.started = True
                     error = None
                     try:
                         if job.cancel_requested:
@@ -264,7 +266,8 @@ class RunService:
                 job.cancel_callback()
             except Exception:
                 logger.exception("Run cancellation callback failed")
-        # A not-yet-started task must enter drive() to persist cancellation.
+        # A queued task must acquire the session lease before it persists its
+        # cancellation. Only interrupt a task that already owns the lease.
         if job.started:
             job.task.cancel()
         return True
