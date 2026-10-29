@@ -33,7 +33,26 @@ function readReportDraft(value: unknown): ReportDraft {
   return data as ReportDraft;
 }
 
-export type RetainedReportDraft = Omit<ReportDraft, "researchIds"> & { researchNeedsReview: boolean; file: File | null };
+// Only simple numeric markers are recognized; this is a navigation aid, not validation.
+function reportMarkers(body: string, sections: string, structured: boolean): number[] | null {
+  let text = body;
+  if (structured) {
+    try {
+      const value: unknown = JSON.parse(sections);
+      if (!Array.isArray(value)) return null;
+      const strings: string[] = [];
+      const collect = (item: unknown): void => {
+        if (typeof item === "string") strings.push(item);
+        else if (Array.isArray(item)) item.forEach(collect);
+        else if (item && typeof item === "object") Object.values(item).forEach(collect);
+      };
+      collect(value); text = strings.join("\n");
+    } catch { return null; }
+  }
+  return [...new Set(Array.from(text.matchAll(/\[([1-9][0-9]*)\]/g), (match) => Number(match[1])))].sort((a, b) => a - b);
+}
+
+export type RetainedReportDraft = Omit<ReportDraft, "researchIds"> & { researchNeedsReview: boolean; citationNeedsReview?: boolean; file: File | null };
 
 export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
@@ -57,8 +76,11 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const [sources, setSources] = useState<ReportSource[]>(initialDraft?.sources ?? []);
   const [researchSources, setResearchSources] = useState<ResearchSource[]>([]);
   const [researchNeedsReview, setResearchNeedsReview] = useState(initialDraft?.researchNeedsReview ?? false);
-  const draftRef = useRef<RetainedReportDraft>({ docName, title, body, format, structured, sections, visualSections, sources, researchNeedsReview, file });
-  draftRef.current = { docName, title, body, format, structured, sections, visualSections, sources, researchNeedsReview: researchNeedsReview || researchSources.length > 0, file };
+  const [citationNeedsReview, setCitationNeedsReview] = useState(initialDraft?.citationNeedsReview ?? false);
+  const markers = reportMarkers(body, sections, structured);
+  const noteSourceChange = () => { if (markers === null || markers.length) setCitationNeedsReview(true); };
+  const draftRef = useRef<RetainedReportDraft>({ docName, title, body, format, structured, sections, visualSections, sources, researchNeedsReview, citationNeedsReview, file });
+  draftRef.current = { docName, title, body, format, structured, sections, visualSections, sources, researchNeedsReview: researchNeedsReview || researchSources.length > 0, citationNeedsReview, file };
   useEffect(() => () => { onRetainDraft?.(draftRef.current); }, []);
   const importedSources = useRef<ResearchSource[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
@@ -165,7 +187,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     </div>
     <form className="flex flex-col gap-2 rounded border border-line p-3" onSubmit={(event) => {
       event.preventDefault(); setFormError(null);
-      if (researchNeedsReview) { setFormError("请先核对研究来源和正文引用编号。"); return; }
+      if (researchNeedsReview || citationNeedsReview) { setFormError("请先核对研究来源和正文引用编号。"); return; }
       if (sources.some((source) => !source.title.trim() || !source.url.trim())) {
         setFormError("请填写每条来源的标题和网址，或删除空来源。"); return;
       }
@@ -214,6 +236,8 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           setDocName(draft.docName); setTitle(draft.title); setBody(draft.body); setFormat(draft.format); setStructured(draft.structured);
           setSections(draft.sections); setVisualSections(draft.visualSections); setSources(draft.sources); setFormError(null);
           setResearchSources(importedSources.current); setResearchNeedsReview(false);
+          const restoredMarkers = reportMarkers(draft.body, draft.sections, draft.structured);
+          setCitationNeedsReview(restoredMarkers === null || restoredMarkers.length > 0);
         }} />
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
       <label>文件格式 <select aria-label="报告文件格式" value={format} onChange={(event) => {
@@ -240,21 +264,32 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <div className="space-y-2">
         <p>参考来源（可选，最多 30 条；正文可用 [1]、[2] 对应来源顺序。只保存提供的信息，不自动核验）</p>
         {sources.map((source, index) => <div key={index} className="space-y-1 rounded border border-line p-2">
-          <Input aria-label={`来源 ${index + 1} 标题`} placeholder="来源标题" value={source.title} onChange={(event) => setSources((current) => current.map((item, i) => i === index ? { ...item, title: event.target.value } : item))} />
-          <Input aria-label={`来源 ${index + 1} 网址`} placeholder="https://example.com" value={source.url} onChange={(event) => setSources((current) => current.map((item, i) => i === index ? { ...item, url: event.target.value } : item))} />
+          <Input aria-label={`来源 ${index + 1} 标题`} placeholder="来源标题" value={source.title} onChange={(event) => { noteSourceChange(); setSources((current) => current.map((item, i) => i === index ? { ...item, title: event.target.value } : item)); }} />
+          <Input aria-label={`来源 ${index + 1} 网址`} placeholder="https://example.com" value={source.url} onChange={(event) => { noteSourceChange(); setSources((current) => current.map((item, i) => i === index ? { ...item, url: event.target.value } : item)); }} />
           <Input aria-label={`来源 ${index + 1} 访问时间`} placeholder="可选：2026-10-29 或带时区的 ISO 时间" value={source.accessed_at ?? ""} onChange={(event) => setSources((current) => current.map((item, i) => i === index ? { ...item, accessed_at: event.target.value } : item))} />
-          <Button type="button" variant="secondary" onClick={() => setSources((current) => current.filter((_, i) => i !== index))}>删除来源 {index + 1}</Button>
+          <Button type="button" variant="secondary" onClick={() => { noteSourceChange(); setSources((current) => current.filter((_, i) => i !== index)); }}>删除来源 {index + 1}</Button>
         </div>)}
-        <Button type="button" variant="secondary" disabled={sources.length + researchSources.length >= 30} onClick={() => setSources((current) => [...current, { title: "", url: "" }])}>添加来源</Button>
+        <Button type="button" variant="secondary" disabled={sources.length + researchSources.length >= 30} onClick={() => { noteSourceChange(); setSources((current) => [...current, { title: "", url: "" }]); }}>添加来源</Button>
       </div>
       {researchNeedsReview && <div role="alert" className="rounded border border-line p-2">
         <p>恢复的草稿未保留所选研究来源。请重新选择所需来源，并核对正文中的引用编号；来源记录可能已变化或删除。</p>
         <Button type="button" variant="secondary" onClick={() => setResearchNeedsReview(false)}>已核对研究来源和引用编号</Button>
       </div>}
       <ReportResearchPicker project={projectId} session={sessionId} service={scoped ? state.serviceId : null}
-        selected={researchSources} onChange={setResearchSources} manualCount={sources.length} />
+        selected={researchSources} onChange={(items) => { noteSourceChange(); setResearchSources(items); }} manualCount={sources.length} />
+      <div className="space-y-2 rounded border border-line p-2" aria-label="正文来源编号对照">
+        <p>正文编号对照：仅识别形如 [1] 的独立数字标记；其他引用写法无法检查。请自行核对每处对应关系与事实。</p>
+        {markers === null ? <p role="status">章节 JSON 无法读取，不能检查编号；原草稿未更改。</p> : <>
+          <p>识别到的编号：{markers.length ? markers.map((number) => `[${number}]`).join("、") : "无"}。</p>
+          {markers.some((number) => number > sources.length + researchSources.length) && <p role="alert">有编号超出当前来源列表，请检查正文和来源。</p>}
+        </>}
+        <ol>{sources.map((source, index) => <li key={`manual-${index}`}>[{index + 1}] 手工来源：{source.title || "（未填写标题）"} · {source.url || "（未填写网址）"}</li>)}
+          {researchSources.map((source, index) => <li key={source.page_source_id}>[{sources.length + index + 1}] 研究来源：{source.title || "（页面未提供标题）"} · {source.url} · {source.page_source_id}</li>)}</ol>
+        {citationNeedsReview && <div role="alert"><p>来源或顺序已变化，或草稿已恢复；正文编号不会自动更新。请逐处核对后继续。</p>
+          <Button type="button" variant="secondary" onClick={() => setCitationNeedsReview(false)}>已核对正文编号和来源顺序</Button></div>}
+      </div>
       {formError && <p role="alert">{formError}</p>}
-      <Button type="submit" disabled={researchNeedsReview || !scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
+      <Button type="submit" disabled={researchNeedsReview || citationNeedsReview || !scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
       {ipc.isMock && <p role="status">演示模式不能生成报告。</p>}
     </form>
     {scoped && state.reportBatch && <div role="status" className="rounded border border-line p-2">
