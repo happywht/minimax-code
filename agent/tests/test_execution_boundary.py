@@ -18,7 +18,11 @@ from minimax_code.execution import (
     spawn_exec,
     spawn_shell,
 )
-from minimax_code.workspace_ctx import WorkspaceUnavailableError
+from minimax_code.workspace_ctx import (
+    WorkspaceUnavailableError,
+    reset_current_root,
+    set_current_root,
+)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object lifecycle")
@@ -118,6 +122,41 @@ async def test_nested_read_only_scope_does_not_restrict_parent_after_exit(tmp_pa
             with pytest.raises(ExecutionDeniedError, match="read-only"):
                 require_write_access()
         require_write_access()
+
+
+async def test_nested_workspace_cannot_widen_and_omission_inherits(tmp_path):
+    root = tmp_path / "parent"
+    child = root / "child"
+    outside = tmp_path / "outside"
+    child.mkdir(parents=True)
+    outside.mkdir()
+    with execution_scope(ExecutionPolicy(root)):
+        with pytest.raises(ExecutionDeniedError, match="outside the parent"):
+            with execution_scope(ExecutionPolicy(outside)):
+                pass
+        with execution_scope(ExecutionPolicy(child)):
+            with execution_scope(ExecutionPolicy()):
+                with pytest.raises(ExecutionDeniedError, match="outside the active"):
+                    await spawn_exec(sys.executable, "-c", "pass", cwd=root)
+            with pytest.raises(ExecutionDeniedError, match="outside the parent"):
+                with execution_scope(ExecutionPolicy(root)):
+                    pass
+        proc = await spawn_exec(sys.executable, "-c", "pass", cwd=root)
+        await communicate_bounded(proc, timeout=5)
+        assert proc.returncode == 0
+
+
+def test_implicit_parent_uses_current_session_root(tmp_path):
+    root = tmp_path / "session"
+    root.mkdir()
+    token = set_current_root(root)
+    try:
+        with execution_scope(ExecutionPolicy()):
+            with pytest.raises(ExecutionDeniedError, match="outside the parent"):
+                with execution_scope(ExecutionPolicy(tmp_path)):
+                    pass
+    finally:
+        reset_current_root(token)
 
 
 async def test_output_is_capped_while_draining_both_pipes(tmp_path):

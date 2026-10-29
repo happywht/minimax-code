@@ -27,7 +27,7 @@ def parent(tmp_path):
 async def test_independent_shell_and_explicit_collection(parent):
     (parent / "hello.txt").write_text("before")
     child = await prepare_child(parent, "run_shell")
-    with child.scope():
+    with execution_scope(ExecutionPolicy(workspace=parent)), child.scope():
         proc = await spawn_exec(sys.executable, "-c",
                                 "from pathlib import Path; Path('hello.txt').write_text('after')",
                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -42,6 +42,17 @@ async def test_independent_shell_and_explicit_collection(parent):
     assert (child.base / "backups/hello.txt").read_text() == "before"
     assert collect_child(load_child(parent, "run_shell"))["already_collected"]
     assert child.root.exists()  # No destructive implicit pruning.
+
+
+async def test_child_scope_cannot_switch_from_another_parent(parent, tmp_path):
+    child = await prepare_child(parent, "foreign")
+    other = tmp_path / "other"
+    other.mkdir()
+    with execution_scope(ExecutionPolicy(workspace=other)):
+        with pytest.raises(PermissionError, match="outside the parent"):
+            with child.scope():
+                pass
+        assert current_root() == parent
 
 
 async def test_parallel_children_detect_conflict_and_preflight_all_files(parent):
@@ -99,7 +110,8 @@ async def test_git_worktree_includes_dirty_inputs_without_touching_parent_index(
     (parent / "资料.txt").write_text("untracked")
     before = await _git(parent, "status", "--porcelain")
     index = await _git(parent, "diff", "--cached")
-    child = await prepare_child(parent, "git_child")
+    with execution_scope(ExecutionPolicy(workspace=parent)):
+        child = await prepare_child(parent, "git_child")
     assert child.record["kind"] == "git_worktree"
     assert (child.root / "source.txt").read_text() == "unstaged"
     assert (child.root / "资料.txt").read_text() == "untracked"

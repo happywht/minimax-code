@@ -44,11 +44,15 @@ def is_read_only() -> bool:
 
 @contextlib.contextmanager
 def execution_scope(policy: ExecutionPolicy) -> Iterator[None]:
-    # A nested scope may select an independently managed child workspace, but
-    # it must never turn a read-only parent run into a writable one.
     parent = _policy.get()
-    if parent is not None and parent.read_only and not policy.read_only:
-        policy = ExecutionPolicy(workspace=policy.workspace, read_only=True)
+    if parent is not None:
+        # Resolve at nesting time: the outer agent scope may be entered before
+        # its session root is installed. A missing inner root inherits this root.
+        root = require_directory(parent.workspace or current_root() or env_or_cwd_root())
+        target = require_directory(policy.workspace) if policy.workspace is not None else root
+        if not target.is_relative_to(root):
+            raise ExecutionDeniedError("Nested execution workspace is outside the parent workspace.")
+        policy = ExecutionPolicy(workspace=target, read_only=parent.read_only or policy.read_only)
     token = _policy.set(policy)
     try:
         yield

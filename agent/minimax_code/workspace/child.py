@@ -179,18 +179,19 @@ class ChildWorkspace:
     @contextmanager
     def scope(self):
         require_write_access()
-        root_token = set_current_root(self.root)
-        run_token = set_current_run_id(self.run_id)
-        artifact_token = _artifact_root.set(self.parent)
-        child_token = _active_child.set(self.run_id)
-        try:
-            with execution_scope(ExecutionPolicy(workspace=self.root)):
+        # Check the inherited execution boundary before changing current_root.
+        with execution_scope(ExecutionPolicy(workspace=self.root)):
+            root_token = set_current_root(self.root)
+            run_token = set_current_run_id(self.run_id)
+            artifact_token = _artifact_root.set(self.parent)
+            child_token = _active_child.set(self.run_id)
+            try:
                 yield
-        finally:
-            _active_child.reset(child_token)
-            _artifact_root.reset(artifact_token)
-            reset_current_run_id(run_token)
-            reset_current_root(root_token)
+            finally:
+                _active_child.reset(child_token)
+                _artifact_root.reset(artifact_token)
+                reset_current_run_id(run_token)
+                reset_current_root(root_token)
 
     def finish(self, state: str) -> None:
         self.record["state"] = state
