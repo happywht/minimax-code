@@ -203,6 +203,22 @@ function NotificationItem({
     } catch (error) { if (current()) setAttentionError(error instanceof Error ? error.message : "无法读取请求状态"); }
     finally { if (current()) setAttentionBusy(false); }
   };
+  const openAttentionHistory = () => {
+    try {
+      const binding = JSON.parse(entry.source_id || "") as { job_id?: unknown; occurrence_id?: unknown };
+      if (typeof binding.job_id !== "string" || !binding.job_id ||
+          typeof binding.occurrence_id !== "string" || !binding.occurrence_id) {
+        throw new Error("通知关联不完整，无法定位历史记录");
+      }
+      window.dispatchEvent(new CustomEvent("minimax:open-scheduled", {
+        detail: { jobId: binding.job_id, occurrenceId: binding.occurrence_id },
+      }));
+      useNotificationStore.getState().setOpen(false);
+      if (!entry.read) onMarkRead(entry.id);
+    } catch (error) {
+      setAttentionError(error instanceof Error ? error.message : "无法定位历史记录");
+    }
+  };
   return (
     <div
       className={`group flex items-start gap-2 border-b border-line/50 px-3 py-2 text-xs transition-colors hover:bg-surface-3 ${
@@ -230,6 +246,10 @@ function NotificationItem({
             <Button type="button" variant="ghost" size="sm" disabled={attentionBusy || entry.title === "定时任务请求已结束"}
               className="h-auto px-0 py-0 text-[11px] hover:underline" onClick={() => void openAttention()}>
               {attentionBusy ? "读取当前请求…" : entry.title === "定时任务请求已结束" ? "请求已结束" : "查看并处理请求"}
+            </Button>
+            <Button type="button" variant="ghost" size="sm"
+              className="ml-2 h-auto px-0 py-0 text-[11px] hover:underline" onClick={openAttentionHistory}>
+              查看关联历史
             </Button>
             {attentionError && <p role="status" className="text-status-warning">{attentionError}</p>}
           </div>
