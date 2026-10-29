@@ -86,6 +86,7 @@ export default function App() {
   const refreshCrashReport = useCrashRecoveryStore((s) => s.loadPreviousReport);
   const [view, setView] = useState<MainView>("chat");
   const automationEdited = useRef(false);
+  const settingsEdited = useRef(false);
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
@@ -160,7 +161,14 @@ export default function App() {
     automationEdited.current = false;
     return true;
   }, []);
+  const leaveSettings = useCallback(() => {
+    if (!settingsEdited.current) return true;
+    if (!window.confirm("设置中可能有未保存的编辑。离开会丢失草稿，确定离开吗？")) return false;
+    settingsEdited.current = false;
+    return true;
+  }, []);
   const handleViewChange = useCallback((next: SidebarView) => {
+    if ((overlayView === "settings" || overlayView === "agents") && next !== overlayView && !leaveSettings()) return;
     const automation = (value: string | null) => value === "scheduled" || value === "workflows" || value === "webhooks";
     if (automation(overlayView) && !automation(next) && !leaveAutomation()) return;
     if (next === "skills" || next === "settings" || next === "scheduled" || next === "workflows" || next === "webhooks" || next === "agents" || next === "artifacts" || next === "attachments" || next === "office" || next === "research" || next === "run-artifacts" || next === "task-dashboard") {
@@ -172,25 +180,26 @@ export default function App() {
     }
     setOverlayView(null);
     setView(next);
-  }, [overlayView, leaveAutomation]);
+  }, [overlayView, leaveAutomation, leaveSettings]);
 
   const openSettings = useCallback((tab: SettingsTab) => {
     if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return;
+    if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return;
     setSettingsInitialTab(tab);
     setOverlayView("settings");
-  }, [overlayView, leaveAutomation]);
+  }, [overlayView, leaveAutomation, leaveSettings]);
 
   useEffect(() => {
-    const openChat = () => { if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return; setOverlayView(null); setView("chat"); };
+    const openChat = () => { if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return; setOverlayView(null); setView("chat"); };
     window.addEventListener("minimax:open-chat", openChat);
     return () => window.removeEventListener("minimax:open-chat", openChat);
-  }, [overlayView, leaveAutomation]);
+  }, [overlayView, leaveAutomation, leaveSettings]);
 
   useEffect(() => {
-    const openScheduled = () => setOverlayView("scheduled");
+    const openScheduled = () => { if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; setOverlayView("scheduled"); };
     window.addEventListener("minimax:open-scheduled", openScheduled);
     return () => window.removeEventListener("minimax:open-scheduled", openScheduled);
-  }, []);
+  }, [overlayView, leaveSettings]);
 
   useEffect(() => {
     (async () => {
@@ -379,7 +388,7 @@ export default function App() {
               </>
             )}
             {overlayView && (
-              <WorkspaceOverlay onClose={() => { if (overlayView !== "scheduled" && overlayView !== "workflows" && overlayView !== "webhooks" || leaveAutomation()) setOverlayView(null); }}>
+              <WorkspaceOverlay onClose={() => { if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; if (overlayView !== "scheduled" && overlayView !== "workflows" && overlayView !== "webhooks" || leaveAutomation()) setOverlayView(null); }}>
                 <Suspense fallback={<DeferredPanelFallback />}>
                   {overlayView === "task-dashboard" ? (
                     <ProjectRunDashboard onClose={() => setOverlayView(null)} onOpenSession={() => {
@@ -395,7 +404,8 @@ export default function App() {
                     <SettingsPage
                       key={overlayView}
                       initialTab={settingsInitialTab}
-                      onClose={() => setOverlayView(null)}
+                      onEdit={() => { settingsEdited.current = true; }}
+                      onClose={() => { if (leaveSettings()) setOverlayView(null); }}
                     />
                   )}
                 </Suspense>
