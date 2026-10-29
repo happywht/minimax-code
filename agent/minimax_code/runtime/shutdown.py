@@ -22,13 +22,25 @@ async def _drain_tasks(tasks) -> None:
 
 
 async def _shutdown(server: Any) -> None:
-    from ..app import get_db, get_execution_profiles, get_mcp_registry, get_subagent_llm
+    from ..app import (
+        begin_codebase_shutdown,
+        drain_codebase_shutdown,
+        get_db,
+        get_execution_profiles,
+        get_mcp_registry,
+        get_subagent_llm,
+    )
     from ..ipc.builtins import _ACTIVE_RUNS
     from ..ipc.handlers_terminal import _SESSIONS
     from ..orchestrator.subagent import _BACKGROUND_RUNS
     from ..runs import RunShutdownError, get_run_service
     from ..scheduler import quiesce_scheduler
 
+    # Fence auto and explicit index builds before any shutdown await.
+    try:
+        begin_codebase_shutdown()
+    except Exception as exc:
+        raise ShutdownIncomplete("Codebase indexer cannot be fenced") from exc
     # Stop new scheduled admissions before draining the owners of actual work.
     await quiesce_scheduler()
     try:
@@ -50,6 +62,10 @@ async def _shutdown(server: Any) -> None:
     if any(s.process is not None and s.process.returncode is None for s in _SESSIONS.values()):
         raise ShutdownIncomplete("A terminal process is still running")
     await quiesce_scheduler(wait=True)
+    try:
+        await drain_codebase_shutdown()
+    except BaseException as exc:
+        raise ShutdownIncomplete("Codebase index cleanup was not confirmed") from exc
     catalog = get_execution_profiles()
     if catalog is not None:
         try:
@@ -94,7 +110,8 @@ async def shutdown_runtime(server: Any) -> None:
     """All callers await one teardown; repeated cancellation cannot cancel it.
 
     A cancelled caller still waits for teardown before propagating cancellation.
-    No timeout is interpreted as proof of completion.
+    No timeout is interpreted as proof of completion. Runtime restart in the
+    same process is not supported; start a fresh service process.
     """
     task = getattr(server, "_runtime_shutdown_task", None)
     if task is None:

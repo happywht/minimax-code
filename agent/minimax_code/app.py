@@ -58,6 +58,8 @@ _CODEBASE_INDEXER: Any = None  # type: ignore[no-untyped-def]
 # uses the legacy ``root_key=''`` storage shard so existing indexes and
 # incremental state survive the upgrade untouched. No LRU by design.
 _CODEBASE_INDEXERS: dict[str, Any] = {}
+_CODEBASE_INDEX_CLOSING = False
+_CODEBASE_AUTO_TASKS: set[asyncio.Task[Any]] = set()
 # Plugin registry singleton (platform pillar #3 — Plugins). Lazily
 # built by ensure_plugin_registry(); tests inject via set_plugin_registry().
 _PLUGIN_REGISTRY: Any = None  # type: ignore[no-untyped-def]
@@ -518,6 +520,8 @@ def ensure_codebase_indexer(root: Path | None = None) -> Any:
     treat that as "codebase search disabled", same as before.
     """
     global _CODEBASE_INDEXER
+    if _CODEBASE_INDEX_CLOSING:
+        return None
     workspace = (
         Path(root).expanduser().resolve()
         if root is not None
@@ -559,7 +563,7 @@ def _schedule_codebase_index_build(*, delay_s: float = 5.0) -> None:
     rest of the application. ``MINIMAX_CODE_DISABLE_AUTO_INDEX=1`` skips
     the auto-build for tests or resource-constrained environments.
     """
-    if os.environ.get("MINIMAX_CODE_DISABLE_AUTO_INDEX"):
+    if _CODEBASE_INDEX_CLOSING or os.environ.get("MINIMAX_CODE_DISABLE_AUTO_INDEX"):
         return
 
     async def _build() -> None:
@@ -573,7 +577,9 @@ def _schedule_codebase_index_build(*, delay_s: float = 5.0) -> None:
             logger.exception("auto codebase index build failed")
 
     try:
-        asyncio.get_running_loop().create_task(_build())
+        task = asyncio.get_running_loop().create_task(_build())
+        _CODEBASE_AUTO_TASKS.add(task)
+        task.add_done_callback(_CODEBASE_AUTO_TASKS.discard)
     except RuntimeError:
         # No running loop during synchronous startup paths; ignore.
         pass
@@ -594,6 +600,41 @@ def _schedule_codebase_index_build(*, delay_s: float = 5.0) -> None:
 # pool is shared across every ``agent.invoke`` request.
 
 _SUBAGENT_LLM: Any = None  # type: ignore[no-untyped-def]
+
+
+def begin_codebase_shutdown() -> None:
+    """Prevent creation and start of index builds before yielding control."""
+    global _CODEBASE_INDEX_CLOSING
+    _CODEBASE_INDEX_CLOSING = True
+    indexers = list(_CODEBASE_INDEXERS.values())
+    if _CODEBASE_INDEXER is not None:
+        indexers.append(_CODEBASE_INDEXER)
+    seen: set[int] = set()
+    for indexer in indexers:
+        if id(indexer) in seen:
+            continue
+        seen.add(id(indexer))
+        if not callable(getattr(indexer, "begin_close", None)) or not callable(
+            getattr(indexer, "close", None)
+        ):
+            raise RuntimeError("codebase indexer must support begin_close and close")
+        indexer.begin_close()
+
+
+async def drain_codebase_shutdown() -> None:
+    """Stop delayed launches and await existing index writers before DB close."""
+    for task in list(_CODEBASE_AUTO_TASKS):
+        task.cancel()
+    await asyncio.gather(*list(_CODEBASE_AUTO_TASKS), return_exceptions=True)
+    indexers = list(_CODEBASE_INDEXERS.values())
+    if _CODEBASE_INDEXER is not None:
+        indexers.append(_CODEBASE_INDEXER)
+    # Deduplicate the default indexer, which is also stored in the root map.
+    seen: set[int] = set()
+    for indexer in indexers:
+        if id(indexer) not in seen:
+            seen.add(id(indexer))
+            await indexer.close()
 
 
 def get_subagent_llm() -> Any:

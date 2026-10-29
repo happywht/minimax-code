@@ -29,6 +29,10 @@ def lifetime(monkeypatch):
         order.append("llm-close")
     db = SimpleNamespace(close=AsyncMock(side_effect=close_db))
     llm = SimpleNamespace(close=AsyncMock(side_effect=close_llm))
+    monkeypatch.setattr(app, "_CODEBASE_INDEX_CLOSING", False)
+    monkeypatch.setattr(app, "_CODEBASE_INDEXERS", {})
+    monkeypatch.setattr(app, "_CODEBASE_INDEXER", None)
+    monkeypatch.setattr(app, "_CODEBASE_AUTO_TASKS", set())
     monkeypatch.setattr(app, "get_db", lambda: db)
     monkeypatch.setattr(app, "get_subagent_llm", lambda: llm)
     monkeypatch.setattr(app, "get_mcp_registry", lambda: None)
@@ -285,3 +289,116 @@ async def test_historical_failed_task_does_not_poison_later_shutdown(lifetime):
     assert lifetime.db.close.await_count == 1
     await shutdown_runtime(lifetime.server)
     assert lifetime.db.close.await_count == 1
+
+
+async def test_shutdown_cancels_delayed_auto_index_before_db_close(lifetime, monkeypatch):
+    from minimax_code import app
+
+    attempted = []
+    monkeypatch.delenv("MINIMAX_CODE_DISABLE_AUTO_INDEX", raising=False)
+    monkeypatch.setattr(app, "get_codebase_indexer", lambda: attempted.append(True))
+    app._schedule_codebase_index_build(delay_s=60)
+    assert len(app._CODEBASE_AUTO_TASKS) == 1
+    await shutdown_runtime(lifetime.server)
+    assert not attempted
+    assert not app._CODEBASE_AUTO_TASKS
+    assert lifetime.db.close.await_count == 1
+    app._schedule_codebase_index_build(delay_s=0)
+    assert not app._CODEBASE_AUTO_TASKS
+
+
+async def test_shutdown_fences_new_builds_and_waits_for_active_index(lifetime, monkeypatch, tmp_path):
+    from minimax_code import app
+    from minimax_code.codebase.indexer import CodebaseIndexer
+
+    indexer = CodebaseIndexer(tmp_path, object())
+    app._CODEBASE_INDEXERS["workspace"] = indexer
+    started, release = asyncio.Event(), asyncio.Event()
+    async def build(*, force):
+        started.set()
+        await release.wait()
+    monkeypatch.setattr(indexer, "_run_build", build)
+    await indexer.build_index()
+    await started.wait()
+    closing = asyncio.create_task(shutdown_runtime(lifetime.server))
+    while not indexer._closing:
+        await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="closing"):
+        await indexer.build_index()
+    assert app.ensure_codebase_indexer(tmp_path / "other") is None
+    assert lifetime.db.close.await_count == 0
+    release.set()
+    await closing
+    assert lifetime.db.close.await_count == 1
+    assert app.ensure_codebase_indexer(tmp_path) is None
+    with pytest.raises(RuntimeError, match="closing"):
+        await indexer.build_index()
+
+
+async def test_shutdown_fences_build_already_waiting_for_index_lock(lifetime, tmp_path):
+    from minimax_code import app
+    from minimax_code.codebase.indexer import CodebaseIndexer
+
+    indexer = CodebaseIndexer(tmp_path, object())
+    app._CODEBASE_INDEXERS["workspace"] = indexer
+    await indexer._lock.acquire()
+    build = asyncio.create_task(indexer.build_index())
+    await asyncio.sleep(0)
+    closing = asyncio.create_task(shutdown_runtime(lifetime.server))
+    while not indexer._closing:
+        await asyncio.sleep(0)
+    indexer._lock.release()
+    with pytest.raises(RuntimeError, match="closing"):
+        await build
+    await closing
+    assert indexer._task is None
+    assert lifetime.db.close.await_count == 1
+
+
+async def test_cancelled_index_build_does_not_confirm_shutdown(lifetime, monkeypatch, tmp_path):
+    from minimax_code import app
+    from minimax_code.codebase.indexer import CodebaseIndexer
+
+    indexer = CodebaseIndexer(tmp_path, object())
+    app._CODEBASE_INDEXERS["workspace"] = indexer
+    started = asyncio.Event()
+    async def build(*, force):
+        started.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(indexer, "_run_build", build)
+    await indexer.build_index()
+    await started.wait()
+    indexer._task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await indexer._task
+    with pytest.raises(ShutdownIncomplete, match="index cleanup"):
+        await shutdown_runtime(lifetime.server)
+    assert lifetime.db.close.await_count == 0
+
+
+async def test_shutdown_accepts_indexer_with_lifecycle_protocol(lifetime):
+    from minimax_code import app
+
+    events = []
+    class Indexer:
+        def begin_close(self):
+            events.append("fence")
+        async def close(self):
+            assert lifetime.db.close.await_count == 0
+            events.append("drained")
+    indexer = Indexer()
+    app._CODEBASE_INDEXERS["fake"] = indexer
+    app._CODEBASE_INDEXER = indexer
+    await shutdown_runtime(lifetime.server)
+    assert events == ["fence", "drained"]
+    assert lifetime.db.close.await_count == 1
+
+
+async def test_shutdown_rejects_indexer_without_lifecycle_protocol(lifetime):
+    from minimax_code import app
+
+    app._CODEBASE_INDEXERS["fake"] = object()
+    with pytest.raises(ShutdownIncomplete, match="cannot be fenced"):
+        await shutdown_runtime(lifetime.server)
+    assert lifetime.db.close.await_count == 0
+    assert app._CODEBASE_INDEX_CLOSING

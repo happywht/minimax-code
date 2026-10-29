@@ -80,6 +80,7 @@ class CodebaseIndexer:
         self._progress = IndexProgress()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[Any] | None = None
+        self._closing = False
 
     @property
     def root_key(self) -> str:
@@ -129,6 +130,8 @@ class CodebaseIndexer:
         Otherwise starts a background task and returns the initial status.
         """
         async with self._lock:
+            if self._closing:
+                raise RuntimeError("codebase indexer is closing")
             if self._progress.status == IndexStatus.INDEXING:
                 return self.to_dict()
             if self._task is not None and not self._task.done():
@@ -136,6 +139,19 @@ class CodebaseIndexer:
             self._progress = IndexProgress(status=IndexStatus.INDEXING)
             self._task = asyncio.create_task(self._run_build(force=force))
         return self.to_dict()
+
+    def begin_close(self) -> None:
+        """Fence new builds without yielding to a concurrent build request."""
+        self._closing = True
+
+    async def close(self) -> None:
+        """Wait for the existing build, including its thread-backed file reads."""
+        self.begin_close()
+        async with self._lock:
+            task = self._task
+        if task is not None:
+            # Do not cancel: asyncio.to_thread work can outlive cancellation.
+            await asyncio.shield(task)
 
     async def _run_build(self, *, force: bool) -> None:
         """Actual indexing work executed in a background task.
