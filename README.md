@@ -89,6 +89,9 @@ A: 会话与配置等元数据在系统数据目录中的 SQLite；项目文件�
 **Q: 换机器怎么迁移？**
 A: 旧机器 Settings → Data 导出 JSON → 新机器安装启动后在同一入口导入。导入是替换式整体事务（all-or-nothing），失败自动回滚。
 
+**Q: Windows 如何日常启动？**
+A: 首次准备依赖和前端后，可双击根目录的 `Start-MiniMax-Code.cmd`，保留窗口并在浏览器打开输出的本地地址。启动器不会安装或更新软件；详情见 [部署指南](docs/deployment.md)。
+
 **Q: 启动 agent 提示 dist 缺失？**
 A: 先执行一次 `pnpm build`，再运行 `pnpm start`。生产启动不会重新构建或安装依赖；缺少前端产物时会给出准备命令。开发模式的 `pnpm dev:agent` 仍允许只启动 API。
 

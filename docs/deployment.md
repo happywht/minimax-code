@@ -41,6 +41,8 @@ curl http://127.0.0.1:8765/health
 - `db: true` —— SQLite 可写
 - `data_dir` —— 数据目录名（basename，不含用户路径）
 
+Windows 上完成上述准备后，可双击发布目录根部的 `Start-MiniMax-Code.cmd`，或为它创建快捷方式；启动器会切换到自身目录并直接运行现有生产启动器，不需要每次输入 `pnpm start`。保留窗口打开，在浏览器访问 Agent 输出的回环地址；关闭窗口可能中断运行。Node.js 不在 PATH 或环境缺失时窗口会保留错误提示，需自行修复准备环境；它不安装、构建、更新或覆盖配置和数据，也不自动连接已经占用端口的其他服务。相对工作区环境变量按启动器所在目录解析。该入口尚未经过安装演练。
+
 生产启动入口为 `scripts/start-production.mjs`，不运行构建、安装或 `uv sync`。
 默认使用 `agent/.venv` 中的平台 Python；设置 `UV_PROJECT_ENVIRONMENT` 时使用该环境
 （相对路径以 `agent/` 为基准），也可用绝对路径 `MINIMAX_CODE_PYTHON` 指定已安装的解释器。
