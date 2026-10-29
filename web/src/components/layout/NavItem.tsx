@@ -38,7 +38,7 @@ export function NavItem({
       data-selected={selected ? "true" : "false"}
       aria-current={selected ? "page" : undefined}
       className={
-        "group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors duration-150 " +
+        "group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent " +
         (selected
           ? "bg-accent-subtle text-ink-0"
           : "text-ink-1 hover:bg-surface-3 hover:text-ink-0")

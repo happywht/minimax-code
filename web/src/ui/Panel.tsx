@@ -25,17 +25,17 @@ export function Panel({
   return (
     <section
       className={
-        "flex min-h-0 flex-col overflow-hidden rounded-lg border border-line bg-surface-2 " +
+        "flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-line bg-surface-2 " +
         className
       }
       {...rest}
     >
       {(title != null || actions != null) && (
-        <header className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-line px-3">
-          <h3 className="truncate text-xs font-semibold uppercase tracking-wide text-ink-1">
+        <header className="flex min-h-10 shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-line px-3 py-2">
+          <h3 className="min-w-0 text-xs font-semibold text-ink-0">
             {title}
           </h3>
-          {actions != null && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
+          {actions != null && <div className="flex flex-wrap items-center gap-1">{actions}</div>}
         </header>
       )}
       <div className={"min-h-0 flex-1 " + (flush ? "" : "p-3")}>{children}</div>

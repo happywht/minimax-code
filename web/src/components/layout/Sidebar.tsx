@@ -580,7 +580,7 @@ export function Sidebar({
       </div>
 
       {/* Four daily areas; each child retains the existing view/filter behavior. */}
-      <nav aria-label="日常导航" className="max-h-[42%] shrink-0 space-y-1 overflow-y-auto px-2" data-testid="sidebar-nav">
+      <nav aria-label="日常导航" className="max-h-[42%] shrink-0 space-y-1 overflow-y-auto px-2 pb-2" data-testid="sidebar-nav">
         {([
           { id: "projects" as const, label: "项目与任务", icon: <Folder size={14} />, items: <>
             <NavItem icon={<Folder size={14} />} label="项目与任务列表" selected={navigationGroup === "projects" && view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-projects" />
@@ -613,7 +613,7 @@ export function Sidebar({
             data-testid={`sidebar-area-${group.id}`}>
             <span className="text-ink-2">{group.icon}</span><span className="flex-1">{group.label}</span>{navigationGroup === group.id ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           </button>
-          {navigationGroup === group.id && <div id={`sidebar-group-${group.id}`} className="ml-2 border-l border-line pl-1">{group.items}</div>}
+          {navigationGroup === group.id && <div id={`sidebar-group-${group.id}`} className="ml-2 space-y-0.5 border-l border-line pl-1">{group.items}</div>}
         </div>)}
         {onViewChange && <NavItem icon={<SettingsIcon size={14} />} label="设置" selected={view === "settings"} onClick={() => onViewChange("settings")} testId="sidebar-nav-settings" />}
       </nav>

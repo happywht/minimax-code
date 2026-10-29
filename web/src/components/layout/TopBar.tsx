@@ -40,7 +40,7 @@ export function TopBar({
   return (
     <header
       data-testid={testId}
-      className="flex h-10 w-full shrink-0 items-center justify-between gap-2 border-b border-line bg-surface-1 px-2 md:px-3"
+      className="flex h-11 w-full shrink-0 items-center justify-between gap-1 border-b border-line bg-surface-1 px-2 sm:gap-2 md:px-3"
     >
       <div
         data-testid="app-topbar-left"
@@ -63,7 +63,7 @@ export function TopBar({
       </div>
       <div
         data-testid="app-topbar-right"
-        className="flex shrink-0 items-center gap-1"
+        className="flex shrink-0 items-center gap-0.5 sm:gap-1"
       >
         {rightSlot}
         {onToggleInspector && (
@@ -105,6 +105,8 @@ export function TopBar({
           variant="ghost"
           icon={<SettingsIcon size={14} />}
           onClick={onOpenSettings}
+          aria-label={strings.layout.topbar.settings}
+          title={strings.layout.topbar.settings}
           data-testid="app-topbar-settings"
         >
           <span className="hidden sm:inline">{strings.layout.topbar.settings}</span>

@@ -6,7 +6,7 @@ import { forwardRef, type InputHTMLAttributes, type TextareaHTMLAttributes } fro
 const FIELD_CLASSES =
   "w-full rounded-md border border-line bg-surface-2 text-ink-0 outline-none " +
   "transition-colors duration-150 placeholder:text-ink-2 " +
-  "hover:border-line-strong focus:border-accent/60 " +
+  "hover:border-line-strong focus:border-accent/60 focus-visible:ring-2 focus-visible:ring-accent/30 " +
   "disabled:cursor-not-allowed disabled:opacity-50";
 
 export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {

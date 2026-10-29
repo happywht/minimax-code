@@ -506,7 +506,7 @@ function WorkspaceOverlay({
         className="absolute inset-0 cursor-default"
         onClick={onClose}
       />
-      <div className="relative h-full min-w-0 overflow-hidden rounded-lg border border-minimax-border bg-minimax-bg shadow-2xl shadow-black/20 animate-in fade-in-0 zoom-in-95 duration-200">
+      <div className="relative h-full min-w-0 overflow-hidden rounded-xl border border-line bg-surface-0 shadow-modal animate-in fade-in-0 zoom-in-95 duration-200">
         {children}
       </div>
     </div>
