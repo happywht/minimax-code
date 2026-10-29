@@ -425,18 +425,21 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     finally { if (current()) setBusy(false); }
   };
   const resolveText = async () => {
-    if (!review || !merge || busy || !allowCollect) return;
+    if (!review || !merge || busy || (!allowCollect && !review.team_collection?.eligible)) return;
     const snapshot = review, draft = merge, ticket = ++generation.current, host = ipc.agentBaseUrl;
     const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
       useSessionStore.getState().currentSessionId === sessionId &&
       (useSessionStore.getState().currentProjectId === projectId || (!projectId && useSessionStore.getState().currentProjectId === "inbox"));
     setBusy(true); setMessage("");
     try {
+      const interruptedResolution = !allowCollect;
+      if (interruptedResolution && !snapshot.team_collection?.step_id) throw new Error("缺少成员完成记录或停止证据");
       const accepted = await requestConfirmation({ title: "写入手动合并结果", confirmLabel: "确认写入",
-        description: `将用编辑框的完整内容替换父目录文件 ${snapshot.root} / ${draft.path}。请先核对两侧差异和编辑内容；系统会保留写入前备份与子工作区，并检查审阅版本。` });
+        description: `${interruptedResolution ? "请先核对团队及相关进程确已停止。受管任务已收束并不证明外逸进程不存在。" : ""}将用编辑框的完整内容替换父目录文件 ${snapshot.root} / ${draft.path}。请先核对两侧差异和编辑内容；系统会保留写入前备份与子工作区，并检查审阅版本。` });
       if (!accepted || !current()) return;
       const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string; resolution: { path: string; backup: string } }>("run.child_workspace", {
         run_id: runId, session_id: sessionId, ...(teamRunId ? { team_run_id: teamRunId } : {}), action: "resolve_text",
+        ...(interruptedResolution ? { confirmed_team_stopped: true, expected_team_step_id: snapshot.team_collection!.step_id } : {}),
         revision: snapshot.revision, expected_service_id: snapshot.service_id, path: draft.path, content: draft.text,
       });
       if (!current()) return;
@@ -569,7 +572,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       {review.files.map((file) => <details key={file.path}><summary>{file.path}{file.conflict ? ` · 冲突：${file.conflict}` : file.resolved ? " · 已手动合并" : ""}</summary>
         {file.diff_unavailable ? <p>差异过大或非 UTF-8，请手动查看。</p> : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.diff || "（内容相同或无文本差异）"}</pre>}
         {file.diff_truncated && <p>差异已截断，请手动查看。</p>}
-        {allowCollect && file.conflict === "parent_changed" && file.merge_parent_text !== undefined && <button type="button" disabled={busy} onClick={() => setMerge({ path: file.path, text: file.merge_parent_text! })}>编辑手动合并结果</button>}
+        {(allowCollect || review.team_collection?.eligible) && file.conflict === "parent_changed" && file.merge_parent_text !== undefined && <button type="button" disabled={busy} onClick={() => setMerge({ path: file.path, text: file.merge_parent_text! })}>编辑手动合并结果</button>}
         {merge?.path === file.path && <div className="space-y-1">
           <p>初始内容为当前父文件；请参考上方差异自行合并子任务成果。提交将写入完整文件。</p>
           {file.merge_child_text !== undefined ? <details><summary>查看完整子任务文件（只读）</summary>
