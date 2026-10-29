@@ -12,7 +12,7 @@ const clip = (text: string, limit: number) => text.length > limit ? `${text.slic
 type Prepared = { text: string; service: string };
 
 /** Prepares editable context from a persisted run; it never sends a task. */
-export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null {
+export function FollowupRunDraft({ run, allowOtherSession = false }: { run: AgentRun; allowOtherSession?: boolean }): JSX.Element | null {
   const session = useSessionStore((s) => s.currentSessionId);
   const project = useSessionStore((s) => s.currentProjectId);
   const host = ipc.agentBaseUrl;
@@ -21,15 +21,16 @@ export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null
   const epoch = useRef(0);
   useEffect(() => { ++epoch.current; setPrepared(null); setMessage(""); setBusy(false); return () => { ++epoch.current; }; }, [run.id, session, project, host]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setPrepared(null); setBusy(false); setMessage("连接变化，请重新准备草稿。"); }), []);
-  const available = !!project && !!session && run.session_id === session && run.metadata?.project_id === project && terminal.has(run.status);
+  const sourceSession = run.session_id;
+  const available = !!project && !!session && (allowOtherSession || sourceSession === session) && run.metadata?.project_id === project && terminal.has(run.status);
   if (!available || !project || !session) return null;
   const isCurrent = (ticket: number) => ticket === epoch.current && ipc.agentBaseUrl === host &&
     useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === session;
   const read = async (ticket: number): Promise<Prepared> => {
     const identity = await typedIPC.getServiceIdentity();
     if (!isCurrent(ticket) || !identity.service_id) throw new Error("服务或会话已变化");
-    const [snapshot, attachments, summary] = await Promise.all([
-      typedIPC.getRunSteps(run.id), typedIPC.listAttachments(project),
+    const [snapshot, attachments, target, source, summary] = await Promise.all([
+      typedIPC.getRunSteps(run.id), typedIPC.listAttachments(project), typedIPC.getSession(session), typedIPC.getSession(sourceSession),
       typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: identity.service_id, run_id: run.id })
         .then((value) => ({ value }), (error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -37,17 +38,22 @@ export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null
           return { value: null };
         }),
     ]);
-    const after = await typedIPC.getServiceIdentity();
+    const [after, targetAfter, sourceAfter] = await Promise.all([typedIPC.getServiceIdentity(), typedIPC.getSession(session), typedIPC.getSession(sourceSession)]);
     if (!isCurrent(ticket) || after.service_id !== identity.service_id || attachments.service_id !== identity.service_id ||
-        snapshot.run.id !== run.id || snapshot.run.session_id !== session || snapshot.run.metadata?.project_id !== project || !terminal.has(snapshot.run.status) ||
+        target.session.id !== session || target.session.project_id !== project || target.session.archived ||
+        targetAfter.session.id !== session || targetAfter.session.project_id !== project || targetAfter.session.archived ||
+        source.session.id !== sourceSession || source.session.project_id !== project || source.session.archived ||
+        sourceAfter.session.id !== sourceSession || sourceAfter.session.project_id !== project || sourceAfter.session.archived ||
+        (sourceSession !== session && summary.value === null) ||
+        snapshot.run.id !== run.id || snapshot.run.session_id !== sourceSession || snapshot.run.metadata?.project_id !== project || !terminal.has(snapshot.run.status) ||
         (summary.value !== null && (summary.value.project_id !== project || summary.value.service_id !== identity.service_id || !summary.value.detail ||
-        summary.value.detail.id !== run.id || summary.value.detail.session_id !== session || summary.value.detail.status !== snapshot.run.status)))
+        summary.value.detail.id !== run.id || summary.value.detail.session_id !== sourceSession || summary.value.detail.status !== snapshot.run.status)))
       throw new Error("运行、项目或服务归属已变化，请刷新");
     const saved = snapshot.run, raw = saved.metadata?.verification as VerificationEvidence | undefined;
     const evidence = raw?.version === 1 ? raw : undefined;
     const result = evidence?.validation;
     const lines = ["请基于以下已记录运行准备后续任务（目标请补充；请先核对原记录与文件）：",
-      `运行：${saved.id} · ${clip(saved.title || "未命名", 240)}`, `运行状态：${statuses[saved.status] ?? saved.status}（不代表业务验收）`,
+      `来源会话：${sourceSession} · 运行：${saved.id} · ${clip(saved.title || "未命名", 240)}`, `运行状态：${statuses[saved.status] ?? saved.status}（不代表业务验收）`,
       `验证记录：${evidence ? verdicts[evidence.verdict ?? "unknown"] ?? "未知" : "历史记录未提供验证证据"}`];
     const detail = summary.value?.detail;
     if (!detail) lines.push("运行文本回执：无法读取；请打开所属会话核对。其他已确认的记录仍列于下方。");
@@ -64,7 +70,7 @@ export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null
       lines.push(`命令输出未加入草稿${result.stdout_truncated || result.stderr_truncated ? "；已保存输出存在截断" : ""}，请在原运行中查看。`);
     } else lines.push("未记录可用验证命令或结果。");
     if (saved.status !== "completed") {
-      const reviewSteps = snapshot.steps.filter((step) => step.run_id === saved.id && step.session_id === session &&
+      const reviewSteps = snapshot.steps.filter((step) => step.run_id === saved.id && step.session_id === sourceSession &&
         (step.payload?.outcome === "unknown" || step.payload?.requires_review === true ||
           (step.kind === "tool_call" && step.status !== "completed")));
       lines.push("待核对的已记录步骤（状态不是副作用的证明，请检查文件及外部系统）：");
@@ -74,7 +80,7 @@ export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null
       lines.push("已核对的进展：（请填写）", "未完成事项：（请填写）", "不确定的操作及外部副作用：（请核对后填写）");
       lines.push("预算与未知用量：（请核对原运行及子任务；未知不等于零）");
     }
-    const records = snapshot.steps.filter((step) => step.run_id === saved.id && step.session_id === session && step.status === "completed" &&
+    const records = snapshot.steps.filter((step) => step.run_id === saved.id && step.session_id === sourceSession && step.status === "completed" &&
       step.payload?.source === "run_attachment_v1" && step.payload?.project_id === project && step.payload?.service_id === identity.service_id);
     const rows = records.map((step) => attachments.attachments.find((item) => item.id === step.payload?.attachment_id &&
       item.sha256 === step.payload?.sha256 && item.project_id === project && item.service_id === identity.service_id)).filter((item) => !!item);
@@ -110,10 +116,11 @@ export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null
   };
   return <div className="space-y-2 text-xs" data-testid={`run-followup-${run.id}`}>
     <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void prepare()}>准备后续任务草稿</Button>
-    {prepared && <div className="space-y-2 rounded border border-line p-2"><p>以下是待追加的草稿，请核对；不会自动发送。</p>
+    {prepared && <div className="space-y-2 rounded border border-line p-2"><p>来源会话：{sourceSession}；目标会话：{session}。请核对以下草稿；不会自动发送。</p>
       <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-1 p-2">{prepared.text}</pre>
       <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy} onClick={() => void append()}>追加到当前会话草稿</Button>
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setPrepared(null)}>取消</Button></div></div>}
     {message && <p role="status" className="break-words text-ink-1">{message}</p>}
+    {message === "已添加到当前会话草稿，尚未发送。" && <Button type="button" size="sm" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}
   </div>;
 }

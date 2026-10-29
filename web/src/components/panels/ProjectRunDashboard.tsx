@@ -7,6 +7,7 @@ import { VerificationBadge } from "../chat/VerificationBadge";
 import { VerificationDetails } from "../chat/VerificationDetails";
 import { RunAttachments } from "../right-panel/RunAttachments";
 import { RunTextArtifacts } from "../right-panel/RunTextArtifacts";
+import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 
 type Group = "attention" | "active" | "recent";
 const groupLabels: Record<Group, string> = { attention: "等待处理", active: "运行与排队", recent: "最近结果" };
@@ -194,6 +195,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
         </div>
         <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: detail.session_id, projectId: project!, serviceId: service }} />
         <RunTextArtifacts key={`${service}:${detail.id}:${detail.session_id}`} runId={detail.id} sessionId={detail.session_id} projectId={project!} serviceId={service} review />
+        <FollowupRunDraft key={`${service}:${detail.id}:${activeSession}`} run={snapshot.run} allowOtherSession />
         {!snapshot.steps.some((step) => step.status === "completed" && step.payload?.source === "run_attachment_v1" &&
           step.payload?.project_id === project && step.payload?.service_id === service && typeof step.payload?.attachment_id === "string" &&
           typeof step.payload?.sha256 === "string") && <p>没有可确认的运行关联附件；未关联或较早的项目成果不在此显示。</p>}
