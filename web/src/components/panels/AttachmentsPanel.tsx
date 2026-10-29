@@ -62,6 +62,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const scoped = state.projectId === projectId && state.host === host;
   const [file, setFile] = useState<File | null>(initialDraft?.file ?? null);
   const [addingContext, setAddingContext] = useState(false);
+  const [includeExcerpt, setIncludeExcerpt] = useState(false);
   const [contextNotice, setContextNotice] = useState("");
   const [contextAdded, setContextAdded] = useState(false);
   const contextEpoch = useRef(0);
@@ -110,6 +111,14 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     };
     setAddingContext(true); setContextNotice(""); setContextAdded(false);
     try {
+      const checkScope = async () => {
+        const [identity, session] = await Promise.all([typedIPC.getServiceIdentity(), typedIPC.getSession(sessionId)]);
+        if (!current()) return false;
+        if (identity.service_id !== service || session.session.id !== sessionId || session.session.project_id !== projectId)
+          throw new Error("会话项目或服务归属已变化，请刷新并重新选择附件");
+        return true;
+      };
+      if (!await checkScope()) return;
       const result = await typedIPC.getAttachment(projectId, id);
       if (!current()) return;
       const row = result.attachment;
@@ -121,13 +130,16 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       const supportsPreview = ["parsed", "empty", "truncated"].includes(row.parser_status);
       const preview = supportsPreview ? Array.from(result.preview_text) : [];
       const clipped = preview.length > 1200 || row.preview_truncated || row.parser_status === "truncated";
-      const details = ["项目附件（仅以下元数据及摘录加入草稿，尚未发送；内容未经核验）：",
+      const details = [includeExcerpt ? "项目附件（以下元数据及摘录加入草稿，尚未发送；内容未经核验）：" : "项目附件引用（仅元数据加入草稿，尚未发送；未读取原件）：",
         `文件名：${row.original_name} · 版本：${row.version}`, `附件 ID：${row.id}`, `SHA-256：${row.sha256}`,
         `声明类型：${row.declared_type} · 识别类型：${row.recognized_type}`,
         `解析状态：${labels[row.parser_status]} · 范围：${row.parser_scope} · 原因：${row.parser_reason}`,
-        `文本预览${clipped ? "（已截断，不代表原文件全文）" : "（有界解析内容，不保证覆盖原文件全文）"}：`,
-        supportsPreview ? (preview.slice(0, 1200).join("") || "（没有可用的提取文本）") : "（解析不可用，未提供文本摘录）",
+        ...(includeExcerpt ? [
+          `文本预览${clipped ? "（已截断，不代表原文件全文）" : "（有界解析内容，不保证覆盖原文件全文）"}：`,
+          supportsPreview ? (preview.slice(0, 1200).join("") || "（没有可用的提取文本）") : "（解析不可用，未提供文本摘录）",
+        ] : []),
         "如当前运行环境支持项目附件读取工具，可按附件 ID 进一步读取其支持的内容；请区分原件、解析预览和未验证事实。"].join("\n");
+      if (!await checkScope()) return;
       const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project: projectId, session: sessionId, text: details };
       window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
       if (!current()) return;
@@ -173,10 +185,11 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {state.selected.recognized_type === "xlsx" && state.selected.parser_status === "empty" && <p role="status">有界扫描未发现非空单元格；不等于文件没有其他内容。</p>}
       {state.selected.preview_truncated && <p role="status">{state.selected.recognized_type === "xlsx" ? "预览已达到单元格窗口、数量或 64 KiB / 2000 行展示上限，部分存储内容未显示；可下载完整原件。" : "预览已达到 64 KiB / 2000 行展示上限，后续内容未显示；可下载完整原件。"}</p>}
       <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
+      <label className="flex items-center gap-2 text-xs text-ink-1"><input type="checkbox" checked={includeExcerpt} disabled={addingContext} onChange={(event) => setIncludeExcerpt(event.target.checked)} />同时加入最多 1200 字解析摘录</label>
       <div className="flex flex-wrap gap-2"><Button type="button" disabled={state.busy || state.loading || addingContext || !sessionId || !state.serviceId} loading={addingContext} onClick={() => void addAttachmentContext()}>加入当前会话草稿</Button>
       <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
       {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
-      <p className="text-xs text-ink-2">仅追加附件身份与最多 1200 字解析预览，不发送、不上传原件到对话，也不代表模型已读取完整文件。</p>
+      <p className="text-xs text-ink-2">默认仅追加附件身份；可选择加入解析摘录。不会发送或上传原件到对话，也不代表模型已读取完整文件。</p>
       {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>
       <PdfOriginalPreview attachment={state.selected} />
       <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
