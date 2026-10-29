@@ -148,9 +148,8 @@ _WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
 #   that emits the ``permission.request`` event and blocks until the
 #   frontend POSTs ``permission.resolve``.
 #
-# When ``permission_gater`` is None the loop falls back to the store's
-# ``is_allowed`` decision (default-allow for unconfigured tools), which
-# is the behaviour every test that didn't opt in continues to see.
+# Unconfigured tools retain the default-allow behaviour. An explicit ask
+# rule must fail closed if no approval channel is available.
 
 
 def _check_rule(
@@ -1560,6 +1559,8 @@ class AgentCore:
                       else "allow" if "allow" in actions else "ask")
             if action == "ask" and self._permission_gater is None:
                 action = "deny"
+        if action == "ask" and self._permission_gater is None:
+            action = "deny"
         if action == "deny":
             denied = ToolResult.fail(
                 f"tool '{name}' denied by permission policy (action=deny)",

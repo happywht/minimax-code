@@ -1201,9 +1201,9 @@ async def _handle_agent_send_message(
 
         perm_store = await _ensure_permission_store(ctx.server)
     except Exception:
-        if internal_schedule is not None or internal_skill is not None or admitted_permissions is not None:
-            raise RuntimeError("Saved execution permission policy is unavailable") from None
-        logger.debug("permission store unavailable; running without gating")
+        raise RuntimeError("Execution permission policy is unavailable") from None
+    if perm_store is None:
+        raise RuntimeError("Execution permission policy is unavailable")
 
     from ..perm_consent import PermissionGater, register_gater
 
