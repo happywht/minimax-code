@@ -38,7 +38,9 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
     name = "generate_xlsx_from_xlsx"
     description = (
         "Create an XLSX from all stored cells in one visible worksheet of a current-project XLSX attachment. "
-        "Select and reorder columns by exact header, converting to text, number or boolean; optional summaries "
+        "Select and reorder columns by exact header, converting to text, number or boolean. "
+        "Per-column trim removes surrounding Unicode whitespace; null_values maps exact markers to blank "
+        "after trimming and before conversion. Optional summaries "
         "are static values and charts use output column names. Optional typed filters use output column names; "
         "all conditions must match. Optional calculated_column appends static add, subtract or multiply results before filtering; blank operands produce blank. Optional deduplicate_by keeps the first row for exact output-column "
         "values, with blanks matching blanks, after filtering and before grouping. "
@@ -89,7 +91,8 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
             writer = csv.writer(buffer, lineterminator="\n")
             writer.writerows(extraction["rows"])
             try:
-                spec = csv_to_spec(buffer.getvalue().encode("utf-8"), sheet_name, columns)
+                cleaning_counts: dict[str, int] = {}
+                spec = csv_to_spec(buffer.getvalue().encode("utf-8"), sheet_name, columns, cleaning_counts)
             except ValueError as error:
                 raise ValueError(f"Worksheet columns or values are invalid: {error}") from error
             if calculated_column is not None:
@@ -112,6 +115,9 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 result.output["request_key"] = request_key
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
+                result.output["cleaning"] = [{"column": column["name"],
+                    "trim": column.get("trim", False), "null_values": column.get("null_values", []),
+                    "changed_cells": cleaning_counts[column["name"]]} for column in columns]
                 result.output["calculated_column"] = calculated_column
                 result.output["filter_conditions"] = filters or []
                 result.output["sort_by"] = sort_by or []

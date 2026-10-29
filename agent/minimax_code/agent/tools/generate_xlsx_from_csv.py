@@ -27,14 +27,23 @@ class ColumnSelection(BaseModel):
     source: str = Field(min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=80)
     kind: Literal["text", "number", "boolean"]
+    trim: bool = False
+    null_values: list[str] = Field(default_factory=list, max_length=20)
 
 
-def csv_to_spec(data: bytes, sheet_name: str, columns: list[dict[str, Any]]) -> dict:
+def csv_to_spec(data: bytes, sheet_name: str, columns: list[dict[str, Any]],
+                cleaning_counts: dict[str, int] | None = None) -> dict:
     if len(data) > MAX_CSV_BYTES:
         raise ValueError("CSV original exceeds 1 MiB")
     if not isinstance(columns, list) or not 1 <= len(columns) <= 20:
         raise ValueError("Choose 1–20 columns")
     selected = [ColumnSelection.model_validate(value) for value in columns]
+    if any(len(value) > 4096 for column in selected for value in column.null_values):
+        raise ValueError("Null markers must be at most 4096 characters")
+    if any(len(set(column.null_values)) != len(column.null_values) for column in selected):
+        raise ValueError("Null markers must be unique within a column")
+    if cleaning_counts is not None:
+        cleaning_counts.update({column.name: 0 for column in selected})
     if len({column.source for column in selected}) != len(selected):
         raise ValueError("A CSV source column may be selected only once")
     try:
@@ -64,6 +73,12 @@ def csv_to_spec(data: bytes, sheet_name: str, columns: list[dict[str, Any]]) -> 
                 value = values[index[column.source]]
                 if len(value) > 4096:
                     raise ValueError(f"CSV row {source_row} contains a cell over 4096 characters")
+                cleaned = value.strip() if column.trim else value
+                if cleaned in column.null_values:
+                    cleaned = ""
+                if cleaning_counts is not None and cleaned != value:
+                    cleaning_counts[column.name] += 1
+                value = cleaned
                 if value == "":
                     converted.append(None)
                 elif column.kind == "text":
@@ -297,6 +312,8 @@ class GenerateXlsxFromCsvTool(Tool):
         "Select and reorder columns by exact header; each output column is text, number or boolean. "
         "CSV must be UTF-8, with a unique header and at most 1 MiB/1000 rows. Empty cells become blank; "
         "numbers are strict decimal and booleans are true/false. Text beginning '=' remains literal. "
+        "For each column, optional trim removes surrounding Unicode whitespace and null_values maps explicit "
+        "exact markers to blank before type conversion; markers are matched after trimming. "
         "Optional filters use output column names and typed values; all conditions must match. "
         "Append an optional calculated numeric column before filters; add, subtract or multiply two numeric columns using exact decimal arithmetic. Blank operands yield blank; results are static. "
         "Apply filters, optional deduplicate_by, optional group_by, then optional sort_by before summaries and chart. "
@@ -316,6 +333,10 @@ class GenerateXlsxFromCsvTool(Tool):
             "columns": {"type": "array", "items": {"type": "object", "properties": {
                 "source": {"type": "string"}, "name": {"type": "string"},
                 "kind": {"type": "string", "enum": ["text", "number", "boolean"]},
+                "trim": {"type": "boolean", "description": "Remove surrounding Unicode whitespace before conversion"},
+                "null_values": {"type": "array", "maxItems": 20, "uniqueItems": True,
+                                "items": {"type": "string", "maxLength": 4096},
+                                "description": "Exact markers to convert to blank after optional trim"},
             }, "required": ["source", "name", "kind"], "additionalProperties": False}},
             "calculated_column": {"type": "object", "properties": {
                 "name": {"type": "string"}, "left": {"type": "string"}, "right": {"type": "string"},
@@ -372,7 +393,8 @@ class GenerateXlsxFromCsvTool(Tool):
             original, data = await self.originals.content(self.project_id, attachment_id)
             if original["recognized_type"] != "utf8_text" or original["parser_status"] not in {"parsed", "truncated"}:
                 raise ValueError("CSV attachment is not a valid UTF-8 CSV")
-            spec = csv_to_spec(data, sheet_name, columns)
+            cleaning_counts: dict[str, int] = {}
+            spec = csv_to_spec(data, sheet_name, columns, cleaning_counts)
             if calculated_column is not None:
                 spec = calculate_spec(spec, calculated_column)
             source_row_count = len(spec["rows"])
@@ -393,6 +415,9 @@ class GenerateXlsxFromCsvTool(Tool):
                 result.output["request_key"] = request_key
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
+                result.output["cleaning"] = [{"column": column["name"],
+                    "trim": column.get("trim", False), "null_values": column.get("null_values", []),
+                    "changed_cells": cleaning_counts[column["name"]]} for column in columns]
                 result.output["calculated_column"] = calculated_column
                 result.output["filter_conditions"] = filters or []
                 result.output["sort_by"] = sort_by or []
