@@ -813,3 +813,9 @@ HostTunnelManager 使用真实 Windows OpenSSH 隧道打开浏览器，页面加
 停用服务可执行 `systemctl --user disable --now minimax-code-remote.service`；保留
 数据目录，移除授权时只删除 `authorized_keys` 中带标识 `minimax-code-678367084c`
 的那一行。完整机器重启、付费模型任务、自动安装升级和 14 天试用尚未验收。
+
+2026-10-29 补充：Windows 产品隧道的 SSH 进程被终止后，manager 按 1、2、4 秒
+最多三次重连并保留原端口；在真实主机上验证健康检查恢复，另在真实浏览器中验证
+同一标签页经原地址恢复。前端主机面板显示重连及失败状态。实测脚本为
+`.verification/live-tunnel-reconnect.py` 和 `.verification/browser-tunnel-reconnect.py`；
+未模拟物理网络断开或远端机器重启。

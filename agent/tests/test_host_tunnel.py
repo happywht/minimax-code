@@ -99,16 +99,104 @@ async def test_ssh_exit_reports_bounded_diagnostics():
     assert process.returncode == 255
 
 
-async def test_transport_exit_invalidates_connected_url():
-    process = Process()
-    manager = HostTunnelManager(spawn=AsyncMock(return_value=process),
-                                health=AsyncMock(return_value=True))
+async def test_transport_exit_reconnects_on_same_port():
+    first, second = Process(), Process()
+    spawn = AsyncMock(side_effect=[first, second])
+    manager = HostTunnelManager(spawn=spawn, health=AsyncMock(return_value=True),
+                                reconnect_delays=(0,))
+    original = await manager.connect(HOST)
+    first.exit(255, b"Connection reset")
+    assert manager.connection(HOST["id"])["state"] == "reconnecting"
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if manager.connection(HOST["id"])["state"] == "connected":
+            break
+    assert manager.connection(HOST["id"]) == original
+    assert spawn.await_count == 2
+    assert spawn.await_args_list[0].args == spawn.await_args_list[1].args
+    await manager.close()
+    assert second.killed
+
+
+async def test_reconnect_attempts_are_bounded_even_if_connection_flaps():
+    first, second, third = Process(), Process(), Process()
+    spawn = AsyncMock(side_effect=[first, second, third])
+    manager = HostTunnelManager(spawn=spawn, health=AsyncMock(return_value=True),
+                                reconnect_delays=(0, 0))
     await manager.connect(HOST)
-    process.exit(255, b"Connection reset")
+    for process, count in [(first, 2), (second, 3)]:
+        process.exit(255)
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if spawn.await_count == count and manager.connection(HOST["id"])["state"] == "connected":
+                break
+        assert spawn.await_count == count
+        assert manager.connection(HOST["id"])["state"] == "connected"
+    third.exit(255, b"Connection reset")
     await manager._tunnels[HOST["id"]].watcher
     state = manager.connection(HOST["id"])
     assert state["state"] == "failed" and state["local_url"] is None
     assert state["error"] == "Connection reset"
+    assert spawn.await_count == 3
+    await manager.close()
+
+
+async def test_failed_reconnect_health_reaps_attempt_and_reports_failure():
+    first, retry = Process(), Process()
+    spawn = AsyncMock(side_effect=[first, retry])
+    health = AsyncMock(side_effect=[True, False])
+    manager = HostTunnelManager(spawn=spawn, health=health, startup_timeout=0.01,
+                                reconnect_delays=(0,))
+    await manager.connect(HOST)
+    first.exit(255)
+    await manager._tunnels[HOST["id"]].watcher
+    state = manager.connection(HOST["id"])
+    assert state["state"] == "failed" and state["local_url"] is None
+    assert "Timed out" in state["error"]
+    assert retry.killed
+    await manager.close()
+
+
+async def test_disconnect_cancels_pending_reconnect():
+    process = Process()
+    spawn = AsyncMock(return_value=process)
+    manager = HostTunnelManager(spawn=spawn, health=AsyncMock(return_value=True),
+                                reconnect_delays=(3600,))
+    await manager.connect(HOST)
+    process.exit(255)
+    await asyncio.sleep(0)
+    assert manager.connection(HOST["id"])["state"] == "reconnecting"
+    assert (await manager.connect(HOST))["state"] == "reconnecting"
+    assert (await manager.disconnect(HOST["id"]))["state"] == "disconnected"
+    await asyncio.sleep(0)
+    assert spawn.await_count == 1
+    await manager.close()
+
+
+async def test_disconnect_during_reconnect_spawn_reaps_new_process():
+    first, second = Process(), Process()
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def spawn(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return first
+        entered.set()
+        await release.wait()
+        return second
+
+    manager = HostTunnelManager(spawn=spawn, health=AsyncMock(return_value=True),
+                                reconnect_delays=(0,))
+    await manager.connect(HOST)
+    first.exit(255)
+    await entered.wait()
+    task = asyncio.create_task(manager.disconnect(HOST["id"]))
+    await asyncio.sleep(0)
+    release.set()
+    assert (await task)["state"] == "disconnected"
+    assert second.killed
     await manager.close()
 
 

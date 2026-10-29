@@ -66,6 +66,7 @@ class _Tunnel:
     state: str = "connecting"
     error: str | None = None
     identity: tuple = field(default_factory=tuple)
+    argv: list[str] = field(default_factory=list)
 
     def snapshot(self) -> dict[str, Any]:
         return {"host_id": self.host_id, "state": self.state,
@@ -76,10 +77,12 @@ class _Tunnel:
 class HostTunnelManager:
     """One owned process per host; disconnect/shutdown reap before returning."""
 
-    def __init__(self, *, spawn: Any = None, health: Any = None, startup_timeout: float = 15):
+    def __init__(self, *, spawn: Any = None, health: Any = None, startup_timeout: float = 15,
+                 reconnect_delays: tuple[float, ...] = (1, 2, 4)):
         self._spawn = spawn or asyncio.create_subprocess_exec
         self._health = health or _health
         self._timeout = startup_timeout
+        self._reconnect_delays = reconnect_delays
         self._tunnels: dict[str, _Tunnel] = {}
         self._failures: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
@@ -91,7 +94,7 @@ class HostTunnelManager:
         tunnel = self._tunnels.get(host_id)
         if tunnel is not None:
             if tunnel.state == "connected" and tunnel.process.returncode is not None:
-                tunnel.state = "failed"
+                tunnel.state = "reconnecting"
                 tunnel.error = tunnel.stderr.strip() or "SSH tunnel exited"
             return tunnel.snapshot()
         return {"host_id": host_id, "state": "disconnected", "local_url": None,
@@ -101,27 +104,84 @@ class HostTunnelManager:
         while chunk := await tunnel.process.stderr.read(4096):
             tunnel.stderr = (tunnel.stderr + chunk.decode("utf-8", errors="replace"))[-2000:]
 
-    async def _watch(self, tunnel: _Tunnel) -> None:
+    async def _spawn_owned(self, argv: list[str], host_id: str, remote_port: int,
+                           local_port: int) -> Any:
+        spawning = asyncio.create_task(self._spawn(
+            *argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL))
+        try:
+            return await asyncio.shield(spawning)
+        except asyncio.CancelledError:
+            while not spawning.done():
+                with suppress(asyncio.CancelledError):
+                    await asyncio.shield(spawning)
+            if not spawning.cancelled() and spawning.exception() is None:
+                abandoned = _Tunnel(host_id, remote_port, local_port, spawning.result())
+                abandoned.reader = asyncio.create_task(self._drain(abandoned))
+                await self._stop(abandoned)
+            raise
+
+    async def _ready(self, tunnel: _Tunnel) -> None:
+        async with asyncio.timeout(self._timeout):
+            while tunnel.process.returncode is None:
+                try:
+                    ready = await self._health(f"http://127.0.0.1:{tunnel.local_port}")
+                except (httpx.HTTPError, ValueError, OSError):
+                    ready = False
+                if ready and tunnel.process.returncode is None:
+                    return
+                await asyncio.sleep(0.1)
+        raise OSError(tunnel.stderr.strip() or "SSH tunnel exited during connection")
+
+    async def _reap_process(self, tunnel: _Tunnel) -> None:
+        if tunnel.process.returncode is None:
+            with suppress(ProcessLookupError):
+                tunnel.process.kill()
         await tunnel.process.wait()
         if tunnel.reader:
             await tunnel.reader
-        if tunnel.state in {"connecting", "connected"}:
-            tunnel.state = "failed"
-            tunnel.error = tunnel.stderr.strip() or "SSH tunnel exited"
 
-    async def _stop(self, tunnel: _Tunnel) -> None:
-        async def reap() -> None:
-            if tunnel.process.returncode is None:
-                with suppress(ProcessLookupError):
-                    tunnel.process.kill()
+    async def _watch(self, tunnel: _Tunnel) -> None:
+        # The attempt budget applies to the whole tunnel lifetime, including flapping.
+        delays = iter(self._reconnect_delays)
+        while True:
             await tunnel.process.wait()
             if tunnel.reader:
                 await tunnel.reader
+            if tunnel.state not in {"connected", "reconnecting"}:
+                return
+            tunnel.state = "reconnecting"
+            tunnel.error = tunnel.stderr.strip() or "SSH tunnel exited"
+            while True:
+                delay = next(delays, None)
+                if delay is None:
+                    tunnel.state = "failed"
+                    return
+                await asyncio.sleep(delay)
+                try:
+                    tunnel.process = await self._spawn_owned(
+                        tunnel.argv, tunnel.host_id, tunnel.remote_port, tunnel.local_port)
+                    tunnel.stderr = ""
+                    tunnel.reader = asyncio.create_task(self._drain(tunnel))
+                    await self._ready(tunnel)
+                except (TimeoutError, OSError) as exc:
+                    await self._reap_process(tunnel)
+                    tunnel.error = (str(exc) or tunnel.stderr.strip()
+                                    or "Timed out waiting for authenticated remote agent health")
+                    continue
+                tunnel.state = "connected"
+                tunnel.error = None
+                break
+
+    async def _stop(self, tunnel: _Tunnel) -> None:
+        async def reap() -> None:
             if tunnel.watcher:
-                await tunnel.watcher
+                tunnel.watcher.cancel()
+                with suppress(asyncio.CancelledError):
+                    await tunnel.watcher
+            await self._reap_process(tunnel)
         task = asyncio.create_task(reap())
-        # Retain ownership even if a disconnect/connection request is cancelled
-        # repeatedly while the operating system is still reaping SSH.
+        # Retain ownership even if the caller is repeatedly cancelled.
         cancelled = False
         while not task.done():
             try:
@@ -146,10 +206,10 @@ class HostTunnelManager:
             if self._closed:
                 raise ValueError("tunnel manager is closed")
             old = self._tunnels.get(host_id)
-            if (old and old.state == "connected" and old.process.returncode is None
+            if (old and old.state in {"connected", "reconnecting"}
                     and old.identity == identity and old.remote_port == remote_port
                     and local_port in {0, old.local_port}):
-                return old.snapshot()
+                return self.connection(host_id)
             if old:
                 old.state = "disconnected"
                 await self._stop(old)
@@ -164,43 +224,21 @@ class HostTunnelManager:
                 return dict(failure)
             argv = build_tunnel_args(host, local_port, remote_port)
             try:
-                spawning = asyncio.create_task(self._spawn(
-                    *argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-                    stdin=asyncio.subprocess.DEVNULL))
-                try:
-                    process = await asyncio.shield(spawning)
-                except asyncio.CancelledError:
-                    while not spawning.done():
-                        with suppress(asyncio.CancelledError):
-                            await asyncio.shield(spawning)
-                    if not spawning.cancelled() and spawning.exception() is None:
-                        process = spawning.result()
-                        abandoned = _Tunnel(host_id, remote_port, local_port, process)
-                        abandoned.reader = asyncio.create_task(self._drain(abandoned))
-                        await self._stop(abandoned)
-                    raise
+                process = await self._spawn_owned(argv, host_id, remote_port, local_port)
             except OSError as exc:
                 failure = {"host_id": host_id, "state": "failed", "local_url": None,
                            "remote_port": remote_port, "error": f"SSH client unavailable: {exc}"}
                 self._failures[host_id] = failure
                 return dict(failure)
             self._failures.pop(host_id, None)
-            tunnel = _Tunnel(host_id, remote_port, local_port, process, identity=identity)
+            tunnel = _Tunnel(host_id, remote_port, local_port, process, identity=identity, argv=argv)
             self._tunnels[host_id] = tunnel
             tunnel.reader = asyncio.create_task(self._drain(tunnel))
             tunnel.watcher = asyncio.create_task(self._watch(tunnel))
             try:
-                async with asyncio.timeout(self._timeout):
-                    while tunnel.process.returncode is None:
-                        try:
-                            ready = await self._health(f"http://127.0.0.1:{local_port}")
-                        except (httpx.HTTPError, ValueError, OSError):
-                            ready = False
-                        if ready and tunnel.process.returncode is None:
-                            tunnel.state = "connected"
-                            return tunnel.snapshot()
-                        await asyncio.sleep(0.1)
-                raise OSError(tunnel.stderr.strip() or "SSH tunnel exited during connection")
+                await self._ready(tunnel)
+                tunnel.state = "connected"
+                return tunnel.snapshot()
             except asyncio.CancelledError:
                 tunnel.state = "disconnected"
                 await self._stop(tunnel)

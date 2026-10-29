@@ -3,6 +3,11 @@ import { typedIPC } from "../../ipc";
 import type { HostConnection, RemoteHost } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 
+const STATUS_LABELS: Record<HostConnection["state"], string> = {
+  connected: "已连接", disconnected: "已断开", connecting: "连接中",
+  reconnecting: "正在重连", failed: "连接失败",
+};
+
 // Only expose the loopback HTTP endpoint returned by the tunnel manager.
 function tunnelUrl(connection?: HostConnection): string | null {
   if (connection?.state !== "connected" || !connection.local_url) return null;
@@ -39,6 +44,29 @@ export function HostsTab(): JSX.Element {
     finally { setBusy(false); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  // Refresh process state while this panel is visible. Stop polling while a
+  // user operation is in flight so an older response cannot undo its result.
+  useEffect(() => {
+    if (busy || hosts.length === 0) return;
+    let active = true;
+    let pending = false;
+    const timer = window.setInterval(() => {
+      if (pending) return;
+      pending = true;
+      void Promise.all(hosts.map(async (host) => {
+        try { return [host.id, (await typedIPC.getHostConnection(host.id)).connection] as const; }
+        catch { return null; }
+      })).then((statuses) => {
+        if (!active) return;
+        setConnections((current) => {
+          const next = { ...current };
+          for (const status of statuses) if (status) next[status[0]] = status[1];
+          return next;
+        });
+      }).finally(() => { pending = false; });
+    }, 5000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [busy, hosts]);
 
   const register = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(null);
@@ -92,12 +120,12 @@ export function HostsTab(): JSX.Element {
       const url = tunnelUrl(connection);
       return <article key={host.id} className="space-y-2 rounded-md border border-line p-3">
         <h3 className="text-xs font-medium">{host.name} ({host.username}@{host.hostname}:{host.port})</h3>
-        <p className="text-xs text-ink-2">{!host.enabled ? "已禁用 · " : ""}状态：{connection?.state ?? "未知"}</p>
+        <p className="text-xs text-ink-2">{!host.enabled ? "已禁用 · " : ""}状态：{connection ? STATUS_LABELS[connection.state] : "未知"}</p>
         {connection?.error && <p role="alert" className="text-xs text-status-error">{connection.error}</p>}
         {connection?.state === "connected" && !url && <p role="alert" className="text-xs text-status-error">隧道地址无效，无法打开。</p>}
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={busy || !host.enabled || connection?.state === "connected" || !Number.isInteger(Number(remotePort)) || Number(remotePort) < 1 || Number(remotePort) > 65535} onClick={() => void changeConnection(host, true)}>连接</Button>
-          <Button size="sm" disabled={busy || connection?.state !== "connected"} onClick={() => void changeConnection(host, false)}>断开</Button>
+          <Button size="sm" disabled={busy || !host.enabled || connection?.state === "connected" || connection?.state === "reconnecting" || !Number.isInteger(Number(remotePort)) || Number(remotePort) < 1 || Number(remotePort) > 65535} onClick={() => void changeConnection(host, true)}>连接</Button>
+          <Button size="sm" disabled={busy || (connection?.state !== "connected" && connection?.state !== "reconnecting")} onClick={() => void changeConnection(host, false)}>断开</Button>
           <Button size="sm" disabled={busy} onClick={() => void toggleHost(host)}>{host.enabled ? "禁用" : "启用"}</Button>
           {url && <a className="text-xs text-accent underline" href={url} target="_blank" rel="noopener noreferrer">在新标签页打开远端</a>}
         </div>

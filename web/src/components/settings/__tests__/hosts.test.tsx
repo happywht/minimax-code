@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { HostsTab } from "../HostsTab";
 
 const api = vi.hoisted(() => ({ listHosts: vi.fn(), getHostConnection: vi.fn(), connectHost: vi.fn(), disconnectHost: vi.fn(), createHost: vi.fn(), updateHost: vi.fn() }));
@@ -46,5 +46,17 @@ describe("remote host settings", () => {
     render(<HostsTab />);
     fireEvent.click(await screen.findByRole("button", { name: "连接" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("SSH failed");
+  });
+  it("updates the displayed status when a tunnel exits", async () => {
+    vi.useFakeTimers();
+    try {
+      api.getHostConnection.mockResolvedValueOnce({ connection: { ...disconnected, state: "connected", local_url: "http://127.0.0.1:4567" } });
+      api.getHostConnection.mockResolvedValue({ connection: { ...disconnected, state: "failed", error: "SSH exited" } });
+      await act(async () => { render(<HostsTab />); });
+      expect(screen.getByRole("link", { name: "在新标签页打开远端" })).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(screen.queryByRole("link")).toBeNull();
+      expect(screen.getByRole("alert")).toHaveTextContent("SSH exited");
+    } finally { vi.useRealTimers(); }
   });
 });
