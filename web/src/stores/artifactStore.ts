@@ -8,13 +8,14 @@ interface ArtifactState {
   host: string;
   serviceId: string | null;
   nextCursor: string | null; paging: boolean;
+  query: string;
   artifacts: TextArtifact[];
   selected: TextArtifact | null;
   preview: string;
   loading: boolean;
   busy: boolean;
   error: string | null;
-  activate: (projectId: string | null) => Promise<void>;
+  activate: (projectId: string | null, query?: string) => Promise<void>;
   loadMore: () => Promise<void>;
   register: (path: string) => Promise<void>;
   select: (id: string) => Promise<void>;
@@ -39,19 +40,19 @@ export const useArtifactStore = create<ArtifactState>((set, get) => {
     return false;
   };
   return {
-    projectId: null, host: "", serviceId: null, nextCursor: null, paging: false, artifacts: [], selected: null, preview: "",
+    projectId: null, host: "", serviceId: null, nextCursor: null, paging: false, query: "", artifacts: [], selected: null, preview: "",
     loading: false, busy: false, error: null,
     clear: () => {
       epoch++; selection++; download?.abort();
       set({ projectId: null, serviceId: null, nextCursor: null, paging: false, artifacts: [], selected: null, preview: "", loading: false, busy: false, error: null });
     },
-    activate: async (project) => {
+    activate: async (project, query = "") => {
       get().clear();
       if (!project) return;
       const ticket = epoch, host = ipc.agentBaseUrl;
-      set({ projectId: project, host, loading: true });
+      set({ projectId: project, host, query, loading: true });
       try {
-        const result = await typedIPC.listArtifacts(project);
+        const result = await typedIPC.listArtifacts(project, undefined, undefined, query || undefined);
         if (!current(ticket, project, host)) return;
         result.artifacts.forEach((row) => validate(row, project, result.service_id));
         set({ artifacts: result.artifacts, serviceId: result.service_id, nextCursor: result.next_cursor ?? null });
@@ -59,16 +60,16 @@ export const useArtifactStore = create<ArtifactState>((set, get) => {
       finally { if (current(ticket, project, host)) set({ loading: false }); }
     },
     loadMore: async () => {
-      const { projectId: project, host, serviceId, nextCursor: cursor } = get();
+      const { projectId: project, host, serviceId, nextCursor: cursor, query } = get();
       if (get().paging || !cursor || !ready(project, host, serviceId) || !project) return;
       const ticket = epoch;
       set({ paging: true, error: null });
       try {
-        const result = await typedIPC.listArtifacts(project, undefined, cursor);
+        const result = await typedIPC.listArtifacts(project, undefined, cursor, query || undefined);
         if (!current(ticket, project, host)) return;
         if (result.service_id !== serviceId || result.artifacts.length > 200 ||
-            (result.next_cursor != null && (!/^art_[a-f0-9]{32}$/.test(result.next_cursor) ||
-              result.next_cursor !== result.artifacts[result.artifacts.length - 1]?.id || result.next_cursor === cursor)))
+            (result.next_cursor != null && (result.next_cursor === cursor || (query ? !result.next_cursor.startsWith("q_") :
+              !/^art_[a-f0-9]{32}$/.test(result.next_cursor) || result.next_cursor !== result.artifacts[result.artifacts.length - 1]?.id))))
           throw new Error("Artifact page is inconsistent; refresh");
         result.artifacts.forEach((row) => validate(row, project, serviceId));
         const existing = new Set(get().artifacts.map((row) => row.id));
@@ -85,7 +86,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => {
         const result = await typedIPC.registerArtifact({ project_id: project, source_path: path });
         if (!current(ticket, project, host)) return;
         validate(result.artifact, project, serviceId);
-        set({ artifacts: [result.artifact, ...get().artifacts] });
+        if (!get().query || result.artifact.source_path.includes(get().query)) set({ artifacts: [result.artifact, ...get().artifacts] });
         await get().select(result.artifact.id);
       } catch (error) { if (current(ticket, project, host)) set({ error: errorText(error) }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }

@@ -213,11 +213,15 @@ class ArtifactService:
         }, expected_root=project["root_path"], expected_service_id=expected_service_id,
             expected_session_id=expected_session_id, idempotent=request_id is not None)
 
-    async def list(self, project_id, run_id=None, cursor=None):
+    async def list(self, project_id, run_id=None, cursor=None, query=None):
+        from .artifact_cursor import decode_cursor, encode_cursor
         await self.dao.project(project_id)
-        rows = await self.dao.list(project_id, run_id, cursor, limit=201)
-        return {"artifacts": rows[:200], "next_cursor": rows[199]["id"] if len(rows) > 200 else None,
-                "service_id": await self.dao.service_id()}
+        service = await self.dao.service_id()
+        anchor = decode_cursor(cursor, "art", project_id, service, run_id, query)
+        rows = await self.dao.list(project_id, run_id, anchor, limit=201, query=query)
+        next_id = rows[199]["id"] if len(rows) > 200 else None
+        next_cursor = encode_cursor("art", project_id, service, run_id, query, next_id) if next_id and query is not None else next_id
+        return {"artifacts": rows[:200], "next_cursor": next_cursor, "service_id": service}
 
     async def content(self, project_id, artifact_id):
         if not _ID.fullmatch(artifact_id):

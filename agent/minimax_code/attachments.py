@@ -412,11 +412,15 @@ class AttachmentService:
         return {"status": "complete" if saved == len(results) else "partial" if saved else "unconfirmed",
                 "results": results}
 
-    async def list(self, project_id, cursor=None):
+    async def list(self, project_id, cursor=None, query=None):
+        from .artifact_cursor import decode_cursor, encode_cursor
         await self.dao.project(project_id)
-        rows = await self.dao.list(project_id, cursor, limit=201)
-        return {"attachments": rows[:200], "next_cursor": rows[199]["id"] if len(rows) > 200 else None,
-                "service_id": await self.dao.service_id()}
+        service = await self.dao.service_id()
+        anchor = decode_cursor(cursor, "att", project_id, service, None, query)
+        rows = await self.dao.list(project_id, anchor, limit=201, query=query)
+        next_id = rows[199]["id"] if len(rows) > 200 else None
+        next_cursor = encode_cursor("att", project_id, service, None, query, next_id) if next_id and query is not None else next_id
+        return {"attachments": rows[:200], "next_cursor": next_cursor, "service_id": service}
 
     async def content(self, project_id, attachment_id):
         if not _ID.fullmatch(attachment_id):

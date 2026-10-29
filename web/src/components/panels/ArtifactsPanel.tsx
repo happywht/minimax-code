@@ -21,7 +21,7 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
   const scoped = state.projectId === projectId && state.host === host;
   const [path, setPath] = useState("");
   const [query, setQuery] = useState("");
-  const filteredArtifacts = (scoped ? state.artifacts : []).filter((row) => `${row.source_path} ${row.run_id ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const filteredArtifacts = scoped ? state.artifacts : [];
   const [office, setOffice] = useState(false);
   const [research, setResearch] = useState(false);
   useEffect(() => {
@@ -44,14 +44,17 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
       <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void state.register(path); }}>
         <Input aria-label="项目相对文件路径" value={path} onChange={(event) => setPath(event.target.value)} placeholder="reports/result.md" />
         <Button type="submit" disabled={!scoped || !path || !state.serviceId || state.busy || state.loading}>登记新版本</Button>
-        <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(projectId)}>刷新</Button>
+        <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(projectId, state.query)}>刷新</Button>
       </form>
       {scoped && state.error && <p role="alert" className="text-status-error">{state.error}</p>}
       {state.loading && <p role="status">正在读取成果…</p>}
-      {!state.loading && !state.artifacts.length && <p>当前项目还没有登记的文本成果。</p>}
+      {!state.loading && !state.artifacts.length && <p>{state.query ? "没有匹配的文本成果。" : "当前项目还没有登记的文本成果。"}</p>}
       <div className="space-y-1"><h3 className="font-medium">已登记文本成果</h3>
-        <Input aria-label="搜索文本成果" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按路径或运行 ID 筛选已加载成果" />
-        <p className="text-xs text-ink-2">只筛选当前项目已加载记录。匹配 {filteredArtifacts.length} 项。</p></div>
+        <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void state.activate(projectId, query); }}>
+          <Input aria-label="搜索文本成果" maxLength={240} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按路径字面搜索" />
+          <Button type="submit" disabled={state.busy}>搜索</Button>
+        </form>
+        <p className="text-xs text-ink-2">搜索当前项目登记路径，区分大小写；不搜索文件内容。已加载 {filteredArtifacts.length} 项。</p></div>
       <ul className="space-y-1">
         {filteredArtifacts.map((row) => <li key={row.id}>
           <button className="w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => void state.select(row.id)}>

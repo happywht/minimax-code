@@ -1720,7 +1720,7 @@ document the migration in this file.
 | `attachment.generate_pdf` | `{project_id, expected_service_id, filename, title, paragraphs?, sections?}` | `{attachment, preview_text}`，生成并保存 PDF 文本报告，业务及视觉未验证 |
 | `attachment.generate_docx` | `{project_id, expected_service_id, filename, title, paragraphs}` | `{attachment, preview_text}`，生成并保存有界纯文本 DOCX；不验证版式或事实 |
 | `attachment.extract_xlsx` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, sheet_name}` | 复核会话、服务与附件后返回受控完整工作表行及日期、百分比、货币列；不计算公式 |
-| `attachment.list` | `{project_id, cursor?}` | `{attachments, service_id, next_cursor}`，每页最多 200 条元数据，不含预览。使用返回的非空游标继续读取更早记录；游标必须属于同一项目 |
+| `attachment.list` | `{project_id, cursor?, query?}` | `{attachments, service_id, next_cursor}`，每页最多 200 条元数据，不含预览。可选 query（1–240 字符）按名称区分大小写作字面子串匹配，不读取或搜索原件；搜索游标绑定项目、服务和 query，继续时必须使用相同参数。无 query 保持原游标行为 |
 | `attachment.get` | `{project_id, attachment_id}` | `{attachment, preview_text}`，核对原件后返回有界纯文本 |
 
 严格拒绝额外字段；project_id 为非空、最长 128 字符，attachment_id 为 `att_` 加 32 位小写十六进制。
@@ -1854,7 +1854,7 @@ attachment 沿用原附件类型、版本、SHA-256 与 v2/inert_text 预览，�
 | 方法 | 参数 | 返回 |
 |------|------|------|
 | `artifact.register` | `{project_id, source_path, run_id?, expected_service_id?, expected_session_id?, request_id?}` | `{artifact}`，成功登记一个新的不可变版本 |
-| `artifact.list` | `{project_id, run_id?, cursor?}` | `{artifacts, service_id, next_cursor}`，按项目及可选运行筛选，每页最多 200 项；使用返回的非空游标继续读取更早记录，游标必须属于同一筛选范围 |
+| `artifact.list` | `{project_id, run_id?, cursor?, query?}` | `{artifacts, service_id, next_cursor}`，按项目及可选运行筛选，每页最多 200 项；可选 query（1–240 字符）按登记路径区分大小写作字面子串匹配，不读取或搜索原件。搜索游标绑定项目、服务、运行及 query；无 query 保持原游标行为 |
 | `artifact.get` | `{project_id, artifact_id}` | `{artifact, preview_text}`，经过 vault 大小/hash 核对的纯文本 |
 
 带运行登记可同时传入 `expected_service_id`、`expected_session_id` 和 32 位小写十六进制 `request_id`；三项必须一起提供，写入时在同一事务核对归属和请求去重。同一请求重试仅接受相同范围及字节，不证明运行生成了该文件。

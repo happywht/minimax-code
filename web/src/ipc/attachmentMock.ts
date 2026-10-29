@@ -1,6 +1,7 @@
 /** In-memory originals only. PDF/DOCX/XLSX parsing requires the real backend extra. */
 import type { AttachmentGetResult, AttachmentKind, AttachmentOriginal, AttachmentParserStatus } from "../types/ipc";
 import { MOCK_ARTIFACT_SERVICE } from "./artifactMock";
+import { metadataAnchor, metadataCursor } from "./metadataCursor";
 
 export const MOCK_ATTACHMENT_SERVICE = MOCK_ARTIFACT_SERVICE;
 export const ATTACHMENT_LIMIT = 10 * 1024 * 1024;
@@ -8,18 +9,21 @@ const rows: { metadata: AttachmentOriginal; bytes: Uint8Array; preview: string }
 const kinds = new Set<AttachmentKind>(["txt", "csv", "pdf", "docx", "xlsx", "png", "jpeg", "gif", "webp", "unknown"]);
 
 export function attachmentMock(method: string, params: Record<string, unknown>, projectExists: boolean): unknown {
-  const allowed = method === "attachment.get" ? ["project_id", "attachment_id"] : ["project_id", "cursor"];
+  const allowed = method === "attachment.get" ? ["project_id", "attachment_id"] : ["project_id", "cursor", "query"];
   if (!params || typeof params !== "object" || Array.isArray(params)
       || Object.keys(params).some((key) => !allowed.includes(key))
       || typeof params.project_id !== "string" || !params.project_id || params.project_id.length > 128) throw new Error("Invalid attachment parameters");
   if (!projectExists) throw new Error("Select an existing project");
   if (method === "attachment.list") {
-    const scoped = rows.filter((row) => row.metadata.project_id === params.project_id).slice().reverse().map((row) => row.metadata);
-    const index = params.cursor == null ? -1 : scoped.findIndex((row) => row.id === params.cursor);
-    if (params.cursor != null && (typeof params.cursor !== "string" || !/^att_[0-9a-f]{32}$/.test(params.cursor) || index < 0)) throw new Error("Invalid attachment cursor");
+    if (params.query != null && (typeof params.query !== "string" || !params.query || [...params.query].length > 240)) throw new Error("Invalid query");
+    const scope = ["att", params.project_id, MOCK_ATTACHMENT_SERVICE, null, params.query ?? null];
+    const scoped = rows.filter((row) => row.metadata.project_id === params.project_id && (params.query == null || row.metadata.original_name.includes(params.query as string))).slice().reverse().map((row) => row.metadata);
+    const anchor = metadataAnchor(params.cursor, scope, params.query);
+    const index = anchor == null ? -1 : scoped.findIndex((row) => row.id === anchor);
+    if (anchor != null && (!/^att_[0-9a-f]{32}$/.test(anchor) || index < 0)) throw new Error("Invalid attachment cursor");
     const page = scoped.slice(index + 1, index + 201);
     return { service_id: MOCK_ATTACHMENT_SERVICE, attachments: page,
-      next_cursor: scoped.length > index + 201 ? page[page.length - 1].id : null };
+      next_cursor: scoped.length > index + 201 ? (params.query == null ? page[page.length - 1].id : metadataCursor(scope, page[page.length - 1].id)) : null };
   }
   if (method !== "attachment.get" || typeof params.attachment_id !== "string" || !/^att_[a-f0-9]{32}$/.test(params.attachment_id)) throw new Error("Invalid attachment parameters");
   const row = rows.find((item) => item.metadata.id === params.attachment_id && item.metadata.project_id === params.project_id);

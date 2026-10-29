@@ -84,9 +84,12 @@ class ArtifactDAO:
                 f"VALUES ({','.join('?' for _ in keys)})", tuple(row.values()))
         return row
 
-    async def list(self, project_id, run_id=None, cursor=None, limit=200):
+    async def list(self, project_id, run_id=None, cursor=None, limit=200, query=None):
         scope = "project_id=?" + (" AND run_id=?" if run_id is not None else "")
         params = [project_id] + ([run_id] if run_id is not None else [])
+        if query is not None:
+            scope += " AND instr(source_path, ?) > 0"
+            params.append(query)
         if cursor is not None:
             anchor = await self.db.fetchone(
                 f"SELECT rowid AS position FROM text_artifacts WHERE {scope} AND id=?",

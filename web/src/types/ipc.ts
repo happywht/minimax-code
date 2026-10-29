@@ -33,7 +33,7 @@ export interface ArtifactRegisterParams {
   request_id?: string;
 }
 
-export interface ArtifactListParams { project_id: string; run_id?: string }
+export interface ArtifactListParams { project_id: string; run_id?: string; cursor?: string; query?: string }
 export interface ArtifactListResult { artifacts: TextArtifact[]; service_id: string; next_cursor?: string | null }
 export interface ArtifactGetResult { artifact: TextArtifact; preview_text: string }
 

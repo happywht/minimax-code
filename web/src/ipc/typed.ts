@@ -130,13 +130,13 @@ import type { IPCClient } from "./client";
 export interface TypedIPC {
   ping(): Promise<boolean>;
   registerArtifact(params: import("../types/ipc").ArtifactRegisterParams): Promise<{ artifact: import("../types/ipc").TextArtifact }>;
-  listArtifacts(projectId: string, runId?: string, cursor?: string): Promise<import("../types/ipc").ArtifactListResult>;
+  listArtifacts(projectId: string, runId?: string, cursor?: string, query?: string): Promise<import("../types/ipc").ArtifactListResult>;
   getArtifact(projectId: string, artifactId: string): Promise<import("../types/ipc").ArtifactGetResult>;
   generateReportPair(params: import("../types/ipc").AttachmentReportPairParams): Promise<import("../types/ipc").ReportPairResult>;
   generatePdf(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   generateDocx(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   extractAttachmentXlsx(params: { project_id: string; session_id: string; expected_service_id: string; attachment_id: string; expected_sha256: string; sheet_name: string }): Promise<{ ok: true; project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; sheet_name: string; rows: string[][]; date_columns: string[]; percentage_columns: string[]; currency_columns: string[] }>;
-  listAttachments(projectId: string, cursor?: string): Promise<import("../types/ipc").AttachmentListResult>;
+  listAttachments(projectId: string, cursor?: string, query?: string): Promise<import("../types/ipc").AttachmentListResult>;
   getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
   generateOfficeXlsx(params: import("../types/ipc").OfficeGenerateParams): Promise<import("../types/ipc").OfficeGetResult>;
   generateOfficeAnalysis(params: import("../types/ipc").OfficeAnalysisParams): Promise<import("../types/ipc").OfficeAnalysisResult>;
@@ -637,13 +637,13 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
   return {
     ping: () => client.ping(),
     registerArtifact: (params) => client.request("artifact.register", params),
-    listArtifacts: (projectId, runId, cursor) => client.request("artifact.list", { project_id: projectId, ...(runId === undefined ? {} : { run_id: runId }), ...(cursor === undefined ? {} : { cursor }) }),
+    listArtifacts: (projectId, runId, cursor, query) => client.request("artifact.list", { project_id: projectId, ...(runId === undefined ? {} : { run_id: runId }), ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) }),
     getArtifact: (projectId, artifactId) => client.request("artifact.get", { project_id: projectId, artifact_id: artifactId }),
     generateReportPair: (params) => client.request("attachment.generate_report_pair", params),
     generatePdf: (params) => client.request("attachment.generate_pdf", params),
     generateDocx: (params) => client.request("attachment.generate_docx", params),
     extractAttachmentXlsx: (params) => client.request("attachment.extract_xlsx", params),
-    listAttachments: (projectId, cursor) => client.request("attachment.list", { project_id: projectId, ...(cursor === undefined ? {} : { cursor }) }),
+    listAttachments: (projectId, cursor, query) => client.request("attachment.list", { project_id: projectId, ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) }),
     // Preview results retain versioned parser scope/reason independently of quality.
     getAttachment: (projectId, attachmentId) => client.request("attachment.get", { project_id: projectId, attachment_id: attachmentId }),
     generateOfficeXlsx: (params) => client.request("office.generate_xlsx", params),

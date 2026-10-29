@@ -76,7 +76,8 @@ class ArtifactListParams(BaseModel):
 
 class ArtifactScopedListParams(ArtifactListParams):
     run_id: str | None = Field(default=None, min_length=1, max_length=128)
-    cursor: str | None = Field(default=None, pattern=r"^art_[0-9a-f]{32}$")
+    cursor: str | None = Field(default=None, min_length=1, max_length=8192)
+    query: str | None = Field(default=None, min_length=1, max_length=240)
 
 
 class ArtifactRegisterParams(ArtifactListParams):
@@ -93,7 +94,8 @@ class ArtifactGetParams(ArtifactListParams):
 
 class AttachmentListParams(ArtifactListParams):
     """Project association only; caller host/path authority is not accepted."""
-    cursor: str | None = Field(default=None, pattern=r"^att_[0-9a-f]{32}$")
+    cursor: str | None = Field(default=None, min_length=1, max_length=8192)
+    query: str | None = Field(default=None, min_length=1, max_length=240)
 
 
 class AttachmentExtractXlsxParams(ArtifactListParams):

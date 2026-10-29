@@ -6,9 +6,10 @@ import type { AttachmentOriginal, DocxContent, ReportPairResult } from "../types
 interface AttachmentState {
   projectId: string | null; host: string; serviceId: string | null;
   nextCursor: string | null; paging: boolean;
+  query: string;
   attachments: AttachmentOriginal[]; selected: AttachmentOriginal | null; preview: string;
   loading: boolean; busy: boolean; error: string | null; reportBatch: ReportPairResult | null;
-  activate: (projectId: string | null) => Promise<void>;
+  activate: (projectId: string | null, query?: string) => Promise<void>;
   loadMore: () => Promise<void>;
   upload: (file: File) => Promise<void>;
   generateDocx: (filename: string, title: string, content: DocxContent, format?: "docx" | "pdf") => Promise<void>;
@@ -40,17 +41,17 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
     get().clear(); set({ error: "Attachment context changed; refresh the current project" }); return false;
   };
   return {
-    projectId: null, host: "", serviceId: null, nextCursor: null, paging: false, attachments: [], selected: null, preview: "", loading: false, busy: false, error: null, reportBatch: null,
+    projectId: null, host: "", serviceId: null, nextCursor: null, paging: false, query: "", attachments: [], selected: null, preview: "", loading: false, busy: false, error: null, reportBatch: null,
     clear: () => {
       epoch++; selection++; uploading?.abort(); downloading?.abort();
       set({ projectId: null, serviceId: null, nextCursor: null, paging: false, attachments: [], selected: null, preview: "", loading: false, busy: false, error: null, reportBatch: null });
     },
-    activate: async (project) => {
+    activate: async (project, query = "") => {
       get().clear(); if (!project) return;
       const ticket = epoch, host = ipc.agentBaseUrl;
-      set({ projectId: project, host, loading: true });
+      set({ projectId: project, host, query, loading: true });
       try {
-        const result = await typedIPC.listAttachments(project);
+        const result = await typedIPC.listAttachments(project, undefined, query || undefined);
         if (!current(ticket, project, host)) return;
         if (!result.service_id || result.attachments.length > 200) throw new Error("Attachment list is inconsistent");
         result.attachments.forEach((row) => validate(row, project, result.service_id));
@@ -59,16 +60,16 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
       finally { if (current(ticket, project, host)) set({ loading: false }); }
     },
     loadMore: async () => {
-      const { projectId: project, host, serviceId, nextCursor: cursor } = get();
+      const { projectId: project, host, serviceId, nextCursor: cursor, query } = get();
       if (get().paging || !cursor || !ready(project, host, serviceId) || !project) return;
       const ticket = epoch;
       set({ paging: true, error: null });
       try {
-        const result = await typedIPC.listAttachments(project, cursor);
+        const result = await typedIPC.listAttachments(project, cursor, query || undefined);
         if (!current(ticket, project, host)) return;
         if (result.service_id !== serviceId || result.attachments.length > 200 ||
-            (result.next_cursor != null && (!/^att_[a-f0-9]{32}$/.test(result.next_cursor) ||
-              result.next_cursor !== result.attachments[result.attachments.length - 1]?.id || result.next_cursor === cursor)))
+            (result.next_cursor != null && (result.next_cursor === cursor || (query ? !result.next_cursor.startsWith("q_") :
+              !/^att_[a-f0-9]{32}$/.test(result.next_cursor) || result.next_cursor !== result.attachments[result.attachments.length - 1]?.id))))
           throw new Error("Attachment page is inconsistent; refresh");
         result.attachments.forEach((row) => validate(row, project, serviceId));
         const existing = new Set(get().attachments.map((row) => row.id));
@@ -86,7 +87,7 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
         const row = await uploadAttachment(file, project, serviceId, host, uploading.signal);
         if (!current(ticket, project, host)) return;
         validate(row, project, serviceId);
-        set({ attachments: [row, ...get().attachments] });
+        if (!get().query || row.original_name.includes(get().query)) set({ attachments: [row, ...get().attachments] });
         await get().select(row.id);
       } catch (error) { if (current(ticket, project, host)) set({ error: errorText(error) }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
@@ -101,7 +102,7 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
         const result = await (format === "pdf" ? typedIPC.generatePdf(params) : typedIPC.generateDocx(params));
         if (!current(ticket, project, host)) return;
         validate(result.attachment, project, serviceId);
-        set({ attachments: [result.attachment, ...get().attachments] });
+        if (!get().query || result.attachment.original_name.includes(get().query)) set({ attachments: [result.attachment, ...get().attachments] });
         await get().select(result.attachment.id);
       } catch (error) { if (current(ticket, project, host)) set({ error: `${errorText(error)}；如响应丢失，请先刷新检查是否已生成。` }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
@@ -126,7 +127,7 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
             throw new Error("Report format association changed; refresh");
           }
         });
-        set({ reportBatch: result, attachments: [...saved.map((item) => item.attachment), ...get().attachments] });
+        set({ reportBatch: result, attachments: [...saved.map((item) => item.attachment).filter((row) => !get().query || row.original_name.includes(get().query)), ...get().attachments] });
         if (saved.length) await get().select(saved[0].attachment.id);
       } catch (error) { if (current(ticket, project, host)) set({ error: `${errorText(error)}；结果不明，请刷新附件后再重试缺失格式。` }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }

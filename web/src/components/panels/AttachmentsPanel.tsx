@@ -69,7 +69,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const contextEpoch = useRef(0);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
-  const filteredAttachments = (scoped ? state.attachments : []).filter((row) => `${row.original_name} ${row.id}`.toLowerCase().includes(query.trim().toLowerCase()) && (typeFilter === "all" || row.recognized_type === typeFilter));
+  const filteredAttachments = (scoped ? state.attachments : []).filter((row) => typeFilter === "all" || row.recognized_type === typeFilter);
   const [docName, setDocName] = useState(initialDraft?.docName ?? "报告.docx"), [title, setTitle] = useState(initialDraft?.title ?? "");
   const [body, setBody] = useState(initialDraft?.body ?? "");
   const [format, setFormat] = useState<"docx" | "pdf" | "both">(initialDraft?.format ?? "docx");
@@ -163,14 +163,16 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {file && <span className="break-all text-xs text-ink-1">待上传：{file.name}（{file.size} 字节）</span>}
       {file && <Button type="button" variant="secondary" disabled={state.busy} onClick={() => setFile(null)}>清除待上传文件</Button>}
       <Button type="submit" disabled={!scoped || !file || file.size > 10485760 || !state.serviceId || state.busy || state.loading}>上传原件</Button>
-      <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(projectId)}>刷新</Button>
+      <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(projectId, state.query)}>刷新</Button>
     </form>
     {scoped && state.loading && <p role="status">正在读取附件…</p>}
-    {scoped && !state.loading && !state.attachments.length && <p>当前项目还没有附件原件。</p>}
+    {scoped && !state.loading && !state.attachments.length && <p>{state.query ? "没有匹配的附件。" : "当前项目还没有附件原件。"}</p>}
     <div className="space-y-2 rounded border border-line p-3"><h3 className="font-semibold">已有附件与报告</h3>
-      <div className="flex flex-wrap gap-2"><Input aria-label="搜索附件" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按名称或附件 ID 筛选" />
+      <form className="flex flex-wrap gap-2" onSubmit={(event) => { event.preventDefault(); void state.activate(projectId, query); }}><Input aria-label="搜索附件" maxLength={240} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按名称字面搜索" />
+      <Button type="submit" disabled={state.busy}>搜索</Button></form>
+      <div className="flex flex-wrap gap-2">
       <select aria-label="筛选附件类型" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} className="rounded border border-line bg-surface-0 px-2 text-xs text-ink-1"><option value="all">全部类型</option><option value="pdf">PDF</option><option value="docx">DOCX</option><option value="xlsx">XLSX</option><option value="csv">CSV</option><option value="txt">TXT</option></select></div>
-      <p className="text-xs text-ink-2">筛选当前项目已加载记录；已选预览不会因筛选而改变。匹配 {filteredAttachments.length} 项。</p>
+      <p className="text-xs text-ink-2">名称搜索覆盖当前项目，区分大小写，不搜索文件内容；类型仅筛选已加载记录。显示 {filteredAttachments.length} 项。</p>
     <ul className="space-y-1">{filteredAttachments.map((row) => <li key={row.id}>
       <button disabled={state.busy} className="max-w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3" onClick={() => void state.select(row.id)}>
         {row.original_name} · v{row.version} · {row.id} · {row.size_bytes} 字节 · {labels[row.parser_status]} / 未验证
