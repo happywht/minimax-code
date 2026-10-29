@@ -9,20 +9,23 @@ import { ScheduleRunDetail } from "./ScheduleRunDetail";
 const labels: Record<string,string> = {ready:"已绑定",needs_rebind:"需要重新绑定",blocked:"配置受阻",requires_review:"需要核对",pending:"待接单",running:"运行中",awaiting_approval:"等待授权",completed:"执行结束",budget_paused:"预算暂停",cancelled:"已取消",failed:"执行失败",interrupted:"运行中断",superseded:"已被重新绑定替代",manual:"手动",cron:"定时",chat:"对话（可写）",execute:"执行",plan:"只读规划"};
 const label = (value: string) => labels[value] ?? value;
 export const emptyScheduleContext = (): ScheduleContext => ({ project_id: "", provider_id: "", model: "", mode: "execute", budget_tokens: 0, timezone: "Asia/Shanghai" });
-export const validScheduleContext = (context: ScheduleContext): boolean => !!(context.project_id && context.provider_id && context.model && context.budget_tokens > 0);
+export const validScheduleContext = (context: ScheduleContext): boolean => !!(context.project_id && context.provider_id && context.model && typeof context.timezone === "string" && context.timezone.trim() && Number.isSafeInteger(context.budget_tokens) && context.budget_tokens > 0);
 
 export function ScheduleContextFields({ value, onChange }: { value: ScheduleContext; onChange: (next: ScheduleContext) => void }): JSX.Element {
   const projects = useSessionStore((state) => state.projects);
   const models = useModelStore((state) => state.models);
   const patch = (next: Partial<ScheduleContext>) => onChange({ ...value, ...next });
+  const projectAvailable = projects.some((project) => project.id === value.project_id && project.id !== "inbox" && !!project.root_path);
+  const modelAvailable = models.some((model) => model.provider_id === value.provider_id && model.id === value.model);
   return <div className="grid grid-cols-2 gap-2 text-xs" data-testid="schedule-context-fields">
     <p className="col-span-2 text-ink-2">Local / Native · 独立会话 · 权限保存为快照，后续全局允许不扩展授权；自动任务禁用全局与插件钩子</p>
     <label>项目与目录<select aria-label="调度项目" className="w-full bg-surface-2" value={value.project_id} onChange={(event) => patch({ project_id: event.target.value })}>
-      <option value="">选择项目</option>{projects.filter((project) => project.id !== "inbox" && project.root_path).map((project) => <option key={project.id} value={project.id}>{project.name} · {project.root_path}</option>)}
+      <option value="">选择项目</option>{value.project_id && !projectAvailable && <option value={value.project_id}>已保存项目当前不可用：{value.project_id}</option>}{projects.filter((project) => project.id !== "inbox" && project.root_path).map((project) => <option key={project.id} value={project.id}>{project.name} · {project.root_path}</option>)}
     </select></label>
     <label>Provider / 模型<select aria-label="调度模型" className="w-full bg-surface-2" value={`${value.provider_id}|${value.model}`} onChange={(event) => { const [provider_id, model] = event.target.value.split("|"); patch({ provider_id, model }); }}>
-      <option value="|">选择模型</option>{models.filter((model) => model.provider_id).map((model) => <option key={`${model.provider_id}|${model.id}`} value={`${model.provider_id}|${model.id}`}>{model.provider} / {model.name}</option>)}
+      <option value="|">选择模型</option>{value.provider_id && value.model && !modelAvailable && <option value={`${value.provider_id}|${value.model}`}>已保存模型当前不可用：{value.provider_id} / {value.model}</option>}{models.filter((model) => model.provider_id).map((model) => <option key={`${model.provider_id}|${model.id}`} value={`${model.provider_id}|${model.id}`}>{model.provider} / {model.name}</option>)}
     </select></label>
+    {(value.project_id && !projectAvailable || value.provider_id && value.model && !modelAvailable) && <p className="col-span-2 text-status-warning">所选项目或模型当前不在可用列表中；请核对并重新选择。保存时服务端还会重新检查。</p>}
     <label>单次 token 上限（必填正数）<Input aria-label="调度预算" type="number" min={1} value={value.budget_tokens || ""} onChange={(event) => patch({ budget_tokens: Number(event.target.value) })} /></label>
     <label>模式<select aria-label="调度模式" className="w-full bg-surface-2" value={value.mode} onChange={(event) => patch({ mode: event.target.value as ScheduleContext["mode"] })}>
       <option value="execute">执行</option><option value="chat">对话（可写）</option><option value="plan">只读规划</option>

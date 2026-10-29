@@ -327,7 +327,7 @@ export interface TypedIPC {
   // and the binding translates at the boundary.
   listJobs(): Promise<ListJobsResult>;
   createJob(opts: ScheduleDefinition): Promise<{ job: ScheduledJob }>;
-  updateJob(jobId: string, expectedRevision: number, opts: ScheduleDefinition): Promise<{job: ScheduledJob}>;
+  updateJob(jobId: string, expectedRevision: number, opts: ScheduleDefinition, expectedService?: string): Promise<{job: ScheduledJob}>;
   listScheduleOccurrences(jobId: string): Promise<{occurrences: ScheduleOccurrence[]}>;
   deleteJob(jobId: string): Promise<{ ok: true }>;
   enableJob(jobId: string, acknowledgeOccurrenceId?: string): Promise<{ job: ScheduledJob }>;
@@ -850,8 +850,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       });
       return { job: normalizeScheduledJob(result.job) };
     },
-    updateJob: async (jid, expectedRevision, opts) => {
-      const result = await client.request<{job: WireScheduledJob}>("schedule.update", { job_id: jid, expected_revision: expectedRevision, name: opts.name, cron_expr: opts.cron, payload: {prompt:opts.prompt}, context: opts.context });
+    updateJob: async (jid, expectedRevision, opts, expectedService) => {
+      const result = await client.request<{job: WireScheduledJob}>("schedule.update", { job_id: jid, expected_revision: expectedRevision, name: opts.name, cron_expr: opts.cron, payload: {prompt:opts.prompt}, context: opts.context, ...(expectedService ? {expected_service_id: expectedService} : {}) });
       return {job:normalizeScheduledJob(result.job)};
     },
     listScheduleOccurrences: (jid) => client.request<{occurrences: ScheduleOccurrence[]}>("schedule.occurrences",{job_id:jid}),

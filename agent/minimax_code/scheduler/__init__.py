@@ -202,7 +202,7 @@ class JobScheduler:
         saved = await capture_context(self._db, context)
         next_due = _next_due(cron_expr, saved["timezone"])
         async with self._db.transaction() as conn:
-            cursor = await conn.execute("UPDATE scheduled_jobs SET name=?,cron_expr=?,payload=?,context=?,context_version=1,timezone=?,revision=revision+1,binding_state='ready',binding_reason=NULL,next_run_at=? WHERE id=? AND revision=? AND deleted_at IS NULL",
+            cursor = await conn.execute("UPDATE scheduled_jobs SET name=?,cron_expr=?,payload=?,context=?,context_version=1,timezone=?,revision=revision+1,binding_state=CASE WHEN binding_state='requires_review' THEN binding_state ELSE 'ready' END,binding_reason=CASE WHEN binding_state='requires_review' THEN binding_reason ELSE NULL END,next_run_at=? WHERE id=? AND revision=? AND deleted_at IS NULL",
                 (name, cron_expr, dumps_json(payload), dumps_json(saved), saved["timezone"], next_due, job_id, expected_revision))
             if cursor.rowcount != 1:
                 raise SchedulerError("Schedule revision conflict; refresh before editing")

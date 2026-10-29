@@ -88,7 +88,7 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
     {binding && <div key={JSON.stringify([binding.host, binding.service])} className="relative min-h-0 flex-1">
       {!ready && <div className="absolute inset-0 z-10 bg-surface-overlay/90" aria-hidden="true" />}
       <div ref={surfaceRef} className="h-full overflow-auto p-4" aria-hidden={!ready || undefined} onChangeCapture={onEdit}>
-        {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab active={ready} onOpenSession={onOpenSession} /></div>}
+        {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab active={ready} serviceId={binding.service} onOpenSession={onOpenSession} /></div>}
         {visited.has("workflows") && <div hidden={tab !== "workflows"}><WorkflowsTab /></div>}
         {visited.has("webhooks") && <div hidden={tab !== "webhooks"}><WebhooksTab /></div>}
       </div>

@@ -207,7 +207,7 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
             {visited.has("models") && <div hidden={tab !== "models"}><ModelsTab /></div>}
             {visited.has("providers") && <div hidden={tab !== "providers"}><ProvidersTab /></div>}
             {visited.has("permissions") && <div hidden={tab !== "permissions"}><PermissionsTab /></div>}
-            {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab onOpenSession={onClose} /></div>}
+            {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab serviceId={scope.service} active={ready} onOpenSession={onClose} /></div>}
             {visited.has("agents") && <div hidden={tab !== "agents"}><AgentsTab /></div>}
             {visited.has("teams") && <div hidden={tab !== "teams"}><TeamsTab /></div>}
             {visited.has("audit") && <div hidden={tab !== "audit"}><AuditTab /></div>}

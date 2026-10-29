@@ -24,7 +24,7 @@ import { StreamEvent } from "../../types/ipc";
 
 export { ScheduledTab };
 
-function ScheduledTab({onOpenSession, active = true}: {onOpenSession?: () => boolean | void; active?: boolean}): JSX.Element {
+function ScheduledTab({onOpenSession, active = true, serviceId}: {onOpenSession?: () => boolean | void; active?: boolean; serviceId?: string}): JSX.Element {
   const jobs = useScheduleStore((s) => s.jobs);
   const refresh = useScheduleStore((s) => s.refresh);
   const create = useScheduleStore((s) => s.create);
@@ -131,6 +131,7 @@ function ScheduledTab({onOpenSession, active = true}: {onOpenSession?: () => boo
           <ScheduledJobRow
             key={j.id}
             job={j}
+            serviceId={serviceId}
             onOpenSession={onOpenSession}
             onToggle={(enabled) => void setEnabled(j.id, enabled)}
             onDelete={async () => {
@@ -142,9 +143,10 @@ function ScheduledTab({onOpenSession, active = true}: {onOpenSession?: () => boo
               if (accepted) await remove(j.id);
             }}
             onRunNow={() => void runNow(j.id)}
-            onUpdate={async (name, cron, prompt, context) => {
-              const job = await update(j.id, { name, cron, prompt, context });
-              if (job) toast.success(strings.settings.scheduled.updatedToast, job.name);
+            onUpdate={async (revision, name, cron, prompt, context, expectedService) => {
+              const result = await update(j.id, revision, { name, cron, prompt, context }, expectedService);
+              if (result.job) toast.success(strings.settings.scheduled.updatedToast, result.job.name);
+              return result;
             }}
           />
         ))}
@@ -153,11 +155,11 @@ function ScheduledTab({onOpenSession, active = true}: {onOpenSession?: () => boo
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession, serviceId }: {
   onOpenSession?: () => boolean | void;
-  job: ScheduledJob; onToggle: (enabled: boolean) => void;
+  job: ScheduledJob; serviceId?: string; onToggle: (enabled: boolean) => void;
   onDelete: () => void; onRunNow: () => void;
-  onUpdate: (name: string, cron: string, prompt: string, context: ScheduleContext) => Promise<void>;
+  onUpdate: (revision: number, name: string, cron: string, prompt: string, context: ScheduleContext, expectedService: string) => Promise<{ job: ScheduledJob | null; error?: string }>;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -166,6 +168,15 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
   const [editPrompt, setEditPrompt] = useState(job.prompt);
   const [editContext, setEditContext] = useState(job.context ?? emptyScheduleContext());
   const [acknowledged, setAcknowledged] = useState(false);
+  useEffect(() => { setAcknowledged(false); }, [job.active_occurrence_id]);
+  const [editRevision, setEditRevision] = useState<number | null>(null);
+  const [editService, setEditService] = useState<string | null>(null);
+  const [initialDraft, setInitialDraft] = useState("");
+  const [editError, setEditError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const draftSignature = JSON.stringify([editName, editCron, editPrompt, editContext]);
+  const changed = editing && draftSignature !== initialDraft;
+  const changedOnServer = editRevision !== null && job.revision !== editRevision;
 
   const startEditing = () => {
     // Reset the draft to the current definition so reopening after a
@@ -173,13 +184,34 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
     setEditName(job.name);
     setEditCron(job.cron);
     setEditPrompt(job.prompt);
-    setEditContext(job.context ?? emptyScheduleContext());
+    const context = job.context ?? emptyScheduleContext();
+    setEditContext(context);
+    setEditRevision(job.revision ?? null);
+    setEditService(serviceId ?? null);
+    setInitialDraft(JSON.stringify([job.name, job.cron, job.prompt, context]));
+    setEditError("");
     setEditing(true);
   };
 
+  const cancelEdit = async () => {
+    if (saving) return;
+    if (changed && !await requestConfirmation({ title: "放弃定时计划草稿？", description: "未保存的编辑将丢失。", confirmLabel: "放弃草稿" })) return;
+    setEditing(false); setEditError("");
+  };
+  const reloadEdit = async () => {
+    if (saving) return;
+    if (changed && !await requestConfirmation({ title: "载入最新计划？", description: "当前编辑草稿将被最新版本替换。请先复制需要保留的内容。", confirmLabel: "载入最新版本" })) return;
+    startEditing();
+  };
   const handleSave = async () => {
-    await onUpdate(editName.trim(), editCron.trim(), editPrompt.trim(), editContext);
-    setEditing(false);
+    if (saving || editRevision === null || !editService || editService !== serviceId) return;
+    setSaving(true); setEditError("");
+    try {
+      const result = await onUpdate(editRevision, editName.trim(), editCron.trim(), editPrompt.trim(), editContext, editService);
+      if (result.job) setEditing(false);
+      else setEditError(result.error || "保存未确认；请刷新计划并核对后再操作。");
+    } catch (error) { setEditError(error instanceof Error ? error.message : String(error)); }
+    finally { setSaving(false); }
   };
 
 
@@ -218,7 +250,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
         </label>
         <IconButton
           data-testid={`settings-job-edit-${job.id}`}
-          onClick={editing ? () => setEditing(false) : startEditing}
+          onClick={editing ? () => void cancelEdit() : startEditing}
           aria-label={strings.settings.scheduled.edit}
         >
           <Pencil />
@@ -243,9 +275,15 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
       {job.binding_state === "requires_review" && <label className="px-3 text-xs"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />已核对 {job.active_occurrence_id} 的副作用，放弃该运行恢复并允许未来任务</label>}
       {editing && (
         <div data-testid={`settings-job-edit-form-${job.id}`} className="border-t border-line px-3 py-2">
+          <fieldset disabled={saving}>
           <p className="mb-2 text-[11px] font-medium text-ink-1">
             {strings.settings.scheduled.editTitle}
           </p>
+          <p className="mb-2 text-xs text-ink-2">编辑基于版本 {editRevision ?? "未知"}。已接单运行保留原快照；未接单的旧发生会被替代。保存会重新捕获当前权限与项目配置，不会自动启用计划。</p>
+          {!editService && <p role="alert" className="text-status-warning">服务身份未确认，无法保存；请重连后重新编辑。</p>}
+          {editRevision === null && <p role="alert" className="text-status-warning">版本未知，无法安全保存；请刷新后重新编辑。</p>}
+          {changedOnServer && <div role="status" className="space-y-1 text-status-warning"><p>计划已更新到版本 {job.revision ?? "未知"}。当前草稿仍保留，不能直接覆盖新版本。</p><Button type="button" size="sm" variant="secondary" disabled={saving} onClick={() => void reloadEdit()}>载入最新版本</Button></div>}
+          {editError && <p role="alert" className="break-words text-status-error">保存失败或结果未确认：{editError}。草稿仍保留；请刷新并核对版本后处理。</p>}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
             <label htmlFor={`scheduled-job-edit-name-${job.id}`} className="sr-only">
               {strings.settings.scheduled.fieldName}
@@ -289,7 +327,8 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
                 size="sm"
                 variant="ghost"
                 data-testid="settings-job-edit-cancel"
-                onClick={() => setEditing(false)}
+                disabled={saving}
+                onClick={() => void cancelEdit()}
               >
                 {strings.settings.scheduled.cancel}
               </Button>
@@ -297,7 +336,8 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
                 size="sm"
                 variant="subtle"
                 data-testid="settings-job-edit-save"
-                disabled={!editName.trim() || !editCron.trim() || !editPrompt.trim() || !validScheduleContext(editContext)}
+                disabled={saving || changedOnServer || editRevision === null || !editService || editService !== serviceId || !editName.trim() || !editCron.trim() || !editPrompt.trim() || !validScheduleContext(editContext)}
+                loading={saving}
                 onClick={() => void handleSave()}
               >
                 {strings.settings.scheduled.save}
@@ -305,6 +345,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
             </div>
           </div>
           <ScheduleContextFields value={editContext} onChange={setEditContext} />
+          </fieldset>
         </div>
       )}
       <div data-testid={expanded ? `settings-job-tasks-${job.id}` : undefined} className={expanded ? "border-t border-line py-2" : ""}>
