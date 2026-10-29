@@ -21,6 +21,7 @@ import { VerificationBadge } from "../chat/VerificationBadge";
 import { VerificationDetails } from "../chat/VerificationDetails";
 import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
 import { NativeSteerInput } from "./NativeSteerInput";
+import { RunAttachments } from "./RunAttachments";
 import type { VerificationEvidence } from "../../types/ipc";
 
 export interface RunTimelinePanelProps {
@@ -207,6 +208,7 @@ export function RunTimelinePanel({
               ))}
             </ol>
             <RunBudgetPanel run={run} />
+            <RunAttachments run={run} steps={run.steps} />
             <NativeSteerInput run={run} />
             <RunWorkspaceDiff run={run} />
             <RunRecoveryActions run={run} refresh={() => loadForSession(currentSessionId)} />

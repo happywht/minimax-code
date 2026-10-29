@@ -477,6 +477,14 @@ Run, session, project and session host policy are checked.
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older
 run without journal entries has cursor 0. Existing `run.list` callers are unchanged.
+New Native generation-tool results may also add completed observation steps
+with `payload.source:"run_attachment_v1"`, containing the verified attachment
+ID, project and service IDs, SHA-256, filename and generating tool. These mean
+the tool returned a confirmed project attachment; an idempotent call can return
+an older attachment. Partial reports record only confirmed saved formats.
+Existing unassociated outputs are not inferred; a saved file may lack a step
+if recording failed. Preview and content APIs remain authoritative and clients
+must recheck the association and byte identity before displaying or downloading.
 For a run that has never started, `queued_input` is null or
 `{text, truncated}`, projecting the saved string request up to 8000 characters.
 It is cleared after the run starts; non-text inputs do not get this projection.

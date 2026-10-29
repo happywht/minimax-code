@@ -265,6 +265,24 @@ class _RunRecorder:
         )
         await self.emit("run.step.completed", {"run_id": self.run_id, "step": step})
 
+        try:
+            from ..run_attachments import record_tool_attachments
+            artifacts = await record_tool_attachments(self.db, self.run_id, self.session_id,
+                                                       self.project_id, call, result)
+        except Exception:
+            # The original tool result is already durable. An auxiliary index
+            # failure must not change it or assert that an association exists.
+            logger.warning("Could not record task attachment association for %s; inspect project attachments",
+                           self.run_id, exc_info=True)
+            return
+        for artifact in artifacts:
+            try:
+                await self.emit("run.step.completed", {"run_id": self.run_id, "step": artifact})
+            except Exception:
+                # The committed journal remains authoritative; reconnect can
+                # retrieve it even when this notification was not delivered.
+                logger.warning("Could not notify task attachment association for %s", self.run_id, exc_info=True)
+
     async def complete(self, result: Any, *, blocks: int = 1, receipt: dict[str, Any] | None = None,
                        verification: dict[str, Any] | None = None) -> None:
         """Close the run timeline with the final block accounting.
