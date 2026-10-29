@@ -48,7 +48,9 @@ function decimalParts(input: string): string | null {
 }
 
 export function csvToOfficeSpec(table: CsvTable, kinds: Kind[]): OfficeTableSpec {
+  if (new TextEncoder().encode(JSON.stringify(table)).length > 1048576) throw new Error("编辑后的表格超过 1 MiB");
   const rows = table.rows.map((row, index) => row.map((value, column) => {
+    if ([...value].length > 4096) throw new Error(`表格第 ${index + 2} 行「${table.headers[column]}」超过 4096 字符`);
     if (value === "") return null;
     if (kinds[column] === "text") return value;
     const clean = value.trim();
@@ -60,7 +62,7 @@ export function csvToOfficeSpec(table: CsvTable, kinds: Kind[]): OfficeTableSpec
       if (normalized !== null && Number.isFinite(number) && Math.abs(number) <= 999999999999999
           && (number === 0 || Math.abs(number) >= 1e-12) && decimalParts(String(number)) === normalized) return number;
     }
-    throw new Error(`CSV 第 ${index + 2} 行「${table.headers[column]}」不是有效的${kinds[column] === "boolean" ? "布尔值（true/false）" : "数字"}`);
+    throw new Error(`表格第 ${index + 2} 行「${table.headers[column]}」不是有效的${kinds[column] === "boolean" ? "布尔值（true/false）" : "数字"}`);
   }));
   return { sheet_name: "清单", columns: table.headers.map((name, index) => ({ name, kind: kinds[index] })), rows };
 }

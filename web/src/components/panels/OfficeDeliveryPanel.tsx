@@ -6,6 +6,7 @@ import type { OfficeTableSpec } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 import { XlsxTablePreview } from "./XlsxTablePreview";
 import { csvToOfficeSpec, parseOfficeCsv, type CsvTable } from "./officeCsv";
+import { CsvTableEditor } from "./CsvTableEditor";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
   { name: "名称", kind: "text" }, { name: "数量", kind: "number" },
@@ -27,6 +28,8 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
   const [formError, setFormError] = useState<string | null>(null);
   const [csv, setCsv] = useState("");
   const [csvTable, setCsvTable] = useState<CsvTable | null>(null);
+  const [originalCsvTable, setOriginalCsvTable] = useState<CsvTable | null>(null);
+  const [tableDirty, setTableDirty] = useState(false);
   const [kinds, setKinds] = useState<OfficeTableSpec["columns"][number]["kind"][]>([]);
   const csvRef = useRef(csv);
   const fileReader = useRef<FileReader | null>(null);
@@ -43,7 +46,7 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
   }, [project, host]);
   const cancelFileRead = () => { fileSequence.current++; fileReader.current?.abort(); fileReader.current = null; setFilePending(false); };
   const applyCsv = (text: string, table: CsvTable) => {
-    csvRef.current = text; setCsv(text); setCsvTable(table); setKinds(table.headers.map(() => "text"));
+    csvRef.current = text; setCsv(text); setCsvTable(table); setOriginalCsvTable(table); setTableDirty(false); setKinds(table.headers.map(() => "text"));
     setCandidate(null); setFormError(null);
   };
   const readCsvFile = (file: File) => {
@@ -100,12 +103,14 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
       <label>选择本地 UTF-8 CSV 文件（最多 1 MiB）<input aria-label="选择本地 CSV 文件" type="file" accept=".csv,text/csv" onClick={cancelFileRead} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) readCsvFile(file); }} /></label>
       <p>文件仅在本页读取，不会上传或保存为项目附件。生成时提交转换后的表格数据。</p>
       {filePending && <p role="status">正在读取文件；现有草稿保留。</p>}
-      {candidate && <div><p>已读取 {candidate.name}（{candidate.table.rows.length} 行）；当前 CSV 草稿不会自动覆盖。</p><Button type="button" variant="secondary" onClick={() => applyCsv(candidate.text, candidate.table)}>使用此文件替换 CSV 草稿</Button><Button type="button" variant="ghost" onClick={() => setCandidate(null)}>保留当前草稿</Button></div>}
-      <Textarea aria-label="粘贴 CSV" rows={6} value={csv} onChange={(event) => { csvRef.current = event.target.value; setCsv(event.target.value); setCsvTable(null); setFormError(null); }} />
-      <Button type="button" variant="secondary" onClick={() => { try { const table = parseOfficeCsv(csv); setCsvTable(table); setKinds(table.headers.map(() => "text")); setFormError(null); } catch (error) { setCsvTable(null); setFormError(error instanceof Error ? error.message : "CSV 无效"); } }}>读取 CSV 列</Button>
+      {candidate && <div><p>已读取 {candidate.name}（{candidate.table.rows.length} 行）；当前 CSV 草稿不会自动覆盖。替换也会放弃尚未转换的表格编辑。</p><Button type="button" variant="secondary" onClick={() => applyCsv(candidate.text, candidate.table)}>使用此文件替换 CSV 草稿</Button><Button type="button" variant="ghost" onClick={() => setCandidate(null)}>保留当前草稿</Button></div>}
+      <Textarea aria-label="粘贴 CSV" rows={6} value={csv} readOnly={tableDirty} onChange={(event) => { csvRef.current = event.target.value; setCsv(event.target.value); setCsvTable(null); setOriginalCsvTable(null); setFormError(null); }} />
+      {tableDirty && <p role="status">表格有编辑，CSV 草稿暂为只读；恢复读取时的表格后可修改原稿。</p>}
+      <Button type="button" variant="secondary" disabled={tableDirty} onClick={() => { try { const table = parseOfficeCsv(csv); setCsvTable(table); setOriginalCsvTable(table); setTableDirty(false); setKinds(table.headers.map(() => "text")); setFormError(null); } catch (error) { setCsvTable(null); setOriginalCsvTable(null); setFormError(error instanceof Error ? error.message : "CSV 无效"); } }}>读取 CSV 列</Button>
       {csvTable && <div className="space-y-2"><p>已读取 {csvTable.rows.length} 行，{csvTable.headers.length} 列。数字须在支持的精度内；布尔只接受 true / false。</p>
         {csvTable.headers.map((name, index) => <label key={index} className="flex items-center gap-2">{name}<select aria-label={`第 ${index + 1} 列类型`} value={kinds[index]} onChange={(event) => setKinds((old) => old.map((kind, i) => i === index ? event.target.value as typeof kind : kind))}>
           <option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option></select></label>)}
+        {originalCsvTable && <CsvTableEditor table={csvTable} original={originalCsvTable} onChange={(next) => { setCsvTable(next); setTableDirty(next !== originalCsvTable); setFormError(null); }} />}
         <Button type="button" variant="secondary" onClick={() => { try { setSource(JSON.stringify(csvToOfficeSpec(csvTable, kinds), null, 2)); edited(); } catch (error) { setFormError(error instanceof Error ? error.message : "转换失败"); } }}>转换为表格输入</Button>
       </div>}
     </details>

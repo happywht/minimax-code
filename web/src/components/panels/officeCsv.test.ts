@@ -14,4 +14,8 @@ describe("office CSV conversion", () => {
     expect(() => csvToOfficeSpec(parseOfficeCsv("编号\n1234567890123456"), ["number"])).toThrow("第 2 行「编号」");
     expect(() => csvToOfficeSpec(parseOfficeCsv("标志\nyes"), ["boolean"])).toThrow("true/false");
   });
+  it("rejects oversized edited cells before generation", () => {
+    expect(() => csvToOfficeSpec({ headers: ["列"], rows: [["字".repeat(4097)]] }, ["text"]))
+      .toThrow("第 2 行「列」超过 4096");
+  });
 });

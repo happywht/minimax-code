@@ -144,6 +144,47 @@ describe("manual Office delivery", () => {
     expect(wire.request.mock.calls.some(([method]) => method === "office.generate_xlsx")).toBe(false);
   });
 
+  it("edits invalid cells and removes empty rows before generating, while preserving the CSV draft", async () => {
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("生成并登记 XLSX")).not.toBeDisabled());
+    fireEvent.click(screen.getByText("从 CSV 创建表格输入"));
+    const draft = "编号,数量\n001,wrong\n,\n002,5";
+    fireEvent.change(screen.getByLabelText("粘贴 CSV"), { target: { value: draft } });
+    fireEvent.click(screen.getByText("读取 CSV 列"));
+    fireEvent.change(screen.getByLabelText("第 2 列类型"), { target: { value: "number" } });
+    fireEvent.click(screen.getByText("转换为表格输入"));
+    expect(screen.getByRole("alert")).toHaveTextContent("第 2 行「数量」");
+    fireEvent.change(screen.getByLabelText("表格第 2 行第 2 列"), { target: { value: "12" } });
+    expect(screen.getByLabelText("粘贴 CSV")).toHaveValue(draft);
+    expect(screen.getByLabelText("粘贴 CSV")).toHaveAttribute("readonly");
+    fireEvent.click(screen.getByRole("button", { name: "移除全空行（1）" }));
+    fireEvent.click(screen.getByText("转换为表格输入"));
+    fireEvent.click(screen.getByText("生成并登记 XLSX"));
+    await screen.findByLabelText("办公成果纯文本预览");
+    const sent = wire.request.mock.calls.find(([method]) => method === "office.generate_xlsx")![1];
+    expect(sent.spec.rows).toEqual([["001", 12], ["002", 5]]);
+    fireEvent.click(screen.getByRole("button", { name: "恢复读取时的表格" }));
+    expect(screen.getByLabelText("表格第 2 行第 2 列")).toHaveValue("wrong");
+    expect(screen.getByLabelText("粘贴 CSV")).not.toHaveAttribute("readonly");
+  });
+
+  it("edits and deletes the correct row beyond the first page", async () => {
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    fireEvent.click(screen.getByText("从 CSV 创建表格输入"));
+    fireEvent.change(screen.getByLabelText("粘贴 CSV"), { target: { value: `编号\n${Array.from({ length: 21 }, (_, i) => `id${i}`).join("\n")}` } });
+    fireEvent.click(screen.getByText("读取 CSV 列"));
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getByLabelText("表格第 22 行第 1 列")).toHaveValue("id20");
+    fireEvent.change(screen.getByLabelText("表格第 22 行第 1 列"), { target: { value: "edited" } });
+    fireEvent.click(screen.getByText("转换为表格输入"));
+    const editor = screen.getByLabelText("结构化表格 JSON") as HTMLTextAreaElement;
+    expect(JSON.parse(editor.value).rows[20]).toEqual(["edited"]);
+    fireEvent.click(screen.getByRole("button", { name: "删除表格第 22 行" }));
+    fireEvent.click(screen.getByText("转换为表格输入"));
+    expect(JSON.parse(editor.value).rows).toHaveLength(20);
+    expect(JSON.parse(editor.value).rows[19]).toEqual(["id19"]);
+  });
+
   it("sends explicit structured intent, escapes preview, downloads verified attachment and preserves retry key", async () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     vi.stubGlobal("URL", { createObjectURL: vi.fn().mockReturnValue("blob:office"), revokeObjectURL: vi.fn() });
