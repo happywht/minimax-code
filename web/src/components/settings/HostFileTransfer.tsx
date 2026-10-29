@@ -4,6 +4,7 @@ import type { HostTransferResult, RemoteHost } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileBrowser } from "./HostFileBrowser";
+import { downloadHostFile } from "../../ipc/hostDownload";
 
 type UploadReceipt = { hostSignature: string; remotePath: string; transferId: string };
 const signature = (host: RemoteHost) => JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file]);
@@ -16,17 +17,18 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
   const [manualId, setManualId] = useState(""), [manualRemote, setManualRemote] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
-  const epoch = useRef(0), base = ipc.agentBaseUrl, hostSignature = signature(host);
+  const epoch = useRef(0), browserDownload = useRef<AbortController | null>(null), base = ipc.agentBaseUrl, hostSignature = signature(host);
   const storageKey = `minimax:host-transfer:${base}:${host.id}`;
   useEffect(() => {
-    epoch.current++; setBusy(false); setMessage(""); setStatus(null); setReceipt(null); setManualId(""); setManualRemote(""); setRecoveryInput("");
+    epoch.current++; browserDownload.current?.abort(); setBusy(false); setMessage(""); setStatus(null); setReceipt(null); setManualId(""); setManualRemote(""); setRecoveryInput("");
     try { const saved = JSON.parse(sessionStorage.getItem(storageKey) || "null") as UploadReceipt | null;
       if (saved?.hostSignature === hostSignature && /^[0-9a-f]{32}$/.test(saved.transferId) && isRemoteAbsolute(saved.remotePath)) {
         setReceipt(saved); setManualId(saved.transferId); setManualRemote(saved.remotePath);
       }
     } catch { /* Storage can be unavailable; no saved receipt is claimed. */ }
-    return () => { epoch.current++; };
-  }, [storageKey, hostSignature]);
+    return () => { epoch.current++; browserDownload.current?.abort(); };
+  }, [storageKey, hostSignature, host.enabled]);
+  useEffect(() => ipc.onSideCar(() => { epoch.current++; browserDownload.current?.abort(); setBusy(false); setMessage("连接已变化，请重新选择文件。"); }), []);
   const valid = (ticket: number) => epoch.current === ticket && ipc.agentBaseUrl === base;
   const recoveryRecord = receipt ? JSON.stringify({
     version: 1, service: base, host_id: host.id, hostname: host.hostname,
@@ -86,6 +88,24 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     } catch (e) { if (valid(ticket)) setMessage(`${e instanceof Error ? e.message : String(e)}；结果可能不明，请先核对目标${action === "upload" ? "或查询传输状态" : "文件"}。`); }
     finally { if (valid(ticket)) setBusy(false); }
   };
+  const browserTransfer = async () => {
+    const path = remote.trim();
+    if (!host.enabled || busy) return;
+    if (!isRemoteAbsolute(path) || path.length > 4096 || path.includes("\0")) { setMessage("请输入有效的远端 Linux 绝对文件路径。"); return; }
+    const ticket = ++epoch.current; setBusy(true); setMessage("");
+    const controller = new AbortController(); browserDownload.current = controller;
+    try {
+      const confirmed = await requestConfirmation({ title: "确认下载到浏览器？", description: `通过 SSH 从 ${host.name} (${host.username}@${host.hostname}) 读取 ${path}，文件上限 10 MiB。浏览器将决定保存位置。`, confirmLabel: "确认下载" });
+      if (!confirmed || !valid(ticket) || controller.signal.aborted) return;
+      const blob = await downloadHostFile(host, path, base, controller.signal);
+      if (!valid(ticket) || controller.signal.aborted) return;
+      const url = URL.createObjectURL(blob);
+      try { const anchor = document.createElement("a"); anchor.href = url; anchor.download = (path.split("/").pop() || "download").replace(/[\\/:*?"<>|]/g, "_"); anchor.click(); }
+      finally { URL.revokeObjectURL(url); }
+      setMessage("文件字节已校验并交给浏览器下载；保存位置由浏览器决定。");
+    } catch (e) { if (valid(ticket) && !controller.signal.aborted) setMessage(e instanceof Error ? e.message : String(e)); }
+    finally { if (browserDownload.current === controller) browserDownload.current = null; if (valid(ticket)) setBusy(false); }
+  };
   const inspect = async () => {
     if (!host.enabled || !isRemoteAbsolute(manualRemote.trim()) || !/^[0-9a-f]{32}$/.test(manualId)) { setMessage("请输入远端绝对路径和 32 位小写十六进制传输编号。"); return; }
     const ticket = ++epoch.current; setBusy(true); setMessage(""); setStatus(null);
@@ -102,8 +122,11 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     <label className="block text-xs">远端文件绝对路径<Input aria-label={`${host.name} 远端传输路径`} value={remote} disabled={busy} onChange={(e) => setRemote(e.target.value)} placeholder="/home/user/report.pdf" /></label>
     <HostFileBrowser host={host} onSelect={(path) => { if (!busy) setRemote(path); }} />
     <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void transfer("upload")}>上传到此主机</Button>
-      <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void transfer("download")}>从此主机下载</Button></div>
-    <p className="text-xs text-ink-2">上传备份位于远端传输记录目录；下载只创建新文件，不覆盖本机已有文件。两者进行 SHA-256 比对，不能证明业务内容正确。响应中断时先核对，不自动重试。</p>
+      <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void transfer("download")}>下载到服务端路径</Button>
+      <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void browserTransfer()}>下载到当前浏览器</Button>
+      {busy && browserDownload.current && <Button type="button" size="sm" variant="secondary" onClick={() => browserDownload.current?.abort()}>取消浏览器下载</Button>}</div>
+    <p className="text-xs text-ink-2">浏览器下载通过 SSH 执行远端只读命令，仅支持不经过符号链接的普通文件，最大 10 MiB；不写入服务端文件。</p>
+    <p className="text-xs text-ink-2">上传备份位于远端传输记录目录；服务端路径下载只创建新文件，不覆盖已有文件。浏览器下载的保存位置和同名处理由浏览器决定。校验不能证明业务内容正确；响应中断时先核对，不自动重试。</p>
     <label className="block text-xs">上传传输编号<Input aria-label={`${host.name} 上传传输编号`} value={manualId} maxLength={32} disabled={busy} onChange={(e) => setManualId(e.target.value)} /></label>
     <label className="block text-xs">查询用远端路径<Input aria-label={`${host.name} 上传查询路径`} value={manualRemote} disabled={busy} onChange={(e) => setManualRemote(e.target.value)} /></label>
     <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void inspect()}>查询上传状态</Button>

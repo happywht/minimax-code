@@ -550,7 +550,8 @@ def build_app(
         allow_methods=CORS_ALLOW_METHODS,
         allow_headers=CORS_ALLOW_HEADERS,
         expose_headers=["X-Artifact-Service-Id", "X-Artifact-SHA256",
-                        "X-Attachment-Service-Id", "X-Attachment-SHA256"],
+                        "X-Attachment-Service-Id", "X-Attachment-SHA256",
+                        "X-Host-Download-SHA256", "X-Host-Download-Service"],
     )
 
     # Stash the WS manager on the app state so tests / future
@@ -804,6 +805,8 @@ def build_app(
     register_artifact_routes(app)
     from .attachment_http import register_attachment_routes
     register_attachment_routes(app)
+    from .host_download_http import register_host_download_routes
+    register_host_download_routes(app)
 
     from .preview.server import register_preview_routes
 
