@@ -17,6 +17,7 @@ import { InlineCode, TabHeader } from "./fields";
 import { useTeamForm } from "./teams/useTeamForm";
 import { TeamForm } from "./teams/TeamForm";
 import { TeamRow } from "./teams/TeamRow";
+import { useChat } from "../../stores/chat";
 
 export { TeamsTab };
 
@@ -30,6 +31,7 @@ function TeamsTab(): JSX.Element {
 
   const spawnRun = useTeamRunStore((s) => s.spawn);
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
+  const executionMode = useChat((s) => s.executionMode);
 
   // Available agents for team assignment
   const agents = useAgentStore((s) => s.agents);
@@ -52,13 +54,14 @@ function TeamsTab(): JSX.Element {
   };
 
   const handleRun = (teamName: string, request: string, budgetTokens?: number) => {
-    if (!currentSessionId) return;
+    if (!currentSessionId || executionMode !== "execute") return;
     toast.info(strings.settings.teams.runStartedToast, strings.settings.teams.runStartedDetail);
     void spawnRun({
       team_name: teamName,
       request,
       session_id: currentSessionId,
       budget_tokens: budgetTokens,
+      mode: "execute",
     });
   };
 
@@ -88,6 +91,7 @@ function TeamsTab(): JSX.Element {
       {form.showForm && <TeamForm form={form} agents={agents} />}
 
       {!currentSessionId && <p className="text-xs text-ink-2">请先选择会话，再运行团队；团队使用该会话的工作目录。</p>}
+      {executionMode === "plan" && <p className="text-xs text-ink-2">当前为规划模式；团队运行需要先切换到执行模式。成员工具会遵守权限规则并按需请求授权。</p>}
 
       {loading && teams.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
@@ -107,7 +111,7 @@ function TeamsTab(): JSX.Element {
               onToggleEnabled={() => void (t.enabled ? disable(t.name) : enable(t.name))}
               onDelete={() => void handleDelete(t)}
               onRun={(request, budgetTokens) => handleRun(t.name, request, budgetTokens)}
-              canRun={Boolean(currentSessionId)}
+              canRun={Boolean(currentSessionId) && executionMode === "execute"}
             />
           ))}
         </ul>

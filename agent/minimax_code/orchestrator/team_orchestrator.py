@@ -152,11 +152,15 @@ class TeamOrchestrator:
         agent_dao: AgentDAO | None = None,
         llm: MiniMaxClient | None = None,
         emit_event: Any | None = None,
+        permission_store: Any | None = None,
+        permission_server: Any | None = None,
     ) -> None:
         self._team_dao = team_dao
         self._agent_dao = agent_dao
         self._llm = llm
         self._emit_event = emit_event
+        self._permission_store = permission_store
+        self._permission_server = permission_server
 
     # -- public API ---------------------------------------------------------
 
@@ -185,8 +189,9 @@ class TeamOrchestrator:
         from ..budget import daily_budget_limit, resolve_run_budget
         from ..budget_ledger import BudgetHandle, budget_scope
         from ..schedule_context import RetainedChildren
-        from .subagent import _team_children
+        from .subagent import _team_children, _team_permissions
         from .team_control import register, unregister
+        from ..perm_consent import PermissionGater, register_gater, unregister_gater
 
         runs_dao: Any | None = None
         budget_handle: Any | None = None
@@ -198,11 +203,16 @@ class TeamOrchestrator:
         owner_task = asyncio.current_task()
         assert owner_task is not None
         owner_token = _team_children.set(children)
+        permission_token = None
+        gater = None
+        gater_key = f"team:{task_id}"
 
         async def persist_start() -> None:
             # No member can call a model until the owner and its budget family
             # have both been committed in the same transaction.
-            nonlocal runs_dao, budget_handle, metadata
+            nonlocal runs_dao, budget_handle, metadata, permission_token, gater
+            if self._llm is not None and (self._permission_store is None or self._permission_server is None or self._emit_event is None):
+                raise RuntimeError("Team permission service is unavailable")
             runs_dao = self._make_runs_dao()
             await self._ensure_session(run_session_id)
             row = await runs_dao.create_run(
@@ -218,6 +228,19 @@ class TeamOrchestrator:
             budget_handle = await BudgetHandle.for_run(self._team_dao._db, task_id,
                                                        daily_limit=daily_budget_limit())
             scopes.enter_context(budget_scope(budget_handle))
+            if self._llm is not None:
+                class TeamPermissionGater(PermissionGater):
+                    async def request_consent(self, *, tool, args, session_id=None, timeout=None):
+                        from ..workspace_ctx import current_root
+                        root = current_root()
+                        return await super().request_consent(tool=tool, args={**args,
+                            "_team_workspace": str(root) if root is not None else "unknown",
+                            "_execution_boundary": "working copy; host processes are not OS-sandboxed"},
+                            session_id=session_id, timeout=timeout)
+
+                gater = TeamPermissionGater(emit=self._emit_event, run_id=task_id, explicit_once=True)
+                register_gater(self._permission_server, gater_key, gater)
+                permission_token = _team_permissions.set({"store": self._permission_store, "gater": gater})
             register(task_id, owner_task)
 
         try:
@@ -248,6 +271,11 @@ class TeamOrchestrator:
             raise
         finally:
             unregister(task_id, owner_task)
+            if gater is not None:
+                gater.cancel_all()
+                unregister_gater(self._permission_server, gater_key)
+            if permission_token is not None:
+                _team_permissions.reset(permission_token)
             _team_children.reset(owner_token)
             scopes.close()
 

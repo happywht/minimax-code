@@ -419,6 +419,10 @@ def register_run_handlers(server: Any) -> None:
                 snapshot["pending_native_permissions"] = gater.live_requests(session_id, run_id)
             elif isinstance(gater, CodexApprovalGate):
                 snapshot["pending_codex_permissions"] = gater.live_requests(session_id, run_id)
+            if isinstance(registry, dict):
+                for candidate in registry.values():
+                    if isinstance(candidate, PermissionGater) and candidate is not gater and candidate.run_id == run_id:
+                        snapshot["pending_native_permissions"].extend(candidate.live_requests(session_id, run_id))
             live = getattr(ctx.server, "_live_ask_users", {}).get(run_id)
             if live:
                 event, future, deadline = live

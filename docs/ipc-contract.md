@@ -1998,6 +1998,11 @@ UI 依据 `cancel_supported` 禁用动作，不能只改任务账本制造已停
 `team.spawn` requires an existing `session_id` (or, for older callers, an
 existing `parent_session_id`); the selected session determines the workspace.
 Any supplied parent session is also checked against host-execution restrictions.
+Team execution is write-enabled and only accepts `mode: "execute"`; a read-only
+execution scope rejects it. Members use the current permission store and a
+team-run-scoped explicit-once consent gate, including parallel members. Pending
+consents are exposed in `run.steps` while this service process remains alive;
+the team does not inherit the ordinary chat run's consent registry entry.
 `budget_tokens` is an optional positive integer; otherwise the service default applies.
 The team has its own durable budget family, shared by concurrent members and the
 service daily ledger. The returned `budget` is a completion snapshot or null if

@@ -283,6 +283,11 @@ def register_team_handlers(
             check_params(params, expected_keys={"team_name", "request"})
             team_name = str(params["team_name"])
             request = str(params["request"])
+            if params.get("mode", "execute") != "execute":
+                await ctx.reply_error(INVALID_PARAMS, "Team execution is unavailable in planning mode")
+                return
+            from ..execution import require_write_access
+            require_write_access()
             budget_tokens = params.get("budget_tokens")
             if budget_tokens is not None and (type(budget_tokens) is not int or budget_tokens <= 0):
                 await ctx.reply_error(INVALID_PARAMS, "budget_tokens must be a positive integer")
@@ -332,12 +337,17 @@ def register_team_handlers(
             # boot not yet run) keeps the legacy stub path for tests.
             from ..app import get_sessions_dao, get_subagent_llm
             from ..orchestrator.team_orchestrator import TeamOrchestrator
+            from .handlers_permissions import _ensure_permission_store
+
+            permission_store = await _ensure_permission_store(ctx.server)
 
             orch = TeamOrchestrator(
                 team_dao=team_dao,
                 agent_dao=agent_dao_instance,
                 llm=get_subagent_llm(),
                 emit_event=ctx.emit,
+                permission_store=permission_store,
+                permission_server=ctx.server,
             )
             # v1.3.0: scope the whole team run to the driving session's
             # root — members spawned via ``create_task`` copy the context
@@ -391,7 +401,7 @@ def register_team_handlers(
             await ctx.reply_error(INTERNAL_ERROR, "Team stopped; review incomplete operations")
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
-        except WorkspaceUnavailableError as exc:
+        except (WorkspaceUnavailableError, PermissionError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception:
             logger.exception("team.spawn failed")

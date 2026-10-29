@@ -311,6 +311,7 @@ def _on_background_run_done(run_id: str, task: asyncio.Task) -> None:
 
 
 _team_children: ContextVar[Any | None] = ContextVar("team_background_children", default=None)
+_team_permissions: ContextVar[Any | None] = ContextVar("team_permissions", default=None)
 
 
 def register_background_run(run_id: str, task: asyncio.Task) -> None:
@@ -612,9 +613,11 @@ class SubAgentRuntime:
             # sub-agents too (long tool loops blow the window fastest).
             context_window=context_window_for(child_model) if child_model != saved.get("model") else saved.get("context_window", context_window_for(spec.model)),
         )
+        team_permissions = _team_permissions.get()
         core = AgentCore(
             llm=self._llm, registry=effective_registry, config=core_config,
-            **({"permission_store": scheduled["permissions"], "permission_gater": scheduled["gater"]} if scheduled else {}),
+            **({"permission_store": scheduled["permissions"], "permission_gater": scheduled["gater"]} if scheduled
+               else {"permission_store": team_permissions["store"], "permission_gater": team_permissions["gater"]} if team_permissions else {}),
         )
         # M2 — parent+child shared budget. The parent run publishes its
         # BudgetState via ContextVar before dispatching tools; a sub-agent

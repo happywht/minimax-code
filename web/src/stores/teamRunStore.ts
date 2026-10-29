@@ -50,6 +50,7 @@ export interface TeamRunState {
     session_id?: string;
     parent_session_id?: string;
     budget_tokens?: number;
+    mode?: "execute";
   }) => Promise<void>;
 
   /** Clear completed/failed runs older than `maxAgeMs`. */

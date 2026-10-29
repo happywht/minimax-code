@@ -2073,7 +2073,8 @@ function mockHandle(
       return { team: t } satisfies { team: AgentTeam };
     }
     case "team.spawn": {
-      const p = params as { team_name: string; request: string; session_id?: string; parent_session_id?: string };
+      const p = params as { team_name: string; request: string; session_id?: string; parent_session_id?: string; mode?: string };
+      if (p.mode !== undefined && p.mode !== "execute") throw new Error("Team execution is unavailable in planning mode");
       const sessionId = p.session_id || p.parent_session_id;
       if (!sessionId || !mockSessions.has(sessionId) || (p.parent_session_id && !mockSessions.has(p.parent_session_id))) {
         throw new Error("team.spawn requires an existing session");
