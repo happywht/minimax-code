@@ -14,6 +14,7 @@ import { ReportResearchPicker } from "./ReportResearchPicker";
 import { DraftFileControl } from "./DraftFileControl";
 import { ReportTextExcerpt } from "./ReportTextExcerpt";
 import { ReportTextReuse } from "./ReportTextReuse";
+import { ReportArtifactReuse } from "./ReportArtifactReuse";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -335,6 +336,12 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           setCitationNeedsReview(restoredMarkers === null || restoredMarkers.length > 0);
         }} />
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
+      <ReportArtifactReuse project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host}
+        onApply={(paragraphs) => {
+          const applied = appendExcerpt(paragraphs);
+          if (applied && paragraphs.some((text) => /\[[1-9][0-9]*\]/.test(text))) setCitationNeedsReview(true);
+          return applied;
+        }} />
       <label>文件格式 <select aria-label="报告文件格式" value={format} onChange={(event) => {
         const next = event.target.value as "docx" | "pdf" | "both"; setFormat(next);
         setDocName((name) => `${name.replace(/\.(docx|pdf)$/i, "")}${next === "both" ? "" : `.${next}`}`);
