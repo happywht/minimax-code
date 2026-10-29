@@ -29,9 +29,21 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
     return () => { ++epoch.current; };
   }, [run.id, run.status, session, project, selectedProject, host]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setReview(null); setAttempt(null); setReviewed(false); setPending(false); setLoading(false); setError("连接变化，请重新读取运行和待确认请求。"); }), []);
-  if (typeof run.metadata?.workspace_snapshot !== "string") return null;
-  if (codex ? !run.metadata.codex_thread_id : !run.metadata.model_snapshot) return null;
   if (!resumable && !active) return null;
+  const hasWorkspace = typeof run.metadata?.workspace_snapshot === "string" && !!run.metadata.workspace_snapshot;
+  const missingContext = [
+    ...(!hasWorkspace ? ["工作区快照"] : []),
+    ...(codex ? (!run.metadata?.codex_thread_id ? ["Codex 线程"] : []) : (!run.metadata?.model_snapshot ? ["模型快照"] : [])),
+  ];
+  if (!resumable && missingContext.length) return null;
+  if (resumable && (run.mode === "team" || run.metadata?.manual_team_validation)) return <p className="mt-2 text-xs text-status-warning">
+    此运行不能直接接续。请先核对成员结果、工作区和可能的外部副作用，再明确发起新任务或验证。
+  </p>;
+  if (resumable && missingContext.length) return <div className="mt-2 space-y-1 text-xs text-status-warning" data-testid="run-recovery-unavailable">
+    <p>无法直接接续：记录缺少{missingContext.join("、")}。</p>
+    <p>请先核对时间线、当前文件和可能的外部副作用，再在合适的会话中发起新任务，并手动提供已完成工作、未完成事项和不确定操作的交接信息。新任务不会自动恢复原运行。</p>
+    {run.status === "budget_paused" && <p>新任务的预算需重新明确；请先查看原运行及子任务的用量记录，未知用量不等于零。</p>}
+  </div>;
   const sameProject = (selectedProject ?? "inbox") === (project ?? "inbox");
   const current = (ticket: number) => ticket === epoch.current && ipc.agentBaseUrl === host &&
     useSessionStore.getState().currentSessionId === session &&
