@@ -124,7 +124,7 @@ export interface SessionState {
   setCurrentProject: (id: string | null) => void;
   toggleProjectExpanded: (id: string) => void;
   createProject: (name: string, description?: string, rootPath?: string, validateCommand?: string) => Promise<Project | null>;
-  updateProject: (id: string, fields: { name?: string; description?: string; root_path?: string; validate_command?: string }) => Promise<void>;
+  updateProject: (id: string, fields: { name?: string; description?: string; root_path?: string; validate_command?: string }) => Promise<boolean>;
   deleteProject: (id: string) => Promise<void>;
   archiveProject: (id: string) => Promise<void>;
   unarchiveProject: (id: string) => Promise<void>;
@@ -459,15 +459,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                   name: r.project.name,
                   description: r.project.description,
                   root_path: r.project.root_path,
+                  validate_command: r.project.validate_command,
                   updated_at: r.project.updated_at,
                 }
               : p,
           ),
         }));
+        return true;
       }
+      return false;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(strings.toasts.projectUpdateFailed, message);
+      return false;
     }
   },
 

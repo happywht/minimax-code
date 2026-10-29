@@ -2149,7 +2149,7 @@ export interface VerificationEvidence {
   tool_calls?: number;
   failed_tool_calls?: number;
   failures?: { tool: string; error: string }[];
-  validation?: { command?: string; exit_code?: number | null; ok: boolean; timed_out?: boolean; error?: string; stdout?: string; stderr?: string };
+  validation?: { command?: string; exit_code?: number | null; ok: boolean; timed_out?: boolean; error?: string; stdout?: string; stderr?: string; stdout_truncated?: boolean; stderr_truncated?: boolean };
 }
 
 export interface TaskRow {

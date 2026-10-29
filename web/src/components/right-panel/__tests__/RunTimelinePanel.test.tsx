@@ -114,6 +114,20 @@ describe("RunTimelinePanel", () => {
     expect(screen.getByText(/Command failed/)).toBeInTheDocument();
     expect(screen.getByText(/错误：exit code 1: missing dependency/)).toBeInTheDocument();
   });
+
+  it("shows the selected run's real validation command, exit and bounded output", () => {
+    const run = { ...makeRun(), status: "completed" as const, metadata: { verification: { version: 1,
+      verdict: "failed", reason: "validation_failed", requires_review: true,
+      validation: { command: "pytest -q", ok: false, exit_code: 1, stdout: "failed test", stderr: "trace", stderr_truncated: true } } } };
+    useRunTimelineStore.setState({ runs: { [run.id]: { ...run, steps: [] } }, order: [run.id] });
+    render(<RunTimelinePanel />);
+    const article = screen.getByText("Debug run").closest("article")!;
+    expect(article).toHaveTextContent("校验未通过");
+    expect(article).toHaveTextContent("pytest -q");
+    expect(article).toHaveTextContent("退出码：1");
+    expect(article).toHaveTextContent("failed test");
+    expect(article).toHaveTextContent("标准错误（已截断）");
+  });
 });
 
 describe("RunTimelinePanel auto-scroll", () => {

@@ -18,6 +18,7 @@ import { Button } from "../../ui";
 import { RunRecoveryActions } from "./RunRecoveryActions";
 import { RunBudgetPanel } from "./RunBudgetPanel";
 import { VerificationBadge } from "../chat/VerificationBadge";
+import { VerificationDetails } from "../chat/VerificationDetails";
 import type { VerificationEvidence } from "../../types/ipc";
 
 export interface RunTimelinePanelProps {
@@ -193,6 +194,7 @@ export function RunTimelinePanel({
               <RunStatusBadge status={run.status} />
             </div>
             {!["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) && <VerificationBadge evidence={run.metadata?.verification as VerificationEvidence | undefined} />}
+            {!["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) && <VerificationDetails evidence={run.metadata?.verification as VerificationEvidence | undefined} />}
             <ol className="space-y-1.5">
               {run.steps.map((step) => (
                 <TimelineStep key={step.id} step={step} runStatus={run.status} />

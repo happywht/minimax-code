@@ -125,6 +125,10 @@ export function Sidebar({
   const [createValidate, setCreateValidate] = useState("");
   const [renameTarget, setRenameTarget] = useState<Project | null>(null);
   const [renameName, setRenameName] = useState("");
+  const [settingsTarget, setSettingsTarget] = useState<Project | null>(null);
+  const [settingsRoot, setSettingsRoot] = useState("");
+  const [settingsValidate, setSettingsValidate] = useState("");
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const createInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -278,8 +282,23 @@ export function Sidebar({
       setRenameTarget(null);
       return;
     }
-    await updateProject(renameTarget.id, { name });
-    setRenameTarget(null);
+    if (await updateProject(renameTarget.id, { name })) setRenameTarget(null);
+  };
+
+  const startProjectSettings = (project: Project) => {
+    setSettingsTarget(project); setSettingsRoot(project.root_path ?? "");
+    setSettingsValidate(project.validate_command ?? "");
+  };
+  const saveProjectSettings = async () => {
+    if (!settingsTarget || settingsSaving) return;
+    const changes: { root_path?: string; validate_command?: string } = {};
+    if (settingsRoot.trim() !== (settingsTarget.root_path ?? "")) changes.root_path = settingsRoot.trim();
+    if (settingsValidate.trim() !== (settingsTarget.validate_command ?? "")) changes.validate_command = settingsValidate.trim();
+    if (!Object.keys(changes).length) { setSettingsTarget(null); return; }
+    setSettingsSaving(true);
+    try {
+      if (await updateProject(settingsTarget.id, changes)) setSettingsTarget(null);
+    } finally { setSettingsSaving(false); }
   };
 
   // Project deletion
@@ -295,6 +314,12 @@ export function Sidebar({
   };
 
   const projectMenuItems = (project: Project) => [
+    {
+      id: "settings",
+      label: "项目验证设置",
+      icon: <SettingsIcon size={14} />,
+      onClick: () => startProjectSettings(project),
+    },
     {
       id: "rename",
       label: "重命名",
@@ -824,7 +849,7 @@ export function Sidebar({
             }}
           />
           <p className="mt-3 mb-1 text-[11px] text-ink-2">
-            根目录（可选）：绑定后该项目的会话、终端与代码索引都以该目录为工作区根，且无法访问根外路径。
+            根目录（可选）：项目会话默认使用此目录；命令仍具有宿主进程权限。
           </p>
           <Input
             data-testid="sidebar-create-project-root"
@@ -833,8 +858,7 @@ export function Sidebar({
             placeholder="例如 D:\projects\my-app（留空则不绑定）"
           />
           <p className="mt-3 mb-1 text-[11px] text-ink-2">
-            验证命令（可选）：项目声明的验收命令（如 pytest -x -q）。Agent 修改文件的
-            任务完成前会自动执行它，真实结果计入验收证据，失败将标记需人工复核。
+            验证命令（可选）：Native 可写任务正常完成后自动执行；真实结果计入该任务的验收证据。
           </p>
           <Input
             data-testid="sidebar-create-project-validate"
@@ -844,6 +868,17 @@ export function Sidebar({
           />
         </Modal>
       )}
+
+      {settingsTarget && <Modal title={`项目验证设置 · ${settingsTarget.name}`}
+        onClose={() => { if (!settingsSaving) setSettingsTarget(null); }} testId="sidebar-project-validation-settings"
+        footer={<><Button variant="ghost" size="sm" disabled={settingsSaving} onClick={() => setSettingsTarget(null)}>取消</Button>
+          <Button variant="primary" size="sm" loading={settingsSaving} disabled={settingsSaving} onClick={() => void saveProjectSettings()}>保存设置</Button></>}>
+        <label className="block text-xs text-ink-1">项目根目录
+          <Input aria-label="项目根目录" value={settingsRoot} disabled={settingsSaving} onChange={(event) => setSettingsRoot(event.target.value)} placeholder="已有的绝对目录，留空为默认目录" /></label>
+        <label className="mt-3 block text-xs text-ink-1">任务验证命令
+          <Input aria-label="任务验证命令" value={settingsValidate} maxLength={500} disabled={settingsSaving} onChange={(event) => setSettingsValidate(event.target.value)} placeholder="例如 pytest -q；留空关闭自动验证" /></label>
+        <p className="mt-3 text-xs text-ink-2">Native 可写任务正常完成后在任务工作区执行该 shell 命令，结果显示在时间线。规划模式和 Codex 不执行此自动验证。设置只作用于之后接收的任务；已有会话若绑定独立工作区，仍使用其工作区。命令可读写宿主文件并访问网络，请只填写信任的命令。</p>
+      </Modal>}
 
       {/* Rename project modal */}
       {renameTarget && (
