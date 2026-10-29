@@ -5,6 +5,7 @@ import { Button, Input, Textarea } from "../../ui";
 import type { AttachmentParserStatus, DocxSection, ReportSource } from "../../types/ipc";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
+import { ReportSectionsEditor, readEditableSections } from "./ReportSectionsEditor";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -25,12 +26,13 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
   const [body, setBody] = useState("");
   const [format, setFormat] = useState<"docx" | "pdf" | "both">("docx");
   const [structured, setStructured] = useState(false), [sections, setSections] = useState(sectionExample);
+  const [visualSections, setVisualSections] = useState(false);
   const [sources, setSources] = useState<ReportSource[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
   const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources]);
   useEffect(() => {
-    setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setSections(sectionExample); setSources([]); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
+    setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setVisualSections(false); setSections(sectionExample); setSources([]); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
@@ -80,10 +82,17 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       {format !== "docx" && <p>PDF 需要已安装的中文 TrueType 字体；缺失或字符不受支持时请按提示配置。表格最多 10 列、每表 1000 格。</p>}
       <Input aria-label="报告文件名" value={docName} onChange={(event) => setDocName(event.target.value)} />
       <Input aria-label="报告标题" value={title} onChange={(event) => setTitle(event.target.value)} />
-      <label>内容形式 <select aria-label="报告内容形式" value={structured ? "sections" : "plain"} onChange={(event) => { setStructured(event.target.value === "sections"); setFormError(null); }}>
-        <option value="plain">普通段落</option><option value="sections">章节和表格 JSON</option>
+      <label>内容形式 <select aria-label="报告内容形式" value={!structured ? "plain" : visualSections ? "visual" : "sections"} onChange={(event) => {
+        const next = event.target.value; setFormError(null);
+        if (next === "visual" && !readEditableSections(sections)) { setFormError("当前 JSON 无法无损显示为可视编辑，请先修正 JSON。原内容已保留。"); return; }
+        setStructured(next !== "plain"); setVisualSections(next === "visual");
+      }}>
+        <option value="plain">普通段落</option><option value="visual">章节可视编辑</option><option value="sections">章节和表格 JSON</option>
       </select></label>
-      {structured ? <><p>按示例填写章节标题与依次排列的段落、表格；表格每行列数必须一致，单元格均为文本。</p>
+      {structured ? visualSections ? (() => {
+        const editable = readEditableSections(sections);
+        return editable ? <ReportSectionsEditor value={editable} onChange={(value) => setSections(JSON.stringify(value, null, 2))} /> : <p role="alert">章节内容无法显示，请切换 JSON 查看。</p>;
+      })() : <><p>按示例填写章节标题与依次排列的段落、表格；表格每行列数必须一致，单元格均为文本。</p>
         <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => setSections(event.target.value)} /></> :
         <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />}
       <div className="space-y-2">
