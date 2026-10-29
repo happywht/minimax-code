@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
-import { StreamEvent, type ProjectRunSummaryItem, type ProjectRunSummaryResult, type RunStepsResult } from "../../types/ipc";
+import { StreamEvent, type ProjectRunSummaryItem, type ProjectRunSummaryResult, type RunStepsResult, type VerificationEvidence } from "../../types/ipc";
 import { Button } from "../../ui";
+import { VerificationBadge } from "../chat/VerificationBadge";
+import { VerificationDetails } from "../chat/VerificationDetails";
 import { RunAttachments } from "../right-panel/RunAttachments";
 import { RunTextArtifacts } from "../right-panel/RunTextArtifacts";
 
@@ -96,6 +98,23 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
       {detail.text === null ? <p>没有可确认属于此运行的已保存文本回执；进行中或旧运行可能尚无回执。</p> : <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{detail.text || "（文本为空）"}</pre>}
       {detail.text_truncated && <p>仅显示前 8000 字符；请打开所属会话查看。</p>}
       {snapshot && service && <>
+        <div className="mt-2 space-y-1 rounded border border-line p-2 text-xs" aria-label="运行证据">
+          <p className="font-medium">已保存的运行证据</p>
+          <p>快照状态：{statusLabels[snapshot.run.status] ?? snapshot.run.status}</p>
+          {snapshot.run.error && <p className="whitespace-pre-wrap break-all text-status-warning">运行错误：{snapshot.run.error.slice(0, 2000)}{snapshot.run.error.length > 2000 ? "…（已截断）" : ""}</p>}
+          {["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(snapshot.run.status)
+            ? <p>运行尚未结束，验证结果可能尚未保存。</p>
+            : <><VerificationBadge evidence={snapshot.run.metadata?.verification as VerificationEvidence | undefined} />
+              <VerificationDetails evidence={snapshot.run.metadata?.verification as VerificationEvidence | undefined} /></>}
+          <p>已记录失败步骤：{snapshot.steps.filter((step) => step.status === "failed").length} 项</p>
+          <ul className="space-y-1">{snapshot.steps.filter((step) => step.status === "failed").slice(0, 25).map((step) => {
+            const description = step.error || step.summary;
+            return <li key={step.id} className="rounded bg-surface-2 p-2"><p className="break-all">{step.title || step.tool_name || step.kind}</p>
+              {description && <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all">{description.slice(0, 2000)}{description.length > 2000 ? "…（已截断）" : ""}</pre>}</li>;
+          })}</ul>
+          {snapshot.steps.filter((step) => step.status === "failed").length > 25 && <p>仅显示前 25 项失败步骤，请打开所属会话查看全部记录。</p>}
+          <p className="text-ink-2">步骤记录与配置命令的结果不证明交付质量；运行中的快照可能发生变化。</p>
+        </div>
         <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: detail.session_id, projectId: project!, serviceId: service }} />
         <RunTextArtifacts key={`${service}:${detail.id}:${detail.session_id}`} runId={detail.id} sessionId={detail.session_id} projectId={project!} serviceId={service} review />
         {!snapshot.steps.some((step) => step.status === "completed" && step.payload?.source === "run_attachment_v1" &&
