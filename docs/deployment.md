@@ -104,6 +104,14 @@ Windows 或 Linux 上手工切换已安装版本前，可使用 `scripts/prepare
 python scripts/prepare-release-upgrade.py --old-release "D:/apps/minimax-old" --new-release "D:/apps/minimax-new" --old-python "D:/apps/minimax-old/agent/.venv/Scripts/python.exe" --data-dir "D:/minimax-data" --backup-dir "D:/minimax-backups" --confirm-stopped
 ```
 
+可将上述手工升级的 `backup-ready` 事务复制到另一个私有备份位置，保留原事务：
+
+```bash
+python scripts/copy-upgrade-backup.py --source-transaction "D:/minimax-backups/minimax-upgrade-backup-example" --destination-parent "D:/minimax-backup-copies"
+```
+
+目标父目录须预先存在，与源事务互不包含；Linux 要求当前用户持有且权限为 `0700`，Windows 需自行限制 ACL。命令创建独立目录，复制数据包及源状态，并在复制时与原事务的 SHA-256 比对，写入回执；不会覆盖或删除原件。中断或失败的目录保留为 `.COPY-INCOMPLETE`，不可用于恢复。成功目录有 `.COPY-COMPLETE`、`receipt.json` 和 `source-state.json`；复制完成后仍须用原版本的 bundle 工具校验并按恢复流程检查。摘要不能认证来源，数据包仍有原来的排除项，必须另行保全工作区、凭据和其他独立文件。此命令只支持手工升级准备工具的事务，不支持 Linux 用户服务升级事务，也不自动清理任何副本。
+
 脚本使用旧版本的 bundle 命令创建和校验离线数据包；bundle 自身的数据目录租约会拒绝仍持有租约的服务。每次在备份目录新建独立事务子目录，保留 ZIP 和 `state.json`：完成时记录旧/新清单身份、schema、包哈希与排除范围；失败或中断时保留不完整状态，不覆盖任何已有包。清单身份和包哈希不证明发布者可信，也不证明恢复可行。
 
 完成后先审阅状态与排除项，再按适用流程手动决定升级。备份不含系统密钥环、环境变量、未登记工作区文件及其他 bundle 排除项；需分别保全。它不切换或启动服务、不迁移或删除数据、不自动回退，也不支持逆向 schema 迁移。版本包显式启动入口仍会拒绝 schema 不匹配的旧库；Linux systemd 的完整切换使用下文独立流程。此入口尚未做真实升级、备份恢复或跨机演练。
