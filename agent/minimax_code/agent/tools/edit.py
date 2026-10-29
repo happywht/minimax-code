@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import re
 from typing import Any
 
 from ...execution import require_write_access
@@ -34,7 +35,8 @@ class EditFileTool(Tool):
         "Replace an exact substring inside a file. The agent must pass "
         "the old text verbatim; the tool refuses to run if it appears 0 "
         "or >1 times (unless replace_all=True). Returns a textual diff "
-        "summary and the line ranges that were modified."
+        "summary and the line ranges that were modified. Unchanged text "
+        "retains its original line endings."
     )
     parameters = {
         "type": "object",
@@ -73,6 +75,8 @@ class EditFileTool(Tool):
             return ToolResult.fail("'old_string' must be a string")
         if not isinstance(new, str):
             return ToolResult.fail("'new_string' must be a string")
+        if not old:
+            return ToolResult.fail("'old_string' must be non-empty")
         if old == new:
             return ToolResult.fail("'old_string' and 'new_string' are identical — nothing to do")
 
@@ -114,9 +118,8 @@ class EditFileTool(Tool):
 
         try:
             original_bytes = read_target.read_bytes()
-            # Match text-mode universal-newline handling while tying the
-            # baseline hash to the exact bytes used to compute this edit.
-            original = original_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            # Keep the original line endings so unrelated lines survive an edit.
+            original = original_bytes.decode("utf-8")
         except UnicodeDecodeError:
             return ToolResult.fail("file is not valid UTF-8")
         except OSError as exc:
@@ -148,10 +151,16 @@ class EditFileTool(Tool):
         except Exception:
             pass
 
-        occurrences = original.count(old)
+        # Match line endings as logical newlines, but retain the original
+        # spans when writing. This also works with mixed newline files.
+        normalized_old = _normalize_newlines(old)
+        pattern = re.compile(r"(?:\r\n|\r|\n)".join(
+            re.escape(part) for part in normalized_old.split("\n")
+        ))
+        matches = list(pattern.finditer(original))
+        occurrences = len(matches)
         if occurrences == 0:
-            # Provide a helpful hint with the closest matching block.
-            hint = _closest_hint(original, old)
+            hint = _closest_hint(_normalize_newlines(original), normalized_old)
             return ToolResult.fail(
                 f"'old_string' not found in {target.name}" + (f" — {hint}" if hint else "")
             )
@@ -161,10 +170,16 @@ class EditFileTool(Tool):
                 "narrow it or pass replace_all=True"
             )
 
-        if replace_all:
-            updated = original.replace(old, new)
-        else:
-            updated = original.replace(old, new, 1)
+        chosen = matches if replace_all else matches[:1]
+        pieces: list[str] = []
+        cursor = 0
+        for match in chosen:
+            pieces.append(original[cursor:match.start()])
+            newline = _nearby_newline(original, match.start(), match.end())
+            pieces.append(_normalize_newlines(new).replace("\n", newline))
+            cursor = match.end()
+        pieces.append(original[cursor:])
+        updated = "".join(pieces)
 
         try:
             from ...file_mutations import atomic_write_text
@@ -173,8 +188,7 @@ class EditFileTool(Tool):
         except OSError as exc:
             return ToolResult.fail(f"write failed: {exc}")
 
-        # Hash the bytes that actually landed (write_text applies
-        # platform newline translation on Windows) — see file_sha256.
+        # Hash the bytes that actually landed.
         new_sha = file_sha256(write_target)
 
         changed_lines, removed, added = _line_delta(original, updated)
@@ -240,6 +254,25 @@ class EditFileTool(Tool):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _nearby_newline(text: str, start: int, end: int) -> str:
+    """Prefer the replaced span, then the closest surrounding line ending."""
+    line_endings = re.compile(r"\r\n|\r|\n")
+    within = line_endings.search(text, start, end)
+    if within:
+        return within.group()
+    before = None
+    for before in line_endings.finditer(text, 0, start):
+        pass
+    after = line_endings.search(text, end)
+    if before and (not after or start - before.end() <= after.start() - end):
+        return before.group()
+    return after.group() if after else "\n"
 
 
 def _line_delta(old: str, new: str) -> tuple[list[int], int, int]:

@@ -58,12 +58,22 @@ async def test_overlay_edit_preserves_changed_mirror(workspace_root, sandbox_sco
     assert original(parent) == b"header\nold\n"
 
 
-async def test_edit_keeps_existing_universal_newline_behavior(tmp_path, monkeypatch):
+async def test_edit_matches_logical_newlines_without_rewriting_other_lines(tmp_path, monkeypatch):
     monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
     path = tmp_path / "lines.txt"
     path.write_bytes(b"old\r\nnext\rline\n")
     result = await EditFileTool().run(path=str(path), old_string="old\nnext", new_string="new\nnext")
-    assert result.success and path.read_bytes() == b"new\nnext\nline\n"
+    assert result.success and path.read_bytes() == b"new\r\nnext\rline\n"
+
+
+async def test_replace_all_preserves_mixed_newlines_per_match(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINIMAX_CODE_WORKSPACE", str(tmp_path))
+    path = tmp_path / "mixed.txt"
+    path.write_bytes(b"old\r\nend\nold\rend\n")
+    result = await EditFileTool().run(
+        path=str(path), old_string="old\nend", new_string="new\nend", replace_all=True
+    )
+    assert result.success and path.read_bytes() == b"new\r\nend\nnew\rend\n"
 
 
 async def test_independent_child_race_keeps_parent_and_child_changes(tmp_path, monkeypatch):
