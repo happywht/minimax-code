@@ -4,6 +4,7 @@ import { useArtifactStore, useAttachmentStore, useRunTimelineStore, useSessionSt
 import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
 import { Button } from "../../ui";
 import { RunAttachments } from "../right-panel/RunAttachments";
+import { RunTextArtifacts } from "../right-panel/RunTextArtifacts";
 import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 import { ArtifactsPanel } from "./ArtifactsPanel";
 import { AttachmentsPanel, type RetainedReportDraft } from "./AttachmentsPanel";
@@ -109,12 +110,14 @@ function SessionDeliveries({ binding }: { binding: Binding }): JSX.Element {
   const load = useRunTimelineStore((s) => s.loadForSession);
   useEffect(() => { void load(binding.session); }, [binding.session, load]);
   const associated = order.map((id) => runs[id]).filter((run) => run && run.session_id === binding.session &&
-    run.metadata?.project_id === binding.project && run.steps.some((step) => step.run_id === run.id && step.session_id === run.session_id &&
-      step.status === "completed" && step.payload?.source === "run_attachment_v1" && step.payload?.project_id === binding.project && step.payload?.service_id === binding.service));
+    run.metadata?.project_id === binding.project);
   return <div className="space-y-3 text-sm"><h3 className="font-semibold">当前会话的任务关联成果</h3>
-    <p>仅列出最近运行中已持久记录、与当前项目及服务匹配的工具返回附件。旧记录、手工生成或未成功记录关联的成果请到项目附件查看；幂等调用可能复用旧成果，内容未验证。</p>
-    {!binding.session ? <p>请先选择会话。</p> : error ? <p role="alert">无法读取运行记录：{error}</p> : loading ? <p role="status">正在读取运行记录…</p> : !associated.length ? <p>当前会话最近运行没有可确认的关联成果。</p> : associated.map((run) => <article key={run.id} className="rounded border border-line p-3">
-      <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p><RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} /><FollowupRunDraft run={run} />
+    <p>列出当前项目和会话的近期运行及活动运行。附件来自已记录的工具结果；文本成果需按运行读取登记关联。关联不证明成果由该运行生成，内容均需自行核对。更早的成果可在项目成果中查找。</p>
+    {binding.session && <Button type="button" size="sm" variant="secondary" disabled={loading} onClick={() => void load(binding.session)}>刷新运行</Button>}
+    {!binding.session ? <p>请先选择会话。</p> : error ? <p role="alert">无法读取运行记录：{error}</p> : loading ? <p role="status">正在读取运行记录…</p> : !associated.length ? <p>当前会话没有可确认项目归属的近期运行。</p> : associated.map((run) => <article key={run.id} className="rounded border border-line p-3">
+      <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p><RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} />
+      <details className="mt-2"><summary>登记关联的文本成果</summary><RunTextArtifacts runId={run.id} sessionId={binding.session!} projectId={binding.project} serviceId={binding.service} /></details>
+      <FollowupRunDraft run={run} />
     </article>)}
   </div>;
 }
