@@ -10,3 +10,4 @@ agent/tests/fixtures/bundle-v5-writer.py.txt -text whitespace=cr-at-eol
 agent/tests/fixtures/bundle-v5-attachments.py.txt -text whitespace=cr-at-eol
 agent/tests/fixtures/bundle-v5-metadata.py.txt -text whitespace=cr-at-eol
 agent/tests/fixtures/bundle-v6-writer.py.txt -text
+agent/tests/fixtures/bundle-v7-writer.py.txt -text
