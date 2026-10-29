@@ -16,7 +16,7 @@ export interface TeamRowProps {
   onToggleEnabled: () => void;
   onDelete: () => void;
   /** Start a team run with the given request text. */
-  onRun: (request: string, budgetTokens?: number) => void;
+  onRun: (request: string, budgetTokens?: number, maxParallel?: number) => void;
   canRun: boolean;
 }
 
@@ -24,12 +24,14 @@ export function TeamRow({ team, onToggleEnabled, onDelete, onRun, canRun }: Team
   const [showRunForm, setShowRunForm] = useState(false);
   const [request, setRequest] = useState("");
   const [budget, setBudget] = useState("");
+  const [parallel, setParallel] = useState("");
   const budgetValid = !budget || (/^[1-9]\d*$/.test(budget) && Number.isSafeInteger(Number(budget)));
+  const parallelValid = !parallel || (/^[1-9]\d*$/.test(parallel) && Number(parallel) <= 16);
 
   const submitRun = () => {
     const trimmed = request.trim();
-    if (!trimmed || !canRun || !budgetValid) return;
-    onRun(trimmed, budget ? Number(budget) : undefined);
+    if (!trimmed || !canRun || !budgetValid || !parallelValid) return;
+    onRun(trimmed, budget ? Number(budget) : undefined, parallel ? Number(parallel) : undefined);
     setShowRunForm(false);
     setRequest("");
   };
@@ -119,6 +121,11 @@ export function TeamRow({ team, onToggleEnabled, onDelete, onRun, canRun }: Team
             onChange={(e) => setBudget(e.target.value)} placeholder="正整数" className="w-full rounded-md border border-line bg-surface-1 px-2 py-1.5 text-xs text-ink-0" />
           {!budgetValid && <p className="text-xs text-status-error">请输入有效的正整数。</p>}
           <p className="text-[11px] text-ink-2">按请求估算并共享每日预算；不是金额或严格费用上限。</p>
+          <label className="block text-[11px] text-ink-1" htmlFor={`team-parallel-${team.name}`}>直接成员并行数（留空使用服务默认，通常为 2）</label>
+          <input id={`team-parallel-${team.name}`} type="text" inputMode="numeric" value={parallel}
+            onChange={(e) => setParallel(e.target.value)} placeholder="1–16" className="w-full rounded-md border border-line bg-surface-1 px-2 py-1.5 text-xs text-ink-0" />
+          {!parallelValid && <p className="text-xs text-status-error">请输入 1 到 16 的整数。</p>}
+          <p className="text-[11px] text-ink-2">仅限制本次团队的直接成员；普通子任务有独立的进程级限制。</p>
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="ghost" onClick={() => setShowRunForm(false)}>
               {strings.settings.teams.runCancel}
@@ -127,7 +134,7 @@ export function TeamRow({ team, onToggleEnabled, onDelete, onRun, canRun }: Team
               size="sm"
               variant="subtle"
               data-testid={`settings-team-run-submit-${team.name}`}
-              disabled={!request.trim() || !canRun || !budgetValid}
+              disabled={!request.trim() || !canRun || !budgetValid || !parallelValid}
               onClick={submitRun}
             >
               {strings.settings.teams.runSubmit}

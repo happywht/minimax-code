@@ -508,6 +508,7 @@ export interface TypedIPC {
     budget_tokens?: number;
     mode?: "execute";
     idempotency_key?: string;
+    max_parallel?: number;
   }): Promise<{
     team_name: string;
     orchestration_mode: string;
@@ -529,6 +530,7 @@ export interface TypedIPC {
     task_id: string | null;
     success: boolean;
     budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean; limit_tokens: number | null } | null;
+    max_parallel?: number;
   }>;
 
   // plugins (platform pillar #3) — drive the Settings page's Plugins tab.

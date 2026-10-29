@@ -293,6 +293,10 @@ def register_team_handlers(
             if budget_tokens is not None and (type(budget_tokens) is not int or budget_tokens <= 0):
                 await ctx.reply_error(INVALID_PARAMS, "budget_tokens must be a positive integer")
                 return
+            max_parallel = params.get("max_parallel")
+            if max_parallel is not None and (type(max_parallel) is not int or not 1 <= max_parallel <= 16):
+                await ctx.reply_error(INVALID_PARAMS, "max_parallel must be an integer from 1 to 16")
+                return
             session_id = params.get("session_id")
             if session_id is not None:
                 session_id = str(session_id)
@@ -342,7 +346,7 @@ def register_team_handlers(
             # so team runs never produced a real answer. None (no db /
             # boot not yet run) keeps the legacy stub path for tests.
             from ..app import get_sessions_dao, get_subagent_llm
-            from ..orchestrator.team_orchestrator import TeamOrchestrator
+            from ..orchestrator.team_orchestrator import TeamOrchestrator, _team_concurrency_limit
             from ..runs import get_run_service
             from ..storage.dao.runs import AgentRunsDAO
             from ..budget import resolve_run_budget
@@ -373,6 +377,7 @@ def register_team_handlers(
                 dao = AgentRunsDAO(team_dao._db)
                 project_id = session.get("project_id")
                 workspace = str(root)
+                effective_parallel = max_parallel if max_parallel is not None else _team_concurrency_limit()
                 async def operation(job):
                     # Queueing may outlive a project/session change or a revoked
                     # host permission; never execute using the stale snapshot.
@@ -387,7 +392,8 @@ def register_team_handlers(
                         raise ValueError("Team session, project or workspace changed while queued")
                     return await orch.run(team_name, request, session_id=session_id,
                         parent_session_id=parent_session_id, budget_tokens=budget_tokens,
-                        workspace_snapshot=workspace, project_id=project_id, admitted_run_id=job.run_id)
+                        workspace_snapshot=workspace, project_id=project_id, admitted_run_id=job.run_id,
+                        max_parallel=effective_parallel)
 
                 async def finalize(job, error):
                     row = await dao.get_run(job.run_id)
@@ -398,23 +404,27 @@ def register_team_handlers(
                             summary="团队未完成；请查看运行状态并核对。", session_id=session_id)
 
                 payload = {"mode": "team", "kind": "team_spawn", "team_name": team_name,
-                           "request": request, "parent_session_id": parent_session_id, "budget_tokens": budget_tokens}
+                           "request": request, "parent_session_id": parent_session_id, "budget_tokens": budget_tokens,
+                           "max_parallel": max_parallel}
                 run, job, created = await service.admit(dao=dao, session_id=session_id, request=payload,
                     request_key=request_key, title=f"Team run: {team_name}",
                     metadata={"team_result": None, "parent_session_id": parent_session_id,
                               "workspace_snapshot": workspace, "project_id": project_id,
-                              "budget": {"limit_tokens": resolve_run_budget(budget_tokens)}},
+                              "budget": {"limit_tokens": resolve_run_budget(budget_tokens)},
+                              "team_max_parallel": effective_parallel},
                     workspace=workspace, project_id=project_id, operation=operation, finalize=finalize)
+                effective_parallel = (run.get("metadata") or {}).get("team_max_parallel", effective_parallel)
                 if created:
                     await ctx.emit("agent.team_progress", {"task_id": run["id"], "team_name": team_name,
                         "session_id": session_id, "status": "queued", "progress": 0,
-                        "agents_total": 0, "agents_completed": 0, "idempotency_key": request_key})
+                        "agents_total": 0, "agents_completed": 0, "idempotency_key": request_key,
+                        "max_parallel": effective_parallel})
                 if job is None:
                     saved = (run.get("metadata") or {}).get("team_result")
                     if not isinstance(saved, dict):
                         await ctx.reply_error(INVALID_PARAMS, "Team run has no completed result; review its status")
                         return
-                    await ctx.reply({**saved, "task_id": run["id"]})
+                    await ctx.reply({**saved, "task_id": run["id"], "max_parallel": effective_parallel})
                     return
                 result = await service.wait(job)
             await ctx.reply({
@@ -444,6 +454,7 @@ def register_team_handlers(
                 "task_id": result.task_id,
                 "success": result.success,
                 "budget": result.budget,
+                "max_parallel": effective_parallel,
             })
         except asyncio.CancelledError:
             await ctx.reply_error(INTERNAL_ERROR, "Team stopped; review incomplete operations")

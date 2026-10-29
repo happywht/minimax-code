@@ -2010,6 +2010,13 @@ project and host permissions are rechecked at dispatch. An optional
 omitting it retain distinct legacy submissions. Queue cancellation is recorded
 as cancelled before execution, while an in-flight cancellation is interrupted.
 `budget_tokens` is an optional positive integer; otherwise the service default applies.
+`max_parallel` optionally sets this team's direct-member concurrency to 1–16.
+When omitted the service uses `MINIMAX_CODE_TEAM_MAX_CONCURRENCY`, or 2 if unset
+or invalid; an explicit legacy environment value <= 0 remains unlimited. The
+effective value is fixed in `team_max_parallel` on admission and appears in team
+progress events. Sequential/review orchestration retains its existing order.
+The generic background sub-agent semaphore is independent, so this is not a
+service-wide or recursively aggregated concurrency limit.
 The team has its own durable budget family, shared by concurrent members and the
 service daily ledger. The returned `budget` is a completion snapshot or null if
 unavailable; unknown usage remains unknown. Requests use estimated reservations,

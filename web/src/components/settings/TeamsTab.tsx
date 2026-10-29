@@ -53,7 +53,7 @@ function TeamsTab(): JSX.Element {
     if (accepted) await remove(t.name);
   };
 
-  const handleRun = (teamName: string, request: string, budgetTokens?: number) => {
+  const handleRun = (teamName: string, request: string, budgetTokens?: number, maxParallel?: number) => {
     if (!currentSessionId || executionMode !== "execute") return;
     toast.info(strings.settings.teams.runStartedToast, strings.settings.teams.runStartedDetail);
     void spawnRun({
@@ -61,6 +61,7 @@ function TeamsTab(): JSX.Element {
       request,
       session_id: currentSessionId,
       budget_tokens: budgetTokens,
+      max_parallel: maxParallel,
       mode: "execute",
     });
   };
@@ -110,7 +111,7 @@ function TeamsTab(): JSX.Element {
               team={t}
               onToggleEnabled={() => void (t.enabled ? disable(t.name) : enable(t.name))}
               onDelete={() => void handleDelete(t)}
-              onRun={(request, budgetTokens) => handleRun(t.name, request, budgetTokens)}
+              onRun={(request, budgetTokens, maxParallel) => handleRun(t.name, request, budgetTokens, maxParallel)}
               canRun={Boolean(currentSessionId) && executionMode === "execute"}
             />
           ))}

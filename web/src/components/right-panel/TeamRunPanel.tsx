@@ -105,6 +105,7 @@ function RunCard({ run, onRemove, onCancel }: { run: TeamRunEntry; onRemove: () 
       {/* Progress bar */}
       {!isDone && <ProgressBar progress={run.progress} />}
       {run.status === "queued" && <p className="mt-1 text-minimax-muted">等待同会话的任务完成；尚未开始团队执行。</p>}
+      {run.max_parallel !== undefined && <p className="mt-1 text-minimax-muted">直接成员并行上限：{run.max_parallel > 0 ? run.max_parallel : "服务配置为无限制"}</p>}
       {run.status === "interrupted" && <p className="mt-1 text-status-error">已中断；请核对执行中的操作和文件变化，不能自动恢复。</p>}
       {run.status === "cancelled" && <p className="mt-1 text-ink-2">排队时已取消，团队未开始执行。</p>}
 
@@ -167,6 +168,7 @@ function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
           <XCircle size={11} className="shrink-0 text-status-error" />
         )}
         <span className="min-w-0 text-ink-0">{run.title || run.id} · {run.status === "interrupted" ? "已中断，需核对" : run.status}
+          {typeof run.metadata?.team_max_parallel === "number" && <span className="block text-ink-2">直接成员并行上限：{run.metadata.team_max_parallel > 0 ? run.metadata.team_max_parallel : "服务配置为无限制"}</span>}
           {budget && <span className="block text-ink-2">结束时快照：已知下界 {budget.known_tokens}，预留 {budget.reserved_tokens}，未知请求 {budget.unknown_attempts}；{budget.usage_complete ? "用量已记录" : "用量未完整确认"}</span>}
           {stopMessage && <span className="block text-ink-2">{stopMessage}</span>}
         </span>

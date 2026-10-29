@@ -2074,14 +2074,15 @@ function mockHandle(
       return { team: t } satisfies { team: AgentTeam };
     }
     case "team.spawn": {
-      const p = params as { team_name: string; request: string; session_id?: string; parent_session_id?: string; mode?: string; budget_tokens?: number; idempotency_key?: string };
+      const p = params as { team_name: string; request: string; session_id?: string; parent_session_id?: string; mode?: string; budget_tokens?: number; idempotency_key?: string; max_parallel?: number };
       if (p.mode !== undefined && p.mode !== "execute") throw new Error("Team execution is unavailable in planning mode");
+      if (p.max_parallel !== undefined && (!Number.isInteger(p.max_parallel) || p.max_parallel < 1 || p.max_parallel > 16)) throw new Error("max_parallel must be an integer from 1 to 16");
       const sessionId = p.session_id || p.parent_session_id;
       if (!sessionId || !mockSessions.has(sessionId) || (p.parent_session_id && !mockSessions.has(p.parent_session_id))) {
         throw new Error("team.spawn requires an existing session");
       }
       const key = p.idempotency_key ? `${sessionId}:${p.idempotency_key}` : null;
-      const signature = JSON.stringify([p.team_name, p.request, p.parent_session_id ?? null, p.budget_tokens ?? null]);
+      const signature = JSON.stringify([p.team_name, p.request, p.parent_session_id ?? null, p.budget_tokens ?? null, p.max_parallel ?? null]);
       const previous = key ? mockTeamRequests.get(key) : undefined;
       if (previous) {
         if (previous.signature !== signature) throw new Error("idempotency_key already belongs to different input");
@@ -2098,6 +2099,7 @@ function mockHandle(
         task_id: `teamrun_mock_${crypto.randomUUID()}`,
         success: true,
         budget: null,
+        max_parallel: p.max_parallel ?? 2,
       };
       if (key) mockTeamRequests.set(key, { signature, result });
       return result;

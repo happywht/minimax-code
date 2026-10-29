@@ -23,6 +23,7 @@ export interface TeamRunEntry {
   session_id?: string;
   cancelling?: boolean;
   idempotency_key?: string;
+  max_parallel?: number;
   status: TeamProgressData["status"];
   progress: number;
   agents_total: number;
@@ -53,6 +54,7 @@ export interface TeamRunState {
     budget_tokens?: number;
     mode?: "execute";
     idempotency_key?: string;
+    max_parallel?: number;
   }) => Promise<void>;
 
   /** Clear completed/failed runs older than `maxAgeMs`. */
@@ -83,6 +85,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
             team_name: opts.team_name,
             session_id: opts.session_id ?? opts.parent_session_id,
             idempotency_key: requestKey,
+            max_parallel: opts.max_parallel,
             status: "queued",
             progress: 0,
             agents_total: 0,
@@ -106,6 +109,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
                 task_id: result.task_id ?? r.task_id,
                 status: result.success ? "completed" : "failed",
                 progress: 1,
+                max_parallel: result.max_parallel ?? r.max_parallel,
                 updated_at: Date.now(),
                 result: {
                   merged_text: result.merged_text,
@@ -190,6 +194,7 @@ export function initTeamRunListener(): () => void {
                   agents_completed: evt.agents_completed ?? r.agents_completed,
                   agent_name: evt.agent_name ?? r.agent_name,
                   summary: evt.summary ?? r.summary,
+                  max_parallel: evt.max_parallel ?? r.max_parallel,
                   updated_at: Date.now(),
                 }
               : r,
@@ -207,6 +212,7 @@ export function initTeamRunListener(): () => void {
         team_name: evt.team_name,
         session_id: evt.session_id,
         idempotency_key: evt.idempotency_key,
+        max_parallel: evt.max_parallel,
         status: evt.status,
         progress: evt.progress,
         agents_total: evt.agents_total ?? 0,

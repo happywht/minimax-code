@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 def _team_concurrency_limit() -> int:
     """Max agents of one team run executing at once.
 
-    ``MINIMAX_CODE_TEAM_MAX_CONCURRENCY`` (default 4); <= 0 disables the
+    ``MINIMAX_CODE_TEAM_MAX_CONCURRENCY`` (default 2); <= 0 disables the
     cap. A large team used to fan every agent out at once, each with its
     own LLM loop and tool budget.
     """
@@ -68,7 +68,7 @@ def _team_concurrency_limit() -> int:
     try:
         return int(raw)
     except ValueError:
-        return 4
+        return 2
 
 
 def _subagent_wall_clock_s() -> float:
@@ -175,6 +175,7 @@ class TeamOrchestrator:
         workspace_snapshot: str | None = None,
         project_id: str | None = None,
         admitted_run_id: str | None = None,
+        max_parallel: int | None = None,
     ) -> TeamRunResult:
         """Execute a team run and persist the result.
 
@@ -186,6 +187,7 @@ class TeamOrchestrator:
         task_id = admitted_run_id or f"teamrun_{uuid.uuid4().hex[:10]}"
         run_session_id = session_id or task_id
         self._session_id = run_session_id
+        self._parallel_limit = _team_concurrency_limit() if max_parallel is None else max_parallel
 
         from ..budget import daily_budget_limit, resolve_run_budget
         from ..budget_ledger import BudgetHandle, budget_scope
@@ -459,9 +461,9 @@ class TeamOrchestrator:
         """Run all agents concurrently via ``asyncio.gather``.
 
         v1.2.2: concurrency is bounded by a semaphore
-        (``MINIMAX_CODE_TEAM_MAX_CONCURRENCY``, default 4).
+    (``MINIMAX_CODE_TEAM_MAX_CONCURRENCY``, default 2).
         """
-        limit = _team_concurrency_limit()
+        limit = self._parallel_limit
         sem = asyncio.Semaphore(limit) if limit > 0 else None
         total = len(configs)
 
@@ -787,6 +789,8 @@ class TeamOrchestrator:
             if summary:
                 payload["summary"] = summary
             payload["session_id"] = session_id or self._session_id
+            if hasattr(self, "_parallel_limit"):
+                payload["max_parallel"] = self._parallel_limit
             if getattr(self, "_request_key", None):
                 payload["idempotency_key"] = self._request_key
             await self._emit_event("agent.team_progress", payload)

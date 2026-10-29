@@ -1959,6 +1959,7 @@ export interface TeamProgressData {
   task_id: string;
   session_id?: string;
   idempotency_key?: string;
+  max_parallel?: number;
   status: "queued" | "started" | "agent_started" | "agent_completed" | "completed" | "failed" | "cancelled" | "interrupted";
   agent_name?: string;
   progress: number; // 0..1
