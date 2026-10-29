@@ -9,9 +9,12 @@ type Kind = OfficeTableSpec["columns"][number]["kind"];
 
 export function CsvTableEditor({ table, original, kinds, onChange }: { table: CsvTable; original: CsvTable; kinds: Kind[]; onChange: (next: CsvTable, nextKinds?: Kind[]) => void }): JSX.Element {
   const [page, setPage] = useState(0);
+  const [dedupeColumns, setDedupeColumns] = useState<number[]>([]);
   const lastPage = Math.max(0, Math.ceil(table.rows.length / PAGE_SIZE) - 1);
   useEffect(() => { setPage((current) => Math.min(current, lastPage)); }, [lastPage]);
   useEffect(() => { setPage(0); }, [original]);
+  // Column edits can change indices, so require the user to select keys again.
+  useEffect(() => { setDedupeColumns([]); }, [table.headers]);
   const edit = (row: number, column: number, value: string) => onChange({ ...table, rows: table.rows.map((cells, i) =>
     i === row ? cells.map((old, j) => j === column ? value : old) : cells) });
   const remove = (row: number) => onChange({ ...table, rows: table.rows.filter((_, i) => i !== row) });
@@ -44,6 +47,14 @@ export function CsvTableEditor({ table, original, kinds, onChange }: { table: Cs
   const trimColumn = (column: number) => onChange({ ...table, rows: table.rows.map((cells) =>
     cells.map((value, i) => i === column ? value.trim() : value)) });
   const empty = table.rows.filter((cells) => cells.every((cell) => cell === "")).length;
+  const seen = new Set<string>();
+  const uniqueRows = table.rows.filter((cells) => {
+    const key = JSON.stringify(dedupeColumns.map((column) => cells[column]));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const duplicateCount = dedupeColumns.length ? table.rows.length - uniqueRows.length : 0;
   return <div className="space-y-2" data-testid="csv-table-editor">
     <p>编辑的数据仅在本页面；行号以当前表格为准（含表头），源 CSV 不变。恢复会还原本次读取的表格并将列类型重置为文本。</p>
     <p>列清理会去除该列每个数据单元格的首尾空白，可能改变文本；不会自动清理。</p>
@@ -52,6 +63,16 @@ export function CsvTableEditor({ table, original, kinds, onChange }: { table: Cs
       <Button type="button" variant="secondary" disabled={!empty} onClick={() =>
       onChange({ ...table, rows: table.rows.filter((cells) => cells.some((cell) => cell !== "")) })}>移除全空行（{empty}）</Button>
       <Button type="button" variant="secondary" onClick={() => { onChange(original, original.headers.map(() => "text" as const)); setPage(0); }}>恢复读取时的表格</Button></div>
+    <fieldset className="space-y-2 rounded border border-line p-2">
+      <legend>按列去重</legend>
+      <p>选择关键列后预览待删除数量；所有所选列的原始文本完全相同才算重复，空字符串也参与匹配。保留当前顺序中的第一行，不自动去除空白或忽略大小写。</p>
+      <div className="flex flex-wrap gap-3">{table.headers.map((header, index) => <label key={index}>
+        <input type="checkbox" checked={dedupeColumns.includes(index)} onChange={(event) => setDedupeColumns((old) =>
+          event.target.checked ? [...old, index].sort((a, b) => a - b) : old.filter((column) => column !== index))} /> 第 {index + 1} 列（{header || "未命名"}）
+      </label>)}</div>
+      <p role="status">{dedupeColumns.length ? `预览：将删除 ${duplicateCount} 行，保留 ${uniqueRows.length} 行。` : "请选择至少一列以预览重复行。"}</p>
+      <Button type="button" variant="secondary" disabled={!dedupeColumns.length || !duplicateCount} onClick={() => { onChange({ ...table, rows: uniqueRows }); setPage(0); }}>删除预览中的重复行（{duplicateCount}）</Button>
+    </fieldset>
     <div className="overflow-auto"><table className="text-xs"><thead><tr><th scope="col">表格行</th>
       {table.headers.map((header, index) => <th key={index} scope="col" className="min-w-40 align-top">
         <input aria-label={`第 ${index + 1} 列名称`} className="w-full rounded border border-line bg-surface-2 p-1" value={header} onChange={(event) => rename(index, event.target.value)} />
