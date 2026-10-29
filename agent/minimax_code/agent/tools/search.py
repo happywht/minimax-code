@@ -277,6 +277,14 @@ def _python_search(
     matches: list[dict[str, Any]] = []
     for read_path, rel in candidates:
         try:
+            # os.walk does not follow directory links by default, but its
+            # filenames can still contain links to files outside the root.
+            # Never read through a link discovered during enumeration.
+            if read_path.is_symlink():
+                continue
+            allowed_root = sandbox if sandbox is not None and read_path.is_relative_to(sandbox) else root
+            if not read_path.resolve().is_relative_to(allowed_root.resolve()):
+                continue
             if read_path.stat().st_size > _MAX_FILE_BYTES:
                 continue
         except OSError:

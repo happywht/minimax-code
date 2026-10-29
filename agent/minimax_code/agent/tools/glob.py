@@ -170,9 +170,11 @@ def _glob_walk(
             if _match(name, match_pattern, has_doublestar):
                 full = os.path.join(dirpath, name)
                 try:
+                    if Path(full).is_symlink():
+                        continue
                     rel = str(Path(full).resolve().relative_to(root))
-                except ValueError:
-                    rel = str(full)
+                except (OSError, ValueError):
+                    continue
                 # Replace backslashes for cross-platform consistency.
                 rel = rel.replace("\\", "/")
                 results.append(rel)
