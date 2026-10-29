@@ -190,3 +190,26 @@ manifest 核验。两项真实 Agent 测试分别运行 supervisor 与 CLI，验
 本批不改数据库结构。回退启动入口时先停止原进程并保留运行恢复证据，再恢复匹配的
 脚本和 `package.json`；原启动命令会重新执行构建。用户数据、附件和数据库完整恢复
 仍按各自备份流程处理，这些启动检查不能替代安装、升级、回退和恢复演练。
+
+### Linux 用户服务版本升级（实验）
+
+`scripts/upgrade-linux-user-service.py` 升级**已安装且正在运行**的生成器用户服务；它不下载安装依赖、不创建版本目录、不覆盖已有版本或数据目录。先将旧版和新版分别完整准备在两个互不重叠的固定目录，包含各自可用的虚拟环境 Python、已安装的 agent 和构建好的 web；不要在升级期间修改它们。现有 unit 必须逐字等于上节生成器以旧版路径、同一工作区、数据目录及端口生成的输出；loaded fragment 必须与指定文件一致，不能有 drop-in 或待 reload 修改。自定义 unit 使用人工流程，不要删除自定义配置来绕过检查。
+
+**操作员必须先停止接单并确认所有活动任务已完成或安全终止**，检查外部容器及其他执行器；`--quiesced` 只是操作员的明确确认，工具不能证明任务已完成。确保只有此工具操作服务，期间无人手动启动、修改 unit 或使用同一数据目录；租约不防止非 CLI 嵌入或不同路径硬链接。数据、工作区、版本目录与备份目录需在可信本地文件系统；备份目录须预先存在、属当前用户且为 0700，且不能与前三者相互包含。留足空间，并单独保全工作区、未登记文件、外部配置、私有 marker、安装身份、系统钥匙串和其他凭据。离线 bundle 不包含这些内容，且数据库可能含敏感信息。
+
+例如（路径仅作示例）：
+
+```bash
+python3 scripts/upgrade-linux-user-service.py \
+  --unit minimax.service --unit-file "$HOME/.config/systemd/user/minimax.service" \
+  --old-release "$HOME/apps/minimax/1.0" --old-python "$HOME/apps/minimax/1.0/agent/.venv/bin/python" --old-web "$HOME/apps/minimax/1.0/web/dist" \
+  --new-release "$HOME/apps/minimax/1.1" --new-python "$HOME/apps/minimax/1.1/agent/.venv/bin/python" --new-web "$HOME/apps/minimax/1.1/web/dist" \
+  --workspace "$HOME/projects/example" --data "$HOME/.local/share/minimax-code" \
+  --backups "$HOME/minimax-backups" --port 8765 --quiesced
+```
+
+工具停止 unit 并要求状态为 inactive，使用旧版程序创建和校验离线 bundle，再保留旧 unit、原子切换 unit、reload、start，检查 active 与回环 `/health` 的 HTTP 200 和 `ok`、`db`、`web`、`auth_required` 均为 true（不跟随重定向）。新旧虚拟环境必须已安装 bundle 支持且旧 bundle writer 支持当前 schema；不支持时停止并保留原数据。每次交易建立独立私有目录，保留 `state.json`、旧 unit 和 bundle。锁只协调遵守该工具协议的同 unit 升级。health 与 active 只是基本就绪检查，不证明数据库、任务或工作区验收通过，也不证明响应一定由目标进程提供。
+
+**失败和中断：** 工具不会自动恢复旧数据库或用旧程序启动已升级数据。切换过程中或之后失败时，它尽力停止服务并保留新版 unit、原数据和备份；停止失败、超时、SIGKILL、断电或进程崩溃后的实际状态可能未知，不能根据记录推定服务已停止或切换未发生。先检查 systemd、进程及数据目录租约，确认完全停止；保全升级后的数据目录、WAL/SHM、marker、日志和工作副本作为证据。若备份尚未成功校验，不应把它用于恢复。若需要回退，使用**旧版**的 `bundle verify` 和 `bundle restore --new-data-dir` 恢复到全新路径，按 [bundle 恢复边界](data-vault-bundle.md) 另行核对独立文件、marker、身份和凭据；用旧版生成指向新恢复目录的 unit，经检查后由操作者手动部署并启动。不得用旧版直接打开已迁移的新库，也不得覆盖现有数据。失败前停止而尚未切换时同样应先确认实际状态；此流程不自动重启。
+
+此工具的受控测试不等于真实主机的 systemd、断电恢复、完整备份或 M7 部署验收；首次安装、全量系统恢复和自动回滚仍需单独操作和验证。
