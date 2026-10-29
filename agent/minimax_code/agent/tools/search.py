@@ -48,7 +48,10 @@ class SearchFilesTool(Tool):
         "directory. By default uses ripgrep if available, else falls back "
         "to a pure-Python walker. Returns up to 'max_results' matches with "
         "file path, line number, and the matched line (truncated to 400 "
-        "chars). Optionally filter by file glob (e.g. '*.py'). Inside a "
+        "chars). Optionally filter by file glob (e.g. '*.py'). "
+        "For surrounding lines across files, set 'context_lines' to 1-5; "
+        "each match then includes line-numbered before/after context; "
+        "context searches allow at most 200 results and use the Python engine. Inside a "
         "write sandbox the search transparently covers your sandboxed "
         "writes too (slower Python engine — narrow 'path' when possible)."
     )
@@ -61,6 +64,7 @@ class SearchFilesTool(Tool):
             "file_pattern": {"type": "string", "default": "*", "description": "Only search files matching this glob."},
             "case_sensitive": {"type": "boolean", "default": True},
             "max_results": {"type": "integer", "minimum": 1, "maximum": 5000, "default": _DEFAULT_MAX_RESULTS},
+            "context_lines": {"type": "integer", "minimum": 0, "maximum": 5, "default": 0},
         },
         "required": ["pattern"],
         "additionalProperties": False,
@@ -90,6 +94,11 @@ class SearchFilesTool(Tool):
         file_pattern = kwargs.get("file_pattern") or "*"
         case_sensitive = bool(kwargs.get("case_sensitive", True))
         max_results = int(kwargs.get("max_results") or _DEFAULT_MAX_RESULTS)
+        context_lines = kwargs.get("context_lines", 0)
+        if type(context_lines) is not int or not 0 <= context_lines <= 5:
+            return ToolResult.fail("'context_lines' must be an integer between 0 and 5")
+        if context_lines and not 1 <= max_results <= _DEFAULT_MAX_RESULTS:
+            return ToolResult.fail("context searches require 'max_results' between 1 and 200")
 
         # Pre-compile a Python regex for the fallback path. When
         # not in regex mode we still pass a pre-compiled regex so
@@ -108,7 +117,7 @@ class SearchFilesTool(Tool):
         # sandbox mirrors, so the fast path would silently miss the
         # sub-agent's own writes.
         sandbox = current_sandbox()
-        if shutil.which("rg") and sandbox is None and not is_read_only():
+        if shutil.which("rg") and sandbox is None and not is_read_only() and not context_lines:
             try:
                 return await _rg_search(
                     pattern=pattern,
@@ -130,6 +139,7 @@ class SearchFilesTool(Tool):
             max_results=max_results,
             single_file=single_file,
             sandbox=sandbox,
+            context_lines=context_lines,
         )
 
 
@@ -235,6 +245,7 @@ def _python_search(
     max_results: int,
     single_file: Path | None,
     sandbox: Path | None = None,
+    context_lines: int = 0,
 ) -> ToolResult:
     import fnmatch
 
@@ -284,9 +295,20 @@ def _python_search(
             except UnicodeDecodeError:
                 continue
 
-        for i, line in enumerate(text.splitlines(), 1):
+        lines = text.splitlines()
+        for i, line in enumerate(lines, 1):
             if rx.search(line):
-                matches.append(_format_match(rel, i, line))
+                match = _format_match(rel, i, line)
+                if context_lines:
+                    match["before"] = [
+                        _format_context(n + 1, lines[n])
+                        for n in range(max(0, i - 1 - context_lines), i - 1)
+                    ]
+                    match["after"] = [
+                        _format_context(n + 1, lines[n])
+                        for n in range(i, min(len(lines), i + context_lines))
+                    ]
+                matches.append(match)
                 if len(matches) >= max_results:
                     return ToolResult.ok(
                         output={"root": str(root), "matches": matches, "engine": "python"},
@@ -339,6 +361,12 @@ def _format_match(rel: str, lineno: int, line: str) -> dict[str, Any]:
     if len(line) > 400:
         line = line[:397] + "..."
     return {"file": rel, "line": lineno, "text": line}
+
+
+def _format_context(lineno: int, line: str) -> dict[str, Any]:
+    if len(line) > 400:
+        line = line[:397] + "..."
+    return {"line": lineno, "text": line}
 
 
 __all__ = ["SearchFilesTool"]
