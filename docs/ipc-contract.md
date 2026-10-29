@@ -1819,7 +1819,7 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 |------|------|------|
 | `office.generate_xlsx` | `{project_id, expected_service_id, request_key, filename, spec, run_id?}` | `{delivery, attachment, preview_text}` |
 | `office.generate_analysis` | 上述字段加 `summaries` 和可选 `chart` | 无图表返回 `{kind:"delivery",delivery,attachment,preview_text,materialized_spec}`；图表返回 `{kind:"attachment",attachment,validation_report,analysis_spec}` |
-| `office.list` | `{project_id}` | `{deliveries:[{delivery,attachment}], service_id}`，最近 200 条 |
+| `office.list` | `{project_id, cursor?, query?}` | `{deliveries:[{delivery,attachment}], service_id, next_cursor}`，每页最多 200 条；按登记顺序倒序，query 字面匹配文件名、成果 ID 或运行 ID，区分大小写。游标绑定项目、服务和查询 |
 | `office.get` | `{project_id, delivery_id}` | `{delivery, attachment, preview_text}`，重新检查 vault 原件大小/hash |
 
 汇总沿用静态值生成和纯表格幂等登记。图表只引用原始数据行，以独立项目附件登记；该路径不支持 `run_id`，不保证幂等，响应不明时应先检查项目附件。图表回执核对保存单元格与图表系列引用，不代表视觉或业务验收。

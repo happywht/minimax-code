@@ -92,7 +92,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   draftRef.current = { filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis };
   useEffect(() => () => { onRetainDraft?.(draftRef.current); }, []);
   const scoped = state.projectId === project && state.host === host;
-  const filteredEntries = (scoped ? state.entries : []).filter((entry) => `${entry.attachment.original_name} ${entry.delivery.id} ${entry.delivery.run_id ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const filteredEntries = scoped ? state.entries : [];
   const marker = project && state.serviceId && scoped ? `minimax:office-chart-pending:${host}:${project}:${state.serviceId}` : null;
   useEffect(() => {
     setChartMarkerReady(false);
@@ -209,11 +209,15 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
     <p>在当前 Agent 服务登记不可变新文件；关联已有 run 只作来源引用，不改变其状态。切换页面只停止本页等待，已提交结果可刷新找回。</p>
     {ipc.isMock && <p role="status">演示模式不生成 Office 文件；请连接真实后端及 attachments 可选依赖。</p>}
     <div className="space-y-2 rounded border border-line p-3"><h3 className="font-semibold">已有表格成果</h3>
-      <Input aria-label="搜索表格成果" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按文件名、成果 ID 或运行 ID 筛选" />
-      <p className="text-xs text-ink-2">筛选当前项目已加载记录；已选预览不会因筛选而改变。匹配 {filteredEntries.length} 项。</p>
+      <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void state.activate(project, query.trim()); }}>
+        <Input aria-label="搜索表格成果" maxLength={240} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按文件名、成果 ID 或运行 ID 搜索" />
+        <Button type="submit" variant="secondary" disabled={state.busy || state.paging}>搜索</Button>
+      </form>
+      <p className="text-xs text-ink-2">搜索整个项目，按字面区分大小写；已加载 {filteredEntries.length} 项。</p>
     <ul className="space-y-1">{filteredEntries.map((entry) => <li key={entry.delivery.id}><button className="w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" disabled={state.busy} onClick={() => void state.select(entry.delivery.id)}>
       {entry.attachment.original_name} · v{entry.attachment.version} · {entry.delivery.id} · 已登记 / 结构校验通过 · 业务未验证
     </button></li>)}</ul>
+    {scoped && state.nextCursor && <Button type="button" variant="secondary" disabled={state.busy || state.paging} onClick={() => void state.loadMore()}>{state.paging ? "正在加载…" : "加载更早成果"}</Button>}
     {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
       <h3 className="font-medium">已选表格 · {state.selected.attachment.original_name}</h3>
       <p>校验范围 {state.selected.delivery.validation_report.scope} · 全部 {state.selected.delivery.validation_report.cell_count} 格（含表头） · 未做版式或业务验收</p>
@@ -280,7 +284,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       {analysis.chart && chartPending && <div role="status"><p>上次图表结果未确认，请先检查当前项目附件，重复提交可能创建新版本。</p>
         <Button type="button" variant="secondary" onClick={() => void allowChartRetry()}>已检查附件，允许再次生成</Button></div>}
       <div className="flex flex-wrap gap-2"><Button type="submit" disabled={!scoped || !state.serviceId || state.busy || ipc.isMock || (!!analysis.chart && (!chartMarkerReady || chartPending))}>生成并登记 XLSX</Button>
-        <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(project)}>刷新</Button>
+        <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(project, state.query)}>刷新</Button>
         <Button type="button" variant="secondary" onClick={() => { try { saveJson(parsed(), "office-input.json"); } catch { setFormError("请先输入有效表格 JSON"); } }}>保存当前输入 JSON</Button></div>
     </form>
     {(formError || scoped && state.error) && <p role="alert" className="text-status-error">{formError || state.error}</p>}

@@ -95,9 +95,21 @@ class OfficeDAO:
             raise ValueError("Office delivery does not exist in this project")
         return dict(row)
 
-    async def list(self, project_id):
-        return [dict(row) for row in await self.db.fetchall(
-            "SELECT * FROM office_deliveries WHERE project_id=? ORDER BY rowid DESC LIMIT 200", (project_id,))]
+    async def list(self, project_id, cursor=None, query=None):
+        scope = "d.project_id=?"
+        args = [project_id]
+        if query is not None:
+            scope += " AND (instr(a.original_name, ?) > 0 OR instr(d.id, ?) > 0 OR instr(coalesce(d.run_id, ''), ?) > 0)"
+            args.extend([query, query, query])
+        join = " FROM office_deliveries d LEFT JOIN attachments a ON a.id=d.attachment_id AND a.project_id=d.project_id "
+        if cursor is not None:
+            anchor = await self.db.fetchone("SELECT d.rowid AS position" + join + "WHERE " + scope + " AND d.id=?", (*args, cursor))
+            if anchor is None:
+                raise ValueError("Office cursor does not exist in this scope")
+            scope += " AND d.rowid<?"
+            args.append(anchor["position"])
+        rows = await self.db.fetchall("SELECT d.*" + join + "WHERE " + scope + " ORDER BY d.rowid DESC LIMIT 201", tuple(args))
+        return [dict(row) for row in rows]
 
     async def binding(self, project, run_id):
         return await run_binding(self.db.fetchall, project, run_id)

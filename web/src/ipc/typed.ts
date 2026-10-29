@@ -143,7 +143,7 @@ export interface TypedIPC {
   getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
   generateOfficeXlsx(params: import("../types/ipc").OfficeGenerateParams): Promise<import("../types/ipc").OfficeGetResult>;
   generateOfficeAnalysis(params: import("../types/ipc").OfficeAnalysisParams): Promise<import("../types/ipc").OfficeAnalysisResult>;
-  listOfficeDeliveries(projectId: string): Promise<import("../types/ipc").OfficeListResult>;
+  listOfficeDeliveries(projectId: string, cursor?: string, query?: string): Promise<import("../types/ipc").OfficeListResult>;
   getOfficeDelivery(projectId: string, deliveryId: string): Promise<import("../types/ipc").OfficeGetResult>;
 
   // Remote host registry and file transfer. Pre-record transfer_id before push
@@ -654,7 +654,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     getAttachment: (projectId, attachmentId) => client.request("attachment.get", { project_id: projectId, attachment_id: attachmentId }),
     generateOfficeXlsx: (params) => client.request("office.generate_xlsx", params),
     generateOfficeAnalysis: (params) => client.request("office.generate_analysis", params),
-    listOfficeDeliveries: (projectId) => client.request("office.list", { project_id: projectId }),
+    listOfficeDeliveries: (projectId, cursor, query) => client.request("office.list", { project_id: projectId, ...(cursor ? { cursor } : {}), ...(query ? { query } : {}) }),
     getOfficeDelivery: (projectId, deliveryId) => client.request("office.get", { project_id: projectId, delivery_id: deliveryId }),
 
     createHost: (params) => client.request("host.create", params),

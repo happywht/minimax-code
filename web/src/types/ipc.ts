@@ -116,7 +116,7 @@ export interface OfficeDelivery {
 }
 export interface OfficeEntry { delivery: OfficeDelivery; attachment: AttachmentOriginal }
 export interface OfficeGetResult extends OfficeEntry { preview_text: string }
-export interface OfficeListResult { deliveries: OfficeEntry[]; service_id: string }
+export interface OfficeListResult { deliveries: OfficeEntry[]; service_id: string; next_cursor: string | null }
 export interface OfficeGenerateParams {
   project_id: string;
   expected_service_id: string;

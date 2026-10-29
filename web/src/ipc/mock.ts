@@ -540,7 +540,7 @@ function mockHandle(
     case "office.list": {
       const p = (params ?? {}) as { project_id?: string };
       if (!p.project_id || !mockProjects.has(p.project_id)) throw new Error("An existing project is required");
-      return { deliveries: [], service_id: "mock-office-unavailable" };
+      return { deliveries: [], service_id: "mock-office-unavailable", next_cursor: null };
     }
     case "office.generate_analysis":
     case "office.generate_xlsx":

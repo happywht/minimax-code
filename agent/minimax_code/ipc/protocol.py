@@ -252,6 +252,11 @@ class OfficeAnalysisGenerateParams(OfficeGenerateParams):
     chart: Chart | None = None
 
 
+class OfficeListParams(ArtifactListParams):
+    cursor: str | None = Field(default=None, min_length=1, max_length=8192)
+    query: str | None = Field(default=None, min_length=1, max_length=240)
+
+
 class OfficeGetParams(ArtifactListParams):
     delivery_id: str = Field(pattern=r"^off_[0-9a-f]{32}$")
 

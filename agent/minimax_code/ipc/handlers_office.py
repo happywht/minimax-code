@@ -11,7 +11,7 @@ from ..office_deliveries import get_office_service
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
-    ArtifactListParams,
+    OfficeListParams,
     OfficeGenerateParams,
     OfficeAnalysisGenerateParams,
     OfficeGetParams,
@@ -93,5 +93,5 @@ def register_office_handlers(server):
 
     server.register("office.generate_xlsx", handler(OfficeGenerateParams, "generate"))
     server.register("office.generate_analysis", generate_analysis)
-    server.register("office.list", handler(ArtifactListParams, "list"))
+    server.register("office.list", handler(OfficeListParams, "list"))
     server.register("office.get", handler(OfficeGetParams, "get"))

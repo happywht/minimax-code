@@ -74,16 +74,21 @@ class OfficeService:
             raise ValueError("Office generation requires an explicit absolute project directory")
         return project
 
-    async def list(self, project_id):
+    async def list(self, project_id, cursor=None, query=None):
+        from .artifact_cursor import decode_cursor, encode_cursor
         await self.originals.dao.project(project_id)
         service = await self.originals.dao.service_id()
+        anchor = decode_cursor(cursor, "off", project_id, service, None, query or "")
+        records = await self.dao.list(project_id, anchor, query)
+        next_cursor = (encode_cursor("off", project_id, service, None, query or "", records[199]["id"])
+                       if len(records) > 200 else None)
         rows = []
-        for row in await self.dao.list(project_id):
+        for row in records[:200]:
             attachment = await self.originals.dao.get(project_id, row["attachment_id"])
             if row["service_id"] != service:
                 raise ValueError("Office service identity is inconsistent")
             rows.append({"delivery": validate_record(row, attachment), "attachment": metadata(attachment)})
-        return {"deliveries": rows, "service_id": service}
+        return {"deliveries": rows, "service_id": service, "next_cursor": next_cursor}
 
     async def get(self, project_id, delivery_id):
         if not _ID.fullmatch(delivery_id):
