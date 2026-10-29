@@ -597,23 +597,20 @@ def register_run_handlers(server: Any) -> None:
             if run is None:
                 raise HandlerError(INVALID_PARAMS, "unknown run_id")
             service = get_run_service(ctx.server)
-            job = service.get_job(request.run_id)
-            # Set the in-memory fence before yielding to SQLite: a waiting job
-            # cannot enter its operation while its cancellation is committed.
-            queued_job = job is not None and not job.started and not job.finalizing
-            if run.get("mode") == "team":
+            # Wait for an admission already committing before looking up its job.
+            # The service fences queued work before yielding and shields the durable
+            # cancellation from an RPC disconnect.
+            job = await service.job_for_run(request.run_id)
+            queued_job = job is not None and not job.operation_started
+            requested = await service.cancel_run_durable(request.run_id)
+            if run.get("mode") == "team" and not requested:
                 from ..orchestrator.team_control import cancel as cancel_team
-                requested = service.cancel_run(request.run_id) or cancel_team(request.run_id)
-            else:
-                requested = service.cancel_run(request.run_id)
+                requested = cancel_team(request.run_id)
             if queued_job and job.cancel_requested:
                 from .builtins import _notify_run
-                pending = await dao.request_queued_cancel(request.run_id)
-                if pending is not None:
-                    run = pending
+                run = await dao.get_run(request.run_id)
+                if run is not None:
                     await _notify_run(ctx, "run.updated", {"run": run})
-                else:
-                    run = await dao.get_run(request.run_id)
             await ctx.reply({"ok": True, "requested": requested, "run": run})
         except ValidationError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
