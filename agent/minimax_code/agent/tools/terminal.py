@@ -136,15 +136,16 @@ async def _signal_process_tree(
 # Environment variable sanitisation
 # ---------------------------------------------------------------------------
 
+# Ambient module search paths are excluded, as in the shared process boundary;
+# callers that need them can still opt in through explicit extra variables.
 # Keys that are always safe to pass through (case-insensitive match).
 _SAFE_ENV_WHITELIST: frozenset[str] = frozenset({
     "PATH", "HOME", "USERPROFILE", "HOMEPATH", "HOMEDRIVE",
     "TEMP", "TMP", "TMPDIR",
     "LANG", "LC_ALL", "LC_CTYPE",
-    "PYTHONPATH", "PYTHONUNBUFFERED", "PYTHONIOENCODING",
+    "PYTHONUNBUFFERED", "PYTHONIOENCODING",
     "GOPATH", "GOROOT",
     "CARGO_HOME", "RUSTUP_HOME",
-    "NODE_PATH",
     "JAVA_HOME",
     "EDITOR", "VISUAL",
     "PAGER", "TERM",
