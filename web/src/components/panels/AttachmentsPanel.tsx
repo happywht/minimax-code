@@ -84,6 +84,8 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const [researchNeedsReview, setResearchNeedsReview] = useState(initialDraft?.researchNeedsReview ?? false);
   const [citationNeedsReview, setCitationNeedsReview] = useState(initialDraft?.citationNeedsReview ?? false);
   const markers = reportMarkers(body, sections, structured);
+  const pdfTableLimitExceeded = structured && format !== "docx" && readEditableSections(sections)?.some((section) =>
+    section.blocks.some((block) => block.kind === "table" && (block.rows[0].length > 10 || block.rows.length * block.rows[0].length > 1000)));
   const noteSourceChange = () => { if (markers === null || markers.length) setCitationNeedsReview(true); };
   const draftRef = useRef<RetainedReportDraft>({ docName, title, body, format, structured, sections, visualSections, sources, researchNeedsReview, citationNeedsReview, file });
   draftRef.current = { docName, title, body, format, structured, sections, visualSections, sources, researchNeedsReview: researchNeedsReview || researchSources.length > 0, citationNeedsReview, file };
@@ -331,6 +333,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       }}><option value="docx">DOCX</option><option value="pdf">PDF</option><option value="both">DOCX + PDF</option></select></label>
       {format === "both" && <p>文件名填写不带扩展名的公共名称。逐项保存；同一输入已有结果后，请选择单一格式重试或修改输入以创建新版本。不确定结果时先刷新附件。</p>}
       {format !== "docx" && <p>PDF 需要已安装的中文 TrueType 字体；缺失或字符不受支持时请按提示配置。表格最多 10 列、每表 1000 格。</p>}
+      {pdfTableLimitExceeded && <p role="alert">当前表格超过 PDF 限制。请缩减表格，或选择仅生成 DOCX；原内容不会自动删减。</p>}
       <Input aria-label="报告文件名" value={docName} onChange={(event) => setDocName(event.target.value)} />
       <Input aria-label="报告标题" value={title} onChange={(event) => setTitle(event.target.value)} />
       <label>内容形式 <select aria-label="报告内容形式" value={!structured ? "plain" : visualSections ? "visual" : "sections"} onChange={(event) => {
@@ -381,7 +384,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           <Button type="button" variant="secondary" onClick={() => setCitationNeedsReview(false)}>已核对正文编号和来源顺序</Button></div>}
       </div>
       {formError && <p role="alert">{formError}</p>}
-      <Button type="submit" disabled={researchNeedsReview || citationNeedsReview || !scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
+      <Button type="submit" disabled={researchNeedsReview || citationNeedsReview || !!pdfTableLimitExceeded || !scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
       {ipc.isMock && <p role="status">演示模式不能生成报告。</p>}
     </form>
     {scoped && state.reportBatch && <div role="status" className="rounded border border-line p-2">

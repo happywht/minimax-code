@@ -17,7 +17,7 @@ export function readEditableSections(text: string): DocxSection[] | null {
         } else if (block.kind === "table") {
           if (Object.keys(block).some((k) => !["kind", "rows", "repeat_header"].includes(k)) ||
               (block.repeat_header !== undefined && typeof block.repeat_header !== "boolean") || !Array.isArray(block.rows) || !block.rows.length || block.rows.length > 100 ||
-              !Array.isArray(block.rows[0]) || !block.rows[0].length || block.rows[0].length > 10 ||
+              !Array.isArray(block.rows[0]) || !block.rows[0].length || block.rows[0].length > 20 ||
               block.rows.some((row: unknown) => !Array.isArray(row) || row.length !== block.rows[0].length || row.some((cell: unknown) => typeof cell !== "string"))) return null;
         } else return null;
       }
@@ -41,7 +41,7 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
     }));
   };
   return <div className="space-y-3">
-    <p>按顺序编辑章节、段落和表格。选择目标章节可将内容移至该章节末尾；每章至少保留一项内容，且最多 100 项。表格为纯文本；每表最多 100 行、10 列、1000 格。生成不会核验内容或版式。</p>
+    <p>按顺序编辑章节、段落和表格。选择目标章节可将内容移至该章节末尾；每章至少保留一项内容，且最多 100 项。表格为纯文本；DOCX 每表最多 100 行、20 列，PDF 另有 10 列、1000 格的限制。生成不会核验内容或版式。</p>
     {value.map((section, si) => {
       const updateBlock = (bi: number, block: DocxBlock) => update(si, { ...section, blocks: section.blocks.map((item, i) => i === bi ? block : item) });
       return <fieldset key={si} className="space-y-2 rounded border border-line p-2">
@@ -59,9 +59,9 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
               <Input aria-label={`章节 ${si + 1} 表格 ${bi + 1} 第 ${ri + 1} 行第 ${ci + 1} 列`} value={cell} onChange={(e) => updateBlock(bi, { ...block, rows: block.rows.map((r, rix) => rix === ri ? r.map((c, cix) => cix === ci ? e.target.value : c) : r) })} />
             </td>)}</tr>)}</tbody></table></div>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="secondary" disabled={block.rows.length >= 100 || (block.rows.length + 1) * block.rows[0].length > 1000} onClick={() => updateBlock(bi, { ...block, rows: [...block.rows, block.rows[0].map(() => "")] })}>添加行</Button>
+              <Button type="button" variant="secondary" disabled={block.rows.length >= 100} onClick={() => updateBlock(bi, { ...block, rows: [...block.rows, block.rows[0].map(() => "")] })}>添加行</Button>
               <Button type="button" variant="secondary" disabled={block.rows.length <= 1} onClick={() => updateBlock(bi, { ...block, rows: block.rows.slice(0, -1) })}>删除末行</Button>
-              <Button type="button" variant="secondary" disabled={block.rows[0].length >= 10 || block.rows.length * (block.rows[0].length + 1) > 1000} onClick={() => updateBlock(bi, { ...block, rows: block.rows.map((r) => [...r, ""]) })}>添加列</Button>
+              <Button type="button" variant="secondary" disabled={block.rows[0].length >= 20} onClick={() => updateBlock(bi, { ...block, rows: block.rows.map((r) => [...r, ""]) })}>添加列</Button>
               <Button type="button" variant="secondary" disabled={block.rows[0].length <= 1} onClick={() => updateBlock(bi, { ...block, rows: block.rows.map((r) => r.slice(0, -1)) })}>删除末列</Button>
             </div>
             <label><input type="checkbox" checked={block.repeat_header ?? false} onChange={(e) => updateBlock(bi, { ...block, repeat_header: e.target.checked })} /> 首行作为表头并在跨页时重复</label>
