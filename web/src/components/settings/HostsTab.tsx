@@ -4,6 +4,7 @@ import type { HostConnection, RemoteHost } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileTransfer } from "./HostFileTransfer";
+import { tunnelPageUrl } from "../../ipc/tunnelPage";
 
 const STATUS_LABELS: Record<HostConnection["state"], string> = {
   connected: "已连接", degraded: "SSH 隧道存在，远端服务不可用", disconnected: "已断开", connecting: "连接中",
@@ -157,7 +158,7 @@ export function HostsTab(): JSX.Element {
 
   return <section className="space-y-4" data-testid="settings-hosts">
     <h2 className="text-sm font-semibold">远程主机</h2>
-    <p className="text-xs text-ink-2">通过 SSH 隧道在新标签页打开远端服务。远端拥有独立的会话、文件和设置；当前页面仍连接本机。SSH 隧道不限制远端命令的访问权限，执行环境由远端配置决定。请仅连接可信主机，并确认远端服务正在运行。</p>
+    <p className="text-xs text-ink-2">通过 SSH 隧道在独立标签页打开远端服务，当前页面保持连接当前服务。远端会话、项目和设置独立，不自动同步或迁移任务。远端需要提供更新后的前端；连接状态不代表任务持续。SSH 隧道不限制远端命令的访问权限，请仅连接可信主机。</p>
     {error && <p role="alert" className="text-xs text-status-error">{error}</p>}
     <form onSubmit={(event) => void register(event)} className="space-y-2 rounded-md border border-line p-3">
       <h3 className="text-xs font-medium">登记主机</h3>
@@ -205,7 +206,7 @@ export function HostsTab(): JSX.Element {
           <Button size="sm" disabled={busy || !host.enabled || !connection || ["connected", "degraded", "connecting", "reconnecting"].includes(connection.state)} onClick={() => void changeConnection(host, true)}>连接</Button>
           <Button size="sm" disabled={busy || !connection || !["connected", "degraded", "connecting", "reconnecting"].includes(connection.state)} onClick={() => void changeConnection(host, false)}>断开</Button>
           <Button size="sm" disabled={busy} onClick={() => void toggleHost(host)}>{host.enabled ? "禁用" : "启用"}</Button>
-          {url && <a className="text-xs text-accent underline" href={url} target="_blank" rel="noopener noreferrer">在新标签页打开远端</a>}
+          {url && <a className="text-xs text-accent underline" href={tunnelPageUrl(url)} target="_blank" rel="noopener noreferrer">打开远端独立标签页</a>}
         </div>
       </article>;
     })}

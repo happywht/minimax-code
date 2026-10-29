@@ -48,6 +48,7 @@ import {
 import { mockNotify, mockRequest } from "./mock";
 import { authHeaders, authProtocols, ensureSession, rememberHealth } from "./httpAuth";
 import { localBrowserOrigin } from "./localOrigin";
+import { tunnelPage } from "./tunnelPage";
 import { bindTypedIPC, type TypedIPC } from "./typed";
 /* ─────────────────────── Internal types ─────────────────────── */
 
@@ -258,14 +259,16 @@ export class IPCClient {
 
   constructor(opts?: IPCClientOptions) {
     const envUrl = readViteEnv("VITE_AGENT_URL");
+    const tunnel = tunnelPage();
     this.baseUrl = localBrowserOrigin(opts?.baseUrl && opts.baseUrl.length > 0
       ? opts.baseUrl
+      : tunnel ? window.location.origin
       : envUrl && envUrl.length > 0
         ? envUrl
         : runtimeAgentBaseUrl()
     ).replace(/\/+$/, "");
     this.forceMock =
-      !!opts?.mockMode || !!opts?.forceMock || readViteEnv("VITE_AGENT_MODE") === "mock";
+      !!opts?.mockMode || !!opts?.forceMock || (!tunnel && readViteEnv("VITE_AGENT_MODE") === "mock");
     // Start in "pending" — no network requests until `start()` probes
     // /health and decides between "http" and "offline". This prevents
     // the ERR_CONNECTION_REFUSED console-spam that occurs when

@@ -32,6 +32,7 @@ import type { SettingsTab } from "./components/settings/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
 import type { CommandPaletteHandle } from "./components/layout/CommandPalette";
 import { registerScopeChangeGuard } from "./lib/scopeChangeGuard";
+import { tunnelPage } from "./ipc/tunnelPage";
 
 const MobilePairingModal = lazy(() =>
   import("./components/modals/MobilePairingModal").then((module) => ({ default: module.MobilePairingModal })),
@@ -352,6 +353,10 @@ export default function App() {
           onToggleCommandPalette={() => paletteRef.current?.toggle()}
           previewActive={view === "preview"}
         />
+        {tunnelPage() && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2 text-xs text-ink-2" role="status">
+          <span>远端隧道标签页 · 当前服务：{ipc.agentBaseUrl}。会话和项目独立；连接状态不表示任务仍在运行。</span>
+          {tunnelPage()?.returnOrigin && <a className="text-accent underline" href={tunnelPage()?.returnOrigin ?? undefined} target="_blank" rel="noopener noreferrer">打开来源页面</a>}
+        </div>}
         <StorageBanner degraded={storageDegraded} />
         <CommandPalette
           ref={paletteRef}
