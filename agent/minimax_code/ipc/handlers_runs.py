@@ -353,10 +353,22 @@ def register_run_handlers(server: Any) -> None:
                 return str(root), session["project_id"]
 
             workspace, project_id = await binding()
+            claim_unconfirmed = False
             async def operation(job):
+                nonlocal claim_unconfirmed
+                from ..run_errors import RunPersistenceError
+
                 if await binding() != (workspace, project_id):
                     raise ValueError("Project binding changed while queued")
-                await dao.update_run_status(job.run_id, status="running")
+                # Do not dispatch a potentially side-effecting command unless
+                # this exact queued run has been durably claimed once.
+                claim_unconfirmed = True
+                claimed = await dao.claim_run(job.run_id)
+                if (not claimed or claimed.get("id") != job.run_id
+                        or claimed.get("session_id") != req.session_id
+                        or claimed.get("status") != "running"):
+                    raise RunPersistenceError("Validation run claim could not be confirmed")
+                claim_unconfirmed = False
                 with execution_scope(ExecutionPolicy(workspace=Path(workspace))):
                     output = await run_validate_command(req.expected_command, cwd=workspace,
                                                         timeout_s=resolve_validate_timeout())
@@ -366,14 +378,23 @@ def register_run_handlers(server: Any) -> None:
                               "verification": evidence}
 
             async def finalize(job, error):
+                from ..run_errors import RunPersistenceError
+
+                # An uncertain claim must not be overwritten with a fabricated
+                # terminal state, even if the database becomes available again.
+                if claim_unconfirmed:
+                    raise RunPersistenceError("Validation run claim is unconfirmed; inspect it before retrying")
                 status = "completed" if error is None and job.result else "interrupted" if isinstance(error, asyncio.CancelledError) else "failed"
                 result = job.result or {"run_id": job.run_id, "session_id": req.session_id,
                     "team_run_id": req.team_run_id, "child_run_id": req.child_run_id,
                     "verification": {"verdict": "unknown", "reason": "validation_interrupted_or_failed", "requires_review": True}}
                 saved = await dao.update_run_status(job.run_id, status=status,
                     error=str(error) if error and not isinstance(error, asyncio.CancelledError) else None, result=result)
-                if saved:
-                    await ctx.emit("run.updated", {"run": saved})
+                if (not saved or saved.get("id") != job.run_id
+                        or saved.get("session_id") != req.session_id or saved.get("status") != status
+                        or await dao.result_payload(job.run_id) != result):
+                    raise RunPersistenceError("Validation result could not be confirmed; inspect the run before retrying")
+                await ctx.emit("run.updated", {"run": saved})
 
             request = {"mode": "execute", "kind": "team_collection_validation", "team_run_id": req.team_run_id,
                        "child_run_id": req.child_run_id, "command": req.expected_command,
