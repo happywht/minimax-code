@@ -12,9 +12,10 @@ from typing import Any
 from ..app import get_mcp_registry, get_mcp_servers_dao
 from ..mcp import MCPClientError, MCPRegistry, MCPServerConfig
 from ..mcp.http_policy import validate_headers, validate_url
+from ..mcp.registry import bridged_name
 from ..mcp.types import tool_result_payload
 from .handler_utils import HandlerError
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS, InvokeMcpToolResult
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS, PERMISSION_DENIED, InvokeMcpToolResult
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -346,6 +347,22 @@ async def handle_mcp_invoke_tool(params: Any, ctx: Context) -> None:
         registry = _registry()
         if registry is None:
             raise HandlerError(INTERNAL_ERROR, "MCP registry not available")
+        # Direct settings-page calls must respect the same tool rule as Agent
+        # dispatch. This endpoint has no consent flow, so an ask cannot be
+        # treated as an approval. Failure to load policy must also fail closed.
+        from .handlers_permissions import _ensure_permission_store
+
+        store = await _ensure_permission_store(ctx.server)
+        if store is None:
+            raise HandlerError(INTERNAL_ERROR, "Permission policy is unavailable")
+        rule = store.lookup(bridged_name(server_name, tool_name))
+        action = str((rule or {}).get("action") or "").strip().lower()
+        if action in {"deny", "ask"}:
+            raise HandlerError(
+                PERMISSION_DENIED,
+                "MCP tool is denied by permission policy" if action == "deny"
+                else "MCP tool requires interactive approval, which direct invocation does not support",
+            )
         try:
             result = await registry.call_tool(server_name, tool_name, arguments)
         except MCPClientError as exc:

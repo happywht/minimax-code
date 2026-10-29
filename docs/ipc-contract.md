@@ -1464,6 +1464,10 @@ Both direct invocation and Agent bridge dispatch check the live registered tool
 and connection identity at the call boundary. Planning and restricted execution
 policies also apply when such a scope exists. Revocation blocks new calls; a call
 already sent to an external server may have effects that cannot be recalled.
+Direct invocation also checks the current permission rule for the canonical bridged
+tool name. It rejects `deny` and `ask` because this endpoint has no interactive
+consent flow, and fails closed if permission policy is unavailable. Agent runs use
+their admitted permission snapshot and their existing consent flow.
 An MCP server is external code, not an operating-system sandbox.
 
 ### `codebase.*` — codebase indexing and retrieval (v0.11.0 Milestone 2)
