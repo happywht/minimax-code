@@ -9,11 +9,13 @@ the incident stays post-mortem instead of being silently rewritten.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
 
 from minimax_code.agent.tools.base import ToolResult, get_default_registry
+from minimax_code.agent.tools import shared_memory
 from minimax_code.workspace_ctx import (
     reset_current_root,
     reset_current_run_id,
@@ -39,6 +41,37 @@ async def _dispatch(name: str, **kwargs) -> ToolResult:
 
 def _store_file(root: Path) -> Path:
     return root / ".minimax" / "shared_memory" / "store.json"
+
+
+def test_lock_timeout_never_enters_critical_section(tmp_path: Path) -> None:
+    lock = tmp_path / ".lock"
+    entered = False
+    with shared_memory._file_lock(lock):
+        with pytest.raises(TimeoutError, match="acquiring shared memory lock"):
+            with shared_memory._file_lock(lock, timeout_s=0.05):
+                entered = True
+    assert not entered
+
+
+@pytest.mark.asyncio
+async def test_put_does_not_modify_store_when_lock_unavailable(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = await _dispatch("shared_memory_put", namespace="plan", key="a", value=1)
+    assert first.success, first.error
+    store = _store_file(workspace_root)
+    original = store.read_bytes()
+
+    @contextlib.contextmanager
+    def unavailable_lock(_path):
+        raise TimeoutError("timed out acquiring shared memory lock")
+        yield
+
+    monkeypatch.setattr(shared_memory, "_file_lock", unavailable_lock)
+    result = await _dispatch("shared_memory_put", namespace="plan", key="b", value=2)
+    assert not result.success
+    assert "acquiring shared memory lock" in (result.error or "")
+    assert store.read_bytes() == original
 
 
 # ---------------------------------------------------------------------------

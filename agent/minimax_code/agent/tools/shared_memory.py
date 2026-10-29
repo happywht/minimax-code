@@ -80,45 +80,41 @@ def _store_root() -> Path | None:
 
 @contextlib.contextmanager
 def _file_lock(path: Path, *, timeout_s: float = 2.0):
-    """Best-effort cross-process lock around the store file.
-
-    Unix uses ``fcntl.flock``; Windows uses an msvcrt ``lk`` file lock
-    (best-effort, advisory). The timeout is short because a stuck lock
-    is almost always a dead agent, not contention — fail-open and log
-    so a hung tool can never hang the whole run.
-    """
+    """Acquire the advisory cross-process lock or fail without writing."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fh = None
     locked = False
     try:
         fh = path.open("a+", encoding="utf-8")
-        deadline = time.time() + timeout_s
+        deadline = time.monotonic() + timeout_s
         if os.name == "nt":
             try:
                 import msvcrt  # type: ignore[import-not-found]
+            except ImportError as exc:  # pragma: no cover
+                raise OSError("shared memory locking unavailable") from exc
 
-                while time.time() < deadline:
-                    try:
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
-                        locked = True
-                        break
-                    except OSError:
-                        time.sleep(0.02)
-            except Exception:  # pragma: no cover — defensive
-                locked = True  # fall back to no lock rather than hang
+            def acquire() -> None:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             try:
                 import fcntl  # type: ignore[import-not-found]
+            except ImportError as exc:  # pragma: no cover
+                raise OSError("shared memory locking unavailable") from exc
 
-                while time.time() < deadline:
-                    try:
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        locked = True
-                        break
-                    except OSError:
-                        time.sleep(0.02)
-            except Exception:  # pragma: no cover — defensive
+            def acquire() -> None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        while True:
+            try:
+                acquire()
                 locked = True
+                break
+            except OSError as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("timed out acquiring shared memory lock") from exc
+                time.sleep(min(0.02, remaining))
         yield
     finally:
         if fh is not None:
@@ -134,6 +130,7 @@ def _file_lock(path: Path, *, timeout_s: float = 2.0):
                     try:
                         import msvcrt  # type: ignore[import-not-found]
 
+                        fh.seek(0)
                         msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
                     except Exception:
                         pass
