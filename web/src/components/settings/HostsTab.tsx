@@ -4,6 +4,7 @@ import type { HostConnection, RemoteHost } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileTransfer } from "./HostFileTransfer";
+import { HostSnapshot } from "./HostSnapshot";
 import { tunnelPageUrl } from "../../ipc/tunnelPage";
 
 const STATUS_LABELS: Record<HostConnection["state"], string> = {
@@ -198,6 +199,7 @@ export function HostsTab(): JSX.Element {
         <p className="text-xs text-ink-2">{!host.enabled ? "已禁用 · " : ""}状态：{connection ? STATUS_LABELS[connection.state] : "状态待核对"}</p>
         {connection?.state === "degraded" && <p className="text-xs text-ink-2">SSH 进程仍在，但远端服务健康检查未通过；会继续检查。请检查远端服务，必要时断开后重新连接。此状态不判断远端任务是否运行。</p>}
         {!connection && <p className="text-xs text-ink-2">无法确认当前隧道状态；请恢复本地服务连接或刷新状态。</p>}
+        <HostSnapshot key={JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file, host.enabled, connectionEpoch])} host={host} />
         <HostFileTransfer host={host} />
         {connection?.error && <p role="alert" className="text-xs text-status-error">{connection.error}</p>}
         {connection?.state === "connected" && !url && <p role="alert" className="text-xs text-status-error">隧道地址无效，无法打开。</p>}
