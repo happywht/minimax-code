@@ -112,3 +112,35 @@ async def test_corrupted_snapshot_is_not_read(env):
     (service.vault / row["snapshot_id"]).write_bytes(b"corrupted")
     result = await registry.dispatch("read_project_document", {"attachment_id": row["id"]})
     assert not result.success and "Attachment unavailable" in result.error
+
+
+async def test_text_reads_complete_original_with_character_cursors(env):
+    _, _, service, upload, registry = env
+    raw = ("中" * 70000 + "TAIL").encode("utf-8")
+    row = await upload("p", "source.txt", raw)
+    assert row["preview_truncated"]
+    first = await registry.dispatch("read_project_document", {"attachment_id": row["id"]})
+    assert first.success and first.output["next_cursor"] == {"unit": 1, "offset": 4000}
+    tail = await registry.dispatch("read_project_document", {
+        "attachment_id": row["id"], "unit": 1, "offset": 70000})
+    assert tail.success and tail.output["text"] == "TAIL" and tail.output["next_cursor"] is None
+    assert (await service.content("p", row["id"]))[1] == raw
+    for cursor in ({"unit": 2}, {"offset": 70005}, {"offset": True}):
+        result = await registry.dispatch("read_project_document", {"attachment_id": row["id"], **cursor})
+        assert not result.success
+
+
+async def test_text_scope_and_project_binding(env):
+    _, sessions, _, upload, registry = env
+    csv = await upload("p", "source.csv", b'name,value\n"a\nb",=1+1\n')
+    result = await registry.dispatch("read_project_document", {"attachment_id": csv["id"]})
+    assert result.success and result.output["text"] == 'name,value\n"a\nb",=1+1\n'
+    assert "raw text" in result.output["scope_notice"]
+    empty = await upload("p", "empty.txt", b"")
+    assert (await registry.dispatch("read_project_document", {"attachment_id": empty["id"]})).output["status"] == "empty"
+    foreign = await upload("other", "foreign.txt", b"secret")
+    assert not (await registry.dispatch("read_project_document", {"attachment_id": foreign["id"]})).success
+    invalid = await upload("p", "invalid.txt", b"hello\x00world")
+    assert not (await registry.dispatch("read_project_document", {"attachment_id": invalid["id"]})).success
+    await sessions.update("s", project_id="other")
+    assert not (await registry.dispatch("read_project_document", {"attachment_id": csv["id"]})).success
