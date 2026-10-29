@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { typedIPC } from "../../ipc";
 import type { HostConnection, RemoteHost } from "../../types/ipc";
 import { Button, Input } from "../../ui";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
 
 const STATUS_LABELS: Record<HostConnection["state"], string> = {
   connected: "已连接", disconnected: "已断开", connecting: "连接中",
@@ -30,6 +31,8 @@ export function HostsTab(): JSX.Element {
   const [identity, setIdentity] = useState("");
   const [remotePort, setRemotePort] = useState("8765");
   const [hostPorts, setHostPorts] = useState<Record<string, string>>({});
+  const [editId, setEditId] = useState<string | null>(null);
+  const [edit, setEdit] = useState({ name: "", hostname: "", username: "", port: "22", identity_file: "", remote_port: "8765" });
 
   const refresh = useCallback(async () => {
     setBusy(true); setError(null);
@@ -92,9 +95,49 @@ export function HostsTab(): JSX.Element {
   const savePort = async (host: RemoteHost) => {
     setBusy(true); setError(null);
     try {
+      if (["connected", "connecting", "reconnecting"].includes(connections[host.id]?.state ?? "")) {
+        const accepted = await requestConfirmation({ title: "保存并断开现有隧道？", description: "更改远端服务端口会断开旧隧道；保存后请重新连接。", confirmLabel: "保存并断开" });
+        if (!accepted) { setBusy(false); return; }
+      }
       await typedIPC.updateHost(host.id, { remote_port: Number(hostPorts[host.id]) });
       await refresh();
     } catch (err) { setError(String(err)); setBusy(false); }
+  };
+
+  const beginEdit = (host: RemoteHost) => {
+    setEditId(host.id); setError(null);
+    setEdit({ name: host.name, hostname: host.hostname, username: host.username, port: String(host.port), identity_file: host.identity_file, remote_port: String(host.remote_port) });
+  };
+
+  const saveHost = async (event: React.FormEvent, host: RemoteHost) => {
+    event.preventDefault(); setError(null);
+    const port = Number(edit.port), remotePort = Number(edit.remote_port);
+    if (!edit.name.trim() || !edit.hostname.trim() || !edit.username.trim() ||
+        !Number.isInteger(port) || port < 1 || port > 65535 || !Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
+      setError("名称、主机地址和用户名不能为空，端口须为 1–65535。"); return;
+    }
+    const changes: Partial<import("../../types/ipc").HostConfig> = {};
+    if (edit.name.trim() !== host.name) changes.name = edit.name.trim();
+    if (edit.hostname.trim() !== host.hostname) changes.hostname = edit.hostname.trim();
+    if (edit.username.trim() !== host.username) changes.username = edit.username.trim();
+    if (port !== host.port) changes.port = port;
+    if (edit.identity_file.trim() !== host.identity_file) changes.identity_file = edit.identity_file.trim();
+    if (remotePort !== host.remote_port) changes.remote_port = remotePort;
+    if (!Object.keys(changes).length) { setEditId(null); return; }
+    setBusy(true);
+    try {
+      const changesConnection = Object.keys(changes).some((key) => key !== "name");
+      if (changesConnection && ["connected", "connecting", "reconnecting"].includes(connections[host.id]?.state ?? "")) {
+        const accepted = await requestConfirmation({ title: "保存并断开现有隧道？", description: "更改 SSH 连接信息会断开此主机的旧隧道，远端标签页将失去连接。保存后请重新连接。", confirmLabel: "保存并断开" });
+        if (!accepted) return;
+      }
+      const result = await typedIPC.updateHost(host.id, changes);
+      setHosts((current) => current.map((item) => item.id === host.id ? result.host : item));
+      setHostPorts((current) => ({ ...current, [host.id]: String(result.host.remote_port) }));
+      if (changesConnection) setConnections((current) => ({ ...current, [host.id]: { host_id: host.id, state: "disconnected", local_url: null, remote_port: null, error: null } }));
+      setEditId(null);
+    } catch (err) { setError(String(err)); }
+    finally { setBusy(false); }
   };
 
   const toggleHost = async (host: RemoteHost) => {
@@ -128,6 +171,18 @@ export function HostsTab(): JSX.Element {
       const url = tunnelUrl(connection);
       return <article key={host.id} className="space-y-2 rounded-md border border-line p-3">
         <h3 className="text-xs font-medium">{host.name} ({host.username}@{host.hostname}:{host.port})</h3>
+        {editId === host.id && <form className="space-y-2 rounded border border-line p-2" onSubmit={(event) => void saveHost(event, host)}>
+          <p className="text-xs text-ink-2">只修改此主机的本地连接配置，不移动远端会话或文件。更改 SSH 信息会断开现有隧道。</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="text-xs">名称<Input aria-label={`${host.name} 编辑名称`} required value={edit.name} onChange={(event) => setEdit({ ...edit, name: event.target.value })} /></label>
+            <label className="text-xs">主机地址<Input aria-label={`${host.name} 编辑主机地址`} required value={edit.hostname} onChange={(event) => setEdit({ ...edit, hostname: event.target.value })} /></label>
+            <label className="text-xs">用户名<Input aria-label={`${host.name} 编辑用户名`} required value={edit.username} onChange={(event) => setEdit({ ...edit, username: event.target.value })} /></label>
+            <label className="text-xs">SSH 端口<Input aria-label={`${host.name} 编辑 SSH 端口`} type="number" min="1" max="65535" required value={edit.port} onChange={(event) => setEdit({ ...edit, port: event.target.value })} /></label>
+            <label className="text-xs">远端服务端口<Input aria-label={`${host.name} 编辑远端服务端口`} type="number" min="1" max="65535" required value={edit.remote_port} onChange={(event) => setEdit({ ...edit, remote_port: event.target.value })} /></label>
+            <label className="text-xs">SSH 私钥路径（留空使用默认配置）<Input aria-label={`${host.name} 编辑 SSH 私钥路径`} value={edit.identity_file} onChange={(event) => setEdit({ ...edit, identity_file: event.target.value })} /></label>
+          </div>
+          <div className="flex gap-2"><Button type="submit" size="sm" disabled={busy}>保存连接配置</Button><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => setEditId(null)}>取消</Button></div>
+        </form>}
         <div className="flex items-end gap-2">
           <label className="text-xs">远端服务端口<Input aria-label={`${host.name} 远端服务端口`} type="number" min="1" max="65535" value={hostPorts[host.id] ?? ""} onChange={(e) => setHostPorts((current) => ({ ...current, [host.id]: e.target.value }))} /></label>
           <Button size="sm" disabled={busy || !Number.isInteger(Number(hostPorts[host.id])) || Number(hostPorts[host.id]) < 1 || Number(hostPorts[host.id]) > 65535 || Number(hostPorts[host.id]) === host.remote_port} onClick={() => void savePort(host)}>保存端口</Button>
@@ -136,6 +191,7 @@ export function HostsTab(): JSX.Element {
         {connection?.error && <p role="alert" className="text-xs text-status-error">{connection.error}</p>}
         {connection?.state === "connected" && !url && <p role="alert" className="text-xs text-status-error">隧道地址无效，无法打开。</p>}
         <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="secondary" disabled={busy || editId !== null} onClick={() => beginEdit(host)}>编辑连接配置</Button>
           <Button size="sm" disabled={busy || !host.enabled || connection?.state === "connected" || connection?.state === "reconnecting"} onClick={() => void changeConnection(host, true)}>连接</Button>
           <Button size="sm" disabled={busy || (connection?.state !== "connected" && connection?.state !== "reconnecting")} onClick={() => void changeConnection(host, false)}>断开</Button>
           <Button size="sm" disabled={busy} onClick={() => void toggleHost(host)}>{host.enabled ? "禁用" : "启用"}</Button>
