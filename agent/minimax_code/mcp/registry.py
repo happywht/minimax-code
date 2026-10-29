@@ -203,11 +203,14 @@ class MCPRegistry:
 
     def is_connected(self, server: str) -> bool:
         """True if ``server`` is attached and its handshake completed."""
-        conn = self._servers.get(_sanitize(server))
+        conn = self._get_conn(server)
         return conn is not None and conn.client.is_initialized
 
     def _get_conn(self, server: str) -> _ServerConn | None:
-        return self._servers.get(_sanitize(server))
+        conn = self._servers.get(_sanitize(server))
+        # Sanitized names are namespace keys, not server identities. Two
+        # persisted names may map to the same key; only the owner may use it.
+        return conn if conn is not None and conn.config.name == server else None
 
     def _authorized_tool(self, server: str, tool: str, *, expected: _BridgedTool | None = None) -> _BridgedTool:
         """Resolve the actual live capability, never just a matching name."""
@@ -379,7 +382,7 @@ class MCPRegistry:
         """Detach a server: unregister its tools and close the client."""
         async with self._mutation_lock:
             key = _sanitize(name)
-            conn = self._servers.get(key)
+            conn = self._get_conn(name)
             if conn is None:
                 return False
             for tool_name in conn.tool_names:
