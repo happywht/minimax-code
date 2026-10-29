@@ -425,7 +425,7 @@ export default function App() {
                   ) : overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks" ? (
                     <AutomationWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (!leaveAutomation()) return false; setOverlayView(null); setView("chat"); return true; }} />
                   ) : overlayView === "skills" ? (
-                    <SkillsPanel onClose={() => setOverlayView(null)} />
+                    <SkillsPanel onClose={() => setOverlayView(null)} onOpenRun={() => { setOverlayView(null); setView("chat"); setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline")); }} />
                   ) : (
                     <SettingsPage
                       key={overlayView}

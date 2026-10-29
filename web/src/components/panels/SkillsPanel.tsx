@@ -27,9 +27,10 @@ function readTextFile(file: File): Promise<string> {
 export interface SkillsPanelProps {
   testId?: string;
   onClose?: () => void;
+  onOpenRun?: () => void;
 }
 
-export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelProps): JSX.Element {
+export function SkillsPanel({ testId = "skills-panel", onClose, onOpenRun }: SkillsPanelProps): JSX.Element {
   const skills = useSkillStore((s) => s.skills);
   const loading = useSkillStore((s) => s.loading);
   const installing = useSkillStore((s) => s.installing);
@@ -111,7 +112,7 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
       </header>
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
-        {skillToRun && <div className="mb-4"><SkillRunPanel skill={skillToRun} onClose={() => setRunId(null)} /></div>}
+        {skillToRun && <div className="mb-4"><SkillRunPanel skill={skillToRun} onClose={() => setRunId(null)} onOpenRun={onOpenRun} /></div>}
         {loading && skills.length === 0 ? (
           <p data-testid="skills-loading" className="flex items-center gap-2 text-sm text-ink-1">
             <Spinner size={14} />

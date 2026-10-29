@@ -2,23 +2,28 @@ import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useChat } from "../../stores/chat";
-import type { AgentRun, SkillInfo, SkillInvokeArgs } from "../../types/ipc";
+import { useRunTimelineStore } from "../../stores/runStore";
+import type { AgentRun, AgentRunStep, SkillInfo, SkillInvokeArgs } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { RunAttachments } from "../right-panel/RunAttachments";
+import { RunTextArtifacts } from "../right-panel/RunTextArtifacts";
 
 type Intent = { skillId: string; args: SkillInvokeArgs };
 const active = new Set(["queued", "planning", "running", "awaiting_approval", "waiting_input"]);
 
-export function SkillRunPanel({ skill, onClose }: { skill: SkillInfo; onClose: () => void }): JSX.Element {
+export function SkillRunPanel({ skill, onClose, onOpenRun }: { skill: SkillInfo; onClose: () => void; onOpenRun?: () => void }): JSX.Element {
   const sessionId = useSessionStore((s) => s.currentSessionId);
   const session = useSessionStore((s) => s.sessions.find((item) => item.id === s.currentSessionId));
+  const activeProject = useSessionStore((s) => s.currentProjectId);
   const projectId = session?.project_id ?? null;
+  const projectMatches = activeProject === projectId || (!projectId && activeProject === "inbox");
   const executionMode = useChat((s) => s.executionMode);
   const [service, setService] = useState<string | null>(null);
   const [request, setRequest] = useState("");
   const [budget, setBudget] = useState("");
   const [pending, setPending] = useState<Intent | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
-  const [selected, setSelected] = useState<{ run: AgentRun; result: Record<string, unknown> | null } | null>(null);
+  const [selected, setSelected] = useState<{ run: AgentRun; steps: AgentRunStep[]; result: Record<string, unknown> | null } | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const epoch = useRef(0);
@@ -27,14 +32,15 @@ export function SkillRunPanel({ skill, onClose }: { skill: SkillInfo; onClose: (
 
   useEffect(() => {
     const current = ++epoch.current, host = ipc.agentBaseUrl;
-    setService(null); setPending(null); setRuns([]); setSelected(null); setMessage(""); setRequest(""); setBudget(""); setBusy(false);
+    setService(null); setPending(null); setRuns([]); setSelected(null); setMessage(""); setBusy(false);
     if (sessionId && session && session.engine !== "codex") {
       void typedIPC.getServiceIdentity().then((value) => {
         if (current === epoch.current && host === ipc.agentBaseUrl && useSessionStore.getState().currentSessionId === sessionId) setService(value.service_id);
       }).catch((error) => { if (current === epoch.current) setMessage(`服务身份不可用：${String(error)}`); });
     }
     return () => { ++epoch.current; };
-  }, [sessionId, projectId, session?.engine, skill.id]);
+  }, [sessionId, projectId, activeProject, session?.engine, skill.id]);
+  useEffect(() => { setRequest(""); setBudget(""); }, [sessionId, projectId, skill.id]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setService(null); setPending(null); setRuns([]); setSelected(null); setRequest(""); setMessage("连接已变化，请重新打开技能运行入口。"); }), []);
   useEffect(() => {
     if (!storageKey || !service || !sessionId) return;
@@ -75,7 +81,7 @@ export function SkillRunPanel({ skill, onClose }: { skill: SkillInfo; onClose: (
     } catch (error) { if (valid(ticket, host)) setMessage(`无法读取运行记录：${String(error)}`); }
     finally { if (valid(ticket, host)) setBusy(false); }
   };
-  useEffect(() => { if (service && sessionId) void refresh(); }, [service, sessionId, skill.id]);
+  useEffect(() => { if (service && sessionId && projectMatches) void refresh(); }, [service, sessionId, skill.id, projectMatches]);
 
   const submit = async (intent?: Intent) => {
     if (!sessionId || !session || !service || !storageKey || busy || !skill.enabled || session.engine === "codex" || executionMode !== "execute") return;
@@ -107,15 +113,37 @@ export function SkillRunPanel({ skill, onClose }: { skill: SkillInfo; onClose: (
     setBusy(true);
     try {
       await identity();
-      if (cancel) await typedIPC.cancelRun(runId);
+      if (!valid(ticket, host)) return;
+      const cancellation = cancel ? await typedIPC.cancelRun(runId) : null;
+      const snapshot = await typedIPC.getRunSteps(runId);
       const data = await typedIPC.getRun(runId);
       await identity();
       if (!valid(ticket, host)) return;
       const profile = data.run.metadata?.skill_execution as { skill_id?: string; project_id?: string | null } | undefined;
-      if (data.run.session_id !== sessionId || profile?.skill_id !== skill.id || profile.project_id !== projectId) throw new Error("运行归属已变化");
-      setSelected({ run: data.run, result: data.result as unknown as Record<string, unknown> | null });
+      if (data.run.id !== runId || data.run.session_id !== sessionId || profile?.skill_id !== skill.id || profile.project_id !== projectId ||
+          data.run.metadata?.project_id !== projectId || snapshot.run.id !== runId || snapshot.run.session_id !== sessionId ||
+          snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId)) throw new Error("运行归属已变化");
+      setSelected({ run: data.run, steps: snapshot.steps, result: data.result as unknown as Record<string, unknown> | null });
       setRuns((old) => old.map((run) => run.id === runId ? data.run : run));
-      if (cancel) setMessage("已请求停止；最终状态需刷新确认。");
+      if (cancel) setMessage(cancellation?.requested ? "已请求停止；最终状态需刷新确认。" : "未发送停止请求，运行可能已结束或服务中不再活动；请核对当前状态。");
+    } catch (error) { if (valid(ticket, host)) setMessage(String(error)); }
+    finally { if (valid(ticket, host)) setBusy(false); }
+  };
+  const openTimeline = async () => {
+    if (!selected || !sessionId || !service || busy) return;
+    const ticket = epoch.current, host = ipc.agentBaseUrl, runId = selected.run.id;
+    setBusy(true);
+    try {
+      await identity();
+      const snapshot = await typedIPC.getRunSteps(runId);
+      await identity();
+      if (!valid(ticket, host)) return;
+      const profile = snapshot.run.metadata?.skill_execution as { skill_id?: string; project_id?: string | null } | undefined;
+      if (snapshot.run.id !== runId || snapshot.run.session_id !== sessionId || profile?.skill_id !== skill.id || profile.project_id !== projectId ||
+          snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId)) throw new Error("运行归属已变化");
+      useRunTimelineStore.setState((state) => ({ runs: { ...state.runs, [runId]: { ...snapshot.run, steps: snapshot.steps } },
+        order: [runId, ...state.order.filter((id) => id !== runId)] }));
+      if (onOpenRun) onOpenRun(); else window.dispatchEvent(new Event("minimax:open-chat"));
     } catch (error) { if (valid(ticket, host)) setMessage(String(error)); }
     finally { if (valid(ticket, host)) setBusy(false); }
   };
@@ -123,7 +151,7 @@ export function SkillRunPanel({ skill, onClose }: { skill: SkillInfo; onClose: (
     <div className="flex justify-between gap-2"><strong>运行 {skill.name}</strong><button type="button" onClick={onClose}>关闭</button></div>
     <p>绑定当前 Native 会话及其项目、工作区和服务；权限、预算和同会话队列由服务端执行。</p>
     {executionMode === "plan" && <p>技能入口为执行模式；请先切换到执行模式再提交或重试。</p>}
-    {!sessionId || !session || session.engine === "codex" ? <p>请先选择 Native 会话。</p> : !service ? <p>正在确认服务身份或服务不可用。</p> : <>
+    {!sessionId || !session || session.engine === "codex" ? <p>请先选择 Native 会话。</p> : !projectMatches ? <p>请切换到当前会话所属项目。</p> : !service ? <p>正在确认服务身份或服务不可用。</p> : <>
       <label className="block">任务要求<textarea className="mt-1 w-full rounded border border-line bg-surface-0 p-2" rows={3} value={request} disabled={busy || !!pending} onChange={(e) => setRequest(e.target.value)} /></label>
       <label className="block">Token 上限（可选，留空使用服务默认）<input className="ml-2 rounded border border-line bg-surface-0 p-1" inputMode="numeric" value={budget} disabled={busy || !!pending} onChange={(e) => setBudget(e.target.value)} /></label>
       {!budgetValid && <p>请输入有效正整数。</p>}
@@ -142,7 +170,16 @@ export function SkillRunPanel({ skill, onClose }: { skill: SkillInfo; onClose: (
         {active.has(run.status) && <button type="button" disabled={busy} onClick={() => void open(run.id, true)}>请求停止</button>}</li>)}</ul>
       {selected && <div className="rounded border border-line p-2"><p>{selected.run.id} · {selected.run.status}</p>
         {selected.result ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(selected.result, null, 2)}</pre> : <p>尚无持久结果；状态或输出可能仍未知。</p>}
-        <p>运行完成不代表验收；请核对结果、截断和验证证据。</p></div>}
+        <p>运行完成不代表验收；请核对结果、截断和验证证据。</p>
+        <button type="button" disabled={busy} onClick={() => void openTimeline()}>进入原会话查看运行时间线</button>
+        {projectId ? <>
+          {selected.steps.some((step) => step.status === "completed" && step.run_id === selected.run.id && step.session_id === sessionId &&
+            step.payload?.source === "run_attachment_v1" && step.payload?.project_id === projectId && step.payload?.service_id === service)
+            ? <RunAttachments run={selected.run} steps={selected.steps} reviewScope={{ sessionId: sessionId!, projectId, serviceId: service }} />
+            : <p>此运行未记录可确认的关联附件；不代表项目中没有其他成果。旧记录或登记失败可能没有关联。</p>}
+          <RunTextArtifacts key={`${service}:${selected.run.id}`} runId={selected.run.id} sessionId={sessionId!} projectId={projectId} serviceId={service} />
+        </> : <p>该会话未绑定项目，无法展示项目附件关联。</p>}
+      </div>}
     </>}
     {message && <p role="status" className="break-words">{message}</p>}
   </section>;
