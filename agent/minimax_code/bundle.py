@@ -1288,9 +1288,52 @@ def restore_bundle(bundle, new_data_dir):
         return _report(manifest, "restore")
 
 
-def import_checkpoint_git(data_dir, checkpoint_id, repo, *, confirmed=False):
+
+def checkpoint_git_metadata(root, checkpoint_id, oid):
+    """Read and validate restored pack metadata without trusting paths from the bundle."""
+    try:
+        managed_child(root / "checkpoint-git-packs", checkpoint_id)
+    except (ValueError, TypeError) as exc:
+        raise BundleError("Invalid checkpoint identity") from exc
+    pack = root / "checkpoint-git-packs" / (checkpoint_id + ".pack")
+    metadata_path = root / "checkpoint-git-packs" / (checkpoint_id + ".json")
+    with _safe_open(metadata_path) as fd:
+        info = os.fstat(fd)
+        _regular(info)
+        _require(info.st_size <= 8192, "Checkpoint Git metadata exceeds limit")
+        payload = os.read(fd, 8193)
+        _require(len(payload) == info.st_size and _identity(info) == _identity(os.fstat(fd))
+                 and _identity(info)[:4] == _identity(metadata_path.lstat())[:4],
+                 "Checkpoint Git metadata changed while reading")
+    try:
+        saved = json.loads(payload, object_pairs_hook=_pairs)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise BundleError("Invalid checkpoint Git metadata") from exc
+    _require(type(saved) is dict and set(saved) == {"checkpoint_id", "oid", "size_bytes", "sha256", "repository"}
+             and saved["checkpoint_id"] == checkpoint_id and saved["oid"] == oid,
+             "Checkpoint Git metadata differs from database")
+    _metadata({key: saved[key] for key in ("size_bytes", "sha256")}, MAX_TOTAL_BYTES)
+    identity = saved["repository"]
+    _require(type(identity) is dict and set(identity) == {"worktree_device", "worktree_inode", "git_device", "git_inode"}
+             and all(type(value) is int and value >= 0 for value in identity.values())
+             and identity["worktree_inode"] > 0 and identity["git_inode"] > 0,
+             "Invalid checkpoint repository identity")
+    return pack, saved
+
+def import_checkpoint_git(data_dir, checkpoint_id, repo, *, confirmed=False,
+                          relocated_workspace=None, confirm_relocation=False,
+                          confirm_trusted_bundle=False):
     """Explicitly import a verified pack into its recorded repository; do not apply it."""
-    _require(confirmed is True, "Explicit confirmation of the recorded repository is required")
+    _require(confirmed is True, "Explicit confirmation of the checkpoint source and target is required")
+    relocating = relocated_workspace is not None
+    if relocating:
+        _require(confirm_relocation is True and confirm_trusted_bundle is True,
+                 "Relocated import requires explicit target and trusted bundle confirmations")
+        _require(Path(repo).is_absolute() and Path(relocated_workspace).is_absolute(),
+                 "Relocated repository and workspace must be absolute paths")
+    else:
+        _require(confirm_relocation is False and confirm_trusted_bundle is False,
+                 "Relocation confirmations require an explicit workspace")
     root, target = _path(data_dir), _path(repo)
     _directory(root)
     try:
@@ -1306,38 +1349,21 @@ def import_checkpoint_git(data_dir, checkpoint_id, repo, *, confirmed=False):
             selected = [(oid, source) for identifier, oid, source in refs if identifier == checkpoint_id]
             _require(len(selected) == 1, "Checkpoint Git reference is unavailable")
             oid, source = selected[0]
-            _require(str(target) == source, "Target does not match recorded checkpoint source")
-            pack = root / "checkpoint-git-packs" / (checkpoint_id + ".pack")
-            metadata_path = root / "checkpoint-git-packs" / (checkpoint_id + ".json")
-            with _safe_open(metadata_path) as fd:
-                info = os.fstat(fd)
-                _regular(info)
-                _require(info.st_size <= 8192, "Checkpoint Git metadata exceeds limit")
-                payload = os.read(fd, 8193)
-                _require(len(payload) == info.st_size and _identity(info) == _identity(os.fstat(fd))
-                         and _identity(info)[:4] == _identity(metadata_path.lstat())[:4],
-                         "Checkpoint Git metadata changed while reading")
-            try:
-                saved = json.loads(payload, object_pairs_hook=_pairs)
-            except (ValueError, UnicodeError, RecursionError) as exc:
-                raise BundleError("Invalid checkpoint Git metadata") from exc
-            _require(type(saved) is dict and set(saved) == {"checkpoint_id", "oid", "size_bytes", "sha256", "repository"}
-                     and saved["checkpoint_id"] == checkpoint_id and saved["oid"] == oid,
-                     "Checkpoint Git metadata differs from database")
-            _metadata({key: saved[key] for key in ("size_bytes", "sha256")}, MAX_TOTAL_BYTES)
-            identity = saved["repository"]
-            _require(type(identity) is dict and set(identity) == {"worktree_device", "worktree_inode", "git_device", "git_inode"}
-                     and all(type(value) is int and value >= 0 for value in identity.values())
-                     and identity["worktree_inode"] > 0 and identity["git_inode"] > 0,
-                     "Invalid checkpoint repository identity")
-            digest = import_pack(pack, oid, source, str(target), MAX_TOTAL_BYTES, saved)
+            if not relocating:
+                _require(str(target) == source, "Target does not match recorded checkpoint source")
+            pack, saved = checkpoint_git_metadata(root, checkpoint_id, oid)
+            digest = import_pack(pack, oid, source, str(target), MAX_TOTAL_BYTES, saved,
+                                 relocated_workspace=relocated_workspace)
             lease.assert_owned(root)
             return {"operation": "import-checkpoint-git", "checkpoint_id": checkpoint_id,
                     "oid": oid, "pack_sha256": digest,
+                    "target_mode": "relocated" if relocating else "original",
                     "notice": "Objects imported without changing refs or applying the checkpoint. "
                               "Repository path and base commit do not prove repository identity; "
                               "concurrent Git operations and GC are not fenced. "
-                              "Failure or interruption may leave unreachable objects."}
+                              "Failure or interruption may leave unreachable objects. "
+                              "Relocated import does not rebind the checkpoint or its session; "
+                              "the existing checkpoint restore UI may still reject the new location."}
 
 
 def main(argv=None):
@@ -1360,6 +1386,9 @@ def main(argv=None):
     import_git.add_argument("--checkpoint-id", required=True)
     import_git.add_argument("--repo", required=True)
     import_git.add_argument("--confirm-source", action="store_true")
+    import_git.add_argument("--relocated-workspace", help="Absolute workspace containing the relocated repository and its Git objects")
+    import_git.add_argument("--confirm-relocated", action="store_true", help="Confirm the relocated target")
+    import_git.add_argument("--confirm-trusted-bundle", action="store_true", help="Confirm bundle provenance was independently checked")
     args = parser.parse_args(argv)
     try:
         if args.command == "create":
@@ -1370,7 +1399,10 @@ def main(argv=None):
             result = restore_bundle(args.bundle, args.new_data_dir)
         else:
             result = import_checkpoint_git(args.data_dir, args.checkpoint_id, args.repo,
-                                           confirmed=args.confirm_source)
+                                           confirmed=args.confirm_source,
+                                           relocated_workspace=args.relocated_workspace,
+                                           confirm_relocation=args.confirm_relocated,
+                                           confirm_trusted_bundle=args.confirm_trusted_bundle)
     except (
         BundleError,
         ServiceLeaseError,

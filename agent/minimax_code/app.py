@@ -1060,7 +1060,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     register_memory_handlers(server)
     logger.info(
         "registered application handlers "
-        "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + 5 checkpoint.* + "
+        "(1 agent.* + 7 agent.* + 5 skill.* + 6 task.* + 5 session.* + 3 workspace.* + 6 checkpoint.* + "
         "5 permission.* + 6 schedule.* + 7 mobile.* + 3 model.* + "
         "7 provider.* + 3 secrets.* + 3 git.* + 3 patch.* + "
         "4 terminal.* + 2 runner.* + 3 audit.* + 5 webhook.* + "

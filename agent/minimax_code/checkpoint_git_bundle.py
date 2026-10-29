@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from .text_artifacts import _identity, _regular, _safe_open
@@ -162,15 +163,20 @@ def validate_pack(pack: Path, oid: str) -> str:
         return parent
 
 
-def import_pack(pack: Path, oid: str, source: str, target: str, limit: int, expected: dict) -> str:
+def import_pack(pack: Path, oid: str, source: str, target: str, limit: int, expected: dict,
+                *, relocated_workspace: str | None = None, verify_only: bool = False) -> str:
     """Import objects only after strict isolated validation and explicit caller confirmation.
 
     No refs, index or worktree files are intentionally modified. Failure or interruption
     may leave unreachable objects. External Git processes and GC are not locked out.
     """
     root = Path(target)
-    if not root.is_absolute() or root.resolve() != root or str(root) != source:
+    if not root.is_absolute() or root.resolve() != root or (relocated_workspace is None and str(root) != source):
         raise ValueError("Target does not match the recorded checkpoint repository")
+    workspace = Path(relocated_workspace) if relocated_workspace is not None else None
+    if workspace is not None and (not workspace.is_absolute() or workspace.resolve() != workspace
+                                  or not root.is_relative_to(workspace)):
+        raise ValueError("Target repository must be inside the confirmed workspace")
     with tempfile.TemporaryDirectory(prefix="checkpoint-git-import-") as temp:
         temporary = Path(temp).absolute() / "snapshot.pack"
         with _safe_open(pack) as fd, temporary.open("xb") as out:
@@ -191,23 +197,32 @@ def import_pack(pack: Path, oid: str, source: str, target: str, limit: int, expe
             raise ValueError("Checkpoint Git pack does not match its saved metadata")
         parent = validate_pack(temporary, oid)
         env = _env(temp)
-        with _safe_open(root, directory=True) as root_fd:
+        with (_safe_open(workspace, directory=True) if workspace is not None else nullcontext()), \
+                _safe_open(root, directory=True) as root_fd:
+            workspace_before = workspace.stat() if workspace is not None else None
             before = root.stat() if root_fd is None else os.fstat(root_fd)
             top = _git(["rev-parse", "--show-toplevel"], cwd=root, env=env, output=True).decode().strip()
             if Path(top).resolve() != root:
                 raise ValueError("Target is not the recorded repository root")
             common = Path(_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=root, env=env, output=True).decode().strip())
+            if not common.is_absolute() or common.resolve() != common:
+                raise ValueError("Git common directory is not a canonical path")
+            if workspace is not None and not common.is_relative_to(workspace):
+                raise ValueError("Git object storage is outside the confirmed workspace")
             with _safe_open(common, directory=True), _safe_open(common / "objects", directory=True):
                 common_info = common.stat()
                 identity = {"worktree_device": before.st_dev, "worktree_inode": before.st_ino,
                             "git_device": common_info.st_dev, "git_inode": common_info.st_ino}
-                if identity != expected["repository"]:
+                if workspace is None and identity != expected["repository"]:
                     raise ValueError("Target repository identity differs from the captured repository")
                 _validate_object_store(common)
                 probe = subprocess.run(["git", "config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$"], cwd=root, env=env,
                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=TIMEOUT, check=False)
                 if probe.returncode != 1:
                     raise ValueError("Partial clone configuration is unsupported")
+                object_format = _git(["rev-parse", "--show-object-format"], cwd=root, env=env, output=True).decode().strip()
+                if object_format != ("sha1" if len(oid) == 40 else "sha256"):
+                    raise ValueError("Target repository object format does not match the checkpoint")
                 head = _git(["rev-parse", "--verify", "HEAD"], cwd=root, env=env, output=True).decode().strip()
                 if head != parent:
                     raise ValueError("Target HEAD does not match the checkpoint base commit")
@@ -216,6 +231,12 @@ def import_pack(pack: Path, oid: str, source: str, target: str, limit: int, expe
                     raise ValueError("Target repository changed before import")
                 if _identity(common_info)[:4] != _identity(common.lstat())[:4]:
                     raise ValueError("Git common directory changed before import")
+                if workspace is not None and _identity(workspace_before)[:4] != _identity(workspace.lstat())[:4]:
+                    raise ValueError("Confirmed workspace changed before import")
+                if verify_only:
+                    _git(["cat-file", "-e", oid + "^{commit}"], cwd=root, env=env)
+                    _git(["fsck", "--full", "--no-reflogs", oid], cwd=root, env=env)
+                    return digest.hexdigest()
                 try:
                     with temporary.open("rb") as incoming:
                         subprocess.run(["git", "--no-optional-locks", f"--git-dir={common}", "index-pack", "--stdin", "--strict"], cwd=root, env=env,

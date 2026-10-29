@@ -34,6 +34,15 @@ class _Base(BaseModel):
 McpTransport = Literal["stdio", "sse", "streamable_http"]
 
 
+class CheckpointRebindParams(BaseModel):
+    """Explicit user-authorized checkpoint migration target."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    checkpoint_id: str = Field(min_length=1, max_length=128)
+    cwd: str = Field(min_length=1, max_length=4096)
+    confirm_rebind: Literal[True]
+    confirm_trusted_bundle: Literal[True]
+
+
 class InvokeMcpToolResult(_Base):
     """MCP tool result; structuredContent preserves any JSON value, including null."""
     ok: bool

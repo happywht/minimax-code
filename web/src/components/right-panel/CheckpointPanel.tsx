@@ -32,6 +32,9 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   const [legacyPaths, setLegacyPaths] = useState<Record<string, string>>({});
   const [legacyConfirmed, setLegacyConfirmed] = useState<Record<string, boolean>>({});
   const [restoreDetails, setRestoreDetails] = useState<Record<string, string[]>>({});
+  const [rebindPaths, setRebindPaths] = useState<Record<string, string>>({});
+  const [rebindTrusted, setRebindTrusted] = useState<Record<string, boolean>>({});
+  const [rebinding, setRebinding] = useState<string | null>(null);
 
   const legacyOptions = (ckpt: Checkpoint) => ckpt.source_root ? undefined : {
     cwd: (legacyPaths[ckpt.id] ?? "").trim(), legacy_source_confirmed: true,
@@ -121,6 +124,31 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(strings.rightPanel.checkpoint.restoreFailed, msg);
+    }
+  };
+
+  const handleRebind = async (ckpt: Checkpoint) => {
+    const cwd = (rebindPaths[ckpt.id] ?? "").trim();
+    if (!cwd || !rebindTrusted[ckpt.id] || rebinding) return;
+    const accepted = await requestConfirmation({
+      title: `重新绑定检查点「${ckpt.label}」`,
+      description: `确认将此检查点绑定到 ${cwd}？请先核实可信数据包并导入其 Git 对象。系统无法证明目标是原仓库，不会修改项目或会话。`,
+      confirmLabel: "确认重新绑定",
+    });
+    if (!accepted) return;
+    setRebinding(ckpt.id);
+    try {
+      const { checkpoint } = await typedIPC.rebindCheckpoint(ckpt.id, {
+        cwd, confirm_rebind: true, confirm_trusted_bundle: true,
+      });
+      setCheckpoints((prev) => prev.map((row) => row.id === ckpt.id ? checkpoint : row));
+      setRebindTrusted((prev) => ({ ...prev, [ckpt.id]: false }));
+      setDiffs((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+      toast.success("检查点已重新绑定", ckpt.label);
+    } catch (err) {
+      toast.error("检查点重新绑定失败", err instanceof Error ? err.message : String(err));
+    } finally {
+      setRebinding(null);
     }
   };
 
@@ -244,6 +272,26 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                           我已核实此目录是创建检查点时使用的目录
                         </label>
                       </div>
+                    )}
+                    {ckpt.git_stash_ref && (
+                      <details className="mt-1 text-[11px] text-minimax-muted">
+                        <summary>迁移后重新绑定</summary>
+                        <p>先将会话指向新工作区并导入可信数据包中的 Git 对象。校验不能证明仓库身份。</p>
+                        <label>新仓库根目录
+                          <input className="w-full text-minimax-fg bg-minimax-bg" value={rebindPaths[ckpt.id] ?? ""}
+                            onChange={(event) => {
+                              setRebindPaths((prev) => ({ ...prev, [ckpt.id]: event.target.value }));
+                              setRebindTrusted((prev) => ({ ...prev, [ckpt.id]: false }));
+                            }} />
+                        </label>
+                        <label><input type="checkbox" checked={Boolean(rebindTrusted[ckpt.id])}
+                          onChange={(event) => setRebindTrusted((prev) => ({ ...prev, [ckpt.id]: event.target.checked }))} />
+                          我已核实数据包可信且目标仓库正确
+                        </label>
+                        <Button size="sm" variant="secondary" data-testid={`${testId}-rebind-${ckpt.id}`}
+                          disabled={!rebindTrusted[ckpt.id] || !(rebindPaths[ckpt.id] ?? "").trim() || Boolean(rebinding)}
+                          onClick={() => void handleRebind(ckpt)}>确认目标并重新绑定</Button>
+                      </details>
                     )}
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-minimax-muted">
                       <span className="flex items-center gap-0.5" title={ckpt.created_at}>

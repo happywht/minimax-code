@@ -8,9 +8,11 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -158,6 +160,220 @@ def test_explicit_git_import_requires_matching_target_and_base(git_checkpoint, t
     assert git("cat-file", "-e", oid).returncode == 0
     assert git("rev-parse", "HEAD").stdout == before_head
     assert git("status", "--porcelain").stdout == before_status
+
+
+def test_relocated_git_import_requires_explicit_trust_and_workspace(git_checkpoint, tmp_path):
+    root, repo, oid = git_checkpoint
+    archive = tmp_path / "git.zip"
+    bundle.create_bundle(root, archive)
+    data = tmp_path / "restored-data"
+    bundle.restore_bundle(archive, data)
+    workspace = tmp_path / "relocated-workspace"
+    workspace.mkdir()
+    target = workspace / "repo"
+    subprocess.run(["git", "clone", "--local", "--no-hardlinks", str(repo), str(target)],
+                   check=True, capture_output=True)
+    loose = target / ".git" / "objects" / oid[:2] / oid[2:]
+    if loose.exists():
+        loose.chmod(stat.S_IWRITE | stat.S_IREAD)
+        loose.unlink()
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=target, capture_output=True, text=True, check=False)
+    assert git("cat-file", "-e", oid).returncode != 0
+    before_status = git("status", "--porcelain").stdout
+    before_refs = git("show-ref").stdout
+    before_head = git("rev-parse", "HEAD").stdout
+    for options in ({}, {"relocated_workspace": str(workspace)},
+                    {"relocated_workspace": str(workspace), "confirm_relocation": True},
+                    {"relocated_workspace": str(tmp_path / "elsewhere"), "confirm_relocation": True,
+                     "confirm_trusted_bundle": True}):
+        with pytest.raises((ValueError, OSError)):
+            bundle.import_checkpoint_git(data, "ckpt_a", target, confirmed=True, **options)
+        assert git("cat-file", "-e", oid).returncode != 0
+    completed = subprocess.run([
+        sys.executable, "-m", "minimax_code.bundle", "import-checkpoint-git",
+        "--data-dir", str(data), "--checkpoint-id", "ckpt_a", "--repo", str(target),
+        "--confirm-source", "--relocated-workspace", str(workspace), "--confirm-relocated",
+        "--confirm-trusted-bundle",
+    ], cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=60)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["target_mode"] == "relocated"
+    assert "does not rebind" in result["notice"]
+    assert git("cat-file", "-e", oid).returncode == 0
+    assert git("status", "--porcelain").stdout == before_status
+    assert git("show-ref").stdout == before_refs
+    assert git("rev-parse", "HEAD").stdout == before_head
+    import sqlite3
+    with sqlite3.connect(data / "data.db") as conn:
+        assert conn.execute("SELECT source_root FROM session_checkpoints WHERE id='ckpt_a'").fetchone()[0] == str(repo.resolve())
+
+
+def test_relocated_git_import_rejects_wrong_object_format(git_checkpoint, tmp_path):
+    root, _, _ = git_checkpoint
+    archive = tmp_path / "git.zip"
+    bundle.create_bundle(root, archive)
+    data = tmp_path / "data-restored"
+    bundle.restore_bundle(archive, data)
+    target = tmp_path / "different-format"
+    target.mkdir()
+    init = subprocess.run(["git", "init", "--object-format=sha256"], cwd=target, capture_output=True)
+    if init.returncode:
+        pytest.skip("Git does not support SHA-256 repositories")
+    with pytest.raises(ValueError, match="object format"):
+        bundle.import_checkpoint_git(data, "ckpt_a", target, confirmed=True,
+                                     relocated_workspace=str(tmp_path), confirm_relocation=True,
+                                     confirm_trusted_bundle=True)
+
+
+def test_relocated_git_import_rejects_common_dir_outside_workspace(git_checkpoint, tmp_path):
+    root, repo, _ = git_checkpoint
+    archive = tmp_path / "git.zip"
+    bundle.create_bundle(root, archive)
+    data = tmp_path / "data-restored"
+    bundle.restore_bundle(archive, data)
+    workspace = tmp_path / "separate-workspace"
+    workspace.mkdir()
+    target = workspace / "worktree"
+    subprocess.run(["git", "worktree", "add", "--detach", str(target), "HEAD"], cwd=repo,
+                   check=True, capture_output=True)
+    with pytest.raises(ValueError, match="outside the confirmed workspace"):
+        bundle.import_checkpoint_git(data, "ckpt_a", target, confirmed=True,
+                                     relocated_workspace=str(workspace), confirm_relocation=True,
+                                     confirm_trusted_bundle=True)
+
+
+async def test_rebind_after_relocated_import_enables_product_restore(git_checkpoint, tmp_path, monkeypatch):
+    from minimax_code.app import set_sessions_dao
+    from minimax_code.config import Config
+    from minimax_code.execution import ExecutionPolicy, execution_scope
+    from minimax_code.ipc import handlers_checkpoint
+    from minimax_code.ipc.handler_utils import HandlerError
+    from minimax_code.ipc.server import IPCServer
+    from minimax_code.storage.dao.checkpoints import CheckpointDAO
+    from minimax_code.storage.dao.sessions import SessionsDAO
+    from minimax_code.workspace import CheckpointManager
+
+    root, repo, oid = git_checkpoint
+    archive = tmp_path / "git.zip"
+    bundle.create_bundle(root, archive)
+    data = tmp_path / "restored"
+    bundle.restore_bundle(archive, data)
+    target = tmp_path / "relocated"
+    subprocess.run(["git", "clone", "--local", "--no-hardlinks", str(repo), str(target)],
+                   check=True, capture_output=True)
+    loose = target / ".git" / "objects" / oid[:2] / oid[2:]
+    if loose.exists():
+        loose.chmod(stat.S_IWRITE | stat.S_IREAD)
+        loose.unlink()
+    db = AsyncDatabase(data / "data.db")
+    await db.connect()
+    sessions = SessionsDAO(db)
+    await sessions.create(id="s", workspace_path=str(target.resolve()))
+    set_sessions_dao(sessions)
+    dao = CheckpointDAO(db)
+    monkeypatch.setattr(handlers_checkpoint, "ensure_data_dir", lambda: data)
+    monkeypatch.setattr(handlers_checkpoint, "require_host_session", AsyncMock())
+    server = IPCServer(config=Config.from_env(), stdin=None, stdout=None)
+    handlers_checkpoint.register_checkpoint_handlers(server, dao=dao, manager=CheckpointManager(data / "checkpoints"))
+
+    async def call(method, params):
+        return await server.handle_request({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+
+    params = {"checkpoint_id": "ckpt_a", "cwd": str(target.resolve()),
+              "confirm_rebind": True, "confirm_trusted_bundle": True}
+    try:
+        initial_session = await sessions.get("s")
+        denied = await call("checkpoint.rebind", {**params, "confirm_trusted_bundle": False})
+        assert "error" in denied
+        outside = await call("checkpoint.rebind", {**params, "cwd": str(repo.resolve())})
+        assert "error" in outside
+        with execution_scope(ExecutionPolicy(workspace=target.resolve(), read_only=True)):
+            planning = await call("checkpoint.rebind", params)
+        assert "error" in planning and "read-only" in planning["error"]["message"]
+        monkeypatch.setattr(handlers_checkpoint, "require_host_session", AsyncMock(side_effect=HandlerError(-32000, "restricted")))
+        restricted = await call("checkpoint.rebind", params)
+        assert "error" in restricted and restricted["error"]["code"] == -32000
+        monkeypatch.setattr(handlers_checkpoint, "require_host_session", AsyncMock())
+        before_import = await call("checkpoint.rebind", params)
+        assert "error" in before_import
+        assert (await dao.get("ckpt_a"))["source_root"] == str(repo.resolve())
+        # Close the database before the explicitly offline import, then reopen.
+        await db.close()
+
+        bundle.import_checkpoint_git(data, "ckpt_a", target, confirmed=True,
+                                     relocated_workspace=str(tmp_path), confirm_relocation=True,
+                                     confirm_trusted_bundle=True)
+        await db.connect()
+        rebound = await call("checkpoint.rebind", params)
+        assert rebound["result"]["checkpoint"]["source_root"] == str(target.resolve())
+        assert (await sessions.get("s"))["workspace_path"] == initial_session["workspace_path"]
+        restored = await call("checkpoint.restore", {"checkpoint_id": "ckpt_a"})
+        assert restored["result"]["result"]["restored"]
+        assert (target / "tracked.txt").read_text(encoding="utf-8") == "changed"
+        assert (target / "nested" / "中文.txt").read_bytes() == b"checkpoint bytes\x00"
+    finally:
+        set_sessions_dao(None)
+        await db.close()
+
+
+async def test_checkpoint_rebind_compare_and_set_prevents_stale_update(tmp_path):
+    from minimax_code.storage.dao.checkpoints import CheckpointDAO
+
+    db = AsyncDatabase(tmp_path / "data.db")
+    await db.connect()
+    await db.migrate()
+    dao = CheckpointDAO(db)
+    try:
+        await dao.create(checkpoint_id="ckpt", session_id="s", label="x",
+                         source_root="/current", git_stash_ref="a" * 40)
+        assert not await dao.rebind_source("ckpt", session_id="s", previous_source="/old",
+                                           git_stash_ref="a" * 40, source_root="/new")
+        assert not await dao.rebind_source("ckpt", session_id="s", previous_source="/current",
+                                           git_stash_ref="b" * 40, source_root="/new")
+        assert (await dao.get("ckpt"))["source_root"] == "/current"
+    finally:
+        await db.close()
+
+
+async def test_checkpoint_rebind_rejects_overlay_before_object_or_binding_work(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from minimax_code import checkpoint_git_bundle
+    from minimax_code.config import Config
+    from minimax_code.execution import ExecutionPolicy, execution_scope
+    from minimax_code.ipc import handlers_checkpoint
+    from minimax_code.ipc.server import IPCServer
+    from minimax_code.workspace_ctx import reset_sandbox, set_sandbox
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    row = {"id": "ckpt_a", "session_id": "s", "source_root": "/old", "git_stash_ref": "a" * 40}
+    dao = AsyncMock()
+    dao.get.return_value = row.copy()
+    monkeypatch.setattr(handlers_checkpoint, "require_host_session", AsyncMock())
+    monkeypatch.setattr(handlers_checkpoint, "_resolve_cwd", AsyncMock(return_value=repo))
+    metadata = Mock()
+    import_pack = Mock()
+    monkeypatch.setattr(bundle, "checkpoint_git_metadata", metadata)
+    monkeypatch.setattr(checkpoint_git_bundle, "import_pack", import_pack)
+    server = IPCServer(config=Config.from_env(), stdin=None, stdout=None)
+    handlers_checkpoint.register_checkpoint_handlers(server, dao=dao)
+    token = set_sandbox(overlay)
+    try:
+        with execution_scope(ExecutionPolicy(workspace=repo)):
+            response = await server.handle_request({"jsonrpc": "2.0", "id": 1,
+                "method": "checkpoint.rebind", "params": {"checkpoint_id": "ckpt_a",
+                "cwd": str(repo), "confirm_rebind": True, "confirm_trusted_bundle": True}})
+    finally:
+        reset_sandbox(token)
+    assert "error" in response and "file overlay" in response["error"]["message"]
+    metadata.assert_not_called()
+    import_pack.assert_not_called()
+    dao.rebind_source.assert_not_awaited()
+    assert dao.get.return_value == row
 
 
 def test_git_import_rejects_changed_base_without_writing(git_checkpoint, tmp_path):

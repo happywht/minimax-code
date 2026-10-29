@@ -29,7 +29,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ..execution import capture_output, spawn_exec
+from pydantic import ValidationError
+
+from ..execution import ExecutionDeniedError, capture_output, process_cwd, spawn_exec
 from ..storage.dao.checkpoints import CheckpointDAO
 from ..storage.db import ensure_data_dir
 from ..workspace import Checkpoint, CheckpointManager, CheckpointRestoreResult
@@ -39,7 +41,8 @@ from ..workspace_ctx import (
     resolve_root_for_session,
 )
 from .handler_utils import HandlerError, check_params, ensure_cwd_within_root
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .host_session_gate import require_host_session
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS, CheckpointRebindParams
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -109,6 +112,72 @@ def register_checkpoint_handlers(
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("checkpoint.create failed")
             await ctx.reply_error(INTERNAL_ERROR, f"checkpoint.create failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # checkpoint.rebind
+    # ------------------------------------------------------------------
+
+    async def handle_rebind(params: Any, ctx: Context) -> None:
+        try:
+            check_params(params, expected_keys={"checkpoint_id", "cwd"})
+            p = params or {}
+            checkpoint_id = _string_required(p, "checkpoint_id")
+            if not Path(_string_required(p, "cwd")).is_absolute():
+                raise HandlerError(INVALID_PARAMS, "Checkpoint target must be an absolute path")
+            if p.get("confirm_rebind") is not True or p.get("confirm_trusted_bundle") is not True:
+                raise HandlerError(INVALID_PARAMS, "Explicit target and trusted bundle confirmations are required")
+            try:
+                CheckpointRebindParams.model_validate(p)
+            except ValidationError as exc:
+                raise HandlerError(INVALID_PARAMS, "Invalid checkpoint rebind parameters") from exc
+            ckpt_dao = await dao_factory()
+            row = await ckpt_dao.get(checkpoint_id)
+            if row is None:
+                raise HandlerError(INVALID_PARAMS, f"unknown checkpoint_id: {checkpoint_id!r}")
+            session_id = str(row.get("session_id") or "") or None
+            oid = row.get("git_stash_ref")
+            if not session_id or not isinstance(oid, str) or not oid:
+                raise HandlerError(INVALID_PARAMS, "Checkpoint has no verifiable Git object")
+            if not isinstance(row.get("source_root"), str) or not row["source_root"]:
+                raise HandlerError(INVALID_PARAMS, "Legacy checkpoint source is unknown; its file paths cannot be safely rebound")
+            await require_host_session(session_id)
+            workdir = await _resolve_cwd(p, session_id=session_id)
+            try:
+                process_cwd(workdir)
+            except ExecutionDeniedError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+            try:
+                workspace = await resolve_root_for_session(session_id)
+                from ..bundle import MAX_TOTAL_BYTES, checkpoint_git_metadata
+                from ..checkpoint_git_bundle import import_pack
+
+                pack, metadata = await asyncio.to_thread(
+                    checkpoint_git_metadata, ensure_data_dir(), checkpoint_id, oid
+                )
+                await asyncio.to_thread(import_pack, pack, oid, row.get("source_root") or "",
+                                        str(workdir), MAX_TOTAL_BYTES, metadata,
+                                        relocated_workspace=str(workspace), verify_only=True)
+            except (ValueError, OSError, WorkspaceUnavailableError) as exc:
+                raise HandlerError(INVALID_PARAMS, f"Checkpoint target could not be verified: {exc}") from exc
+            if await _resolve_cwd(p, session_id=session_id) != workdir:
+                raise HandlerError(INVALID_PARAMS, "Session workspace changed during verification")
+            await require_host_session(session_id)
+            try:
+                process_cwd(workdir)
+            except ExecutionDeniedError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+            updated = await ckpt_dao.rebind_source(
+                checkpoint_id, session_id=session_id, previous_source=row.get("source_root"),
+                git_stash_ref=oid, source_root=str(workdir),
+            )
+            if not updated:
+                raise HandlerError(INVALID_PARAMS, "Checkpoint changed during verification; retry")
+            await ctx.reply({"checkpoint": await ckpt_dao.get(checkpoint_id)})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:
+            logger.exception("checkpoint.rebind failed")
+            await ctx.reply_error(INTERNAL_ERROR, f"checkpoint.rebind failed: {exc}")
 
     # ------------------------------------------------------------------
     # checkpoint.list
@@ -219,6 +288,7 @@ def register_checkpoint_handlers(
             await ctx.reply_error(INTERNAL_ERROR, f"checkpoint.delete failed: {exc}")
 
     server.register("checkpoint.create", handle_create)
+    server.register("checkpoint.rebind", handle_rebind)
     server.register("checkpoint.list", handle_list)
     server.register("checkpoint.restore", handle_restore)
     server.register("checkpoint.diff", handle_diff)

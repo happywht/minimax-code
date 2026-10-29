@@ -207,4 +207,12 @@ DDL与版本一起回滚。回退旧程序须还原该备份到新数据目录�
 uv run python -m minimax_code.bundle import-checkpoint-git --data-dir /absolute/restored-data --checkpoint-id ckpt_ID --repo /absolute/original-repo --confirm-source
 ```
 
-命令要求路径与记录的 `source_root` 一致，工作树及 Git common 目录的文件系统身份与采集时一致，HEAD 等于 stash 的第一父提交，并在隔离裸仓库对 pack 和对象闭包进行校验；它只导入对象，不自动应用检查点或修改 refs、index 和工作区。随后可以使用常规检查点恢复操作并检查结果。路径、目录身份和相同提交只能证明采集以来观察到的关联，不能证明检查点创建时的原始仓库身份；复制、迁移或跨主机恢复通常改变目录身份，会被拒绝导入；外部进程和 GC 不受数据目录租约限制，操作不是原子事务。中断或失败可能留下不可达对象；保留数据包以便检查或重试。数据包散列只证明完整性，不能证明来源，务必只导入可信包。
+默认要求路径与记录的 `source_root` 一致，工作树及 Git common 目录的文件系统身份与采集时一致，HEAD 等于 stash 的第一父提交，并在隔离裸仓库对 pack 和对象闭包进行校验；它只导入对象，不自动应用检查点或修改 refs、index 和工作区。路径、目录身份和相同提交只能证明采集以来观察到的关联，不能证明检查点创建时的原始仓库身份；外部进程和 GC 不受数据目录租约限制，操作不是原子事务。中断或失败可能留下不可达对象；保留数据包以便检查或重试。数据包散列只证明完整性，不能证明来源，务必只导入可信包。
+
+仓库复制、迁移或跨主机恢复后可使用显式迁移模式。先独立核实包的来源和目标仓库；`--relocated-workspace` 是本次用户确认的边界，目标仓库根和 Git common 目录都须在其中。对象格式和 HEAD 仍须匹配，所有路径须是绝对且不含链接：
+
+```bash
+uv run python -m minimax_code.bundle import-checkpoint-git --data-dir /absolute/restored-data --checkpoint-id ckpt_ID --repo /absolute/new-workspace/repo --confirm-source --relocated-workspace /absolute/new-workspace --confirm-relocated --confirm-trusted-bundle
+```
+
+导入本身不重新绑定检查点、项目或会话。先由用户将会话指向新工作区，再在检查点面板展开“迁移后重新绑定”，填写目标仓库根并确认包的来源和目标；服务端验证已导入的对象与闭包后，只更改该检查点的来源路径。随后可在面板中预览并明确选择恢复；恢复可能修改工作区，应先保护当前工作。只有包含 Git 对象包的 v11 数据包支持此流程；旧包不包含对象包。

@@ -1744,9 +1744,12 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 | `checkpoint.list` | 列出快照 |
 | `checkpoint.diff` | 快照与当前工作区对比 |
 | `checkpoint.restore` | 恢复到指定快照 |
+| `checkpoint.rebind` | 经显式确认和只读验证后，将检查点绑定到当前会话工作区内的新仓库根 |
 | `checkpoint.delete` | 删除快照 |
 
 新检查点记录解析后的仓库根 `source_root`，恢复和差异操作须匹配该路径且保持在当前会话工作区内；路径匹配不能证明仓库未被替换。旧记录的 `source_root` 为 null，默认拒绝恢复和差异：确认原始工作目录后，调用 `checkpoint.restore` 或 `checkpoint.diff` 时显式提供 `cwd` 和 `legacy_source_confirmed: true`。该确认由用户承担，系统无法验证旧来源；旧 cwd 可以是会话范围内仓库的子目录。快照文件及 Git stash 对象不包含在数据库备份或 JSON 导出中；bundle v11 保存数据库所列未跟踪文件副本和 Git stash 可达对象包；Git 对象不会自动导入，须使用离线显式导入命令并核实来源。路径和共同基底不证明仓库身份。
+
+迁移后可调用 `checkpoint.rebind`，参数为 `checkpoint_id`、绝对仓库根 `cwd`、`confirm_rebind: true` 和 `confirm_trusted_bundle: true`。用户须先将会话绑定到新工作区并导入可信 v11 包的 Git 对象。服务端校验会话工作区边界、仓库根和 Git 对象存储、pack 和完整闭包、对象格式、HEAD 与 stash 基底，并只更新仍匹配的检查点 `source_root`。规划只读、文件沙箱或受限 host 会话不得执行；Git worktree 的 common 目录位于会话工作区之外时拒绝。原来源未知的旧检查点不能安全重绑定。该操作不修改项目、会话、Git refs、index 或工作区；目录与提交匹配不能证明仓库身份，外部 Git/GC 并发不受锁保护。失败时不重新绑定。
 
 ### diag.* — 诊断
 

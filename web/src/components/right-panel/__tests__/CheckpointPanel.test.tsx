@@ -57,6 +57,25 @@ it("restores a bound checkpoint without an override", async () => {
   await waitFor(() => expect(restore).toHaveBeenCalledWith("ckpt1", undefined));
 });
 
+it("requires a target and trusted-source confirmation before rebinding", async () => {
+  const old = { ...checkpoint("/old"), git_stash_ref: "a".repeat(40) };
+  vi.spyOn(typedIPC, "listCheckpoints").mockResolvedValue({ checkpoints: [old], count: 1 });
+  const rebind = vi.spyOn(typedIPC, "rebindCheckpoint").mockResolvedValue({ checkpoint: { ...old, source_root: "/new" } });
+  render(<CheckpointPanel />);
+  await screen.findByTestId("checkpoint-panel-rebind-ckpt1");
+  fireEvent.click(screen.getByText("迁移后重新绑定"));
+  const button = screen.getByTestId("checkpoint-panel-rebind-ckpt1");
+  expect(button).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("新仓库根目录"), { target: { value: "/new" } });
+  expect(button).toBeDisabled();
+  fireEvent.click(screen.getByLabelText("我已核实数据包可信且目标仓库正确"));
+  fireEvent.click(button);
+  await waitFor(() => expect(rebind).toHaveBeenCalledWith("ckpt1", {
+    cwd: "/new", confirm_rebind: true, confirm_trusted_bundle: true,
+  }));
+  expect(requestConfirmation).toHaveBeenCalledWith(expect.objectContaining({ description: expect.stringContaining("/new") }));
+});
+
 it("shows missing snapshot and skipped file details instead of claiming success", async () => {
   vi.spyOn(typedIPC, "listCheckpoints").mockResolvedValue({ checkpoints: [checkpoint("/workspace")], count: 1 });
   vi.spyOn(typedIPC, "restoreCheckpoint").mockResolvedValue({ result: {

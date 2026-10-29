@@ -515,6 +515,7 @@ export interface TypedIPC {
   // checkpoint (v0.11.0) — drive the RightPanel checkpoint panel.
   listCheckpoints(sessionId: string, opts?: { limit?: number; offset?: number }): Promise<CheckpointListResult>;
   createCheckpoint(opts: { session_id: string; label?: string; message?: string; cwd?: string }): Promise<CheckpointCreateResult>;
+  rebindCheckpoint(checkpointId: string, opts: { cwd: string; confirm_rebind: true; confirm_trusted_bundle: true }): Promise<CheckpointCreateResult>;
   restoreCheckpoint(checkpointId: string, opts?: { cwd?: string; legacy_source_confirmed?: boolean }): Promise<CheckpointRestoreResult>;
   diffCheckpoint(checkpointId: string, opts?: { cwd?: string; legacy_source_confirmed?: boolean }): Promise<CheckpointDiffResult>;
   deleteCheckpoint(checkpointId: string): Promise<CheckpointDeleteResult>;
@@ -1003,6 +1004,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<CheckpointListResult>("checkpoint.list", { session_id: sessionId, ...(opts ?? {}) }),
     createCheckpoint: (opts) =>
       client.request<CheckpointCreateResult>("checkpoint.create", opts),
+    rebindCheckpoint: (checkpointId, opts) =>
+      client.request<CheckpointCreateResult>("checkpoint.rebind", { checkpoint_id: checkpointId, ...opts }),
     restoreCheckpoint: (checkpointId, opts) =>
       client.request<CheckpointRestoreResult>("checkpoint.restore", { checkpoint_id: checkpointId, ...(opts ?? {}) }),
     diffCheckpoint: (checkpointId, opts) =>

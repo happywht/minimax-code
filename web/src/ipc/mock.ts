@@ -2091,6 +2091,15 @@ function mockHandle(
       } satisfies CheckpointRestoreResult;
     }
 
+    case "checkpoint.rebind": {
+      const p = params as { checkpoint_id: string; cwd?: string; confirm_rebind?: boolean; confirm_trusted_bundle?: boolean };
+      const checkpoint = mockCheckpoints.get(p.checkpoint_id);
+      if (!checkpoint || !p.cwd || p.confirm_rebind !== true || p.confirm_trusted_bundle !== true) {
+        throw new Error("checkpoint rebind requires a target and explicit confirmations");
+      }
+      throw new Error("模拟模式无法验证 Git 对象，不能重新绑定检查点");
+    }
+
     case "checkpoint.diff": {
       const p = params as { checkpoint_id: string };
       const checkpoint = mockCheckpoints.get(p.checkpoint_id);

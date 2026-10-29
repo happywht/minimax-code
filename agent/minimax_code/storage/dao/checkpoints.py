@@ -89,6 +89,18 @@ class CheckpointDAO:
         )
         return _hydrate(row) if row else None
 
+    async def rebind_source(self, checkpoint_id: str, *, session_id: str,
+                            previous_source: str | None, git_stash_ref: str,
+                            source_root: str) -> bool:
+        """Update only a still-matching checkpoint after its destination was verified."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "UPDATE session_checkpoints SET source_root=? WHERE id=? AND session_id=? "
+                "AND source_root IS ? AND git_stash_ref=?",
+                (source_root, checkpoint_id, session_id, previous_source, git_stash_ref),
+            )
+            return cursor.rowcount == 1
+
     async def list_by_session(
         self,
         *,
