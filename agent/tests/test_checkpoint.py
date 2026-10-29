@@ -324,6 +324,29 @@ class TestCheckpointManager:
         assert (git_repo / "README.md").read_text(encoding="utf-8") == "edited\n"
 
     @pytest.mark.asyncio
+    async def test_restore_preserves_staged_and_unstaged_changes(
+        self, manager: CheckpointManager, git_repo: Path
+    ) -> None:
+        path = git_repo / "README.md"
+        path.write_text("staged\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=git_repo, check=True)
+        path.write_text("staged\nunstaged\n", encoding="utf-8")
+        checkpoint = await manager.create(
+            cwd=git_repo, checkpoint_id="ckpt_index", session_id="sess", label="index"
+        )
+        assert checkpoint.git_stash_ref is not None
+        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=git_repo, check=True, capture_output=True)
+
+        result = await manager.restore(git_repo, checkpoint)
+
+        assert result.applied_stash is True
+        staged = subprocess.run(
+            ["git", "show", ":README.md"], cwd=git_repo, check=True, capture_output=True
+        ).stdout.decode("utf-8")
+        assert staged == "staged\n"
+        assert path.read_text(encoding="utf-8") == "staged\nunstaged\n"
+
+    @pytest.mark.asyncio
     async def test_diff_without_stash(
         self, manager: CheckpointManager, git_repo: Path
     ) -> None:

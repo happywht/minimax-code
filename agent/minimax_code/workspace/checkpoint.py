@@ -188,7 +188,7 @@ class CheckpointManager:
     ) -> CheckpointRestoreResult:
         """Rewind ``cwd`` to ``checkpoint``.
 
-        Applies the stash ref (if any) and copies untracked files back,
+        Applies the stash ref (if any), including its index state, and copies untracked files back,
         skipping any destination that already exists — a rewind must
         never clobber work the user did after the snapshot.
         """
@@ -385,7 +385,7 @@ class CheckpointManager:
             warnings.append("stash apply: invalid snapshot ref")
             return False
         rc, out, err_out, err = await _run_git(
-            cwd, "stash", "apply", stash_ref, timeout_s=self._timeout_s
+            cwd, "stash", "apply", "--index", stash_ref, timeout_s=self._timeout_s
         )
         if err is not None:
             warnings.append(f"stash apply: {err}")
