@@ -115,7 +115,7 @@ async function drain(): Promise<void> {
           useChat.getState().reconcileLiveStream(entry.run, entry.live_stream);
         }
       }
-      if (refresh && entries.length && entries.every((entry) => "pending_ask_user" in entry)) {
+      if (refresh && entries.every((entry) => "pending_ask_user" in entry)) {
         const question = entries.map((entry) => entry.pending_ask_user).find((value) => value != null) ?? null;
         useChat.getState().reconcileAskUser(question, askVersion, current);
       }
