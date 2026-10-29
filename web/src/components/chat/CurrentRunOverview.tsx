@@ -3,6 +3,7 @@ import { ipc, typedIPC } from "../../ipc";
 import { useChat, usePermissionStore, useRunTimelineStore, useSessionStore } from "../../stores";
 import type { BudgetStateResult } from "../../types/ipc";
 import { Button } from "../../ui";
+import { QueuedRuns } from "./QueuedRuns";
 
 const labels: Record<string, string> = { queued: "已接收，排队中", planning: "规划中", running: "运行中",
   awaiting_approval: "等待授权", waiting_input: "等待回答", budget_paused: "预算暂停", interrupted: "已中断，待核对",
@@ -85,5 +86,6 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
         <Button type="button" size="sm" variant="ghost" disabled={connection !== "connected"} onClick={() => void refreshBudget()}>刷新预算</Button></div>
       <p className="text-ink-2">预算为读取时快照；时间线保留审批、结果、取消及恢复的原有条件。</p>
     </div>}
+    <QueuedRuns session={session} host={host} runs={ordered.filter((item) => item.status === "queued")} stale={stale} />
   </details></div>;
 }
