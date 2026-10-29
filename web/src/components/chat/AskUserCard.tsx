@@ -16,11 +16,12 @@
  */
 
 import { HelpCircle, Send } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "../../stores/chat";
 import { useSessionStore } from "../../stores/sessionStore";
 import { strings } from "../../ui/strings";
 import { Button } from "../../ui";
+import { ipc } from "../../ipc";
 
 export interface AskUserCardProps {
   testId?: string;
@@ -31,6 +32,19 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
   const submit = useChat((s) => s.submitAskUser);
   const skip = useChat((s) => s.skipAskUser);
   const sessionId = useSessionStore((s) => s.currentSessionId);
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<{ host: string; session: string; run: string; request: string }>).detail;
+      const current = useChat.getState().askUser;
+      if (!detail || ipc.agentBaseUrl !== detail.host || useSessionStore.getState().currentSessionId !== detail.session ||
+          !current || current.session_id !== detail.session || current.run_id !== detail.run || current.request_id !== detail.request) return;
+      cardRef.current?.scrollIntoView({ block: "nearest" });
+      cardRef.current?.focus();
+    };
+    window.addEventListener("minimax:open-run-question", open);
+    return () => window.removeEventListener("minimax:open-run-question", open);
+  }, []);
 
   // One entry per question: chosen labels (multi for multiSelect).
   const [selections, setSelections] = useState<string[][]>([]);
@@ -118,6 +132,8 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
 
   return (
     <section
+      ref={cardRef}
+      tabIndex={-1}
       data-testid={testId}
       data-request-id={askUser.request_id}
       aria-labelledby={`${testId}-title`}

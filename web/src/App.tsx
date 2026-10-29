@@ -445,7 +445,7 @@ export default function App() {
             <RightPanel />
           </InspectorDrawer>
           <ToastViewport />
-          <PermissionRequestModal />
+          <PermissionRequestModal connectionState={connState} />
           <ConfirmationDialog />
           <CrashRecoveryPrompt />
           {mobileModalOpen && (

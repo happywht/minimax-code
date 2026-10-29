@@ -20,8 +20,9 @@
  */
 
 import { ShieldAlert, ShieldCheck, X } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
-import { usePermissionStore, type PendingPermission } from "../../stores";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { usePermissionStore, useSessionStore, type PendingPermission } from "../../stores";
+import { ipc } from "../../ipc";
 import { useFocusTrap } from "../../lib/useFocusTrap";
 import { buildPermissionPatchFiles } from "../../lib/permissionPatchPreview";
 import { Button, IconButton } from "../../ui";
@@ -29,10 +30,12 @@ import { PermissionPatchPreview } from "./PermissionPatchPreview";
 
 export interface PermissionRequestModalProps {
   testId?: string;
+  connectionState?: "connecting" | "connected" | "disconnected" | "error";
 }
 
 export function PermissionRequestModal({
   testId = "permission-request-modal",
+  connectionState = "connected",
 }: PermissionRequestModalProps): JSX.Element | null {
   const pendingMap = usePermissionStore((s) => s.pending);
   // Default defensively for older persisted state and partial test/store mocks
@@ -40,18 +43,42 @@ export function PermissionRequestModal({
   const resolvingMap = usePermissionStore((s) => s.resolving ?? {});
   const resolve = usePermissionStore((s) => s.resolve);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const isOpen = useMemo(() => Object.keys(pendingMap).length > 0, [pendingMap]);
-  useFocusTrap(dialogRef, isOpen);
+  const [deferred, setDeferred] = useState<Set<string>>(() => new Set());
+  const [preferred, setPreferred] = useState<string | null>(null);
+  useEffect(() => {
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<{ host: string; session: string; run: string; request: string }>).detail;
+      const state = usePermissionStore.getState(), request = detail && state.pending[detail.request];
+      if (connectionState !== "connected" || !detail || ipc.agentBaseUrl !== detail.host ||
+          useSessionStore.getState().currentSessionId !== detail.session || !request ||
+          request.session_id !== detail.session || request.run_id !== detail.run || state.resolving[detail.request]) return;
+      setDeferred((previous) => { const next = new Set(previous); next.delete(detail.request); return next; });
+      setPreferred(detail.request);
+    };
+    window.addEventListener("minimax:open-run-permission", open);
+    return () => window.removeEventListener("minimax:open-run-permission", open);
+  }, [connectionState]);
+  useEffect(() => ipc.onSideCar((event) => {
+    setPreferred(null);
+    if (event.status !== "started") {
+      const pending = Object.keys(usePermissionStore.getState().pending);
+      setDeferred((previous) => new Set([...previous, ...pending]));
+    }
+  }), []);
 
   // Pick the oldest pending request (FIFO). Multiple simultaneous
   // prompts are stacked; the modal only shows the head of the queue.
   const current: PendingPermission | null = useMemo(() => {
-    const entries = Object.values(pendingMap);
+    if (connectionState !== "connected") return null;
+    const selected = preferred ? pendingMap[preferred] : undefined;
+    if (selected && !deferred.has(selected.request_id)) return selected;
+    const entries = Object.values(pendingMap).filter((entry) => !deferred.has(entry.request_id));
     if (entries.length === 0) return null;
     return entries.reduce((oldest, cur) =>
       cur.received_at < oldest.received_at ? cur : oldest,
     );
-  }, [pendingMap]);
+  }, [pendingMap, preferred, deferred, connectionState]);
+  useFocusTrap(dialogRef, Boolean(current));
   const currentResolving = current ? resolvingMap[current.request_id] : undefined;
 
   // Enter approves, Esc denies — keeps the approval card keyboard-first.
@@ -62,6 +89,8 @@ export function PermissionRequestModal({
         e.preventDefault();
         void resolve(current.request_id, "deny");
       } else if (e.key === "Enter") {
+        const target = e.target as HTMLElement | null;
+        if (target?.closest("button, input, select, textarea, a")) return;
         e.preventDefault();
         void resolve(current.request_id, "allow");
       }
@@ -145,7 +174,11 @@ export function PermissionRequestModal({
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="ghost" size="sm" disabled={Boolean(resolving)} onClick={() => {
+            setDeferred((previous) => new Set([...previous, current.request_id]));
+            setPreferred(null);
+          }}>稍后处理</Button>
           <Button
             variant="secondary"
             size="sm"
@@ -170,7 +203,7 @@ export function PermissionRequestModal({
         </div>
 
         <p className="mt-3 text-[11px] text-ink-2">
-          Enter 允许 · Esc 拒绝 · 关闭右侧 × 等同于拒绝
+          稍后处理不会授权或拒绝，待处理请求仍可能超时。Enter 允许 · Esc 拒绝 · 关闭右侧 × 等同于拒绝
         </p>
       </div>
     </div>
