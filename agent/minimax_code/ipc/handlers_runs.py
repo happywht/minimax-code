@@ -21,12 +21,12 @@ from .server import Context
 logger = logging.getLogger(__name__)
 
 
-async def _get_dao() -> Any:
+async def _get_dao(*, initialize: bool = True) -> Any:
     from ..app import get_db, init_runtime
     from ..storage.dao.runs import AgentRunsDAO
 
     db = get_db()
-    if db is None:
+    if db is None and initialize:
         try:
             await init_runtime()
         except Exception:
@@ -37,6 +37,14 @@ async def _get_dao() -> Any:
     return AgentRunsDAO(db)
 
 
+async def _get_read_control_dao(ctx: Context) -> Any:
+    # A maintenance status/cancel request must not initialize the runtime.
+    admission = getattr(ctx.server, "_rpc_admission", None)
+    if admission is not None and admission.closed:
+        return await _get_dao(initialize=False)
+    return await _get_dao()
+
+
 def register_run_handlers(server: Any) -> None:
     """Register run timeline read APIs."""
 
@@ -45,7 +53,7 @@ def register_run_handlers(server: Any) -> None:
             if params is None:
                 params = {}
             check_params(params, expected_keys=set())
-            dao = await _get_dao()
+            dao = await _get_read_control_dao(ctx)
             session_id = params.get("session_id")
             status = params.get("status")
             # v1.4.0: optional mode filter — 'subagent' surfaces tool-path
@@ -74,7 +82,7 @@ def register_run_handlers(server: Any) -> None:
         try:
             check_params(params, expected_keys={"run_id"})
             run_id = str(params["run_id"])
-            dao = await _get_dao()
+            dao = await _get_read_control_dao(ctx)
             snapshot = await dao.snapshot(run_id)
             if snapshot is None:
                 await ctx.reply_error(INVALID_PARAMS, f"unknown run_id: {run_id!r}")
@@ -89,7 +97,7 @@ def register_run_handlers(server: Any) -> None:
     async def handle_run_events(params: Any, ctx: Context) -> None:
         try:
             request = RunEventsParams.model_validate(params)
-            dao = await _get_dao()
+            dao = await _get_read_control_dao(ctx)
             result = await dao.events(**request.model_dump())
             if result is None:
                 raise HandlerError(INVALID_PARAMS, "unknown run_id")
@@ -135,7 +143,7 @@ def register_run_handlers(server: Any) -> None:
     async def handle_run_get(params: Any, ctx: Context) -> None:
         try:
             request = RunIdParams.model_validate(params)
-            dao = await _get_dao()
+            dao = await _get_read_control_dao(ctx)
             run = await dao.get_run(request.run_id)
             if run is None:
                 raise HandlerError(INVALID_PARAMS, "unknown run_id")
@@ -150,7 +158,7 @@ def register_run_handlers(server: Any) -> None:
 
         try:
             request = RunIdParams.model_validate(params)
-            dao = await _get_dao()
+            dao = await _get_read_control_dao(ctx)
             run = await dao.get_run(request.run_id)
             if run is None:
                 raise HandlerError(INVALID_PARAMS, "unknown run_id")

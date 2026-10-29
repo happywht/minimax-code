@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import IO, Any
 
 from ..config import Config
+from ..runtime.maintenance import AdmissionClosed, RPCAdmission
 from .handler_utils import HandlerError
 from .protocol import (
     INTERNAL_ERROR,
@@ -155,6 +156,7 @@ class IPCServer:
         self.stdout: IO[str] = stdout if stdout is not None else sys.stdout
         self._handlers: dict[str, Handler] = {}
         self._notification_handlers: dict[str, NotificationHandler] = {}
+        self._rpc_admission = RPCAdmission()
         self._write_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         # In-process event/notification subscribers. The HTTP/WS
@@ -226,6 +228,17 @@ class IPCServer:
         self.register("ping", handle_ping)
         self.register("status", handle_status)
         self.register("shutdown", handle_shutdown)
+
+    async def _invoke_handler(self, handler: Handler, params: Any, ctx: Context) -> Any:
+        """Track handler execution for every supported RPC transport."""
+        try:
+            with self._rpc_admission.enter(ctx.method, request=ctx.request_id is not None):
+                result = await handler(params, ctx)
+                if ctx.request_id is not None and not ctx._extra.get("_replied"):
+                    await ctx.reply(result)
+                return result
+        except AdmissionClosed as exc:
+            raise HandlerError(-32000, str(exc)) from exc
 
     # -- main loop ----------------------------------------------------------
 
@@ -344,7 +357,9 @@ class IPCServer:
                     return
             ctx = Context(server=self, method=method, request_id=None)
             try:
-                await handler(params, ctx)
+                await self._invoke_handler(handler, params, ctx)
+            except HandlerError as exc:
+                logger.debug("notification %s rejected: %s", method, exc.message)
             except Exception:  # pragma: no cover — defensive
                 logger.exception("notification handler %s crashed", method)
         else:
@@ -363,12 +378,7 @@ class IPCServer:
                 return
             ctx = Context(server=self, method=method, request_id=request_id)
             try:
-                result = await handler(params, ctx)
-                # Handler should have called ctx.reply, but if it returned
-                # a value we auto-reply for convenience.
-                if not ctx._extra.get("_replied"):
-                    await ctx.reply(result)
-                ctx._extra["_replied"] = True
+                await self._invoke_handler(handler, params, ctx)
             except HandlerError as exc:
                 # Handler raised but didn't catch — convert to JSON-RPC error.
                 logger.debug("handler %s raised HandlerError: %s", method, exc.message)
@@ -440,7 +450,9 @@ class IPCServer:
                 return None
             ctx = Context(server=self, method=method, request_id=None)
             try:
-                await handler(params, ctx)
+                await self._invoke_handler(handler, params, ctx)
+            except HandlerError as exc:
+                logger.debug("notification %s rejected: %s", method, exc.message)
             except Exception:  # pragma: no cover — defensive
                 logger.exception("notification handler %s crashed", method)
             return None
@@ -458,9 +470,7 @@ class IPCServer:
 
         ctx = Context(server=self, method=method, request_id=request_id)
         try:
-            result = await handler(params, ctx)
-            if not ctx._extra.get("_replied"):
-                await ctx.reply(result)
+            await self._invoke_handler(handler, params, ctx)
             return ctx._extra.get("_response") or Response(
                 id=request_id, result=None
             ).model_dump(exclude_none=True)
