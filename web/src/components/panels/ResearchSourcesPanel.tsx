@@ -24,6 +24,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
   const [service, setService] = useState<string | null>(null);
   const [scope, setScope] = useState<{ project: string; session: string; host: string } | null>(null);
   const [selected, setSelected] = useState<ResearchSource | null>(null);
+  const [passage, setPassage] = useState<{ id: string; start: number; end: number; text: string } | null>(null);
   const [batchIds, setBatchIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -64,7 +65,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
   const select = async (id: string) => {
     if (!project || !session || !service) return;
     const revision = ++version.current, expected = service;
-    setSelected(null); setError(null); setNotice(null); setAdded(false); setAdding(false); setLoading(true);
+    setSelected(null); setPassage(null); setError(null); setNotice(null); setAdded(false); setAdding(false); setLoading(true);
     try {
       const result = await typedIPC.getResearchSource({ session_id: session, project_id: project,
         expected_service_id: expected, page_source_id: id });
@@ -75,7 +76,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
     finally { if (current(revision)) setLoading(false); }
   };
 
-  const addToDraft = async (ids: string[]) => {
+  const addToDraft = async (ids: string[], chosen?: { id: string; start: number; end: number; text: string }) => {
     if (!visible || !project || !session || !service || !ids.length || adding) return;
     const revision = ++version.current, expected = service;
     setAdding(true); setNotice(null); setAdded(false);
@@ -87,14 +88,16 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
         if (!current(revision)) return;
         if (!checkScope(result) || result.service_id !== expected || result.source.page_source_id !== id)
           throw new Error("来源或服务关联已变化，请重新选择");
+        if (chosen && (chosen.id !== id || (result.source.excerpt ?? "").slice(chosen.start, chosen.end) !== chosen.text))
+          throw new Error("保存的摘录已变化，请重新选择原文片段");
         sources.push(result.source);
       }
       const text = sources.map((source) => {
         const excerpt = Array.from(source.excerpt ?? ""), shortened = excerpt.length > 600;
         return ["研究来源（页面内容未核验，请核对后使用）：", `标题：${source.title || "（页面未提供标题）"}${source.title_truncated ? "（已截断）" : ""}`,
           `网址：${source.url}`, `实际访问时间：${source.accessed_at}`, `来源 ID：${source.page_source_id}`,
-          `所属运行：${source.run_id}`, `摘录${shortened || source.excerpt_truncated || source.truncated ? "（已截断，不代表全文）" : ""}：`,
-          excerpt.slice(0, 600).join("") || "（无提取文本）"].join("\n");
+          `所属运行：${source.run_id}`, chosen ? "用户从保存摘录中选取的原文片段（不代表全文）：" : `摘录${shortened || source.excerpt_truncated || source.truncated ? "（已截断，不代表全文）" : ""}：`,
+          chosen ? chosen.text : excerpt.slice(0, 600).join("") || "（无提取文本）"].join("\n");
       }).join("\n\n");
       const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project, session, text };
       window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
@@ -149,7 +152,18 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
         {added && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
         <p className="text-xs text-ink-2">添加前重新核对来源归属；只追加到草稿，不会发送。摘录最多 600 个字符，页面内容未自动核验。</p>
         {notice && <p role="status">{notice}</p>}
-        <p>保存的正文摘录（未经核验）：</p><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-1 p-2">{selected.excerpt || "（无提取文本）"}</pre>
+        <label htmlFor="research-excerpt" className="block">保存的正文摘录（未经核验，可选取需要引用的片段）：</label>
+        <textarea id="research-excerpt" readOnly value={selected.excerpt || ""} rows={10}
+          className="w-full rounded border border-line bg-surface-1 p-2 text-sm"
+          onSelect={(event) => {
+            const input = event.currentTarget, start = input.selectionStart, end = input.selectionEnd;
+            setPassage(start < end ? { id: selected.page_source_id, start, end, text: input.value.slice(start, end) } : null);
+          }} />
+        {!selected.excerpt && <p>（无提取文本）</p>}
+        <Button type="button" variant="secondary" loading={adding}
+          disabled={adding || loading || !passage || passage.id !== selected.page_source_id || passage.text.length > 4000}
+          onClick={() => { if (passage) void addToDraft([selected.page_source_id], passage); }}>将选中原文和出处加入草稿</Button>
+        <p className="text-xs text-ink-2">选中保存摘录中的文字后可加入草稿，每次最多 4000 个字符；提交前重新读取并核对原文，不访问网页或发送消息。</p>
         {(selected.excerpt_truncated || selected.truncated) && <p>网页内容或摘录已截断，不代表全文。</p>}
       </div>}
     </>}
