@@ -3,6 +3,13 @@ import type { OfficeTableSpec } from "../../types/ipc";
 type Kind = OfficeTableSpec["columns"][number]["kind"];
 export type CsvTable = { headers: string[]; rows: string[][] };
 
+// CSV carries cell text only; quoting every field preserves commas, quotes and newlines.
+export function serializeOfficeCsv(table: CsvTable): string {
+  return [table.headers, ...table.rows]
+    .map((row) => row.map((value) => `"${value.replace(/"/g, '""')}"`).join(","))
+    .join("\r\n") + "\r\n";
+}
+
 export function parseOfficeCsv(input: string): CsvTable {
   if (new TextEncoder().encode(input).length > 1048576) throw new Error("CSV 超过 1 MiB");
   const source = input.replace(/^\uFEFF/, "");

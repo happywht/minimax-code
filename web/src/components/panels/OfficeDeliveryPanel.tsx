@@ -5,7 +5,7 @@ import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
 import type { OfficeTableSpec } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 import { XlsxTablePreview } from "./XlsxTablePreview";
-import { csvToOfficeSpec, parseOfficeCsv, type CsvTable } from "./officeCsv";
+import { csvToOfficeSpec, parseOfficeCsv, serializeOfficeCsv, type CsvTable } from "./officeCsv";
 import { CsvTableEditor } from "./CsvTableEditor";
 import { OfficeAnalysisControls, type OfficeAnalysisOptions } from "./OfficeAnalysisControls";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
@@ -20,6 +20,12 @@ const example = JSON.stringify({ sheet_name: "清单", columns: [
 function saveJson(value: unknown, name: string): void {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = name; anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function saveCsv(table: CsvTable): void {
+  const url = URL.createObjectURL(new Blob([serializeOfficeCsv(table)], { type: "text/csv;charset=utf-8" }));
+  const anchor = document.createElement("a"); anchor.href = url; anchor.download = "表格处理结果.csv"; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
@@ -260,6 +266,9 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         {csvTable.headers.map((name, index) => <label key={index} className="flex items-center gap-2">{name}<select aria-label={`第 ${index + 1} 列类型`} value={kinds[index]} onChange={(event) => setKinds((old) => old.map((kind, i) => i === index ? event.target.value as typeof kind : kind))}>
           <option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option></select></label>)}
         {originalCsvTable && <CsvTableEditor table={csvTable} original={originalCsvTable} kinds={kinds} onChange={(next, nextKinds) => { setCsvTable(next); if (nextKinds) setKinds(nextKinds); setTableDirty(next !== originalCsvTable); setFormError(null); }} />}
+        <p>下载的是当前表格的新文件，不修改原件。CSV 仅保存单元格文本，不保存列类型；表格软件可能将公式样文本解释为公式或自动转换数据。带类型 JSON 按所选列类型保存，空字符串转为空值，数字和布尔值会规范化。</p>
+        <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={() => { saveCsv(csvTable); setFormError(null); }}>下载当前表格 CSV</Button>
+          <Button type="button" variant="secondary" onClick={() => { try { saveJson(csvToOfficeSpec(csvTable, kinds), "表格处理结果.json"); setFormError(null); } catch (error) { setFormError(error instanceof Error ? error.message : "导出失败"); } }}>下载带类型表格 JSON</Button></div>
         <Button type="button" variant="secondary" onClick={() => { try { setSource(JSON.stringify(csvToOfficeSpec(csvTable, kinds), null, 2)); edited(); } catch (error) { setFormError(error instanceof Error ? error.message : "转换失败"); } }}>转换为表格输入</Button>
       </div>}
     </details>
