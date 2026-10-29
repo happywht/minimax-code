@@ -1,6 +1,6 @@
-# 手动生成并登记纯数据 XLSX
+# 生成并登记纯数据 XLSX
 
-成果侧栏 →「办公成果」提供真实后端的手动入口。选择有明确绝对根目录的项目，填写显示文件名和结构化 JSON，点击「生成并登记 XLSX」。操作只新建私有 vault 文件，不读取、修改或覆盖项目原文件；普通附件上传、模型回复和已有文本成果不会自动成为办公成果。
+成果侧栏 →「办公成果」提供真实后端的手动入口。普通聊天 Agent 也可根据用户提供或已读取的资料调用 `generate_table_xlsx`，由服务端绑定当前会话项目；生成前遵守写入权限（默认请求确认），规划模式不允许写入。Agent 返回成果 ID，可在办公成果列表中按 ID 找到并下载。选择有明确绝对根目录的项目，填写显示文件名和结构化 JSON，点击「生成并登记 XLSX」。操作只新建私有 vault 文件，不读取、修改或覆盖项目原文件；普通附件上传、模型回复和已有文本成果不会自动成为办公成果。
 
 本片仅支持一个可见工作表的 text / number / boolean / null。最多 20 列、1000 数据行，含表头最多 5000 格；规范输入 1 MiB、输出 2 MiB。列名大小写折叠后唯一，每行宽度匹配。text 最长 4096 字符，空串规范化为空白；长编号与前导零请使用 text。数字最多 15 个有效位，绝对值不超过 999999999999999，非零绝对值至少 1e-12；拒绝负零、NaN、Infinity 和把布尔值当数字。
 
@@ -55,7 +55,7 @@ bundle6 仅匹配 schema46，含严格 office 清单；当前 bundle11 对应 sc
 
 ## 入口与维护
 
-认证 RPC 为 `office.generate_xlsx`、`office.list`、`office.get`，严格参数与响应见 [IPC 契约](ipc-contract.md)。不注册 LLM 工具，不增加 run.resume 语义。mock 仅空列表并明确拒绝生成/读取，不模拟验证成功文件。
+认证 RPC 为 `office.generate_xlsx`、`office.list`、`office.get`，严格参数与响应见 [IPC 契约](ipc-contract.md)。普通聊天注册受权限控制的 `generate_table_xlsx` 工具，不增加 run.resume 语义。Agent 必须为一次生成选择稳定 request_key；同一会话、同一 key 和相同输入重试返回原成果，输入不同会冲突，新意图使用新 key。工具生成不关联 run，不表示业务核验。mock 仅空列表并明确拒绝生成/读取，不模拟验证成功文件。
 
 核心文件为 `office_xlsx.py`（模型/生成/全值验证/CLI）、`_office_xlsx_worker.py`、`office_process.py`（固定受限生命周期）、`office_deliveries.py` 与对应 DAO（原子登记）、`office_metadata.py`（共享严格元数据）及 `handlers_office.py`；前端 `OfficeDeliveryPanel` / `officeDeliveryStore` 复用现有附件下载边界。定向测试为 `test_office_xlsx.py`、`test_office_deliveries.py`、`test_handlers_office.py`、`test_office_bundle.py` 与同名 UI / e2e 测试。
 

@@ -1,6 +1,6 @@
 """Explicit operator generation, immutable publication and committed receipts.
 
-No LLM tool registration or run admission. An optional existing run is a checked
+No run admission. An optional existing run is a checked
 historical association, never execution authority or a completion claim.
 """
 from __future__ import annotations
@@ -95,14 +95,14 @@ class OfficeService:
         result = await self.originals.get(project_id, attachment["id"])
         return {"delivery": delivery, **result}
 
-    async def generate(self, request):
+    async def generate(self, request, *, expected_session=None):
         from .attachment_parser import inspect_xlsx
 
         require_write_access()
         async with asyncio.timeout(TOTAL_SECONDS), _slot():
             project = await self._identity(request.project_id, request.expected_service_id)
             fingerprint = digest({"request": request.model_dump(exclude={"request_key"}), "project": project})
-            existing = await self.dao.find(request.project_id, request.request_key)
+            existing = await self.dao.find(request.project_id, request.request_key, expected_session=expected_session)
             if existing is not None:
                 if existing["request_hash"] != fingerprint:
                     raise ValueError("Office request key already belongs to different input")
@@ -138,7 +138,8 @@ class OfficeService:
                     "declared_type": "xlsx", "recognized_type": "xlsx", **parsed,
                 }
                 row = await _commit(self.dao.insert(
-                    fields, attachment, expected_project=project, expected_run=binding))
+                    fields, attachment, expected_project=project, expected_run=binding,
+                    expected_session=expected_session))
                 return await self.get(request.project_id, row["id"])
             finally:
                 # Publication can leave only a private orphan on ambiguous DB

@@ -76,10 +76,17 @@ class OfficeDAO:
         self.db = db
         self.attachments = AttachmentDAO(db)
 
-    async def find(self, project_id, key):
-        row = await self.db.fetchone(
-            "SELECT * FROM office_deliveries WHERE project_id=? AND request_key=?", (project_id, key))
-        return dict(row) if row is not None else None
+    async def find(self, project_id, key, *, expected_session=None):
+        async with self.db.transaction() as conn:
+            if expected_session is not None:
+                cursor = await conn.execute("SELECT project_id FROM sessions WHERE id=?", (expected_session,))
+                session = await cursor.fetchone()
+                if session is None or session[0] != project_id:
+                    raise ValueError("Session project binding changed during office generation")
+            cursor = await conn.execute(
+                "SELECT * FROM office_deliveries WHERE project_id=? AND request_key=?", (project_id, key))
+            row = await cursor.fetchone()
+            return dict(row) if row is not None else None
 
     async def get(self, project_id, delivery_id):
         row = await self.db.fetchone(
@@ -95,11 +102,15 @@ class OfficeDAO:
     async def binding(self, project, run_id):
         return await run_binding(self.db.fetchall, project, run_id)
 
-    async def insert(self, fields, attachment, *, expected_project, expected_run):
+    async def insert(self, fields, attachment, *, expected_project, expected_run, expected_session=None):
         async with self.db.transaction() as conn:
             async def query(sql, args):
                 return await (await conn.execute(sql, args)).fetchall()
 
+            if expected_session is not None:
+                sessions = await query("SELECT project_id FROM sessions WHERE id=?", (expected_session,))
+                if len(sessions) != 1 or sessions[0]["project_id"] != fields["project_id"]:
+                    raise ValueError("Session project binding changed during office generation")
             existing = await query(
                 "SELECT * FROM office_deliveries WHERE project_id=? AND request_key=?",
                 (fields["project_id"], fields["request_key"]))
@@ -112,7 +123,7 @@ class OfficeDAO:
             if current != expected_run:
                 raise ValueError("Office run association changed during generation")
             inserted = await self.attachments.insert_in_transaction(
-                conn, attachment, expected_project=expected_project)
+                conn, attachment, expected_project=expected_project, expected_session=expected_session)
             row = {**fields, "created_at": now_iso()}
             validate_record(row, inserted)
             keys = tuple(row)

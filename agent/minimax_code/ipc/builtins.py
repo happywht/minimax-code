@@ -1240,11 +1240,13 @@ async def _handle_agent_send_message(
     # skill/agent runs retain their frozen tool capabilities.
     if internal_skill is None and internal_schedule is None:
         from ..agent.tools.generate_report_docx import register_report_docx_tool
+        from ..agent.tools.generate_table_xlsx import register_table_xlsx_tool
         from ..agent.tools.project_attachments import register_project_attachment_tools
         from ..agent.tools.public_research import register_public_research_tools
 
         register_project_attachment_tools(registry, db, session_id, project_id)
         register_report_docx_tool(registry, db, session_id, project_id)
+        register_table_xlsx_tool(registry, db, session_id, project_id)
         register_public_research_tools(registry)
 
     if internal_skill is not None:

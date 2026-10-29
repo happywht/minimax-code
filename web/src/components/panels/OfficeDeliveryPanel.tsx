@@ -64,11 +64,11 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
     {(formError || scoped && state.error) && <p role="alert" className="text-status-error">{formError || state.error}</p>}
     {state.busy && <p role="status">正在生成、核对或读取成果…</p>}
     <ul>{(scoped ? state.entries : []).map((entry) => <li key={entry.delivery.id}><button className="rounded border border-line p-2" disabled={state.busy} onClick={() => void state.select(entry.delivery.id)}>
-      {entry.attachment.original_name} · v{entry.attachment.version} · 已登记 / 结构校验通过 · 业务未验证
+      {entry.attachment.original_name} · v{entry.attachment.version} · {entry.delivery.id} · 已登记 / 结构校验通过 · 业务未验证
     </button></li>)}</ul>
     {scoped && state.selected && <div className="space-y-2">
       <p>校验范围 {state.selected.delivery.validation_report.scope} · 全部 {state.selected.delivery.validation_report.cell_count} 格（含表头） · 未做版式或业务验收</p>
-      <p>来源 run: {state.selected.delivery.run_id ?? "手动操作，无 run 关联"}</p>
+      <p>来源 run: {state.selected.delivery.run_id ?? "未关联 run"}</p>
       <p className="break-all text-xs">SHA-256: {state.selected.attachment.sha256}</p>
       <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
         <Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>

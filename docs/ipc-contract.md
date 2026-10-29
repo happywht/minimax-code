@@ -1637,7 +1637,7 @@ attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）�
 
 `attachment.generate_docx` 接受安全 `.docx` 显示名、单行标题（最多 200 字）和 1–100 个段落（每段最多 4096 字，总 UTF-8 最多 256 KiB）。使用本地 python-docx 创建，回读并比较全部段落，再经现有 DOCX 有界解析与不可变附件 vault 登记。不会读取或修改项目文件、调用模型或抓取资料；用户提供的来源文本需自行核实。不保证版式、分页、事实或业务质量。响应丢失时先刷新附件列表；重试会创建新版本。文件与现有附件共享备份协议及未验证状态，不作为已完成报告的质量证明。 普通聊天 Agent 可通过 `generate_report_docx` 生成当前会话项目的文档；提交时复核会话项目绑定，遵循规划模式与写入权限规则。该工具默认要求确认，拒绝规则优先，无法确认时拒绝。
 
-### office.* — 手动生成纯数据 XLSX（Schema046）
+### office.* — 生成纯数据 XLSX（Schema046）
 
 | 方法 | 参数 | 返回 |
 |------|------|------|
@@ -1646,7 +1646,7 @@ attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）�
 | `office.get` | `{project_id, delivery_id}` | `{delivery, attachment, preview_text}`，重新检查 vault 原件大小/hash |
 
 全部参数严格拒绝额外字段。HTTP 入口共用认证、Host/Origin 检查；stdio RPC 为已有受信本地入口。
-不注册为模型工具，不发起模型、run admission/resume 或业务完成状态。
+普通聊天 Agent 可调用 `generate_table_xlsx`，项目由服务端绑定当前会话并在重放与提交时复核；模型不能选择项目。该工具遵循 write_file 与自身权限中较严格的规则，默认确认，规划模式或无法确认时拒绝。请求键在同一会话内与输入绑定，响应丢失时可使用相同键及输入重试，不同输入冲突；新意图使用新键。不发起 run admission/resume 或业务完成状态。
 生成要求允许写入的执行上下文、当前持久服务身份及存在的显式绝对项目根。
 `expected_service_id` 为 `svc_` 加 32 位小写十六进制，`delivery_id` 为 `off_` 加同样后缀；
 project/run ID 最长 128 字符，`request_key` 为 1–128 个 ASCII 字母数字、下划线或连字符。

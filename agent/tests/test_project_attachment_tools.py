@@ -121,7 +121,7 @@ async def test_normal_chat_installs_bound_tools(native, monkeypatch):
     registry, session_id, project_id = installed[0]
     assert (session_id, project_id) == ("one", "inbox")
     assert registry.has("list_project_attachments") and registry.has("read_project_attachment")
-    assert registry.has("generate_report_docx")
+    assert registry.has("generate_report_docx") and registry.has("generate_table_xlsx")
     assert registry.has("search_public_web") and registry.has("read_public_page")
     native.release.set()
     await asyncio.wait_for(task, 5)
