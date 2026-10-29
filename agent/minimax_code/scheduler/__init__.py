@@ -321,11 +321,11 @@ class JobScheduler:
             if run:
                 if _IPC_SERVER and get_run_service(_IPC_SERVER).get_job(run["id"]):
                     continue
-                receipt = await dao.result_payload(run["id"]) or {}
-                status = task_outcome({**receipt,"run_id":run["id"],"run_status":run["status"],"verification":(run.get("metadata") or {}).get("verification")})
+                result = await self._durable_run_result(dao, run)
+                status = task_outcome(result)
                 if status == "running":
                     continue
-                await self._settle_occurrence(occurrence["id"],status,expected_run_id=run["id"],reason=run.get("error"),result=receipt.get("text"))
+                await self._settle_occurrence(occurrence["id"],status,expected_run_id=run["id"],reason=result.get("error") or result.get("review_reason"),result=result.get("text"))
             elif dispatch_pending and occurrence["status"] == "pending":
                 owner = await self._dao.get(occurrence["job_id"])
                 if owner and owner["enabled"] and not owner.get("deleted_at") and owner["revision"]==occurrence["revision"]:
@@ -504,11 +504,7 @@ class JobScheduler:
             if job is not None:
                 await asyncio.gather(service.wait(job), return_exceptions=True)
             run = await dao.get_run(accepted["id"])
-            result = {**(await dao.result_payload(accepted["id"]) or {}),
-                      "run_id": accepted["id"], "run_status": run["status"],
-                      "verification": (run.get("metadata") or {}).get("verification")}
-            if run.get("error"):
-                result["error"] = run["error"]
+            result = await self._durable_run_result(dao, run)
         from ..verification import task_outcome
         result["ok"] = task_outcome(result) == "completed"
         result["output"] = result.get("text", "")
@@ -516,6 +512,33 @@ class JobScheduler:
         # The durable run row is the real evidence; the task row keeps a
         # pointer rather than duplicating the whole transcript.
         result["evidence"] = {"kind": "run", "run_id": result.get("run_id")}
+        return result
+
+    @staticmethod
+    async def _durable_run_result(dao, run):
+        """Never release a schedule lease on an unconfirmed terminal receipt."""
+        try:
+            receipt = await dao.result_payload(run["id"])
+        except (ValueError, UnicodeError):
+            receipt = None
+        receipt = receipt if isinstance(receipt, dict) else {}
+        metadata = run.get("metadata") or {}
+        proofs = [receipt.get("verification"), metadata.get("verification")]
+        valid_proofs = [proof for proof in proofs if isinstance(proof, dict)
+                        and proof.get("version") == 1
+                        and isinstance(proof.get("requires_review"), bool)]
+        evidence = dict(valid_proofs[0]) if valid_proofs else {}
+        evidence["requires_review"] = any(proof["requires_review"] for proof in valid_proofs)
+        reason = None
+        if run["status"] == "completed" and (not receipt or not valid_proofs):
+            evidence["requires_review"] = True
+            reason = "Completed run has no durable receipt or verification evidence"
+        result = {**receipt, "run_id": run["id"], "run_status": run["status"],
+                  "verification": evidence}
+        if reason:
+            result["review_reason"] = reason
+        if run.get("error"):
+            result["error"] = run["error"]
         return result
 
 
@@ -564,7 +587,7 @@ class JobScheduler:
                 return
             # Admission/config failure before any model call remains repairable.
             status = task_outcome(result) if result.get("run_id") else "blocked"
-            await self._settle_occurrence(occurrence["id"],status,expected_run_id=result.get("run_id"),reason=str(result.get("error")) if result.get("error") else None,result=result.get("text") or result.get("output"))
+            await self._settle_occurrence(occurrence["id"],status,expected_run_id=result.get("run_id"),reason=str(result.get("error") or result.get("review_reason")) if result.get("error") or result.get("review_reason") else None,result=result.get("text") or result.get("output"))
         except Exception as exc:
             current = await self._occurrences.get(occurrence["id"])
             if current and (current["status"] in {"superseded","cancelled"} or current["run_id"] != occurrence.get("run_id")):

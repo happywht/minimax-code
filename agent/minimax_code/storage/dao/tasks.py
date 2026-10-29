@@ -102,7 +102,12 @@ class TasksDAO:
         run = await self._db.fetchone("SELECT status,metadata,result FROM agent_runs WHERE id=?",
                                      (task["run_id"],)) if task.get("run_id") else None
         metadata = loads_json(run["metadata"]) or {} if run else {}
-        receipt = loads_json(run["result"]) or {} if run else {}
+        try:
+            receipt = loads_json(run["result"]) or {} if run else {}
+        except (ValueError, UnicodeError):
+            receipt = {}
+        if not isinstance(receipt, dict):
+            receipt = {}
         evidence = metadata.get("verification") or receipt.get("verification") or {}
         if evidence.get("version") != 1:
             evidence = {**evidence, "version": 1, "verdict": "unknown", "reason": "legacy_unverified",
@@ -113,6 +118,14 @@ class TasksDAO:
             "queued", "planning", "running", "awaiting_approval", "waiting_input"})
         if run:
             task["status"] = task_outcome({**receipt, "run_status": run["status"], "verification": evidence})
+            # Schedule settlement can require review even when the underlying
+            # run says completed (for example, a missing durable receipt).
+            # Do not hide that decision when hydrating occurrence history.
+            occurrence = await self._db.fetchone(
+                "SELECT status FROM schedule_occurrences WHERE task_id=?", (task["id"],)
+            )
+            if occurrence and occurrence["status"] == "requires_review":
+                task["status"] = "requires_review"
             if receipt.get("text"):
                 task["result"] = receipt["text"]
         return task
