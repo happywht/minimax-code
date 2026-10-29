@@ -417,6 +417,8 @@ class RunProjectSummaryParams(BaseModel):
     project_id: str = Field(min_length=1, max_length=128)
     expected_service_id: str = Field(min_length=1, max_length=128)
     run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    history_query: str | None = Field(default=None, max_length=200)
+    history_offset: int = Field(default=0, ge=0, le=10000)
 
 
 class RunResearchSearchParams(BaseModel):

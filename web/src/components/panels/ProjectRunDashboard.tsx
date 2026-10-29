@@ -22,8 +22,10 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
   const [detail, setDetail] = useState<ProjectRunSummaryResult["detail"]>(undefined);
   const [snapshot, setSnapshot] = useState<RunStepsResult | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [revision, setRevision] = useState(0);
+  const [query, setQuery] = useState(""), [appliedQuery, setAppliedQuery] = useState("");
+  const [history, setHistory] = useState<ProjectRunSummaryResult["history"]>(undefined);
   const generation = useRef(0), timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { generation.current++; setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setError(""); setBusy(false); }, [project, host]);
+  useEffect(() => { generation.current++; setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setQuery(""); setAppliedQuery(""); setError(""); setBusy(false); }, [project, host]);
   useEffect(() => { generation.current++; setDetail(undefined); setSnapshot(null); setBusy(false); }, [activeSession]);
   const refresh = useCallback(async () => {
     if (!project) return;
@@ -38,7 +40,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
       if (!current()) return;
       if (result.project_id !== project || result.service_id !== scope.service_id || !result.groups ||
           Object.values(result.groups).some((part) => !part || !Array.isArray(part.items) || part.items.length > 25)) throw new Error("运行摘要关联不匹配");
-      setService(scope.service_id); setGroups(result.groups); setDetail(undefined); setSnapshot(null);
+      setService(scope.service_id); setGroups(result.groups); setDetail(undefined); setSnapshot(null); setHistory(undefined);
     } catch (e) { if (current()) { setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setError(e instanceof Error ? e.message : String(e)); } }
     finally { if (current()) setBusy(false); }
   }, [project, host, activeSession]);
@@ -46,7 +48,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
   useEffect(() => {
     const wake = () => { if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => setRevision((n) => n + 1), 250); };
     const unsubs = [StreamEvent.RunCreated, StreamEvent.RunUpdated, StreamEvent.RunCompleted].map((event) => ipc.on(event, wake));
-    unsubs.push(ipc.onSideCar((event) => { generation.current++; setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setBusy(false);
+    unsubs.push(ipc.onSideCar((event) => { generation.current++; setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setBusy(false);
       if (event.status === "started") wake(); else setError("连接中断，运行状态待刷新。"); }));
     return () => { generation.current++; if (timer.current) clearTimeout(timer.current); unsubs.forEach((off) => off()); };
   }, []);
@@ -77,6 +79,20 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
     } catch (e) { if (current()) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (current()) setBusy(false); }
   };
+  const searchHistory = async (term: string, offset: number) => {
+    if (!project || !service || busy) return;
+    const ticket = ++generation.current, expected = service;
+    const current = () => ticket === generation.current && ipc.agentBaseUrl === host && useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === activeSession;
+    setBusy(true); setError(""); setHistory(undefined); setDetail(undefined); setSnapshot(null);
+    try {
+      const result = await typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: expected, history_query: term, history_offset: offset });
+      if (!current()) return;
+      if (result.project_id !== project || result.service_id !== expected || !result.history || result.history.offset !== offset ||
+          !Array.isArray(result.history.items) || result.history.items.length > 25 || typeof result.history.has_more !== "boolean") throw new Error("历史运行归属不匹配");
+      setAppliedQuery(term); setHistory(result.history);
+    } catch (e) { if (current()) setError(e instanceof Error ? e.message : String(e)); }
+    finally { if (current()) setBusy(false); }
+  };
   const items = groups?.[group].items ?? [];
   return <section className="flex h-full min-h-0 flex-col gap-3 overflow-auto p-4" aria-label="项目任务状态">
     <div className="flex justify-between gap-2"><div><h2 className="text-lg font-semibold">项目任务状态</h2>
@@ -84,6 +100,29 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
     <p className="text-sm text-ink-1">按持久运行记录分组，不按会话计数。每组最多显示最近 25 条；已归档会话、未绑定项目的旧记录和内部子任务不在此列表。等待状态不代表审批或问题仍有效。</p>
     <div className="flex flex-wrap gap-2">{(Object.keys(groupLabels) as Group[]).map((id) => <Button key={id} type="button" size="sm" variant={group === id ? "primary" : "secondary"} aria-pressed={group === id} onClick={() => { setGroup(id); setDetail(undefined); setSnapshot(null); }}>{groupLabels[id]}</Button>)}
       <Button type="button" size="sm" variant="ghost" disabled={busy || !project} onClick={() => void refresh()}>刷新</Button></div>
+    <form className="flex flex-wrap items-end gap-2 rounded border border-line p-2" onSubmit={(event) => { event.preventDefault(); void searchHistory(query.trim(), 0); }}>
+      <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">查找历史运行
+        <input className="rounded border border-line bg-surface-0 p-1" value={query} maxLength={200} onChange={(event) => setQuery(event.target.value)} placeholder="运行标题、会话标题或运行 ID" />
+      </label>
+      <Button type="submit" size="sm" variant="secondary" disabled={busy || !service}>查找</Button>
+      {history && <Button type="button" size="sm" variant="ghost" onClick={() => setHistory(undefined)}>关闭搜索结果</Button>}
+      <p className="w-full text-xs text-ink-2">搜索已结束、失败、取消或中断的持久运行；空关键词浏览历史。已归档会话和未绑定项目的旧记录不包含在内。</p>
+    </form>
+    {history && <div className="space-y-2 rounded border border-line p-2" aria-label="历史运行搜索结果">
+      <p className="text-sm">搜索：{appliedQuery || "全部"} · 从第 {history.offset + 1} 条记录开始</p>
+      {!history.items.length && <p>本页没有可显示的运行；主机边界可能隐藏部分记录。</p>}
+      <ul className="space-y-2">{history.items.map((item) => <li key={item.id} className="rounded bg-surface-2 p-2">
+        <p className="font-medium">{item.title || "未命名运行"}</p>
+        <p className="break-all text-xs text-ink-2">会话：{item.session_title || item.session_id} · 运行：{item.id}</p>
+        <p className="text-xs">记录状态：{statusLabels[item.status] ?? item.status} · {item.completed_at ?? item.created_at}</p>
+        <div className="mt-1 flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void select(item, false)}>查看结果</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void select(item, true)}>打开所属会话</Button></div>
+      </li>)}</ul>
+      <div className="flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy || history.offset === 0} onClick={() => void searchHistory(appliedQuery, Math.max(0, history.offset - 25))}>上一页</Button>
+        <Button type="button" size="sm" variant="secondary" disabled={busy || !history.has_more || history.offset >= 10000} onClick={() => void searchHistory(appliedQuery, history.offset + 25)}>下一页</Button></div>
+      {history.has_more && history.offset >= 10000 && <p className="text-xs">已到浏览上限，请缩小搜索范围。</p>}
+      <p className="text-xs text-ink-2">记录可能在翻页时变化，页码不是固定快照；主机不可访问的记录不会显示。</p>
+    </div>}
     {!project && <p role="status">请先选择项目。</p>}{busy && <p role="status">正在读取当前服务记录…</p>}{error && <p role="alert">{error}</p>}
     {!busy && groups && !items.length && <p>此范围内没有已显示的运行记录。</p>}
     {groups?.[group].truncated && <p>此类别超过 25 条，仅显示最近记录。</p>}

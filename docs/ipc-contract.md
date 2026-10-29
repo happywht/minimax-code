@@ -2146,7 +2146,7 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 
 `host.connection` 的 `state` 可为 `degraded`：SSH 隧道进程仍在，但连续两次远端服务健康探测未通过；恢复探测成功后返回 `connected`。该状态不代表远端任务结果。
 
-`run.project_summary` 接受 `project_id`、`expected_service_id` 和可选 `run_id`；无 run_id 时返回项目内未归档会话的有界持久运行分类及可确认的进程内执行者标记，有 run_id 时返回同项目绑定的有界已保存文本结果。排除内部子任务及未绑定项目旧记录；服务重启或断线后活动状态需重新核对。
+`run.project_summary` 接受 `project_id`、`expected_service_id` 和可选 `run_id`；无 run_id 时返回项目内未归档会话的有界持久运行分类及可确认的进程内执行者标记，有 run_id 时返回同项目绑定的有界已保存文本结果。排除内部子任务及未绑定项目旧记录；服务重启或断线后活动状态需重新核对。 可选 `history_query`（最长 200 字符，空字符串浏览全部）按运行标题、会话标题或运行 ID 的字面子串检索结束、失败、取消和中断记录；`history_offset` 从 0 到 10000，每页读取 25 条并返回 `has_more`。分页基于实时记录而非固定快照；主机边界过滤可能导致一页少于 25 条或为空。详情请求不能同时包含历史查询。
 
 `schedule.update` 可附带 `expected_service_id`；服务端在更新前核对该身份。编辑使用打开时的 `expected_revision`；计划已变更时拒绝更新。已接单发生保留原快照，未接单旧发生可被替代；需要核对状态不会因编辑清除。
 

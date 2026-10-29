@@ -836,6 +836,34 @@ def register_run_handlers(server: Any) -> None:
                 AND COALESCE(json_extract(r.metadata,'$.manual_research'),0)!=1"""
             fields = "r.id,r.session_id,r.title,r.status,r.created_at,r.completed_at,s.title AS session_title"
             live_service = get_run_service(ctx.server)
+            if request.run_id and (request.history_query is not None or request.history_offset):
+                raise ValueError("History search cannot be combined with run detail")
+            if request.history_query is not None:
+                # LIKE metacharacters are escaped so the query is a literal substring.
+                term = request.history_query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                pattern = f"%{term}%"
+                rows = await dao._db.fetchall(
+                    f"SELECT {fields} {base} AND r.status IN ('completed','failed','cancelled','interrupted') "
+                    "AND (r.title LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' OR r.id LIKE ? ESCAPE '\\') "
+                    "ORDER BY COALESCE(r.completed_at,r.created_at) DESC,r.id DESC LIMIT 26 OFFSET ?",
+                    (request.project_id, request.project_id, pattern, pattern, pattern, request.history_offset),
+                )
+                items = []
+                allowed_sessions = {}
+                for row in rows[:25]:
+                    sid = row["session_id"]
+                    if sid not in allowed_sessions:
+                        try:
+                            await require_host_session(sid)
+                            allowed_sessions[sid] = True
+                        except HandlerError:
+                            allowed_sessions[sid] = False
+                    if allowed_sessions[sid]:
+                        items.append({**dict(row), "live": None})
+                await check_scope()
+                await ctx.reply({"project_id": request.project_id, "service_id": request.expected_service_id,
+                    "history": {"items": items, "offset": request.history_offset, "has_more": len(rows) > 25}})
+                return
             if request.run_id:
                 row = await dao._db.fetchone(f"SELECT {fields} {base} AND r.id=?", (request.project_id, request.project_id, request.run_id))
                 if not row:

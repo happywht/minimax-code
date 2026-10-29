@@ -999,6 +999,7 @@ export interface ProjectRunSummaryResult {
   project_id: string; service_id: string;
   groups?: Record<"attention" | "active" | "recent", { items: ProjectRunSummaryItem[]; truncated: boolean }>;
   detail?: Omit<ProjectRunSummaryItem, "live"> & { text: string | null; text_truncated: boolean };
+  history?: { items: ProjectRunSummaryItem[]; offset: number; has_more: boolean };
 }
 
 export interface ListRunsResult {
