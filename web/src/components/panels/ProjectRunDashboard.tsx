@@ -10,6 +10,7 @@ import { RunTextArtifacts } from "../right-panel/RunTextArtifacts";
 
 type Group = "attention" | "active" | "recent";
 const groupLabels: Record<Group, string> = { attention: "等待处理", active: "运行与排队", recent: "最近结果" };
+const cancellable = new Set(["queued", "planning", "running", "awaiting_approval", "waiting_input"]);
 const statusLabels: Record<string, string> = { queued: "排队中", planning: "规划中", running: "运行中", awaiting_approval: "等待授权",
   waiting_input: "等待输入", budget_paused: "预算暂停", interrupted: "中断待核对", completed: "执行结束", failed: "执行失败", cancelled: "已取消" };
 
@@ -24,9 +25,11 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [revision, setRevision] = useState(0);
   const [query, setQuery] = useState(""), [appliedQuery, setAppliedQuery] = useState("");
   const [history, setHistory] = useState<ProjectRunSummaryResult["history"]>(undefined);
-  const generation = useRef(0), timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { generation.current++; setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setQuery(""); setAppliedQuery(""); setError(""); setBusy(false); }, [project, host]);
-  useEffect(() => { generation.current++; setDetail(undefined); setSnapshot(null); setBusy(false); }, [activeSession]);
+  const generation = useRef(0), actionEpoch = useRef(0), actionLock = useRef(false), timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [stopping, setStopping] = useState<string | null>(null), [stopNotice, setStopNotice] = useState("");
+  const [requested, setRequested] = useState<Set<string>>(() => new Set());
+  useEffect(() => { generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setQuery(""); setAppliedQuery(""); setError(""); setBusy(false); }, [project, host]);
+  useEffect(() => { generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setDetail(undefined); setSnapshot(null); setBusy(false); }, [activeSession]);
   const refresh = useCallback(async () => {
     if (!project) return;
     const ticket = ++generation.current;
@@ -48,9 +51,9 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
   useEffect(() => {
     const wake = () => { if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => setRevision((n) => n + 1), 250); };
     const unsubs = [StreamEvent.RunCreated, StreamEvent.RunUpdated, StreamEvent.RunCompleted].map((event) => ipc.on(event, wake));
-    unsubs.push(ipc.onSideCar((event) => { generation.current++; setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setBusy(false);
+    unsubs.push(ipc.onSideCar((event) => { generation.current++; actionEpoch.current++; setStopping(null); setRequested(new Set()); setStopNotice("连接变化；若已发送停止请求，请刷新运行状态确认结果。"); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setBusy(false);
       if (event.status === "started") wake(); else setError("连接中断，运行状态待刷新。"); }));
-    return () => { generation.current++; if (timer.current) clearTimeout(timer.current); unsubs.forEach((off) => off()); };
+    return () => { generation.current++; actionEpoch.current++; if (timer.current) clearTimeout(timer.current); unsubs.forEach((off) => off()); };
   }, []);
   const select = async (item: ProjectRunSummaryItem, open: boolean) => {
     if (!project || !service || busy) return;
@@ -93,6 +96,39 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
     } catch (e) { if (current()) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (current()) setBusy(false); }
   };
+  const stop = async (item: ProjectRunSummaryItem) => {
+    if (!project || !service || actionLock.current || !cancellable.has(item.status) || item.live === false) return;
+    const ticket = ++actionEpoch.current, expected = service;
+    const current = () => ticket === actionEpoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === activeSession;
+    actionLock.current = true; setStopping(item.id); setStopNotice("");
+    let sent = false;
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      const snapshot = await typedIPC.getRunSteps(item.id);
+      const identityAfter = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (identity.service_id !== expected || identityAfter.service_id !== expected || snapshot.run.id !== item.id ||
+          snapshot.run.session_id !== item.session_id || snapshot.run.metadata?.project_id !== project ||
+          snapshot.steps.some((step) => step.run_id !== item.id || step.session_id !== item.session_id)) throw new Error("运行、项目或服务身份已变化，请刷新后重试");
+      if (!cancellable.has(snapshot.run.status)) throw new Error("任务已不处于可停止状态，请刷新记录");
+      if (!window.confirm(`请求停止“${item.title || item.id}”？已执行的操作不会撤销；最终状态需要刷新确认。`)) return;
+      const finalIdentity = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (finalIdentity.service_id !== expected) throw new Error("服务身份已变化，请刷新后重试");
+      sent = true;
+      const reply = await typedIPC.cancelRun(item.id);
+      if (!current()) return;
+      if (reply.run.id !== item.id || reply.run.session_id !== item.session_id || reply.run.metadata?.project_id !== project) throw new Error("停止回执归属不匹配");
+      if (reply.requested) {
+        setRequested((previous) => new Set([...previous, item.id]));
+        setStopNotice(`已请求停止 ${item.title || item.id}；请刷新确认最终状态。`);
+      } else setStopNotice(`未发送停止请求，任务可能已经结束或当前服务无法停止；请刷新确认 ${item.title || item.id}。`);
+      setRevision((n) => n + 1);
+    } catch (e) {
+      if (current()) setStopNotice(`${sent ? "停止结果未确认，请先刷新状态：" : "未发送停止请求："}${e instanceof Error ? e.message : String(e)}`);
+    } finally { actionLock.current = false; if (current()) setStopping(null); }
+  };
   const items = groups?.[group].items ?? [];
   return <section className="flex h-full min-h-0 flex-col gap-3 overflow-auto p-4" aria-label="项目任务状态">
     <div className="flex justify-between gap-2"><div><h2 className="text-lg font-semibold">项目任务状态</h2>
@@ -123,6 +159,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
       {history.has_more && history.offset >= 10000 && <p className="text-xs">已到浏览上限，请缩小搜索范围。</p>}
       <p className="text-xs text-ink-2">记录可能在翻页时变化，页码不是固定快照；主机不可访问的记录不会显示。</p>
     </div>}
+    {stopNotice && <p role="status" className="break-words text-sm text-status-warning">{stopNotice}</p>}
     {!project && <p role="status">请先选择项目。</p>}{busy && <p role="status">正在读取当前服务记录…</p>}{error && <p role="alert">{error}</p>}
     {!busy && groups && !items.length && <p>此范围内没有已显示的运行记录。</p>}
     {groups?.[group].truncated && <p>此类别超过 25 条，仅显示最近记录。</p>}
@@ -130,7 +167,8 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
       <p className="font-medium">{item.title || "未命名运行"}</p><p className="break-all text-xs text-ink-2">会话：{item.session_title || item.session_id} · 运行：{item.id}</p>
       <p className="text-xs">记录状态：{statusLabels[item.status] ?? item.status}{item.live === false ? " · 当前服务无法确认仍在执行" : ""} · {group === "recent" ? item.completed_at ?? item.created_at : item.created_at}</p>
       <div className="mt-1 flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void select(item, false)}>查看结果</Button>
-        <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void select(item, true)}>打开所属会话</Button></div>
+        <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void select(item, true)}>打开所属会话</Button>
+        {cancellable.has(item.status) && item.live !== false && <Button type="button" size="sm" variant="secondary" disabled={!!stopping || requested.has(item.id) || !service} onClick={() => void stop(item)}>{stopping === item.id ? "正在请求停止…" : requested.has(item.id) ? "已请求停止" : "停止此任务"}</Button>}</div>
     </li>)}</ul>
     {detail && <div className="rounded border border-line p-3"><h3 className="font-medium">运行结果 · {detail.id}</h3>
       <p>读取时状态：{statusLabels[detail.status] ?? detail.status}</p>
