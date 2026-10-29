@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from pydantic import ValidationError
 
@@ -18,6 +19,7 @@ class GenerateReportDocxTool(Tool):
         "and either paragraphs or sections containing ordered paragraph/table blocks. "
         "Provide sources as title, HTTP(S) URL, and optional actual access time; cite them in body as [1], [2] in source order. Never invent sources or access times. "
         "Pass page_source_ids returned by read_public_page or list_research_sources for this project; actual page metadata and bounded excerpt are inserted automatically. Manual sources come first, then page_source_ids in order. "
+        "Use document_excerpts to include verified current-project attachment extracts; cite them in the body as [资料1], [资料2] in their supplied order. "
         "Use only one of paragraphs or sections. Include source citations supplied or verified by the user. "
         "The file is not rendered or fact-checked. An ambiguous failure may have committed: "
         "check project attachments before retrying."
@@ -34,6 +36,16 @@ class GenerateReportDocxTool(Tool):
             }, "required": ["title", "url"], "additionalProperties": False}},
             "page_source_ids": {"type": "array", "maxItems": 30, "uniqueItems": True,
                                 "items": {"type": "string"}, "description": "IDs of pages read in this project on this service"},
+            "document_excerpts": {"type": "array", "maxItems": 10, "items": {
+                "type": "object", "properties": {
+                    "attachment_id": {"type": "string"},
+                    "expected_sha256": {"type": "string"},
+                    "unit": {"type": "integer", "minimum": 1},
+                    "start": {"type": "integer", "minimum": 0},
+                    "end": {"type": "integer", "minimum": 1},
+                }, "required": ["attachment_id", "expected_sha256", "unit", "start", "end"],
+                "additionalProperties": False,
+            }, "description": "Exact character ranges from read_project_document, at most 1000 characters each; report body may cite [资料1], [资料2]"},
             "sections": {"type": "array", "items": {
                 "type": "object", "properties": {
                     "heading": {"type": "string"},
@@ -67,12 +79,56 @@ class GenerateReportDocxTool(Tool):
             return [] if sources is None else sources
         return await self.research_sources.resolve_pages(page_source_ids, sources)
 
+    async def _document_excerpts(self, excerpts, paragraphs, sections):
+        """Resolve citations from vault originals rather than trusting supplied text."""
+        if excerpts is None or excerpts == []:
+            return paragraphs, sections
+        if not isinstance(excerpts, list) or len(excerpts) > 10:
+            raise ValueError("Provide at most 10 document excerpts")
+        from .project_attachments import ReadProjectDocumentTool
+
+        reader = ReadProjectDocumentTool(self.db, self.session_id, self.project_id)
+        blocks = []
+        for index, ref in enumerate(excerpts, 1):
+            if (not isinstance(ref, dict) or set(ref) != {"attachment_id", "expected_sha256", "unit", "start", "end"}
+                    or not isinstance(ref["attachment_id"], str) or not ref["attachment_id"]
+                    or not isinstance(ref["expected_sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", ref["expected_sha256"])
+                    or type(ref["unit"]) is not int or not 1 <= ref["unit"] <= 10000
+                    or type(ref["start"]) is not int or type(ref["end"]) is not int
+                    or not 0 <= ref["start"] < ref["end"] <= 10 * 1024 * 1024
+                    or ref["end"] - ref["start"] > 1000):
+                raise ValueError("Invalid document excerpt identity or range")
+            result = await reader.run(ref["attachment_id"], ref["unit"], ref["start"])
+            if not result.success:
+                raise ValueError(result.error or "Document excerpt unavailable")
+            page = result.output
+            attachment = page["attachment"]
+            if (attachment["sha256"] != ref["expected_sha256"] or page["unit"] != ref["unit"]
+                    or page["end"] < ref["end"]):
+                raise ValueError("Document identity or excerpt range changed; read it again")
+            excerpt = page["text"][:ref["end"] - ref["start"]]
+            # Each paragraph stays below the generator's per-string limit.
+            blocks.extend([
+                f"[资料{index}] {attachment['original_name']} | 附件 ID: {attachment['id']} | SHA-256: {attachment['sha256']}",
+                f"位置: {page['location']} (unit {page['unit']}/{page['unit_total']}), 字符 [{ref['start']}, {ref['end']})。仅为所选摘录，不代表全文。",
+                f"提取范围: {page['scope_notice']} OCR: {page['ocr']}。原件内容及报告事实未经核验。",
+                f"摘录: {excerpt}",
+            ])
+        if paragraphs is not None and sections is None:
+            return [*paragraphs, "项目附件摘录（未经核验）", *blocks], sections
+        if sections is not None and paragraphs is None:
+            return paragraphs, [*sections, {"heading": "项目附件摘录（未经核验）",
+                "blocks": [{"kind": "paragraph", "text": item} for item in blocks]}]
+        raise ValueError("Provide either paragraphs or sections")
+
     operation = "generate_docx"
 
     async def run(self, filename: str, title: str, paragraphs: list[str] | None = None,
                   sections: list[dict[str, Any]] | None = None,
                   sources: list[dict[str, Any]] | None = None,
-                  page_source_ids: list[str] | None = None) -> ToolResult:
+                  page_source_ids: list[str] | None = None,
+                  document_excerpts: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
             require_write_access()
             if not isinstance(self.project_id, str) or not self.project_id:
@@ -81,6 +137,7 @@ class GenerateReportDocxTool(Tool):
             if row is None or row["project_id"] != self.project_id:
                 raise ValueError("Current session project binding changed")
             identity = await self.service.dao.service_id()
+            paragraphs, sections = await self._document_excerpts(document_excerpts, paragraphs, sections)
             params = AttachmentGenerateDocxParams.model_validate({
                 "project_id": self.project_id, "expected_service_id": identity,
                 "filename": filename, "title": title, "paragraphs": paragraphs, "sections": sections,
@@ -108,6 +165,7 @@ class GenerateReportPdfTool(GenerateReportDocxTool):
         "paragraphs or structured sections with ordered paragraph/table blocks. Include source "
         "citations where available in sources and cite them in body as [1], [2] in source order; do not invent sources or access times. "
         "Pass project page_source_ids from read_public_page or list_research_sources for page metadata and excerpts, ordered after manual sources. "
+        "Use document_excerpts to include verified attachment extracts; cite them as [资料1], [资料2]. "
         "A Chinese TrueType font is embedded; missing dependencies or font coverage cause an explicit error. Facts and visual layout are not verified. "
         "If the outcome is uncertain, inspect project attachments before retrying."
     )
@@ -123,6 +181,7 @@ class GenerateReportPairTool(GenerateReportDocxTool):
         "Generate DOCX and PDF from the same title and paragraphs or sections, saving each in "
         "current-project attachments. Provide known sources with actual URLs and optional access times, and cite them as [1], [2] in source order; never invent them. "
         "Use project page_source_ids from read_public_page or list_research_sources to append actual page metadata and excerpts after manual sources. "
+        "Use document_excerpts to include verified attachment extracts; cite them as [资料1], [资料2]. "
         "Each format is reported separately; partial success is not "
         "full success. Check project attachments before retrying an unconfirmed format, then request "
         "only that format. Neither factual accuracy nor visual rendering is verified."
@@ -137,7 +196,8 @@ class GenerateReportPairTool(GenerateReportDocxTool):
     async def run(self, filename: str, title: str, paragraphs: list[str] | None = None,
                   sections: list[dict[str, Any]] | None = None, formats: list[str] | None = None,
                   sources: list[dict[str, Any]] | None = None,
-                  page_source_ids: list[str] | None = None) -> ToolResult:
+                  page_source_ids: list[str] | None = None,
+                  document_excerpts: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
             require_write_access()
             if not isinstance(self.project_id, str) or not self.project_id:
@@ -146,6 +206,7 @@ class GenerateReportPairTool(GenerateReportDocxTool):
             if row is None or row["project_id"] != self.project_id:
                 raise ValueError("Current session project binding changed")
             identity = await self.service.dao.service_id()
+            paragraphs, sections = await self._document_excerpts(document_excerpts, paragraphs, sections)
             params = AttachmentGenerateReportPairParams.model_validate({
                 "project_id": self.project_id, "expected_service_id": identity, "filename": filename,
                 "title": title, "paragraphs": paragraphs, "sections": sections,
