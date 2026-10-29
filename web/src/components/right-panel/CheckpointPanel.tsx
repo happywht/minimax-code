@@ -29,6 +29,14 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   const [diffs, setDiffs] = useState<Record<string, string>>({});
   const [diffLoading, setDiffLoading] = useState<Record<string, boolean>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [legacyPaths, setLegacyPaths] = useState<Record<string, string>>({});
+  const [legacyConfirmed, setLegacyConfirmed] = useState<Record<string, boolean>>({});
+
+  const legacyOptions = (ckpt: Checkpoint) => ckpt.source_root ? undefined : {
+    cwd: (legacyPaths[ckpt.id] ?? "").trim(), legacy_source_confirmed: true,
+  };
+  const legacyReady = (ckpt: Checkpoint) => Boolean(ckpt.source_root ||
+    ((legacyPaths[ckpt.id] ?? "").trim() && legacyConfirmed[ckpt.id]));
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -94,6 +102,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   };
 
   const handleRestore = async (ckpt: Checkpoint) => {
+    if (!legacyReady(ckpt)) return;
     const accepted = await requestConfirmation({
       title: strings.rightPanel.checkpoint.restoreTitle(ckpt.label),
       description: strings.rightPanel.checkpoint.restoreDescription,
@@ -101,7 +110,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     });
     if (!accepted) return;
     try {
-      await typedIPC.restoreCheckpoint(ckpt.id);
+      await typedIPC.restoreCheckpoint(ckpt.id, legacyOptions(ckpt));
       toast.success(strings.rightPanel.checkpoint.restored, ckpt.label);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -110,6 +119,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   };
 
   const toggleDiff = async (ckpt: Checkpoint) => {
+    if (!legacyReady(ckpt)) return;
     if (expandedDiff === ckpt.id) {
       setExpandedDiff(null);
       return;
@@ -118,7 +128,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     if (diffs[ckpt.id] !== undefined) return;
     setDiffLoading((prev) => ({ ...prev, [ckpt.id]: true }));
     try {
-      const result = await typedIPC.diffCheckpoint(ckpt.id);
+      const result = await typedIPC.diffCheckpoint(ckpt.id, legacyOptions(ckpt));
       setDiffs((prev) => ({
         ...prev,
         [ckpt.id]: result.available ? result.patch : strings.rightPanel.checkpoint.noDiff,
@@ -206,6 +216,23 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                     {ckpt.message && (
                       <div className="truncate text-[11px] text-minimax-muted">{ckpt.message}</div>
                     )}
+                    {!ckpt.source_root && (
+                      <div className="mt-1 text-[11px] text-status-warning">
+                        <p>旧检查点的原目录未知。请核实创建时使用的工作目录；系统无法验证该来源。</p>
+                        <label>原工作目录
+                          <input className="w-full text-minimax-fg bg-minimax-bg" value={legacyPaths[ckpt.id] ?? ""}
+                            onChange={(event) => {
+                              setLegacyPaths((prev) => ({ ...prev, [ckpt.id]: event.target.value }));
+                              setLegacyConfirmed((prev) => ({ ...prev, [ckpt.id]: false }));
+                              setDiffs((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+                            }} />
+                        </label>
+                        <label><input type="checkbox" checked={Boolean(legacyConfirmed[ckpt.id])}
+                          onChange={(event) => setLegacyConfirmed((prev) => ({ ...prev, [ckpt.id]: event.target.checked }))} />
+                          我已核实此目录是创建检查点时使用的目录
+                        </label>
+                      </div>
+                    )}
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-minimax-muted">
                       <span className="flex items-center gap-0.5" title={ckpt.created_at}>
                         <Clock size={10} />
@@ -229,6 +256,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                       size="sm"
                       variant="ghost"
                       onClick={() => void toggleDiff(ckpt)}
+                      disabled={!legacyReady(ckpt)}
                       data-testid={`${testId}-diff-${ckpt.id}`}
                       icon={expandedDiff === ckpt.id ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
                     >
@@ -238,6 +266,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                       size="sm"
                       variant="ghost"
                       onClick={() => void handleRestore(ckpt)}
+                      disabled={!legacyReady(ckpt)}
                       data-testid={`${testId}-restore-${ckpt.id}`}
                     >
                       <RotateCcw size={10} />

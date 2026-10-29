@@ -101,6 +101,7 @@ def register_checkpoint_handlers(
                 has_untracked_snapshot=snapshot.has_untracked_snapshot,
                 checkpoint_id=checkpoint_id,
                 created_at=snapshot.created_at,
+                source_root=str(workdir),
             )
             await ctx.reply({"checkpoint": row})
         except HandlerError as exc:
@@ -150,9 +151,7 @@ def register_checkpoint_handlers(
                 )
             # Resolve cwd after the row lookup — the checkpoint's owning
             # session decides the project-scoped root (v1.3.0).
-            workdir = await _resolve_cwd(
-                p, session_id=str(row.get("session_id") or "") or None
-            )
+            workdir = await _resolve_checkpoint_cwd(p, row)
             mgr = await manager_factory()
             result = await mgr.restore(workdir, _row_to_checkpoint(row))
             await ctx.reply({"result": _result_to_dict(result)})
@@ -177,9 +176,7 @@ def register_checkpoint_handlers(
                 raise HandlerError(
                     INVALID_PARAMS, f"unknown checkpoint_id: {checkpoint_id!r}"
                 )
-            workdir = await _resolve_cwd(
-                p, session_id=str(row.get("session_id") or "") or None
-            )
+            workdir = await _resolve_checkpoint_cwd(p, row)
             mgr = await manager_factory()
             diff = await mgr.diff(workdir, _row_to_checkpoint(row))
             await ctx.reply(
@@ -311,7 +308,7 @@ def _make_manager_factory(manager: Any | None) -> Any:
 
 
 async def _resolve_cwd(
-    params: dict[str, Any], *, session_id: str | None = None
+    params: dict[str, Any], *, session_id: str | None = None, allow_subdir: bool = False
 ) -> Path:
     """Resolve the working tree to snapshot/rewind.
 
@@ -338,9 +335,26 @@ async def _resolve_cwd(
     # Existing checkpoint records store untracked paths relative to their
     # original cwd, without recording that cwd. Silently changing it to the
     # repository root could restore old files into the wrong directory.
-    if target != repo:
+    if target != repo and not allow_subdir:
         raise HandlerError(INVALID_PARAMS, "Checkpoint working directory must be the Git repository root")
-    return repo
+    return target
+
+
+async def _resolve_checkpoint_cwd(params: dict[str, Any], row: dict[str, Any]) -> Path:
+    source = row.get("source_root")
+    session_id = str(row.get("session_id") or "") or None
+    if not source:
+        if params.get("legacy_source_confirmed") is not True or not _string_param(params, "cwd"):
+            raise HandlerError(INVALID_PARAMS, "Checkpoint source is unknown. Verify its original working directory, then supply cwd and legacy_source_confirmed=true.")
+        return await _resolve_cwd(params, session_id=session_id, allow_subdir=True)
+    if not isinstance(source, str):
+        raise HandlerError(INVALID_PARAMS, "Invalid checkpoint source")
+    target_params = dict(params)
+    target_params.setdefault("cwd", source)
+    target = await _resolve_cwd(target_params, session_id=session_id)
+    if target != Path(source).resolve():
+        raise HandlerError(INVALID_PARAMS, "Checkpoint source does not match the selected repository root")
+    return target
 
 
 

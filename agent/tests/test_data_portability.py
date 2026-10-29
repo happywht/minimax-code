@@ -56,6 +56,7 @@ async def _seed(db: AsyncDatabase) -> None:
         "VALUES ('s1', 'Alpha chat', '2026-08-01T10:00:00Z', "
         "'2026-08-01T10:05:00Z')"
     )
+
     await db.execute(
         "INSERT INTO sessions (id, title, created_at, updated_at, archived) "
         "VALUES ('s2', 'Beta chat', '2026-08-02T10:00:00Z', "
@@ -68,6 +69,22 @@ async def _seed(db: AsyncDatabase) -> None:
         "('m2', 's1', 'assistant', 'hi!', '2026-08-01T10:00:05Z', 0, 3), "
         "('m3', 's2', 'user', 'bye', '2026-08-02T10:00:01Z', 1, 0)"
     )
+
+
+async def test_checkpoint_import_keeps_unknown_and_known_sources(async_db):
+    from minimax_code.storage.dao.checkpoints import CheckpointDAO
+
+    legacy = {"id": "old", "session_id": "s", "label": "old", "created_at": "now"}
+    await restore_database(async_db, {"format": EXPORT_FORMAT, "schema_version": 48,
+                                      "tables": {"session_checkpoints": [legacy]}})
+    dao = CheckpointDAO(async_db)
+    assert (await dao.get("old"))["source_root"] is None
+    current = await dump_database(async_db)
+    row = current["tables"]["session_checkpoints"][0]
+    row["source_root"] = "/known/repository"
+    await restore_database(async_db, {"format": EXPORT_FORMAT, "schema_version": 49,
+                                      "tables": {"session_checkpoints": [row]}})
+    assert (await dao.get("old"))["source_root"] == "/known/repository"
 
 
 @pytest.mark.parametrize("table", ["execution_installation", "process_executions", "process_execution_events"])

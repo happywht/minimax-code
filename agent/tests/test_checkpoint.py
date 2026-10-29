@@ -421,6 +421,7 @@ class TestCheckpointIPC:
         assert row["session_id"] == "sess_ipc"
         assert row["label"] == "ipc ckpt"
         assert row["message"] == "via rpc"
+        assert row["source_root"] == str(git_repo.resolve())
         assert row["id"].startswith("ckpt_")
 
         listed = await self._call(server, "checkpoint.list", {"session_id": "sess_ipc"})
@@ -616,6 +617,44 @@ class TestCheckpointProjectRoot:
         assert spy.cwds == [str(git_repo.resolve())]
 
     @pytest.mark.asyncio
+    async def test_legacy_source_requires_explicit_confirmation(
+        self, rooted_session, ckpt_dao: CheckpointDAO, git_repo: Path
+    ) -> None:
+        subdir = git_repo / "legacy"
+        subdir.mkdir()
+        row = await ckpt_dao.create(session_id=rooted_session, label="old")
+        spy = _SpyManager()
+        server = self._server(ckpt_dao, spy)
+        for params in ({}, {"cwd": str(subdir)}, {"legacy_source_confirmed": True}):
+            resp = await self._call(server, "checkpoint.restore", {"checkpoint_id": row["id"], **params})
+            assert resp["error"]["code"] == INVALID_PARAMS
+            assert not spy.cwds
+        escaped = await self._call(server, "checkpoint.restore", {
+            "checkpoint_id": row["id"], "cwd": str(git_repo.parent),
+            "legacy_source_confirmed": True,
+        })
+        assert escaped["error"]["code"] == INVALID_PARAMS
+        assert not spy.cwds
+        resp = await self._call(server, "checkpoint.restore", {
+            "checkpoint_id": row["id"], "cwd": str(subdir), "legacy_source_confirmed": True,
+        })
+        assert "result" in resp
+        assert spy.cwds == [str(subdir.resolve())]
+
+    @pytest.mark.asyncio
+    async def test_recorded_source_rejects_different_repository(
+        self, rooted_session, ckpt_dao: CheckpointDAO, git_repo: Path
+    ) -> None:
+        row = await ckpt_dao.create(session_id=rooted_session, label="bound",
+                                    source_root=str(git_repo / "different"))
+        spy = _SpyManager()
+        server = self._server(ckpt_dao, spy)
+        for method in ("checkpoint.restore", "checkpoint.diff"):
+            resp = await self._call(server, method, {"checkpoint_id": row["id"], "cwd": str(git_repo)})
+            assert resp["error"]["code"] == INVALID_PARAMS
+        assert not spy.cwds
+
+    @pytest.mark.asyncio
     async def test_explicit_cwd_cannot_escape_session_root(
         self, rooted_session, ckpt_dao: CheckpointDAO, tmp_path: Path
     ) -> None:
@@ -648,6 +687,7 @@ class TestCheckpointProjectRoot:
             has_untracked_snapshot=False,
             checkpoint_id="ckpt_seed",
             created_at="2026-01-01T00:00:00Z",
+            source_root=str(git_repo.resolve()),
         )
         spy = _SpyManager()
         server = self._server(ckpt_dao, spy)
@@ -800,5 +840,5 @@ async def test_old_subdirectory_checkpoint_is_not_rebased_on_restore(monkeypatch
     register_checkpoint_handlers(server, dao=dao, manager=manager)
     response = await server.handle_request({"id": 1, "method": "checkpoint.restore",
                                             "params": {"checkpoint_id": "old", "cwd": str(nested)}})
-    assert response["error"]["message"] == "Checkpoint working directory must be the Git repository root"
+    assert "Checkpoint source is unknown" in response["error"]["message"]
     manager.restore.assert_not_awaited()

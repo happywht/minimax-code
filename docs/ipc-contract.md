@@ -1631,7 +1631,7 @@ mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可�
 核对大小/hash/身份，缺失/损坏拒绝，没有 source fallback。返回 application/octet-stream、
 attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）、no-store、nosniff、sandbox CSP、
 上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
-原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，Schema046/bundle v6新增办公成果关联表；Schema047/bundle v7保存各主机远端服务端口；当前Schema048/bundle v8保存Webhook投递记录，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
+原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，Schema046/bundle v6新增办公成果关联表；Schema047/bundle v7保存各主机远端服务端口；Schema048/bundle v8保存Webhook投递记录；当前Schema049/bundle v9记录检查点来源，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
 旧v1/041至v7/047仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
 
 ### office.* — 手动生成纯数据 XLSX（Schema046）
@@ -1745,6 +1745,8 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 | `checkpoint.diff` | 快照与当前工作区对比 |
 | `checkpoint.restore` | 恢复到指定快照 |
 | `checkpoint.delete` | 删除快照 |
+
+新检查点记录解析后的仓库根 `source_root`，恢复和差异操作须匹配该路径且保持在当前会话工作区内；路径匹配不能证明仓库未被替换。旧记录的 `source_root` 为 null，默认拒绝恢复和差异：确认原始工作目录后，调用 `checkpoint.restore` 或 `checkpoint.diff` 时显式提供 `cwd` 和 `legacy_source_confirmed: true`。该确认由用户承担，系统无法验证旧来源；旧 cwd 可以是会话范围内仓库的子目录。快照文件及 Git stash 对象不包含在数据库或数据包中，单独恢复数据库不能保证检查点可恢复。
 
 ### diag.* — 诊断
 

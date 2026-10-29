@@ -56,9 +56,9 @@ from .text_artifacts import (
 )
 
 FORMAT = "minimax-code-data-vault"
-FORMAT_VERSION = 8
-SCHEMA_VERSION = 48
-SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46, 7: 47, 8: 48}
+FORMAT_VERSION = 9
+SCHEMA_VERSION = 49
+SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46, 7: 47, 8: 48, 9: 49}
 MAX_FILES = 10_000
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 MAX_WAL_BYTES = MAX_DATABASE_BYTES
@@ -399,11 +399,11 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
     _require(columns == ["id", "project_id", "service_id", "snapshot_id", "original_name",
                          "declared_type", "recognized_type", "size_bytes", "sha256", "version",
                          "parser_status", "parser_version", "preview_text", "preview_truncated",
-                         "quality_status", "created_at"] + (["parser_reason", "parser_scope"] if schema_version in {43, 44, 45, 46, 47, 48} else []), "Unsupported attachment schema")
+                         "quality_status", "created_at"] + (["parser_reason", "parser_scope"] if schema_version >= 43 else []), "Unsupported attachment schema")
     rows = conn.execute("SELECT id,snapshot_id,size_bytes,sha256,version,service_id,original_name,"
                         "declared_type,recognized_type,parser_status,parser_version,preview_text,"
                         "preview_truncated,quality_status,"
-                        + ("parser_reason,parser_scope" if schema_version in {43, 44, 45, 46, 47, 48} else "'legacy_v1','legacy_v1'")
+                        + ("parser_reason,parser_scope" if schema_version >= 43 else "'legacy_v1','legacy_v1'")
                         + " FROM attachments ORDER BY snapshot_id LIMIT ?",
                         (MAX_FILES + 1,)).fetchall()
     _require(len(rows) + artifact_count <= MAX_FILES, "Too many registered vault files")
@@ -418,7 +418,7 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
                  and declared in DECLARED_TYPES and recognized in RECOGNIZED_TYPES
                  and status in STATUSES and type(parser) is int
                  and (parser == 1 and reason == scope == "legacy_v1"
-                      or schema_version in {43, 44, 45, 46, 47, 48} and parser == 2 and reason in REASONS
+                      or schema_version >= 43 and parser == 2 and reason in REASONS
                       and scope in {"inert_text", "docx_body_paragraphs_tables", "original_only"})
                  and isinstance(preview, str) and len(preview.encode("utf-8")) <= MAX_PREVIEW_BYTES
                  and len(preview.splitlines()) <= MAX_PREVIEW_LINES and truncated in (0, 1)
@@ -650,7 +650,7 @@ def create_bundle(data_dir, output):
             _snapshot(root, stage, lease)
             inventory = _inventory(stage.path / "data.db")
             _require(inventory["schema_version"] == SCHEMA_VERSION,
-                     "Create requires known Schema048; old v1/041 through v7/047 are verify/restore only")
+                     "Create requires known Schema049; old v1/041 through v8/048 are verify/restore only")
             database = _file_meta(stage.path / "data.db", MAX_DATABASE_BYTES)
             excluded = _collect_vault(root, stage, VAULT, inventory["artifacts"], MAX_BYTES)
             excluded_attachments = _collect_vault(root, stage, ATTACHMENT_VAULT,

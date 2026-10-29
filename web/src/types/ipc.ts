@@ -2061,6 +2061,7 @@ export interface Checkpoint {
   tracked_files: string[];
   untracked_files: string[];
   has_untracked_snapshot: boolean;
+  source_root?: string | null;
   created_at: string;
 }
 

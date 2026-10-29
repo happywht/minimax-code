@@ -218,7 +218,7 @@ async def test_pdf_v2_raw_bundle4_reader_verify_restore_and_new_strict_branch(tm
     await db.migrate()
     await db.close()
     current = tmp_path / "current-pdf-v6.zip"
-    assert bundle.create_bundle(data, current)["schema_version"] == 48
+    assert bundle.create_bundle(data, current)["schema_version"] == 49
     with pytest.raises(ValueError):
         frozen.verify_bundle(current)
     for status, reason, preview, truncated in [
@@ -311,7 +311,7 @@ async def test_xlsx_exact_metadata_and_frozen_raw_bundle4_roundtrip_without_repa
     await db.migrate()
     await db.close()
     current = tmp_path / "current-xlsx-v6.zip"
-    assert bundle.create_bundle(data, current)["schema_version"] == 48
+    assert bundle.create_bundle(data, current)["schema_version"] == 49
     with pytest.raises(ValueError):
         frozen.verify_bundle(current)
     for status, reason, preview in [("empty", "no_extracted_body_text_no_ocr", ""),
@@ -347,7 +347,7 @@ async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_al
     db = AsyncDatabase(target / "data.db")
     await db.connect()
     try:
-        assert await db.migrate() == [43, 44, 45, 46, 47, 48]
+        assert await db.migrate() == [43, 44, 45, 46, 47, 48, 49]
         after = await db.fetchone("SELECT * FROM attachments")
         assert tuple(after)[:-2] == before
         assert after["parser_version"] == 1 and after["parser_reason"] == after["parser_scope"] == "legacy_v1"
@@ -357,10 +357,10 @@ async def test_actual_v2_fixture_restore_without_migration_then_043_preserves_al
     finally:
         await db.close()
     new = tmp_path / "v6.zip"
-    assert bundle.create_bundle(target, new)["schema_version"] == 48
+    assert bundle.create_bundle(target, new)["schema_version"] == 49
     with pytest.raises(ValueError):
         legacy_v2_writer().verify_bundle(new)
-    assert bundle.verify_bundle(new)["format_version"] == 8
+    assert bundle.verify_bundle(new)["format_version"] == 9
 
 
 async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_path, monkeypatch):
@@ -433,13 +433,13 @@ async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_p
         assert dict(conn.execute("SELECT * FROM attachments").fetchone()) == before_attachment
         assert conn.execute("SELECT root_path FROM projects WHERE id='v3'").fetchone()[0] == str(project)
     conn.close()
-    with pytest.raises(bundle.BundleError, match="Create requires known Schema048"):
+    with pytest.raises(bundle.BundleError, match="Create requires known Schema049"):
         bundle.create_bundle(target, tmp_path / "must-not-upgrade.zip")
     assert hashlib.sha256((target / "data.db").read_bytes()).hexdigest() == database_digest
     db = AsyncDatabase(target / "data.db")
     await db.connect()
     try:
-        assert await db.migrate() == [44, 45, 46, 47, 48]
+        assert await db.migrate() == [44, 45, 46, 47, 48, 49]
         after = dict(await db.fetchone("SELECT * FROM budget_attempts WHERE id=?", (aid,)))
         assert after["state"] == "unknown" and after["reason"].startswith("migration 044:")
         assert {key: value for key, value in after.items() if key not in {"state", "reason"}} == {
@@ -448,8 +448,8 @@ async def test_frozen_v3_export_restore_preserves_bytes_until_explicit_044(tmp_p
     finally:
         await db.close()
     current = tmp_path / "current-v6.zip"
-    assert bundle.create_bundle(target, current)["format_version"] == 8
-    assert bundle.verify_bundle(current)["schema_version"] == 48
+    assert bundle.create_bundle(target, current)["format_version"] == 9
+    assert bundle.verify_bundle(current)["schema_version"] == 49
     with pytest.raises(ValueError):
         old_writer.verify_bundle(current)
 
@@ -527,7 +527,7 @@ async def test_forward_schema041_upgrade_preserves_registered_text_bytes_and_ser
     try:
         before = dict(await db.fetchone("SELECT * FROM text_artifacts"))
         service = dict(await db.fetchone("SELECT * FROM artifact_service"))
-        assert await db.migrate() == [42, 43, 44, 45, 46, 47, 48]
+        assert await db.migrate() == [42, 43, 44, 45, 46, 47, 48, 49]
         assert dict(await db.fetchone("SELECT * FROM text_artifacts")) == before
         assert dict(await db.fetchone("SELECT * FROM artifact_service")) == service
         assert not await db.fetchall("SELECT * FROM attachments")
@@ -543,7 +543,7 @@ async def test_v2_restores_all_registered_originals_and_public_authenticated_dow
     archive = tmp_path / "v2.zip"
     report = cli("create", "--data-dir", data, "--output", archive)
     assert not list(tmp_path.glob(".bundle-pending-*"))
-    assert report["format_version"] == 8 and report["schema_version"] == 48
+    assert report["format_version"] == 9 and report["schema_version"] == 49
     assert report["artifact_count"] == 1 and report["attachment_count"] == 2
     assert report["excluded_attachment_entries"] == {"orphan": 1, "pending": 1}
     assert cli("verify", "--bundle", archive)["attachment_count"] == 2
@@ -614,7 +614,7 @@ async def test_v2_version_reference_member_rules_fail_closed(both_vaults, tmp_pa
         members = [(item.filename, archive.read(item)) for item in archive.infolist()]
     manifest = json.loads(members[0][1])
     if change == "unknown-version":
-        manifest["format_version"] = 9
+        manifest["format_version"] = 10
     elif change == "schema-format-mismatch":
         manifest["schema_version"] = 41
     elif change == "attachment-path":
@@ -663,11 +663,44 @@ async def test_v7_frozen_bundle_verify_restore_then_migrate(tmp_path, monkeypatc
     db = AsyncDatabase(target / "data.db")
     await db.connect()
     try:
-        assert await db.migrate() == [48]
+        assert await db.migrate() == [48, 49]
         assert await db.fetchone("SELECT name FROM sqlite_master WHERE name='webhook_deliveries'")
     finally:
         await db.close()
     current = tmp_path / "v8.zip"
-    assert bundle.create_bundle(target, current)["format_version"] == 8
-    assert bundle.verify_bundle(current)["schema_version"] == 48
-    assert bundle.restore_bundle(current, tmp_path / "restored-v8")["schema_version"] == 48
+    assert bundle.create_bundle(target, current)["format_version"] == 9
+    assert bundle.verify_bundle(current)["schema_version"] == 49
+    assert bundle.restore_bundle(current, tmp_path / "restored-v8")["schema_version"] == 49
+
+
+async def test_v8_backup_preserves_legacy_checkpoint_on_migration(tmp_path, monkeypatch):
+    path = FIXTURES / "bundle-v8-writer.py.txt"
+    loader = importlib.machinery.SourceFileLoader("minimax_code._frozen_v8_writer", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    writer = importlib.util.module_from_spec(spec)
+    loader.exec_module(writer)
+    source = tmp_path / "source-v8"
+    db = AsyncDatabase(source / "data.db")
+    await db.connect()
+    await migrate_to(db, 48, monkeypatch)
+    await db.execute("INSERT INTO session_checkpoints(id,session_id,label,created_at) VALUES('old','s','old','now')")
+    await db.close()
+    archive = tmp_path / "v8.zip"
+    assert writer.create_bundle(source, archive)["format_version"] == 8
+    assert bundle.verify_bundle(archive)["schema_version"] == 48
+    target = tmp_path / "restored-v8"
+    bundle.restore_bundle(archive, target)
+    db = AsyncDatabase(target / "data.db")
+    await db.connect()
+    try:
+        assert await db.migrate() == [49]
+        row = await db.fetchone("SELECT label, source_root FROM session_checkpoints WHERE id='old'")
+        assert row["label"] == "old" and row["source_root"] is None
+        await db.execute("UPDATE session_checkpoints SET source_root=? WHERE id='old'", ("/verified/path",))
+    finally:
+        await db.close()
+    current = tmp_path / "v9.zip"
+    assert bundle.create_bundle(target, current)["schema_version"] == 49
+    assert bundle.restore_bundle(current, tmp_path / "restored-v9")["schema_version"] == 49
+    with sqlite3.connect(tmp_path / "restored-v9" / "data.db") as conn:
+        assert conn.execute("SELECT source_root FROM session_checkpoints WHERE id='old'").fetchone()[0] == "/verified/path"

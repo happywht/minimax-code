@@ -49,14 +49,15 @@ class CheckpointDAO:
         has_untracked_snapshot: bool = False,
         checkpoint_id: str | None = None,
         created_at: str | None = None,
+        source_root: str | None = None,
     ) -> dict[str, Any]:
         row_id = checkpoint_id or f"ckpt_{uuid.uuid4().hex[:12]}"
         timestamp = created_at or now_iso()
         sql = (
             "INSERT INTO session_checkpoints "
             "(id, session_id, label, message, git_stash_ref, branch, "
-            " tracked_files, untracked_files, has_untracked_snapshot, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " tracked_files, untracked_files, has_untracked_snapshot, created_at, source_root) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         params = (
             row_id,
@@ -69,6 +70,7 @@ class CheckpointDAO:
             json.dumps(untracked_files or []),
             1 if has_untracked_snapshot else 0,
             timestamp,
+            source_root,
         )
         async with self._db.transaction() as conn:
             await conn.execute(sql, params)

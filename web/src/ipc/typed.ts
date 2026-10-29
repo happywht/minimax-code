@@ -515,8 +515,8 @@ export interface TypedIPC {
   // checkpoint (v0.11.0) — drive the RightPanel checkpoint panel.
   listCheckpoints(sessionId: string, opts?: { limit?: number; offset?: number }): Promise<CheckpointListResult>;
   createCheckpoint(opts: { session_id: string; label?: string; message?: string; cwd?: string }): Promise<CheckpointCreateResult>;
-  restoreCheckpoint(checkpointId: string, opts?: { cwd?: string }): Promise<CheckpointRestoreResult>;
-  diffCheckpoint(checkpointId: string, opts?: { cwd?: string }): Promise<CheckpointDiffResult>;
+  restoreCheckpoint(checkpointId: string, opts?: { cwd?: string; legacy_source_confirmed?: boolean }): Promise<CheckpointRestoreResult>;
+  diffCheckpoint(checkpointId: string, opts?: { cwd?: string; legacy_source_confirmed?: boolean }): Promise<CheckpointDiffResult>;
   deleteCheckpoint(checkpointId: string): Promise<CheckpointDeleteResult>;
 
   // task (v0.11.0) — drive the RightPanel progress ledger.

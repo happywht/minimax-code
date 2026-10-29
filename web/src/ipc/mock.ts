@@ -2068,6 +2068,7 @@ function mockHandle(
         tracked_files: ["src/example.ts"],
         untracked_files: [],
         has_untracked_snapshot: false,
+        source_root: "/mock/workspace",
         created_at: now,
       };
       mockCheckpoints.set(checkpoint.id, checkpoint);
