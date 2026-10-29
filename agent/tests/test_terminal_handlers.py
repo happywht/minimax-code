@@ -330,3 +330,53 @@ def test_terminal_output_tail_tracks_discarded_chunks():
     tail = _terminal_output_tail(session)
     assert tail == "x" * 1200
     assert session.output_chars > len(tail)
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_write_failure_retries_and_stops_cleanly(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    session = handlers_terminal.TerminalSession(id="term", command="x", cwd=".", run_step_id="step")
+    session.append("stdout", "one")
+    session.append("stderr", "two")
+    dao = type("DAO", (), {})()
+    dao.checkpoint_running_step = AsyncMock(side_effect=[RuntimeError("write failed"), {"id": "step"}])
+    monkeypatch.setattr(handlers_terminal, "_get_runs_dao", AsyncMock(return_value=dao))
+    monkeypatch.setattr(handlers_terminal, "_OUTPUT_CHECKPOINT_INTERVAL_S", 0.01)
+    task = asyncio.create_task(handlers_terminal._checkpoint_output(session))
+    try:
+        for _ in range(100):
+            if dao.checkpoint_running_step.await_count >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert dao.checkpoint_running_step.await_count == 2
+        payload = dao.checkpoint_running_step.await_args.kwargs["payload"]
+        assert payload["output_may_be_incomplete"] is True
+        assert payload["output_chunks"] == [
+            {"stream": "stdout", "text": "one"}, {"stream": "stderr", "text": "two"}
+        ]
+        await asyncio.sleep(0.03)
+        assert dao.checkpoint_running_step.await_count == 2
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_cannot_overwrite_finished_step(tmp_path):
+    db = AsyncDatabase(make_temp_database_path(tmp_path))
+    await db.connect()
+    await db.migrate()
+    try:
+        dao = AgentRunsDAO(db)
+        await SessionsDAO(db).create(id="checkpoint", workspace_path=str(tmp_path))
+        run = await dao.create_run(session_id="checkpoint", mode="execute", status="running")
+        step = await dao.create_step(run_id=run["id"], session_id="checkpoint", kind="tool_call")
+        updated = await dao.checkpoint_running_step(step["id"], payload={"output_tail": "partial"})
+        assert updated["status"] == "running" and updated["completed_at"] is None
+        await dao.complete_step(step["id"], payload={"output_tail": "final"})
+        assert await dao.checkpoint_running_step(step["id"], payload={"output_tail": "stale"}) is None
+        assert (await dao.get_step(step["id"]))["payload"]["output_tail"] == "final"
+    finally:
+        await db.close()

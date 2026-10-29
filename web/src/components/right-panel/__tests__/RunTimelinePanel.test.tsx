@@ -86,6 +86,12 @@ describe("RunTimelinePanel", () => {
     expect(screen.getByText(/截断情况未知/)).toBeInTheDocument();
   });
 
+  it("warns that output after a checkpoint may be missing even when the saved tail was not truncated", () => {
+    renderWithStep(makeStep({ tool_name: "terminal", payload: { source: "terminal", output_tail: "partial", output_truncated: false, output_may_be_incomplete: true } }));
+    expect(screen.getByText(/记录时未截断/)).toBeInTheDocument();
+    expect(screen.getByText(/检查点之后的输出可能丢失或不完整/)).toBeInTheDocument();
+  });
+
   it("warns that an interrupted command may have unconfirmed side effects", () => {
     const run = { ...makeRun(), status: "interrupted" as const };
     const step = makeStep({ tool_name: "terminal", payload: { source: "terminal", command: "test", cwd: "/work" } });

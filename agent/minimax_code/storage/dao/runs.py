@@ -397,6 +397,25 @@ class AgentRunsDAO:
             await _append_event(conn, run_id, "step_created", {"step": step})
         return step
 
+    async def checkpoint_running_step(
+        self, step_id: str, *, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Persist evidence only while both the step and its run remain active."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute(
+                "UPDATE agent_run_steps SET payload = ? WHERE id = ? AND status = 'running' "
+                "AND EXISTS (SELECT 1 FROM agent_runs WHERE id = agent_run_steps.run_id "
+                "AND status = 'running')",
+                (dumps_json(payload), step_id),
+            )
+            if not cursor.rowcount:
+                return None
+            step = _hydrate_step(await _fetchone(
+                conn, "SELECT * FROM agent_run_steps WHERE id = ?", (step_id,)
+            ))
+            await _append_event(conn, step["run_id"], "step_updated", {"step": step})
+            return step
+
     async def complete_step(
         self,
         step_id: str,

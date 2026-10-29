@@ -269,6 +269,7 @@ function TerminalEvidence({ step, runStatus }: { step: AgentRunStep; runStatus: 
       <div>目录：{typeof payload.cwd === "string" ? payload.cwd : "未知"}</div>
       <div>运行状态：{runStatus}；退出码：{typeof payload.exit_code === "number" ? payload.exit_code : "未知"}</div>
       {runStatus === "interrupted" && <div>运行中断，命令的副作用未知，请检查工作区。</div>}
+      {payload.output_may_be_incomplete === true && <div>检查点之后的输出可能丢失或不完整。</div>}
       {step.error && <div>错误：{step.error}</div>}
       {tail === null ? <div>没有已保存的输出；中断前的输出可能未持久化。</div> : <>
         <div>已保存的输出尾部（最多 1200 字符；不是可恢复的终端会话）。

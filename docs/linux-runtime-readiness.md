@@ -945,3 +945,15 @@ SSH 检查标记和 cgroup，未再次终止服务。脚本为 `.verification/fo
 `verify-formal-crash-run.py` 和 `verify-formal-crash-marker.py`。该测试只覆盖本次受控
 终端命令及可观察的 cgroup，不证明任意脱离 cgroup 的子进程或所有副作用恰好执行一次；
 未模拟物理断网或机器重启。
+
+### 终端历史证据界面与数据库保护部署（2026-10-29）
+
+正式用户服务从 `d1e854c` 升级至
+`/home/ubuntu/.local/share/minimax-code-releases/4102fe02c135e0affedb2e57a5bbf2ef36a59256`，
+包含运行时间线终端输出尾部界面及导入/备份连接锁修复。切换前采样无活动运行、
+定时计划、任务或已建立客户端连接，切换前备份及交易保留在
+`/home/ubuntu/.local/share/minimax-code-remote-backups-4102fe0/upgrade-fgxfbizq`；
+采样不是原子门禁。升级后通过认证隧道读取此前完成的 `run_f902ba324044`，并在
+真实浏览器中选中其验收会话，确认界面显示持久化输出尾部的结束标记。
+脚本为 `.verification/upgrade-real-4102fe0.py` 和 `browser-terminal-evidence.py`。
+本次没有运行付费模型，也未验证整机重启。

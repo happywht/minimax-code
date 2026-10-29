@@ -33,6 +33,7 @@ _MAX_CHUNKS_PER_SESSION = 2_000
 _DEFAULT_TIMEOUT_S = 10 * 60
 _MAX_TIMEOUT_S = 60 * 60
 _OUTPUT_TAIL_LIMIT = 1_200
+_OUTPUT_CHECKPOINT_INTERVAL_S = 1.0
 _WORKSPACE_ENV_KEYS = ("MINIMAX_CODE_WORKSPACE", "MINIMAX_CODE_WORKSPACE_ROOT")
 _WORKSPACE_MARKERS = ("pnpm-workspace.yaml", "AGENTS.md", ".git")
 
@@ -156,10 +157,52 @@ def _preview_text(value: Any, *, limit: int = 600) -> str:
 
 
 def _terminal_output_tail(session: TerminalSession, *, limit: int = _OUTPUT_TAIL_LIMIT) -> str:
-    text = "".join(chunk.text for chunk in session.chunks)
-    if len(text) <= limit:
-        return text
-    return text[-limit:]
+    return "".join(chunk["text"] for chunk in _terminal_output_chunks(session, limit=limit))
+
+
+def _terminal_output_chunks(session: TerminalSession, *, limit: int = _OUTPUT_TAIL_LIMIT) -> list[dict[str, str]]:
+    remaining = limit
+    tail: list[dict[str, str]] = []
+    for chunk in reversed(session.chunks):
+        if remaining <= 0:
+            break
+        text = chunk.text[-remaining:]
+        tail.append({"stream": chunk.stream, "text": text})
+        remaining -= len(text)
+    tail.reverse()
+    return tail
+
+
+def _output_payload(session: TerminalSession, *, incomplete: bool) -> dict[str, Any]:
+    chunks = _terminal_output_chunks(session)
+    tail = "".join(chunk["text"] for chunk in chunks)
+    return {
+        "source": "terminal", "terminal_session_id": session.id,
+        "command": session.command, "cwd": session.cwd,
+        "output_tail": tail, "output_chunks": chunks,
+        "output_truncated": session.output_chars > len(tail),
+        "output_may_be_incomplete": incomplete,
+    }
+
+
+async def _checkpoint_output(session: TerminalSession) -> None:
+    """Periodically persist the latest bounded output without blocking readers."""
+    last_seq = 0
+    while True:
+        await asyncio.sleep(_OUTPUT_CHECKPOINT_INTERVAL_S)
+        seq = session.next_seq - 1
+        if seq == last_seq or not session.run_step_id:
+            continue
+        try:
+            dao = await _get_runs_dao()
+            if dao is not None:
+                step = await dao.checkpoint_running_step(
+                    session.run_step_id, payload=_output_payload(session, incomplete=True)
+                )
+                if step is not None:
+                    last_seq = seq
+        except Exception:
+            logger.exception("failed to checkpoint terminal output")
 
 
 def _require_params(params: Any) -> dict[str, Any]:
@@ -342,14 +385,11 @@ async def _complete_run_tracking(
         step_status = run_status = "cancelled"
     output_tail = _terminal_output_tail(session)
     payload = {
-        "source": "terminal",
-        "terminal_session_id": session.id,
-        "command": session.command,
-        "cwd": session.cwd,
+        **_output_payload(
+            session, incomplete=session.status == "cancelled" or session.exit_code is None
+        ),
         "exit_code": session.exit_code,
         "status": session.status,
-        "output_tail": output_tail,
-        "output_truncated": session.output_chars > len(output_tail),
     }
     summary = _preview_text(
         {
@@ -423,6 +463,7 @@ async def _run_session(
         assert process.stderr is not None
         stdout_task = asyncio.create_task(_read_stream(session, process.stdout, "stdout"))
         stderr_task = asyncio.create_task(_read_stream(session, process.stderr, "stderr"))
+        checkpoint_task = asyncio.create_task(_checkpoint_output(session))
         try:
             session.exit_code, _, _ = await asyncio.wait_for(
                 asyncio.gather(process.wait(), stdout_task, stderr_task), timeout=timeout_s
@@ -438,9 +479,9 @@ async def _run_session(
             session.process_cleanup_attempted = True
             session.exit_code = process.returncode
         finally:
-            for reader in (stdout_task, stderr_task):
+            for reader in (stdout_task, stderr_task, checkpoint_task):
                 reader.cancel()
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            await asyncio.gather(stdout_task, stderr_task, checkpoint_task, return_exceptions=True)
             session.completed_at = time.time()
             session.updated_at = session.completed_at
     except asyncio.CancelledError:
