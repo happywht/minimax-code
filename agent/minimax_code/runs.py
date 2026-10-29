@@ -158,9 +158,33 @@ class RunService:
         parent = self._by_run.get(target.owner.run_id) if target and target.owner else None
         if (not context or context.get("run_service") is not self or parent is None
                 or parent.task is None or parent.task.done() or not job.run_id
+                or parent.cancel_requested or parent.finalizing
                 or job.run_id == parent.run_id):
             raise RunServiceClosing("Restricted child has no live service-owned parent")
-        return self._submit(session_id, operation, job=job, _owned_child=True)
+
+        entered_operation = False
+
+        async def guarded_operation(child: RunJob) -> Any:
+            nonlocal entered_operation
+            # A child may wait for its own session lease while its parent is
+            # cancelled. Do not begin its effects after that cancellation.
+            if parent.cancel_requested:
+                raise asyncio.CancelledError
+            entered_operation = True
+            return await operation(child)
+
+        async def finalize(child: RunJob, error: BaseException | None) -> None:
+            if not entered_operation and child.dao is not None:
+                from .budget_ledger import owned_cleanup
+
+                saved = await owned_cleanup(child.dao.update_run_status(
+                    child.run_id, status="cancelled",
+                    error="Child execution cancelled before it started"))
+                if saved is None:
+                    raise RuntimeError("Could not persist cancelled child run")
+
+        return self._submit(session_id, guarded_operation, job=job, finalize=finalize,
+                            _owned_child=True)
 
     async def admit(
         self, *, dao: Any, session_id: str, request: dict[str, Any], title: str,

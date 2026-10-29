@@ -113,6 +113,69 @@ async def test_run_drain_tracks_owned_child_and_rejects_external_submit(monkeypa
         await drain
     assert 'child cleanup failed' in str(exc.value.__cause__)
 
+
+async def test_cancelled_parent_cannot_start_or_admit_restricted_children(monkeypatch):
+    from types import SimpleNamespace
+
+    from minimax_code import process_context
+    from minimax_code.run_ownership import owned_runtime
+    from minimax_code.runs import RunJob, RunService, RunServiceClosing
+
+    service = RunService()
+    owner = SimpleNamespace(owner=SimpleNamespace(run_id='parent'))
+    monkeypatch.setattr(process_context, 'current_process_target', lambda: owner)
+    blocker_started, release_blocker = asyncio.Event(), asyncio.Event()
+    child_submitted, parent_cleanup, release_parent = (asyncio.Event() for _ in range(3))
+    child_started = False
+    saved = []
+
+    class ChildDAO:
+        async def update_run_status(self, run_id, **kwargs):
+            saved.append((run_id, kwargs))
+            return {'id': run_id}
+
+    async def block(job):
+        blocker_started.set()
+        await release_blocker.wait()
+
+    async def child(job):
+        nonlocal child_started
+        child_started = True
+
+    async def parent(job):
+        token = owned_runtime.set({'run_service': service})
+        try:
+            service.submit_owned_child('child-session', child,
+                job=RunJob('child-session', run_id='child', dao=ChildDAO()))
+            child_submitted.set()
+            await asyncio.Event().wait()
+        finally:
+            with pytest.raises(RunServiceClosing):
+                service.submit_owned_child('late-session', child,
+                    job=RunJob('late-session', run_id='late'))
+            parent_cleanup.set()
+            await release_parent.wait()
+            owned_runtime.reset(token)
+
+    blocker = service.submit('child-session', block)
+    await blocker_started.wait()
+    parent_job = service.submit('parent-session', parent,
+                                job=RunJob('parent-session', run_id='parent'))
+    await child_submitted.wait()
+    child_job = service.get_job('child')
+    assert service.cancel_run('parent')
+    await parent_cleanup.wait()
+    release_blocker.set()
+    await service.wait(blocker)
+    with pytest.raises(asyncio.CancelledError):
+        await service.wait(child_job)
+    assert not child_started
+    assert saved == [('child', {'status': 'cancelled',
+                               'error': 'Child execution cancelled before it started'})]
+    release_parent.set()
+    with pytest.raises(asyncio.CancelledError):
+        await service.wait(parent_job)
+
 async def test_background_failure_during_maintenance_fails_closed(monkeypatch):
     from minimax_code.orchestrator.subagent import drain_background_subagents
 
