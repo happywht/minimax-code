@@ -167,6 +167,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const openChat = () => { setOverlayView(null); setView("chat"); };
+    window.addEventListener("minimax:open-chat", openChat);
+    return () => window.removeEventListener("minimax:open-chat", openChat);
+  }, []);
+
+  useEffect(() => {
     const openScheduled = () => openSettings("scheduled");
     window.addEventListener("minimax:open-scheduled", openScheduled);
     return () => window.removeEventListener("minimax:open-scheduled", openScheduled);

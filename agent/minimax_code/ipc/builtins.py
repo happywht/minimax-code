@@ -1176,10 +1176,62 @@ async def _handle_agent_send_message(
 
     from ..perm_consent import PermissionGater, register_gater
 
+    async def scheduled_attention(kind: str, payload: dict, *, closed: bool = False) -> None:
+        # These notifications are historical hints. The live wait remains the
+        # authority and is checked again by the client before navigation.
+        if internal_schedule is None or not payload.get("request_id"):
+            return
+        import hashlib
+        import json
+        from ..storage.dao._base import now_iso
+
+        request_id = payload["request_id"]
+        notification_id = "ntf_sched_wait_" + hashlib.sha256(
+            f"{job.run_id}:{kind}:{request_id}".encode()
+        ).hexdigest()[:32]
+        try:
+            entry = None
+            async with db.transaction() as conn:
+                async with conn.execute(
+                    "SELECT o.id,o.job_id,o.run_id,o.session_id,j.name FROM schedule_occurrences o JOIN scheduled_jobs j ON j.id=o.job_id WHERE o.id=? AND o.job_id=? AND o.run_id=? AND o.session_id=? AND o.status='running'",
+                    (internal_schedule["occurrence_id"], internal_schedule["job_id"], job.run_id, session_id),
+                ) as cursor:
+                    occurrence = await cursor.fetchone()
+                if closed:
+                    await conn.execute(
+                        "UPDATE notifications SET title=?, body=?, read=1, read_at=? WHERE id=? AND source='schedule_attention'",
+                        ("定时任务请求已结束", "授权或输入请求已解决或失效；请在运行历史查看当前状态。", now_iso(), notification_id),
+                    )
+                elif occurrence and payload.get("session_id") == session_id and payload.get("run_id") == job.run_id:
+                    binding = json.dumps({"job_id": occurrence["job_id"], "occurrence_id": occurrence["id"],
+                        "run_id": job.run_id, "session_id": session_id, "project_id": project_id,
+                        "request_id": request_id, "kind": kind}, ensure_ascii=False)
+                    cursor = await conn.execute(
+                        "INSERT OR IGNORE INTO notifications (id,type,title,body,source,source_id,priority,read,created_at,read_at) VALUES (?,?,?,?,?,?,1,0,?,NULL)",
+                        (notification_id, "permission" if kind == "permission" else "info",
+                         "定时任务曾请求授权" if kind == "permission" else "定时任务曾请求输入",
+                         f"{occurrence['name']} · 打开前将核对请求是否仍有效。", "schedule_attention", binding, now_iso()),
+                    )
+                    if not cursor.rowcount:
+                        return
+                else:
+                    return
+                async with conn.execute("SELECT * FROM notifications WHERE id=?", (notification_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        entry = dict(row)
+                        entry["read"] = bool(entry["read"])
+            if entry:
+                ctx.server.notify({"event": "notification.read" if closed else "notification.new", "data": entry})
+        except Exception:
+            logger.exception("Scheduled attention notification failed")
+
     async def approval_emit(event, data):
         if (internal_schedule is not None or internal_skill is not None) and event == "permission.request":
             data = {**data, "approval_policy": "explicit_once"}
         await ctx.emit(event, data)
+        if event in {"permission.request", "permission.closed"}:
+            await scheduled_attention("permission", data, closed=event == "permission.closed")
     if internal_schedule is not None or internal_skill is not None:
         from ..schedule_context import FrozenPermissions
         if perm_store is None:
@@ -1538,6 +1590,7 @@ async def _handle_agent_send_message(
         registry[job.run_id] = (event, future, deadline)
         try:
             await ctx.emit("agent.ask_user", event)
+            await scheduled_attention("question", event)
         except Exception:
             logger.exception("on_ask_user emit failed")
 
@@ -1548,7 +1601,9 @@ async def _handle_agent_send_message(
         entry = registry.get(job.run_id)
         if entry and entry[0]["request_id"] == payload["request_id"]:
             registry.pop(job.run_id, None)
-        await ctx.emit("agent.ask_user_closed", {**payload, "run_id": job.run_id})
+        event = {**payload, "run_id": job.run_id}
+        await ctx.emit("agent.ask_user_closed", event)
+        await scheduled_attention("question", event, closed=True)
 
     core.on_ask_user_closed = _on_ask_user_closed
 

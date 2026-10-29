@@ -5,7 +5,7 @@
  *
  * v0.7.0 — Mobile Connectivity Enhancement
  */
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Check,
   Info,
@@ -27,6 +27,8 @@ import { useNotificationStore } from "../../stores/notificationStore";
 import type { NotificationEntry } from "../../stores/notificationStore";
 import { formatRelative } from "../../lib/time";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { ipc, typedIPC } from "../../ipc";
+import { useSessionStore } from "../../stores/sessionStore";
 
 const TYPE_ICON: Record<string, typeof Info> = {
   info: Info,
@@ -157,6 +159,50 @@ function NotificationItem({
   onDelete: (id: string) => void;
 }): JSX.Element {
   const Icon = typeIcon(entry.type);
+  const [attentionError, setAttentionError] = useState("");
+  const [attentionBusy, setAttentionBusy] = useState(false);
+  const attentionEpoch = useRef(0);
+  useEffect(() => {
+    const unsubscribe = ipc.onSideCar(() => { attentionEpoch.current++; setAttentionBusy(false); });
+    return () => { attentionEpoch.current++; unsubscribe(); };
+  }, []);
+  const openAttention = async () => {
+    const ticket = ++attentionEpoch.current, host = ipc.agentBaseUrl;
+    const { currentSessionId, currentProjectId } = useSessionStore.getState();
+    const current = () => ticket === attentionEpoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === currentSessionId && useSessionStore.getState().currentProjectId === currentProjectId;
+    setAttentionBusy(true); setAttentionError("");
+    try {
+      const binding = JSON.parse(entry.source_id || "") as { job_id: string; occurrence_id: string; run_id: string;
+        session_id: string; project_id: string; request_id: string; kind: string };
+      if (!binding.job_id || !binding.occurrence_id || !binding.run_id || !binding.session_id || !binding.project_id ||
+          !binding.request_id || !["permission", "question"].includes(binding.kind)) throw new Error("通知关联不完整");
+      const [history, snapshot] = await Promise.all([
+        typedIPC.listScheduleOccurrences(binding.job_id), typedIPC.getRunSteps(binding.run_id),
+      ]);
+      if (!current()) return;
+      const occurrence = history.occurrences.find((row) => row.id === binding.occurrence_id);
+      const schedule = snapshot.run.metadata?.schedule as { occurrence_id?: string; job_id?: string; revision?: number } | undefined;
+      if (!occurrence || occurrence.job_id !== binding.job_id || occurrence.run_id !== binding.run_id ||
+          occurrence.session_id !== binding.session_id || occurrence.context?.project_id !== binding.project_id ||
+          occurrence.context?.host !== "local" || occurrence.context?.engine !== "native" ||
+          snapshot.run.id !== binding.run_id || snapshot.run.session_id !== binding.session_id ||
+          snapshot.run.metadata?.project_id !== binding.project_id || snapshot.run.metadata?.workspace_snapshot !== occurrence.context.workspace ||
+          schedule?.occurrence_id !== occurrence.id || schedule.job_id !== binding.job_id || schedule.revision !== occurrence.revision)
+        throw new Error("运行与定时任务的关联已变化，请查看历史");
+      const pending = binding.kind === "permission"
+        ? snapshot.pending_native_permissions?.some((item) => item.request_id === binding.request_id && item.run_id === binding.run_id && item.session_id === binding.session_id)
+        : snapshot.pending_ask_user?.request_id === binding.request_id && snapshot.pending_ask_user.run_id === binding.run_id && snapshot.pending_ask_user.session_id === binding.session_id;
+      if (!pending) throw new Error("请求已解决、超时或失效，请查看运行历史");
+      useSessionStore.getState().setCurrentProject(binding.project_id);
+      useSessionStore.getState().setCurrent(binding.session_id);
+      void useSessionStore.getState().refresh({ loadCurrent: false });
+      window.dispatchEvent(new Event("minimax:open-chat"));
+      useNotificationStore.getState().setOpen(false);
+      if (!entry.read) onMarkRead(entry.id);
+    } catch (error) { if (current()) setAttentionError(error instanceof Error ? error.message : "无法读取请求状态"); }
+    finally { if (current()) setAttentionBusy(false); }
+  };
   return (
     <div
       className={`group flex items-start gap-2 border-b border-line/50 px-3 py-2 text-xs transition-colors hover:bg-surface-3 ${
@@ -178,6 +224,15 @@ function NotificationItem({
           <p className="mt-0.5 leading-snug line-clamp-2 text-ink-1">
             {entry.body}
           </p>
+        )}
+        {entry.source === "schedule_attention" && (
+          <div className="mt-1">
+            <Button type="button" variant="ghost" size="sm" disabled={attentionBusy || entry.title === "定时任务请求已结束"}
+              className="h-auto px-0 py-0 text-[11px] hover:underline" onClick={() => void openAttention()}>
+              {attentionBusy ? "读取当前请求…" : entry.title === "定时任务请求已结束" ? "请求已结束" : "查看并处理请求"}
+            </Button>
+            {attentionError && <p role="status" className="text-status-warning">{attentionError}</p>}
+          </div>
         )}
         {entry.source === "schedule" && (
           <Button
