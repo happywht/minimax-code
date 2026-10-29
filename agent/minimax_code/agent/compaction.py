@@ -12,12 +12,13 @@ recent context. The strategy:
 
 Token estimation uses a heuristic without a real tokenizer:
 ~4 characters per token for ASCII, ~2 characters per token for CJK.
-This is sufficient for budget enforcement — the LLM reports actual
-usage which the frontend displays.
+This is an estimate, not a tokenizer or a guarantee that protected recent
+messages fit the model window. Paid-call budgets are enforced separately.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -26,6 +27,14 @@ _CJK_RE = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
 
 # Type alias for conversation messages (dict with role/content).
 Message = dict[str, Any]
+
+
+class _CompactedMessage(dict):
+    """Wire-compatible message with in-process state for later compactions."""
+
+    def __init__(self, content: str, state: dict[str, Any]):
+        super().__init__(role="user", content=content)
+        self.state = state
 
 
 def estimate_tokens(text: str) -> int:
@@ -67,7 +76,8 @@ def compact_history(
 
     Returns
     -------
-    Compacted message list that should be within ``max_tokens``.
+    A best-effort bounded digest. Protected system/recent messages can
+    themselves exceed ``max_tokens`` and are never truncated here.
     """
     if not messages:
         return []
@@ -85,7 +95,7 @@ def compact_history(
         return system_msgs
 
     # Estimate current total tokens.
-    current_tokens = sum(estimate_tokens(_msg_text(m)) for m in turns)
+    current_tokens = sum(_message_tokens(m) for m in messages)
     if current_tokens <= max_tokens:
         return messages  # No compaction needed.
 
@@ -101,18 +111,15 @@ def compact_history(
         return system_msgs + turns
 
     # Compact old turns into a summary.
-    summary = _summarise_old_turns(
-        [turns[i:j] for i, j in old_turns]
-    )
+    available = max(0, max_tokens - sum(_message_tokens(m) for m in system_msgs + recent_msgs)
+                    - estimate_tokens("[Conversation summary (compacted)]\n"))
+    summary, state = _summarise_old_turns([turns[i:j] for i, j in old_turns], available)
 
     result = system_msgs.copy()
     if summary:
         # The "[Conversation summary (compacted)]" prefix is a contract:
         # observers and tests match on it to detect compacted payloads.
-        result.append({
-            "role": "user",
-            "content": f"[Conversation summary (compacted)]\n{summary}",
-        })
+        result.append(_CompactedMessage(f"[Conversation summary (compacted)]\n{summary}", state))
     result.extend(recent_msgs)
 
     return result
@@ -125,7 +132,7 @@ def _find_turn_boundaries(turns: list[Message]) -> list[tuple[int, int]]:
     assistant/tool messages until the next user message.
     """
     boundaries: list[tuple[int, int]] = []
-    start = None
+    start = 0 if turns and turns[0].get("role") != "user" else None
     for i, msg in enumerate(turns):
         if msg.get("role") == "user":
             if start is not None:
@@ -136,25 +143,24 @@ def _find_turn_boundaries(turns: list[Message]) -> list[tuple[int, int]]:
     return boundaries
 
 
-def _summarise_old_turns(turn_groups: list[list[Message]]) -> str:
-    """Summarise old turns into a structured, six-section digest (M3).
-
-    Deterministic extraction — no extra LLM call. The sections mirror
-    what a resuming model needs to continue the task faithfully:
-    任务目标 / 用户约束 / 关键决策 / 修改清单 / 验证结果 / 待办.
-    """
+def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tuple[str, dict[str, Any]]:
+    """Extract bounded, explicitly incomplete context without a model call."""
 
     # --- pass 1: collect raw material across all old turns ------------
     first_user_text = ""
     constraint_sentences: list[str] = []
-    assistant_points: list[str] = []
     changed_paths: list[str] = []
-    tool_count = 0
     verification_lines: list[str] = []
-    last_assistant_text = ""
 
     for group in turn_groups:
         for msg in group:
+            if isinstance(msg, _CompactedMessage):
+                state = msg.state
+                first_user_text = first_user_text or state.get("objective", "")
+                constraint_sentences.extend(state.get("constraints", []))
+                verification_lines.extend(state.get("commands", []))
+                changed_paths.extend(state.get("paths", []))
+                continue
             role = msg.get("role", "")
             content = _msg_text(msg)
 
@@ -165,49 +171,61 @@ def _summarise_old_turns(turn_groups: list[list[Message]]) -> str:
                     if _is_constraint(sentence):
                         constraint_sentences.append(sentence)
             elif role == "assistant":
-                if content:
-                    last_assistant_text = content
-                    if len(assistant_points) < 6:
-                        assistant_points.append(content[:150] + ("..." if len(content) > 150 else ""))
                 for call in _message_tool_calls(msg):
-                    tool_count += 1
                     path = _mutating_path(call)
                     if path and path not in changed_paths:
                         changed_paths.append(path)
             elif role == "tool":
-                tool_count += 1
-                if len(verification_lines) < 4 and _looks_like_verification(msg, group):
-                    verification_lines.append(content[:160] + ("..." if len(content) > 160 else ""))
-
-    # --- pass 2: render the six sections ------------------------------
-    parts: list[str] = []
+                call = _matching_command(msg, group)
+                if call:
+                    command = _clip(str(call.get("args", {}).get("command", "")), 64)
+                    excerpt = _command_excerpt(content)
+                    verification_lines.append(f"{call['name']} result: {excerpt}; command: {command}")
 
     objective = (first_user_text or "").strip()
-    if objective:
-        parts.append(f"## Task objective\n{objective[:500]}{'...' if len(objective) > 500 else ''}")
+    constraints = _dedupe(constraint_sentences)
+    if len(constraints) > 6:
+        constraints = constraints[:3] + ["[other constraints omitted]"] + constraints[-3:]
+    commands = verification_lines[-4:]
+    changed_paths = _dedupe(changed_paths)[-12:]
+    state = {"objective": _clip(objective, 500), "constraints": constraints, "commands": commands, "paths": changed_paths}
+    # Reserve separate space for each class, so a long objective cannot
+    # crowd out constraints or the most recent command output.
+    budget = min(2400, max(0, int(available * .6) - 20))
+    parts = []
+    for title, value, fraction in (
+        ("Task objective", objective, .23),
+        ("User constraints", "; ".join(constraints), .23),
+        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .34),
+        ("File write requests (outcomes not established)", ", ".join(changed_paths), .20),
+    ):
+        if value:
+            cap = int(budget * fraction) - len(title) - 6
+            if cap > 16:
+                parts.append(f"## {title}\n{_clip(value, cap)}")
+    return "\n\n".join(parts) or "[Earlier context omitted: insufficient budget]", state
 
-    if constraint_sentences:
-        shown = "; ".join(_dedupe(constraint_sentences)[:6])
-        parts.append(f"## User constraints\n{shown[:400]}")
 
-    if assistant_points:
-        parts.append("## Key assistant responses\n" + "\n".join(f"- {p}" for p in assistant_points[:4]))
+def _clip(value: str, limit: int) -> str:
+    return value if len(value) <= limit else value[:max(0, limit - 12)] + " [truncated]"
 
-    if changed_paths:
-        shown = ", ".join(_dedupe(changed_paths)[:12])
-        extra = "" if len(changed_paths) <= 12 else f" (+{len(changed_paths) - 12} more)"
-        parts.append(f"## Files modified by tools\n{shown}{extra}")
 
-    if verification_lines:
-        parts.append("## Command / verification results\n" + "\n".join(f"- {v}" for v in verification_lines))
+def _command_excerpt(content: str) -> str:
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return _clip(content, 240)
+    if not isinstance(payload, dict):
+        return _clip(content, 240)
+    output = payload.get("output")
+    exit_code = output.get("exit_code") if isinstance(output, dict) else None
+    facts = {"success": payload.get("success"), "exit_code": exit_code, "error": payload.get("error")}
+    return json.dumps(facts, ensure_ascii=False) + " output excerpt: " + _clip(str(output), 160)
 
-    pending = (last_assistant_text or "").strip()
-    if pending:
-        parts.append(f"## Where the work stood\n{pending[-300:]}")
-    if tool_count:
-        parts.append(f"({tool_count} tool call(s) across the compacted turns.)")
 
-    return "\n\n".join(parts)
+def _message_tokens(msg: Message) -> int:
+    calls = msg.get("tool_calls")
+    return estimate_tokens(_msg_text(msg)) + (estimate_tokens(json.dumps(calls, default=str)) if calls else 0)
 
 
 _CONSTRAINT_MARKERS = (
@@ -259,7 +277,7 @@ def _message_tool_calls(msg: Message) -> list[dict[str, Any]]:
                 args = _json.loads(raw_args)
             except ValueError:
                 args = {}
-        out.append({"name": name, "args": args if isinstance(args, dict) else {}})
+        out.append({"id": call.get("id"), "name": name, "args": args if isinstance(args, dict) else {}})
     return out
 
 
@@ -275,28 +293,23 @@ def _mutating_path(call: dict[str, Any]) -> str:
     for key in ("file_path", "path"):
         value = args.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return _clip(value.strip(), 256)
     return ""
 
 
-def _looks_like_verification(msg: Message, group: list[Message]) -> bool:
-    """True when a tool message follows an exec-style call in its turn.
-
-    Heuristic: the assistant message right before the tool result asked
-    for a command execution (exec_command / Bash family), or the result
-    text opens with exit-code markers.
-    """
-    text = _msg_text(msg)[:200].lower()
-    if "exit code" in text or "exit_code" in text:
-        return True
+def _matching_command(msg: Message, group: list[Message]) -> dict[str, Any] | None:
+    """Match a result only to its own command call, never a prior unrelated call."""
+    call_id = msg.get("tool_call_id")
+    if not isinstance(call_id, str) or not call_id:
+        return None
     for candidate in group:
         if candidate is msg:
             break
         if candidate.get("role") == "assistant":
             for call in _message_tool_calls(candidate):
-                if call.get("name") in ("exec_command", "bash", "run_terminal"):
-                    return True
-    return False
+                if call.get("id") == call_id and call.get("name") in ("exec_command", "bash", "run_terminal", "verify_subagent"):
+                    return call
+    return None
 
 
 def _msg_text(msg: Message) -> str:

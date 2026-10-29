@@ -92,6 +92,14 @@ would silently kill continuation. When the conversation exceeds the
 model's context window the loop compacts history in-flight (see the
 `compaction_threshold` / `context_window` knobs below).
 
+Native compaction uses bounded deterministic excerpts: it carries the original
+task objective and selected user constraints across repeated compactions within
+the same run, and associates command excerpts by tool call ID. Write calls are
+listed as requests, not proof of completed changes; command excerpts are not
+independent verification. Excerpts can be truncated or omitted. System messages
+and recent turns remain intact, so they can exceed the estimated target; this
+heuristic is not a tokenizer or a substitute for the separate paid-call budget.
+
 **Foreign-change note (v1.5.1).** Before each iteration's LLM call the
 loop also polls the fs-bus (seq-high-watermark poll, not a
 subscription — no lifecycle to manage) for file writes emitted by

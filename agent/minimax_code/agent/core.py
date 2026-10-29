@@ -940,13 +940,13 @@ class AgentCore:
                         iteration,
                     )
                 ):
-                    from .compaction import compact_history
+                    from .compaction import compact_history, estimate_tokens
 
                     target = int(self.config.context_window * 0.5)
                     compacted = compact_history(
                         messages, max_tokens=target, keep_recent=4
                     )
-                    if len(compacted) < len(messages):
+                    if compacted != messages and sum(estimate_tokens(str(m)) for m in compacted) < sum(estimate_tokens(str(m)) for m in messages):
                         logger.info(
                             "intra-loop compaction: %d → %d messages "
                             "(usage %d > %d%% of window %d)",
@@ -1019,7 +1019,8 @@ class AgentCore:
                             "NOT wrap up early and do NOT fake completion. "
                             "When this block's budget runs out, the runtime "
                             "automatically continues with a fresh block "
-                            "(history is compacted, nothing is lost)."
+                            "(older context may be compacted or omitted; "
+                            "preserve important constraints and evidence)."
                         )
                     else:
                         directive = (
