@@ -106,3 +106,37 @@ export function calculateOfficeColumn(table: CsvTable, name: string, left: numbe
     [...table.headers.map(() => "text" as const), "number"]);
   return next;
 }
+
+// Group values by their selected column type and materialize static totals.
+export function groupOfficeTable(table: CsvTable, kinds: Kind[], key: number, metric: number,
+  operation: "count" | "sum"): { table: CsvTable; kinds: Kind[] } {
+  if (!Number.isInteger(key) || key < 0 || key >= table.headers.length ||
+      !Number.isInteger(metric) || metric < 0 || metric >= table.headers.length) throw new Error("请选择有效的列");
+  if (operation === "sum" && kinds[metric] !== "number") throw new Error("求和列必须设置为数字类型");
+  const source = csvToOfficeSpec(table, kinds);
+  const groups = new Map<string | number | boolean | null, { key: string; count: number; values: number[] }>();
+  source.rows.forEach((row, index) => {
+    const value = row[key];
+    let group = groups.get(value);
+    if (!group) {
+      group = { key: table.rows[index][key], count: 0, values: [] };
+      groups.set(value, group);
+    }
+    group.count++;
+    if (operation === "sum" && row[metric] !== null) group.values.push(row[metric] as number);
+  });
+  const metricName = operation === "count" ? "行数" : `${table.headers[metric]}求和`;
+  if (metricName.toLowerCase() === table.headers[key].toLowerCase()) throw new Error("分组列名与结果列名相同，请先重命名列");
+  const rows = Array.from(groups.values(), (group) => {
+    if (operation === "count") return [group.key, String(group.count)];
+    if (!group.values.length) return [group.key, ""];
+    const values = group.values.map(decimalCoefficient);
+    const exponent = Math.min(...values.map((value) => value.exponent));
+    const total = values.reduce((sum, value) => sum + value.coefficient * 10n ** BigInt(value.exponent - exponent), 0n);
+    return [group.key, total === 0n ? "0" : `${total}e${exponent}`];
+  });
+  const result = { headers: [table.headers[key], metricName], rows };
+  const resultKinds: Kind[] = [kinds[key], "number"];
+  csvToOfficeSpec(result, resultKinds);
+  return { table: result, kinds: resultKinds };
+}
