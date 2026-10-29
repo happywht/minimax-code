@@ -3,13 +3,14 @@ import { waitFor } from "@testing-library/react";
 import { StreamEvent, type AgentRun, type Message, type SendMessageResult } from "../../types/ipc";
 
 const api = vi.hoisted(() => ({
-  listMessages: vi.fn(), sendMessage: vi.fn(),
+  listMessages: vi.fn(), sendMessage: vi.fn(), updateMessage: vi.fn(), listRuns: vi.fn(),
   handlers: new Map<string, (env: { data: any }) => void>(),
 }));
 vi.mock("../../ipc", () => ({
   IPCError: class extends Error {},
   typedIPC: api,
   ipc: { start: vi.fn(), ping: vi.fn().mockResolvedValue(true),
+    onSideCar: () => () => {},
     on: (event: string, fn: (env: { data: any }) => void) => {
       api.handlers.set(event, fn); return () => api.handlers.delete(event);
     } },
@@ -39,10 +40,54 @@ beforeEach(() => {
   vi.clearAllMocks();
   useSessionStore.setState({ currentSessionId: "s", sessions: [] });
   api.listMessages.mockResolvedValue({ messages });
+  api.listRuns.mockResolvedValue({ runs: [] });
 });
 afterEach(() => store.getState().reset());
 
 describe("conversation reconciliation from durable runs", () => {
+  it("resumes sequenced live text without duplicate or out-of-order chunks", () => {
+    const active = { ...run, status: "running" as const };
+    store.getState().reconcileLiveStream(active, { complete: true, messages: [{ message_id: "answer", seq: 2, text: "ab", done: false }] });
+    emit(StreamEvent.MessageChunk, { message_id: "answer", stream_seq: 4, delta: "d", done: false });
+    store.getState().reconcileLiveStream(active, { complete: true, messages: [{ message_id: "answer", seq: 3, text: "abc", done: false }] });
+    emit(StreamEvent.MessageChunk, { message_id: "answer", stream_seq: 4, delta: "d", done: false });
+    expect(store.getState().messages.find((message) => message.id === "answer")?.text).toBe("abcd");
+  });
+
+  it("continues live text after snapshot overflow without replay duplicates", () => {
+    const active = { ...run, status: "running" as const };
+    store.getState().reconcileLiveStream(active, { complete: true, messages: [{ message_id: "answer", seq: 2, text: "ab", done: false }] });
+    emit(StreamEvent.MessageChunk, { message_id: "answer", stream_unavailable: true, stream_event_seq: 3, delta: "c", done: false });
+    emit(StreamEvent.MessageChunk, { message_id: "answer", stream_unavailable: true, stream_event_seq: 3, delta: "c", done: false });
+    emit(StreamEvent.MessageChunk, { message_id: "answer", stream_unavailable: true, stream_event_seq: 4, delta: "d", done: false });
+    emit(StreamEvent.MessageChunk, { message_id: "answer", stream_seq: 3, delta: "old", done: false });
+    store.getState().reconcileLiveStream(active, { complete: true, messages: [{ message_id: "answer", seq: 2, text: "stale", done: false }] });
+    expect(store.getState().messages.find((message) => message.id === "answer")?.text).toBe("abcd");
+  });
+
+  it("preserves local edits and another session during live snapshot recovery", async () => {
+    const active = { ...run, status: "running" as const };
+    store.setState({ messages: [{ id: "answer", role: "assistant", text: "original", streaming: false, created_at: 1, metadata: { run_id: "r" } }] });
+    api.updateMessage.mockResolvedValueOnce({});
+    await store.getState().updateMessage("answer", "local edit");
+    store.getState().reconcileLiveStream(active, { complete: true, messages: [{ message_id: "answer", seq: 1, text: "server", done: false }] });
+    expect(store.getState().messages[0].text).toBe("local edit");
+    store.getState().reset();
+    useSessionStore.setState({ currentSessionId: "other" });
+    store.getState().addLocalMessage("other session");
+    store.getState().reconcileLiveStream(active, { complete: true, messages: [{ message_id: "answer", seq: 1, text: "server", done: false }] });
+    expect(store.getState().messages.map((message) => message.text)).toEqual(["other session"]);
+  });
+
+  it("places an omitted assistant segment before its tool and preserves unconfirmed input", () => {
+    store.setState({ messages: [
+      { id: "tc-1", role: "tool", parent_id: "answer", text: "tool", streaming: false, created_at: 1 },
+      { id: "unsent", role: "user", text: "draft", streaming: false, created_at: 2, metadata: { request_key: "local" } },
+    ] });
+    store.getState().reconcileLiveStream({ ...run, status: "running" }, { complete: true,
+      messages: [{ message_id: "answer", seq: 1, text: "before tool", done: true }] });
+    expect(store.getState().messages.map((message) => message.id)).toEqual(["answer", "tc-1", "unsent"]);
+  });
   it("keeps a Native answer active while its final validation receipt is pending", async () => {
     const receipt = deferred<SendMessageResult>();
     api.sendMessage.mockReturnValueOnce(receipt.promise);

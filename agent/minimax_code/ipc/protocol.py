@@ -436,6 +436,7 @@ class RunSnapshotResult(_Base):
     pending_ask_user: dict[str, Any] | None = None
     pending_native_permissions: list[dict[str, Any]] = Field(default_factory=list)
     pending_codex_permissions: list[dict[str, Any]] = Field(default_factory=list)
+    live_stream: dict[str, Any] | None = None
 
 
 # ---- Error object ---------------------------------------------------------

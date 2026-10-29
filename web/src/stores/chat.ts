@@ -22,7 +22,7 @@ import {
   type ToolCallData,
   type ToolResultData,
 } from "../types/ipc";
-import type { Message, ContentPart, AgentRun, SendMessageResult, MessageStatus } from "../types/ipc";
+import type { Message, ContentPart, AgentRun, SendMessageResult, MessageStatus, RunStepsResult } from "../types/ipc";
 import { useSessionStore } from "./sessionStore";
 import { trimArray, MAX_MESSAGES } from "../lib/eviction";
 import { DEFAULT_SESSION_TITLE } from "../lib/defaultTitles";
@@ -67,6 +67,7 @@ export interface ChatState {
   /** Load persisted messages for a session from the backend. */
   loadMessages: (sessionId: string) => Promise<void>;
   reconcileRuns: (runs: AgentRun[], stillCurrent: () => boolean, includeActive?: boolean) => Promise<void>;
+  reconcileLiveStream: (run: AgentRun, stream: NonNullable<RunStepsResult["live_stream"]>) => void;
   reset: () => void;
   cancel: () => Promise<void>;
   retryMessage: (messageId: string) => Promise<void>;
@@ -149,6 +150,66 @@ function setLiveQuestion(data: AskUserData | null) {
 const recoveredMessageIds = new Set<string>();
 const recoveredRunIds = new Set<string>();
 let reconcilingRunIds = new Set<string>();
+type StreamCursor = { seq: number; queued: Map<number, MessageChunkData> };
+const streamCursors = new Map<string, StreamCursor>();
+const localMessageEdits = new Set<string>();
+const streamWarnings = new Set<string>();
+const unavailableStreams = new Map<string, number>();
+const streamKey = (runId: string, messageId: string) => JSON.stringify([runId, messageId]);
+
+function warnStream(runId: string): void {
+  if (streamWarnings.has(runId)) return;
+  streamWarnings.add(runId);
+  toast.info("流式内容无法完整补齐", "请等待任务结束后查看已保存的记录。");
+}
+
+function requestStreamSnapshot(sessionId: string): void {
+  void import("./runStore").then(({ useRunTimelineStore }) => {
+    if (useSessionStore.getState().currentSessionId === sessionId) void useRunTimelineStore.getState().loadForSession(sessionId);
+  }).catch(() => warnStream(sessionId));
+}
+
+function applyStreamEvent(data: MessageChunkData): void {
+  const runId = data.run_id;
+  if (!runId || !data.session_id || !isCurrentSessionEvent(data) || recoveredMessageIds.has(data.message_id)) return;
+  const key = streamKey(runId, data.message_id);
+  const known = streamCursors.has(key);
+  const cursor = streamCursors.get(key) ?? { seq: 0, queued: new Map<number, MessageChunkData>() };
+  streamCursors.set(key, cursor);
+  if (localMessageEdits.has(data.message_id)) return;
+  if (data.stream_unavailable) {
+    warnStream(runId);
+    const seq = data.stream_event_seq;
+    if (!Number.isSafeInteger(seq) || seq === undefined || seq <= (unavailableStreams.get(runId) ?? 0)) return;
+    unavailableStreams.set(runId, seq);
+    cursor.queued.clear();
+  } else if (data.stream_seq !== undefined) {
+    if (unavailableStreams.has(runId)) return;
+    const seq = data.stream_seq;
+    if (!Number.isSafeInteger(seq) || seq <= 0 || seq <= cursor.seq) return;
+    const existing = useChat.getState().messages.find((message) => message.id === data.message_id);
+    if (seq !== cursor.seq + 1 || (!known && !!existing?.text)) {
+      if (cursor.queued.size < 1000) cursor.queued.set(seq, data);
+      else warnStream(runId);
+      requestStreamSnapshot(data.session_id);
+      return;
+    }
+    cursor.seq = seq;
+  }
+  noteStreamActivity(data);
+  useChat.setState((state) => {
+    const awaiting = data.done && inFlightRequests.has(data.session_id!);
+    const next = applyAssistantChunk(state.messages, data).map((message) => awaiting && message.id === data.message_id
+      ? { ...message, streaming: true, status: "streaming" as const } : message);
+    return { messages: trimArray(state.status === "cancelling"
+      ? next.map((message) => message.id === data.message_id ? { ...message, status: "cancelling" as const } : message)
+      : next, MAX_MESSAGES), status: state.status === "cancelling" ? "cancelling" : data.done && !awaiting ? "idle" : "streaming" };
+  });
+  if (data.done) { pendingAssistantId = null; clearStallWatchdog(); }
+  else resetStallWatchdogForCurrentActivity();
+  const next = cursor.queued.get(cursor.seq + 1);
+  if (next) { cursor.queued.delete(cursor.seq + 1); applyStreamEvent(next); }
+}
 
 /** Frontend inactivity notice. Only the backend may terminate a run. */
 const STALL_TIMEOUT_MS = 60_000;
@@ -308,6 +369,51 @@ export const useChat = create<ChatState>((set, get) => ({
     ++askVersion;
     setLiveQuestion(request);
   },
+  reconcileLiveStream: (run, stream) => {
+    if (run.session_id !== useSessionStore.getState().currentSessionId) return;
+    if (!stream.complete) { if (!unavailableStreams.has(run.id)) unavailableStreams.set(run.id, 0); warnStream(run.id); return; }
+    if (unavailableStreams.has(run.id)) return;
+    const replay: MessageChunkData[] = [];
+    for (const [segmentIndex, segment] of stream.messages.entries()) {
+      if (!segment.message_id || !Number.isSafeInteger(segment.seq) || segment.seq <= 0
+          || localMessageEdits.has(segment.message_id)) continue;
+      const key = streamKey(run.id, segment.message_id);
+      const cursor = streamCursors.get(key) ?? { seq: 0, queued: new Map<number, MessageChunkData>() };
+      streamCursors.set(key, cursor);
+      if (segment.seq < cursor.seq) continue;
+      const existing = get().messages.find((message) => message.id === segment.message_id);
+      if (existing?.metadata?.run_id && existing.metadata.run_id !== run.id) continue;
+      const placeholder = get().messages.find((message) => message.id === pendingAssistantId && message.metadata?.request_key
+        && message.metadata.request_key === run.request_key);
+      if (!existing && !placeholder && get().messages.length >= MAX_MESSAGES) { warnStream(run.id); continue; }
+      cursor.seq = segment.seq;
+      for (const seq of cursor.queued.keys()) if (seq <= cursor.seq) cursor.queued.delete(seq);
+      set((state) => {
+        const pending = pendingAssistantId ? state.messages.find((message) => message.id === pendingAssistantId) : undefined;
+        const canReplace = !existing && pending && pending.metadata?.request_key && pending.metadata.request_key === run.request_key;
+        const row: Message = { id: segment.message_id, role: "assistant", text: segment.text,
+          created_at: existing?.created_at ?? pending?.created_at ?? Date.now(), streaming: !segment.done,
+          status: segment.done ? "completed" : "streaming", metadata: { ...existing?.metadata, run_id: run.id } };
+        let messages = state.messages;
+        if (existing) messages = messages.map((message) => message.id === segment.message_id ? { ...message, ...row } : message);
+        else if (canReplace) {
+          messages = messages.map((message) => message.id === pendingAssistantId ? { ...row, render_key: message.render_key ?? message.id } : message);
+          pendingAssistantId = segment.message_id;
+        } else if (state.messages.length < MAX_MESSAGES) {
+          const laterIds = new Set(stream.messages.slice(segmentIndex + 1).map((item) => item.message_id));
+          const index = state.messages.findIndex((message) => laterIds.has(message.id)
+            || (message.role === "tool" && message.parent_id === segment.message_id)
+            || (message.role === "user" && !!message.metadata?.request_key && message.metadata.request_key !== run.request_key));
+          const at = index < 0 ? state.messages.length : index;
+          messages = [...state.messages.slice(0, at), row, ...state.messages.slice(at)];
+        }
+        return { messages, ...(!segment.done && state.status === "idle" ? { status: "streaming" as const } : {}) };
+      });
+      const next = cursor.queued.get(cursor.seq + 1);
+      if (next) { cursor.queued.delete(cursor.seq + 1); replay.push(next); }
+    }
+    replay.forEach(applyStreamEvent);
+  },
 
   init: async () => {
     if (get().agentReady) return;
@@ -319,6 +425,7 @@ export const useChat = create<ChatState>((set, get) => ({
         if (!data) return;
         if (!isCurrentSessionEvent(data)) return;
         if (recoveredMessageIds.has(data.message_id)) return;
+        if (data.stream_seq !== undefined || data.stream_unavailable) { applyStreamEvent(data); return; }
         noteStreamActivity(data);
         set((s) => {
           // The v0.3.0 thinking_count channel attaches a
@@ -362,6 +469,7 @@ export const useChat = create<ChatState>((set, get) => ({
             tool_call_id: data.tool_call_id,
             tool_name: data.name,
             tool_args: data.args,
+            parent_id: data.message_id,
             created_at: Date.now(),
             streaming: false,
           }), MAX_MESSAGES),
@@ -887,6 +995,7 @@ export const useChat = create<ChatState>((set, get) => ({
 
   updateMessage: async (messageId: string, text: string) => {
     ++_viewRevision;
+    localMessageEdits.add(messageId);
     try {
       await typedIPC.updateMessage({ message_id: messageId, content: text });
       ++_viewRevision;
@@ -902,6 +1011,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   deleteMessage: async (messageId: string) => {
+    localMessageEdits.add(messageId);
     ++_viewRevision;
     try {
       await typedIPC.deleteMessage({ message_id: messageId });
@@ -1111,6 +1221,7 @@ export const useChat = create<ChatState>((set, get) => ({
     recoveredMessageIds.clear();
     recoveredRunIds.clear();
     reconcilingRunIds.clear();
+    streamCursors.clear(); localMessageEdits.clear(); streamWarnings.clear(); unavailableStreams.clear();
     clearStallWatchdog();
     pendingAssistantId = null;
     set({ messages: [], status: "idle", error: null, loadingMessages: false, askUser: null });

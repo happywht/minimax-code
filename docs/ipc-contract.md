@@ -459,6 +459,21 @@ external request; the original JSON-RPC response retains its original ID.
 Closing, cancellation, timeout and process loss invalidate the wait. Recovering
 a request never auto-approves it; neither projection survives a process restart.
 
+For a live service-owned run, `run.steps` may also include `live_stream`:
+`{complete, messages:[{message_id, text, seq, done}]}`. It is a bounded
+in-memory snapshot, not a durable transcript. Sequenced `agent.message_chunk`
+events use `stream_seq`, monotonic per message; clients can ignore duplicates,
+buffer gaps and request another snapshot. Snapshot and event transport are
+independent, so consumers must compare sequence values before applying either.
+At 2 MiB UTF-8, 20,000 chunks or 256 segments the snapshot becomes incomplete;
+subsequent chunks carry `stream_unavailable`, and clients should signal that
+live recovery is unavailable rather than invent missing text. These chunks also
+carry a run-wide monotonic `stream_event_seq` so connected clients can continue
+displaying new text without replaying duplicate events; missed text beyond the
+limit cannot be reconstructed from this snapshot. Final persisted
+history remains the authority after completion; interrupted unsaved Native
+text and the in-memory snapshot do not survive an Agent process restart.
+
 `run.events({run_id, after_seq?: 0, limit?: 100})` returns
 `{events, next_seq, has_more}`. `after_seq` is a non-negative integer (at most
 JavaScript's safe integer limit); `limit` is 1–500. Unknown runs, extra keys,

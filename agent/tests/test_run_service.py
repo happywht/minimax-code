@@ -101,6 +101,29 @@ async def test_disconnected_waiter_does_not_cancel_native_run(native):
     assert len(rows) == 1 and rows[0]["status"] == "completed"
 
 
+async def test_live_native_chunks_are_recoverable_from_running_job(native):
+    from minimax_code.ipc.handlers_runs import register_run_handlers
+
+    register_run_handlers(native.server)
+    task = asyncio.create_task(send(native))
+    await asyncio.wait_for(native.started.get(), 2)
+    core = native.cores[0]
+    await core.on_chunk("one", False)
+    await core.on_chunk(" two", False)
+    await core.on_tool_call({"id": "tc", "name": "read_file", "args": {"path": "a"}})
+    await core.on_chunk("three", False)
+    job = get_run_service(native.server)._jobs["one"][0]
+    ctx = Context(native.server)
+    await native.server._handlers["run.steps"]({"run_id": job.run_id}, ctx)
+    live = ctx.reply.call_args.args[0]["live_stream"]
+    assert [(row["text"], row["seq"], row["done"]) for row in live["messages"]] == [
+        ("one two", 3, True), ("three", 1, False)]
+    assert live["messages"][0]["message_id"] != job.message_id
+    assert live["messages"][1]["message_id"] == job.message_id
+    native.release.set()
+    await asyncio.wait_for(task, 3)
+
+
 async def test_continuation_retries_join_one_worker_and_replay_after_restart(native, monkeypatch):
     from minimax_code.model_snapshot import ModelSnapshot
 

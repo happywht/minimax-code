@@ -101,6 +101,11 @@ async function drain(): Promise<void> {
         };
       }
       useRunTimelineStore.setState({ runs: next, order: entries.map((entry) => entry.run.id), error: null });
+      if (refresh) {
+        for (const entry of entries) if (entry.live_stream && !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(entry.run.status)) {
+          useChat.getState().reconcileLiveStream(entry.run, entry.live_stream);
+        }
+      }
       if (refresh && entries.length && entries.every((entry) => "pending_ask_user" in entry)) {
         const question = entries.map((entry) => entry.pending_ask_user).find((value) => value != null) ?? null;
         useChat.getState().reconcileAskUser(question, askVersion, current);

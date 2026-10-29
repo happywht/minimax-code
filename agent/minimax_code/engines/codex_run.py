@@ -178,8 +178,11 @@ async def drive_codex_run(
             if conversation:
                 await conversation.delta(delta)
             text_parts.append(delta)
+            seq = job.live_stream.append(job.message_id, delta, False) if hasattr(job, "live_stream") else None
             await emit("agent.message_chunk", {"session_id": job.session_id, "run_id": job.run_id,
                        "message_id": job.message_id, "delta": delta, "done": False,
+                       **({"stream_seq": seq} if seq is not None else {"stream_unavailable": True,
+                           "stream_event_seq": job.live_stream.event_seq} if hasattr(job, "live_stream") else {}),
                        "metadata": {"run_id": job.run_id, "engine": "codex", "external_turn_id": turn_id}})
         elif method == "thread/tokenUsage/updated":
             info = (params.get("tokenUsage") or {}).get("total") or {}
@@ -420,8 +423,11 @@ async def drive_codex_run(
                 if result_receipt is not None:
                     result_receipt.clear()
                     result_receipt.update(final)
+                seq = job.live_stream.append(job.message_id, "", True) if hasattr(job, "live_stream") else None
                 await emit("agent.message_chunk", {"session_id": job.session_id, "run_id": job.run_id,
                            "message_id": job.message_id, "delta": "", "done": True,
+                           **({"stream_seq": seq} if seq is not None else {"stream_unavailable": True,
+                               "stream_event_seq": job.live_stream.event_seq} if hasattr(job, "live_stream") else {}),
                            "metadata": {"run_id": job.run_id, "engine": "codex", "external_turn_id": turn_id}})
             finally:
                 queue.put_nowait(None)

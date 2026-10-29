@@ -71,6 +71,14 @@ describe("durable run recovery", () => {
     expect(store.getState().runs.r1.status).toBe("running");
   });
 
+  it("restores a running stream from the reconnect snapshot", async () => {
+    api.getRunSteps.mockResolvedValue({ ...snapshot(run), live_stream: { complete: true,
+      messages: [{ message_id: "streamed", seq: 2, text: "previous output", done: false }] } });
+    await store.getState().loadForSession("s1");
+    expect(useChat.getState().messages.find((message) => message.id === "streamed")?.text).toBe("previous output");
+    expect(useChat.getState().status).toBe("streaming");
+  });
+
   it("restores a live question from a reconnect snapshot", async () => {
     const question = { request_id: "ask-1", session_id: "s1", run_id: "r1", timeout_s: 60,
       expires_at_ms: Date.now() + 60000, questions: [] };

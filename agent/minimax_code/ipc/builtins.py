@@ -1408,6 +1408,7 @@ async def _handle_agent_send_message(
             if metadata is not None and turn_sources:
                 metadata = {**metadata, "sources": turn_sources}
             metadata = {**(metadata or {}), "run_id": job.run_id}
+            seq = job.live_stream.append(current_assistant_message_id, delta, done)
             await ctx.emit(
                 "agent.message_chunk",
                 {
@@ -1416,6 +1417,8 @@ async def _handle_agent_send_message(
                     "message_id": current_assistant_message_id,
                     "delta": delta,
                     "done": done,
+                    **({"stream_seq": seq} if seq is not None else {"stream_unavailable": True,
+                       "stream_event_seq": job.live_stream.event_seq}),
                 },
                 metadata=metadata,
             )
@@ -1448,6 +1451,7 @@ async def _handle_agent_send_message(
         render tool-execution steps in the chat."""
         nonlocal start_new_assistant_message
         try:
+            seq = job.live_stream.append(current_assistant_message_id, "", True)
             await ctx.emit(
                 "agent.message_chunk",
                 {
@@ -1456,6 +1460,8 @@ async def _handle_agent_send_message(
                     "message_id": current_assistant_message_id,
                     "delta": "",
                     "done": True,
+                    **({"stream_seq": seq} if seq is not None else {"stream_unavailable": True,
+                       "stream_event_seq": job.live_stream.event_seq}),
                 },
             )
             # ``call`` is the ``call_log`` dict built by

@@ -404,6 +404,7 @@ async def test_concurrent_external_approval_ids_are_scoped_to_each_run(codex):
     a_snapshot = await rpc(codex, "run.steps", {"run_id": a_run})
     b_snapshot = await rpc(codex, "run.steps", {"run_id": b_run})
     assert [p["request_id"] for p in a_snapshot.reply.call_args.args[0]["pending_codex_permissions"]] == [a_id]
+    assert a_snapshot.reply.call_args.args[0]["live_stream"]["messages"][0]["text"] == "answer 1"
     assert [p["request_id"] for p in b_snapshot.reply.call_args.args[0]["pending_codex_permissions"]] == [b_id]
     assert resolve_any_gater(codex.server, b_id, True)
     assert (await settle(codex, b))["status"] == "completed"

@@ -91,6 +91,10 @@ def register_run_handlers(server: Any) -> None:
             snapshot["pending_ask_user"] = None
             snapshot["pending_native_permissions"] = []
             snapshot["pending_codex_permissions"] = []
+            service = getattr(ctx.server, "_run_service", None)
+            job = service.get_job(run_id) if service is not None else None
+            snapshot["live_stream"] = (job.live_stream.snapshot()
+                if job is not None and job.started and job.session_id == snapshot["run"]["session_id"] else None)
             from ..engines.codex_run import CodexApprovalGate
             from ..perm_consent import PermissionGater
 

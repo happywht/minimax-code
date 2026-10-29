@@ -14,6 +14,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .live_stream import LiveStream
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +40,7 @@ class RunJob:
     record: Any = None
     message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:8]}")
     result: dict[str, Any] | None = None
+    live_stream: LiveStream = field(default_factory=LiveStream)
     error: dict[str, Any] | None = None
     workspace: str | None = None
     project_id: str | None = None

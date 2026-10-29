@@ -768,6 +768,9 @@ export interface MessageChunkData extends RunStreamContext {
   message_id: string;
   delta: string;
   done: boolean;
+  stream_seq?: number;
+  stream_unavailable?: boolean;
+  stream_event_seq?: number;
   /**
    * Optional per-turn metadata — populated on the trailing
    * ``done=True`` chunk (and possibly the first text chunk) by
@@ -983,6 +986,7 @@ export interface RunStepsResult {
   pending_ask_user?: AskUserData | null;
   pending_native_permissions?: PermissionRequestData[];
   pending_codex_permissions?: PermissionRequestData[];
+  live_stream?: { complete: boolean; messages: { message_id: string; text: string; seq: number; done: boolean }[] } | null;
 }
 
 export interface RunEvent {

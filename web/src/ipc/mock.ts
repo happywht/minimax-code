@@ -669,6 +669,7 @@ function mockHandle(
         pending_ask_user: null,
         pending_native_permissions: [],
         pending_codex_permissions: [],
+        live_stream: null,
       };
     }
 
