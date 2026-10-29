@@ -8,7 +8,7 @@ from ...office_metadata import validate_record
 from ._base import now_iso
 from .attachments import AttachmentDAO
 
-MAX_RUN_HISTORY = 256
+RUN_HISTORY_BATCH_SIZE = 256
 MAX_RUN_METADATA = 64 * 1024
 
 
@@ -41,33 +41,37 @@ async def run_binding(query, project, run_id):
             or Path(row["workspace_path"]).resolve(strict=True)
             != Path(project["root_path"]).resolve(strict=True)):
         raise ValueError("Run workspace differs from the project root")
-    # Bound the returned data before SQLite hands oversized metadata to Python.
-    # A longer history fails closed; sampling a suffix could miss authority.
-    history = await query(
-        "SELECT CASE WHEN typeof(metadata)='text' AND length(CAST(metadata AS BLOB))<=? "
-        "THEN metadata ELSE NULL END AS metadata FROM agent_runs WHERE session_id=? LIMIT ?",
-        (MAX_RUN_METADATA, row["session_id"], MAX_RUN_HISTORY + 1))
-    if len(history) > MAX_RUN_HISTORY:
-        raise ValueError("Office run association history exceeds its inspection limit")
-    for saved in history:
-        try:
-            value = json.loads(saved["metadata"], object_pairs_hook=_unique, parse_constant=_constant)
-            pending = [(value, 0)]
-            while pending:
-                item, depth = pending.pop()
-                if depth > 32:
-                    raise ValueError("Run metadata nesting exceeds inspection limit")
-                if type(item) is dict:
-                    pending.extend((child, depth + 1) for child in item.values())
-                elif type(item) is list:
-                    pending.extend((child, depth + 1) for child in item)
-            if (type(value) is not dict
-                    or {"agent_execution", "process_execution_owner"} & value.keys()):
-                raise ValueError
-        except (ValueError, TypeError, RecursionError):
-            # First slice intentionally declines admitted Agent/internal profiles;
-            # an optional historical reference cannot enlarge their authority.
-            raise ValueError("Office association does not support restricted or admitted Agent runs") from None
+    # Inspect the entire history without loading it all at once. A fixed total
+    # limit would make every run in a long-lived session impossible to bind.
+    # Use rowid keyset pagination so each batch follows the previous one.
+    after = 0
+    while True:
+        history = await query(
+            "SELECT rowid AS position, CASE WHEN typeof(metadata)='text' "
+            "AND length(CAST(metadata AS BLOB))<=? THEN metadata ELSE NULL END AS metadata "
+            "FROM agent_runs WHERE session_id=? AND rowid>? ORDER BY rowid LIMIT ?",
+            (MAX_RUN_METADATA, row["session_id"], after, RUN_HISTORY_BATCH_SIZE))
+        if not history:
+            break
+        for saved in history:
+            try:
+                value = json.loads(saved["metadata"], object_pairs_hook=_unique, parse_constant=_constant)
+                pending = [(value, 0)]
+                while pending:
+                    item, depth = pending.pop()
+                    if depth > 32:
+                        raise ValueError("Run metadata nesting exceeds inspection limit")
+                    if type(item) is dict:
+                        pending.extend((child, depth + 1) for child in item.values())
+                    elif type(item) is list:
+                        pending.extend((child, depth + 1) for child in item)
+                if (type(value) is not dict
+                        or {"agent_execution", "process_execution_owner"} & value.keys()):
+                    raise ValueError
+            except (ValueError, TypeError, RecursionError):
+                # An optional historical reference cannot enlarge authority.
+                raise ValueError("Office association does not support restricted or admitted Agent runs") from None
+        after = history[-1]["position"]
     return row
 
 

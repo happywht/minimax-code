@@ -1853,7 +1853,7 @@ stdout 3 MiB/stderr 16 KiB，取消及重复取消等待进程/文件线程回�
 可选 run 仅为来源引用：必须是同项目、同显式 workspace 的普通 native host 非 plan run，
 会话历史包含 admission/internal 执行元数据、其他引擎/隔离配置、损坏或重复键元数据时拒绝；
 生成前及事务提交时重复核对，绝不借用该 run 的工具权限或改变其状态。
-检查完整会话历史最多 256 条，每条 metadata 最多 64 KiB，超限/嵌套过深/非严格 JSON 拒绝，不抽样放行。
+按批检查完整会话历史，每条 metadata 最多 64 KiB，超限/嵌套过深/非严格 JSON 拒绝，不抽样放行。
 请求指纹还绑定项目的 id/root_path/created_at；项目根变更后不能用旧 key 静默重放为新目标。
 已经登记的历史来源被删除后仍可读取该不可变版本。
 
