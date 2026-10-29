@@ -13,7 +13,7 @@ from ...attachment_parser import extract_xlsx
 from ...execution import require_write_access
 from ...office_xlsx import canonical
 from .base import ToolResult
-from .generate_xlsx_from_csv import GenerateXlsxFromCsvTool, csv_to_spec
+from .generate_xlsx_from_csv import GenerateXlsxFromCsvTool, csv_to_spec, filter_spec
 
 _MESSAGES = {
     "sheet_not_found": "Source sheet does not exist; use its exact name",
@@ -37,7 +37,8 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
     description = (
         "Create an XLSX from all stored cells in one visible worksheet of a current-project XLSX attachment. "
         "Select and reorder columns by exact header, converting to text, number or boolean; optional summaries "
-        "are static values and charts use output column names. Formula cells and caches are never imported: "
+        "are static values and charts use output column names. Optional typed filters use output column names; "
+        "all conditions must match and are applied before summaries and charts. Formula cells are never imported: "
         "replace formulas with independently verified values in a copy. Hidden rows/columns, merged cells, "
         "charts, filters, error cells, ambiguous date/number formats and zero-padded identifiers are rejected. "
         "Supported dates become ISO text and must use text output columns. Percentages and currencies "
@@ -53,7 +54,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
     }
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None) -> ToolResult:
+                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -84,12 +85,17 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 spec = csv_to_spec(buffer.getvalue().encode("utf-8"), sheet_name, columns)
             except ValueError as error:
                 raise ValueError(f"Worksheet columns or values are invalid: {error}") from error
+            source_row_count = len(spec["rows"])
+            spec = filter_spec(spec, filters)
             bound_key = hashlib.sha256(canonical([request_key, attachment_id, original["sha256"], source_sheet])).hexdigest()
             result = await self.generator.run(filename, bound_key, spec, summaries=summaries, chart=chart)
             if result.success:
                 result.output["request_key"] = request_key
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
+                result.output["filter_conditions"] = filters or []
+                result.output["source_row_count"] = source_row_count
+                result.output["matched_row_count"] = len(spec["rows"])
                 result.output["source_sheet"] = source_sheet
                 result.output["date_columns"] = extraction["date_columns"]
                 result.output["percentage_columns"] = extraction["percentage_columns"]
