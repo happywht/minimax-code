@@ -293,7 +293,15 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         <Button type="button" variant="secondary" onClick={() => setResearchNeedsReview(false)}>已核对研究来源和引用编号</Button>
       </div>}
       <ReportResearchPicker project={projectId} session={sessionId} service={scoped ? state.serviceId : null}
-        selected={researchSources} onChange={(items) => { noteSourceChange(); setResearchSources(items); }} manualCount={sources.length} />
+        selected={researchSources} onChange={(items) => { noteSourceChange(); setResearchSources(items); }} manualCount={sources.length}
+        onInsertExcerpt={!structured ? (source, number) => {
+          const excerpt = Array.from(source.excerpt ?? "");
+          const clipped = excerpt.length > 600 || source.excerpt_truncated || source.truncated;
+          const text = excerpt.slice(0, 600).join("").replace(/\s+/g, " ").trim();
+          setBody((current) => [current, `来源摘录（未经核验${clipped ? "，已截断" : ""}）：${text} [${number}]`].filter(Boolean).join("\n"));
+          setCitationNeedsReview(true);
+        } : undefined} />
+      {!structured && <p className="text-xs text-ink-2">可将已选来源的最多 600 字摘录及当前编号追加到正文；请核对摘录、引用和事实。</p>}
       <div className="space-y-2 rounded border border-line p-2" aria-label="正文来源编号对照">
         <p>正文编号对照：仅识别形如 [1] 的独立数字标记；其他引用写法无法检查。请自行核对每处对应关系与事实。</p>
         {markers === null ? <p role="status">章节 JSON 无法读取，不能检查编号；原草稿未更改。</p> : <>

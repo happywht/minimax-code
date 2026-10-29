@@ -4,9 +4,10 @@ import { useSessionStore } from "../../stores";
 import type { ResearchSource } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 
-export function ReportResearchPicker({ project, session, service, selected, onChange, manualCount }:
+export function ReportResearchPicker({ project, session, service, selected, onChange, manualCount, onInsertExcerpt }:
   { project: string | null; session: string | null; service: string | null; selected: ResearchSource[];
-    onChange: (items: ResearchSource[]) => void; manualCount: number }): JSX.Element {
+    onChange: (items: ResearchSource[]) => void; manualCount: number;
+    onInsertExcerpt?: (source: ResearchSource, number: number) => void }): JSX.Element {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ResearchSource[]>([]);
   const [offset, setOffset] = useState(0);
@@ -15,6 +16,8 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
   const [error, setError] = useState("");
   const epoch = useRef(0);
   const host = ipc.agentBaseUrl;
+  const selection = useRef({ service, manualCount, ids: "" });
+  selection.current = { service, manualCount, ids: selected.map((item) => item.page_source_id).join("\n") };
   useEffect(() => {
     const off = ipc.onSideCar(() => { epoch.current++; setRows([]); setBusy(false); setError("连接变化，请重新搜索来源。"); });
     return () => { epoch.current++; off(); };
@@ -35,6 +38,25 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
     } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { if (current()) setBusy(false); }
   };
+  const insertExcerpt = async (row: ResearchSource, index: number) => {
+    if (!project || !session || !service || !onInsertExcerpt || busy) return;
+    const ticket = ++epoch.current, expected = selection.current;
+    const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === session &&
+      selection.current.service === expected.service && selection.current.manualCount === expected.manualCount &&
+      selection.current.ids === expected.ids;
+    setBusy(true); setError("");
+    try {
+      const result = await typedIPC.getResearchSource({ project_id: project, session_id: session,
+        expected_service_id: service, page_source_id: row.page_source_id });
+      if (!current()) return;
+      if (result.project_id !== project || result.session_id !== session || result.service_id !== service ||
+          result.source.page_source_id !== row.page_source_id) throw new Error("来源归属已变化，请重新选择");
+      if (!result.source.excerpt?.trim()) throw new Error("此来源没有可用摘录");
+      onInsertExcerpt(result.source, manualCount + index + 1);
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
   return <div className="space-y-2 rounded border border-line p-2">
     <p>项目研究来源：从此服务实际读取的记录中选择；手工来源在前，所选来源按下方顺序编号。页面与报告事实未自动核验，删除来源所属任务或会话后无法生成。</p>
     {!session || !project ? <p>请先选择当前项目的会话。</p> : <>
@@ -54,9 +76,10 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
       <p>[{manualCount + i + 1}] {row.title || "（页面未提供标题）"} · {row.accessed_at}</p><p className="break-all">{row.url}</p>
       <p className="whitespace-pre-wrap break-words">{row.excerpt || "（无摘录）"}</p>
       {(row.title_truncated || row.excerpt_truncated || row.truncated) && <p>标题或摘录已截断。</p>}
-      <div className="flex gap-2"><Button type="button" variant="secondary" disabled={i === 0} onClick={() => { const copy = [...selected]; [copy[i - 1], copy[i]] = [copy[i], copy[i - 1]]; onChange(copy); }}>上移</Button>
-        <Button type="button" variant="secondary" disabled={i === selected.length - 1} onClick={() => { const copy = [...selected]; [copy[i + 1], copy[i]] = [copy[i], copy[i + 1]]; onChange(copy); }}>下移</Button>
-        <Button type="button" variant="secondary" onClick={() => onChange(selected.filter((_, index) => index !== i))}>移除来源</Button></div>
+      {onInsertExcerpt && <Button type="button" variant="secondary" disabled={busy || !service || !row.excerpt?.trim()} onClick={() => void insertExcerpt(row, i)}>追加摘录及编号到正文</Button>}
+      <div className="flex gap-2"><Button type="button" variant="secondary" disabled={busy || i === 0} onClick={() => { const copy = [...selected]; [copy[i - 1], copy[i]] = [copy[i], copy[i - 1]]; onChange(copy); }}>上移</Button>
+        <Button type="button" variant="secondary" disabled={busy || i === selected.length - 1} onClick={() => { const copy = [...selected]; [copy[i + 1], copy[i]] = [copy[i], copy[i + 1]]; onChange(copy); }}>下移</Button>
+        <Button type="button" variant="secondary" disabled={busy} onClick={() => onChange(selected.filter((_, index) => index !== i))}>移除来源</Button></div>
     </div>)}
   </div>;
 }
