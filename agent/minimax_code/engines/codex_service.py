@@ -185,6 +185,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         request_key=request.idempotency_key, title=request.content.strip()[:32],
         metadata={"engine": "codex", "engine_card": info.to_dict(), "reviewed": reviewed,
                   "workspace_snapshot": workspace,
+                  "project_id": project_id,
                   "validate_command": validate_command,
                   "budget": {"limit_tokens": budget, "daily_limit": daily, "daily_baseline": baseline}},
         workspace=workspace, project_id=project_id, operation=operation, finalize=finalize,

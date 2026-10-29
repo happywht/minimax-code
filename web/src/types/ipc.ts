@@ -1464,6 +1464,17 @@ export interface GitDiffResult {
   diff: string;
 }
 
+export interface RunWorkspaceDiffResult {
+  run_id: string;
+  session_id: string;
+  project_id: string | null;
+  workspace: string;
+  scope: "current_workspace";
+  diff: string;
+  staged_diff: string;
+  untracked: string[];
+}
+
 export type PatchLineKind = "context" | "add" | "delete" | "meta";
 
 export interface PatchLine {

@@ -439,6 +439,16 @@ with `cwd`/`project_id`. The review UI uses that same session/workspace for diff
 and admission, retains uncertain request keys, and reloads durable results.
 See [skill-execution.md](skill-execution.md) for ownership and permission limits.
 
+For task review, `git.diff({run_id, session_id})` reads the **current** bound
+workspace for a Native or Codex run and returns `{run_id, session_id, project_id,
+workspace, scope:"current_workspace", diff, staged_diff, untracked}`. The two
+diffs cover tracked unstaged and staged changes; `untracked` lists names only.
+No committed changes are included. No other parameters may be supplied. The
+run's recorded project, engine and workspace must still match the session, and
+host restrictions apply. Runs without these bindings cannot use this view.
+Results can include edits by the user or other runs and are not attribution to
+the selected run. The separate Git reads are not an atomic snapshot.
+
 ### Durable run journal
 
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database

@@ -63,6 +63,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from ..execution import communicate_bounded, spawn_exec
@@ -100,6 +101,7 @@ async def _run_git(args: list[str], *, cwd: str | os.PathLike[str] | None = None
     cmd = ["git", "--no-pager", "-c", "core.fsmonitor=false", *args]
     try:
         proc = await spawn_exec(*cmd, cwd=cwd,
+                                env={"GIT_OPTIONAL_LOCKS": "0"},
                                 stdin=asyncio.subprocess.PIPE if input_bytes is not None else asyncio.subprocess.DEVNULL,
                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         output = await communicate_bounded(proc, timeout=_GIT_TIMEOUT_S, input=input_bytes)
@@ -173,6 +175,70 @@ async def _scoped_cwd(params: dict[str, Any] | None) -> str | None:
     if cwd is None:
         return str(root)
     return ensure_cwd_within_root(cwd, root)
+
+
+async def _run_workspace_diff(params: dict[str, Any]) -> dict[str, Any]:
+    """Read the current bound workspace, never attribute its changes to the run."""
+    from ..app import ensure_db
+    from ..execution import ExecutionPolicy, execution_scope
+    from ..storage.dao.runs import AgentRunsDAO
+    from ..workspace_ctx import require_directory, resolve_root_for_session
+    from .host_session_gate import require_host_session
+
+    if set(params) != {"run_id", "session_id"}:
+        raise HandlerError(INVALID_PARAMS, "Run workspace review requires only run_id and session_id")
+    run_id, session_id = params["run_id"], params["session_id"]
+    if not all(isinstance(value, str) and value for value in (run_id, session_id)):
+        raise HandlerError(INVALID_PARAMS, "run_id and session_id must be non-empty strings")
+    db = await ensure_db()
+    dao = AgentRunsDAO(db)
+
+    async def binding():
+        run = await dao.get_run(run_id)
+        session = await db.fetchone("SELECT id,project_id,engine FROM sessions WHERE id=?", (session_id,))
+        metadata = (run or {}).get("metadata") or {}
+        recorded = metadata.get("workspace_snapshot") if isinstance(metadata, dict) else None
+        model = metadata.get("model_snapshot") if isinstance(metadata, dict) else None
+        engine = metadata.get("engine") if isinstance(metadata, dict) else None
+        if engine is None and isinstance(model, dict):
+            engine = model.get("engine")
+        if (not run or run["session_id"] != session_id or not session or not isinstance(metadata, dict)
+                or session["engine"] not in {"native", "codex"}
+                or engine != session["engine"]
+                or "project_id" not in metadata or metadata["project_id"] != session["project_id"]
+                or not isinstance(recorded, str) or not Path(recorded).is_absolute()):
+            raise HandlerError(INVALID_PARAMS, "Run workspace or project binding is unavailable or changed")
+        if session["project_id"] and not await db.fetchone("SELECT id FROM projects WHERE id=?", (session["project_id"],)):
+            raise HandlerError(INVALID_PARAMS, "Run project is unavailable")
+        await require_host_session(session_id)
+        root = require_directory(await resolve_root_for_session(session_id))
+        if root != Path(recorded):
+            raise HandlerError(INVALID_PARAMS, "Run workspace binding changed; inspect it before reviewing")
+        info = root.stat()
+        return root, (info.st_dev, info.st_ino), session["project_id"]
+
+    root, identity, project_id = await binding()
+    with execution_scope(ExecutionPolicy(workspace=root)):
+        repo_root = Path((await _run_git(["rev-parse", "--show-toplevel"], cwd=root)).strip()).resolve()
+        if not root.is_relative_to(repo_root):
+            raise HandlerError(INVALID_PARAMS, "Git repository does not contain the task workspace")
+        common = ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M"]
+        working = await _run_git([*common, "--", "."], cwd=root)
+        staged = await _run_git([*common, "--staged", "--", "."], cwd=root)
+        status = await _run_git(["-c", "status.relativePaths=true", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--", "."], cwd=root)
+    current_root, current_identity, current_project = await binding()
+    if (current_root, current_identity, current_project) != (root, identity, project_id):
+        raise HandlerError(INVALID_PARAMS, "Run workspace binding changed during review")
+    _, paths, _ = _parse_status_porcelain_v2(status)
+    untracked = []
+    for name in paths:
+        path = Path(os.path.abspath(repo_root / name))
+        if not path.is_relative_to(root):
+            raise HandlerError(INVALID_PARAMS, "Git returned a path outside the task workspace")
+        untracked.append(path.relative_to(root).as_posix())
+    return {"run_id": run_id, "session_id": session_id, "project_id": project_id,
+            "workspace": str(root), "scope": "current_workspace", "diff": working,
+            "staged_diff": staged, "untracked": untracked}
 
 def _parse_status_porcelain_v2(text: str) -> tuple[list[str], list[str], list[str]]:
     """Split ``git status --porcelain=v2 -z`` output into three buckets.
@@ -313,6 +379,9 @@ def register_git_handlers(server: Any) -> None:
     async def handle_git_diff(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
+            if "run_id" in p:
+                await ctx.reply(await _run_workspace_diff(p))
+                return
             cwd = await _scoped_cwd(p)
             scope = p.get("scope", "working")
             ref = p.get("ref")

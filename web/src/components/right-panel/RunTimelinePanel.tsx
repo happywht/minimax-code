@@ -19,6 +19,7 @@ import { RunRecoveryActions } from "./RunRecoveryActions";
 import { RunBudgetPanel } from "./RunBudgetPanel";
 import { VerificationBadge } from "../chat/VerificationBadge";
 import { VerificationDetails } from "../chat/VerificationDetails";
+import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
 import type { VerificationEvidence } from "../../types/ipc";
 
 export interface RunTimelinePanelProps {
@@ -201,6 +202,7 @@ export function RunTimelinePanel({
               ))}
             </ol>
             <RunBudgetPanel run={run} />
+            <RunWorkspaceDiff run={run} />
             <RunRecoveryActions run={run} refresh={() => loadForSession(currentSessionId)} />
           </article>
         ))}

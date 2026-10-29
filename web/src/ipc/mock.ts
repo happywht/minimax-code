@@ -1237,7 +1237,8 @@ function mockHandle(
     }
 
     case "git.diff": {
-      const p = params as { scope?: string; ref?: string; session_id?: string } | undefined;
+      const p = params as { scope?: string; ref?: string; session_id?: string; run_id?: string } | undefined;
+      if (p?.run_id) throw new Error("演示模式无法读取任务工作区差异");
       // A non-empty sample diff keeps the review pipeline exercisable in
       // mock mode — a constant "" here masked the whole code-review flow
       // behind the "no changes" early return.
