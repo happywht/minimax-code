@@ -9,6 +9,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_INPUT_CHARS, SUGGESTION_EVENT } from "./constants";
+import { ipc } from "../../ipc";
+import { useSessionStore } from "../../stores/sessionStore";
 
 const DRAFT_KEY_PREFIX = "minimax-code:draft:";
 
@@ -66,6 +68,9 @@ export function useComposerDraft(sessionId: string | null): ComposerDraft {
     setDraft({ id: sessionId, text: readDraft(sessionId) });
   }
 
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
   // Mirror every edit under the session-scoped key (empty → remove).
   useEffect(() => {
     writeDraft(draft.id, draft.text);
@@ -105,6 +110,25 @@ export function useComposerDraft(sessionId: string | null): ComposerDraft {
     return () =>
       window.removeEventListener(SUGGESTION_EVENT, onSuggestion as EventListener);
   }, [setValue]);
+
+  // This event is acknowledged only by the composer for the same live scope.
+  useEffect(() => {
+    const appendSource = (event: Event) => {
+      const detail = (event as CustomEvent<{ host: string; project: string; session: string; text: string; result?: string }>).detail;
+      const current = useSessionStore.getState(), previous = draftRef.current;
+      if (!detail || typeof detail.text !== "string" || ipc.agentBaseUrl !== detail.host ||
+          current.currentProjectId !== detail.project || current.currentSessionId !== detail.session ||
+          previous.id !== detail.session || sessionId !== detail.session) return;
+      const next = previous.text ? `${previous.text}\n\n${detail.text}` : detail.text;
+      if (next.length > MAX_INPUT_CHARS) { detail.result = "草稿加上来源后超过输入上限，请先精简草稿。"; return; }
+      // Update the ref immediately so two rapid selections cannot overwrite one another.
+      draftRef.current = { id: previous.id, text: next };
+      setDraft((state) => state.id === detail.session ? { ...state, text: next } : state);
+      detail.result = "已添加到当前会话草稿，尚未发送。";
+    };
+    window.addEventListener("minimax:append-research-source", appendSource);
+    return () => window.removeEventListener("minimax:append-research-source", appendSource);
+  }, [sessionId]);
 
   const clear = useCallback(() => setValue(""), [setValue]);
 

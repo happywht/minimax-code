@@ -27,6 +27,8 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [added, setAdded] = useState(false);
   const version = useRef(0);
   const visible = scope?.project === project && scope?.session === session && scope?.host === ipc.agentBaseUrl;
   const current = (revision: number) => version.current === revision && ipc.agentBaseUrl === host
@@ -35,12 +37,12 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
     && response.project_id === project && !!response.service_id;
 
   useEffect(() => ipc.onSideCar(() => {
-    ++version.current; setRows([]); setSelected(null); setService(null); setScope(null); setError(null);
+    ++version.current; setRows([]); setSelected(null); setService(null); setScope(null); setError(null); setAdding(false); setAdded(false);
     setHost(ipc.agentBaseUrl);
     setEpoch((value) => value + 1);
   }), []);
   useEffect(() => { ++version.current; setRows([]); setSelected(null); setService(null); setScope(null); setError(null);
-    setQuery(""); setApplied(""); setOffset(0); setNotice(null); }, [project, session, host]);
+    setQuery(""); setApplied(""); setOffset(0); setNotice(null); setAdding(false); setAdded(false); }, [project, session, host]);
   useEffect(() => {
     const token = version;
     const revision = ++token.current;
@@ -61,7 +63,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
   const select = async (id: string) => {
     if (!project || !session || !service) return;
     const revision = ++version.current, expected = service;
-    setSelected(null); setError(null); setLoading(true);
+    setSelected(null); setError(null); setNotice(null); setAdded(false); setAdding(false); setLoading(true);
     try {
       const result = await typedIPC.getResearchSource({ session_id: session, project_id: project,
         expected_service_id: expected, page_source_id: id });
@@ -70,6 +72,29 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
       setSelected(result.source);
     } catch (reason) { if (current(revision)) setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { if (current(revision)) setLoading(false); }
+  };
+
+  const addToDraft = async () => {
+    if (!visible || !project || !session || !service || !selected || adding) return;
+    const revision = ++version.current, expected = service, id = selected.page_source_id;
+    setAdding(true); setNotice(null); setAdded(false);
+    try {
+      const result = await typedIPC.getResearchSource({ session_id: session, project_id: project,
+        expected_service_id: expected, page_source_id: id });
+      if (!current(revision)) return;
+      if (!checkScope(result) || result.service_id !== expected || result.source.page_source_id !== id) throw new Error("来源或服务关联已变化，请重新选择");
+      const source = result.source;
+      const excerpt = Array.from(source.excerpt ?? ""), shortened = excerpt.length > 600;
+      const text = ["研究来源（页面内容未核验，请核对后使用）：", `标题：${source.title || "（页面未提供标题）"}${source.title_truncated ? "（已截断）" : ""}`,
+        `网址：${source.url}`, `实际访问时间：${source.accessed_at}`, `来源 ID：${source.page_source_id}`,
+        `所属运行：${source.run_id}`, `摘录${shortened || source.excerpt_truncated || source.truncated ? "（已截断，不代表全文）" : ""}：`,
+        excerpt.slice(0, 600).join("") || "（无提取文本）"].join("\n");
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project, session, text };
+      window.dispatchEvent(new CustomEvent("minimax:append-research-source", { detail }));
+      setNotice(detail.result ?? "当前聊天输入区未打开；请先切换到聊天，再重新选择来源。");
+      setAdded(detail.result === "已添加到当前会话草稿，尚未发送。");
+    } catch (reason) { if (current(revision)) setNotice(`未添加来源：${reason instanceof Error ? reason.message : String(reason)}`); }
+    finally { if (current(revision)) setAdding(false); }
   };
 
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目研究来源">
@@ -98,10 +123,13 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
         <p className="break-all">网址：{safeUrl(selected.url) ? <a href={safeUrl(selected.url)!} target="_blank" rel="noopener noreferrer" className="underline">{selected.url}</a> : selected.url}</p>
         <p>实际访问时间：{selected.accessed_at}</p><p className="break-all">所属任务：{selected.run_id}</p>
         <p className="break-all">来源 ID：{selected.page_source_id}</p>
+        <div className="flex flex-wrap gap-2"><Button type="button" variant="primary" loading={adding} disabled={adding || loading} onClick={() => void addToDraft()}>加入当前会话草稿</Button>
         <Button variant="secondary" onClick={() => {
           if (!navigator.clipboard) { setNotice("复制不可用，请手动选择 ID。"); return; }
           void navigator.clipboard.writeText(selected.page_source_id).then(() => setNotice("来源 ID 已复制。"), () => setNotice("复制失败，请手动选择 ID。"));
         }}>复制来源 ID</Button>
+        {added && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
+        <p className="text-xs text-ink-2">添加前重新核对来源归属；只追加到草稿，不会发送。摘录最多 600 个字符，页面内容未自动核验。</p>
         {notice && <p role="status">{notice}</p>}
         <p>保存的正文摘录（未经核验）：</p><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-1 p-2">{selected.excerpt || "（无提取文本）"}</pre>
         {(selected.excerpt_truncated || selected.truncated) && <p>网页内容或摘录已截断，不代表全文。</p>}
