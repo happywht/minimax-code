@@ -80,6 +80,37 @@ class RPCAdmission:
         await self._empty.wait()
 
 
+class HTTPAdmissionBoundary:
+    """Count independent HTTP requests through the complete ASGI response.
+
+    Authentication must wrap this middleware. RPC has its own method-aware
+    boundary; bootstrap only issues the existing local session credential.
+    """
+
+    def __init__(self, app: Any, admission: RPCAdmission) -> None:
+        self.app, self.admission = app, admission
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if (scope["type"] != "http" or scope.get("method") == "OPTIONS"
+                or scope.get("path") in {"/rpc", "/auth/session"}):
+            await self.app(scope, receive, send)
+            return
+        method = "status" if scope.get("path") == "/health" and scope.get("method") == "GET" else "http"
+        entry = self.admission.enter(method, request=True)
+        try:
+            entry.__enter__()
+        except AdmissionClosed:
+            from starlette.responses import JSONResponse
+
+            await JSONResponse({"error": "Service is in maintenance"}, status_code=503,
+                               headers={"Cache-Control": "no-store"})(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            entry.__exit__(None, None, None)
+
+
 class MaintenanceIncomplete(RuntimeError):
     """A supported producer could not be fenced and drained."""
 
@@ -109,6 +140,9 @@ async def _drain(server: Any) -> MaintenanceResult:
     from ..scheduler import quiesce_scheduler
 
     try:
+        preview = getattr(server, "_preview_state", None)
+        if preview is not None:
+            await preview.close_for_maintenance()
         # Close scheduled admissions before the run service. Already admitted
         # runs may still need terminal or index access while they finish, so
         # defer those fences until the scheduler and runs have drained.
@@ -136,7 +170,12 @@ async def _drain(server: Any) -> MaintenanceResult:
         if admission is not None:
             admission.close_controls()
             await admission.wait_empty()
-    return MaintenanceResult(drained=("scheduler", "runs", "local terminal tasks and main processes", "codebase index"))
+    drained = ("scheduler", "runs", "local terminal tasks and main processes", "codebase index")
+    if admission is not None:
+        drained += ("admitted RPC and HTTP requests",)
+    if preview is not None:
+        drained += ("preview streams and watchers",)
+    return MaintenanceResult(drained=drained)
 
 
 async def drain_for_maintenance(server: Any) -> MaintenanceResult:

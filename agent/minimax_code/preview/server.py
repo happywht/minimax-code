@@ -45,11 +45,14 @@ class PreviewState:
         self.event_queue: asyncio.Queue[WatcherEvent] = asyncio.Queue(maxsize=256)
         self._watcher_task: asyncio.Task[None] | None = None
         self._fanout_task: asyncio.Task[None] | None = None
-        self._subscribers: list[asyncio.Queue[WatcherEvent]] = []
+        self._subscribers: list[asyncio.Queue[WatcherEvent | None]] = []
         self.children: dict[Path, PreviewState] = {}
+        self._maintenance_closed = False
 
     async def start_watcher(self) -> None:
         """Start the background file-system watcher."""
+        if self._maintenance_closed:
+            raise RuntimeError("Preview is closed for maintenance")
         if self._watcher_task is not None and not self._watcher_task.done():
             return
         self._watcher_task = asyncio.create_task(
@@ -66,7 +69,7 @@ class PreviewState:
                 event = await self.event_queue.get()
             except asyncio.CancelledError:
                 return
-            dead: list[asyncio.Queue[WatcherEvent]] = []
+            dead: list[asyncio.Queue[WatcherEvent | None]] = []
             for q in self._subscribers:
                 try:
                     q.put_nowait(event)
@@ -75,13 +78,13 @@ class PreviewState:
             for q in dead:
                 self._subscribers.remove(q)
 
-    def subscribe(self) -> asyncio.Queue[WatcherEvent]:
+    def subscribe(self) -> asyncio.Queue[WatcherEvent | None]:
         """Create a new subscriber queue."""
-        q: asyncio.Queue[WatcherEvent] = asyncio.Queue(maxsize=64)
+        q: asyncio.Queue[WatcherEvent | None] = asyncio.Queue(maxsize=64)
         self._subscribers.append(q)
         return q
 
-    def unsubscribe(self, q: asyncio.Queue[WatcherEvent]) -> None:
+    def unsubscribe(self, q: asyncio.Queue[WatcherEvent | None]) -> None:
         """Remove a subscriber queue."""
         try:
             self._subscribers.remove(q)
@@ -104,6 +107,18 @@ class PreviewState:
                 pass
         self._watcher_task = None
         self._fanout_task = None
+
+    async def close_for_maintenance(self) -> None:
+        """Wake streams and permanently prevent new watchers in this process."""
+        self._maintenance_closed = True
+        for child in list(self.children.values()):
+            child._maintenance_closed = True
+        for active in [self, *self.children.values()]:
+            for queue in list(active._subscribers):
+                while not queue.empty():
+                    queue.get_nowait()
+                queue.put_nowait(None)
+        await self.stop()
 
 
 def _safe_path(workspace: Path, file_path: str) -> Path | None:
@@ -213,6 +228,8 @@ def register_preview_routes(
         """SSE endpoint — streams file-change events to the client."""
 
         root = await session_workspace(session_id)
+        if state._maintenance_closed:
+            raise HTTPException(status_code=503, detail="Service is in maintenance")
         active = state
         if root != state.workspace:
             if root not in state.children:
@@ -223,6 +240,8 @@ def register_preview_routes(
                         raise HTTPException(status_code=429, detail="Too many active previews")
                     idle = state.children.pop(idle_root)
                     await idle.stop()
+                    if state._maintenance_closed:
+                        raise HTTPException(status_code=503, detail="Service is in maintenance")
                 state.children[root] = PreviewState(root)
             active = state.children[root]
         await active.start_watcher()
@@ -231,6 +250,8 @@ def register_preview_routes(
             q = active.subscribe()
             try:
                 while True:
+                    if state._maintenance_closed:
+                        break
                     # Use a timeout so we can check for disconnects.
                     if await request.is_disconnected():
                         break
@@ -249,6 +270,8 @@ def register_preview_routes(
                         # Send a keepalive comment.
                         yield ": keepalive\n\n"
                         continue
+                    if event is None:
+                        break
                     data = json.dumps(event.to_dict())
                     yield f"data: {data}\n\n"
             except asyncio.CancelledError:

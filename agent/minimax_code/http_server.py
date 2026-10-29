@@ -489,6 +489,7 @@ def build_app(
     from .preview.server import PreviewState
 
     preview_state = PreviewState(preview_workspace)
+    server._preview_state = preview_state
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -536,7 +537,11 @@ def build_app(
     )
 
     from .http_security import install_application_auth
+    from .runtime.maintenance import HTTPAdmissionBoundary
 
+    # Middleware added later wraps this boundary, so Host/Origin/auth checks
+    # happen before maintenance responses and before any request body reads.
+    app.add_middleware(HTTPAdmissionBoundary, admission=server._rpc_admission)
     install_application_auth(app, _cors_allow_origins())
     app.add_middleware(
         CORSMiddleware,
