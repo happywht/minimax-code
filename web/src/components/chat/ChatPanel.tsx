@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ProviderReadinessBanner } from "./ProviderReadinessBanner";
+import { WorkspaceDiagnostic } from "./WorkspaceDiagnostic";
 import { AskUserCard } from "./AskUserCard";
 import { useChat, useSessionStore } from "../../stores";
 import { DropdownMenu, type DropdownMenuItem } from "../../ui/DropdownMenu";
@@ -363,6 +364,7 @@ export function ChatPanel({
       {current?.engine === "codex" && <p className="px-4 text-xs text-ink-2">Codex 会话使用独立模型配置，仅支持文本。历史与外部线程绑定；如需修改历史，请新建会话并交接上下文。</p>}
       {/* Inline questionnaire while the agent is suspended in ask_user */}
       <AskUserCard />
+      {current?.engine !== "codex" && <WorkspaceDiagnostic />}
       {current?.engine !== "codex" && <ProviderReadinessBanner
         onOpenProviders={onOpenProviderSettings}
         onOpenModels={onOpenModelSettings}

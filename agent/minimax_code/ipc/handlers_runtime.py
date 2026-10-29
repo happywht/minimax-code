@@ -78,11 +78,91 @@ async def _handle_research_set(params: Any, ctx: Context) -> None:
     await _research_config(params, ctx, write=True)
 
 
+async def _handle_workspace_check(params: Any, ctx: Context) -> None:
+    """Check the same local workspace selection as Native admission, without running a command."""
+    import os
+    from pathlib import PureWindowsPath
+
+    from ..app import ensure_db
+    from ..storage.dao.text_artifacts import ArtifactDAO
+    from ..workspace_ctx import require_directory
+    from .host_session_gate import require_host_session
+    from .protocol import INVALID_PARAMS, RuntimeWorkspaceCheckParams
+
+    try:
+        request = RuntimeWorkspaceCheckParams.model_validate(params)
+        db = await ensure_db()
+        if db is None:
+            raise RuntimeError("Storage unavailable")
+
+        async def binding():
+            session = await db.fetchone("SELECT id,project_id,workspace_path,engine FROM sessions WHERE id=?", (request.session_id,))
+            if not session or session["project_id"] != request.project_id:
+                raise ValueError("Session or project binding changed")
+            project = await db.fetchone("SELECT id,root_path FROM projects WHERE id=?", (session["project_id"],)) if session["project_id"] else None
+            identity = await ArtifactDAO(db).service_id()
+            return dict(session), dict(project) if project else None, identity
+
+        session, project, identity = await binding()
+        base = {"session_id": request.session_id, "project_id": request.project_id, "service_id": identity}
+        try:
+            await require_host_session(request.session_id)
+        except HandlerError:
+            if await binding() != (session, project, identity):
+                raise ValueError("Session or project binding changed during check") from None
+            await ctx.reply({**base, "status": "unknown", "source": "unknown", "path": None,
+                             "reason": "execution_boundary_unavailable"})
+            return
+        session_path = str(session.get("workspace_path") or "").strip()
+        project_path = str((project or {}).get("root_path") or "").strip()
+        source = "session" if session_path else "project"
+        if source == "project" and session["project_id"] and not project:
+            result = {"status": "error", "source": source, "path": None, "reason": "project_missing"}
+        else:
+            raw = session_path if source == "session" else project_path
+            if not raw:
+                source, raw = "default", os.environ.get("MINIMAX_CODE_WORKSPACE") or os.getcwd()
+            if PureWindowsPath(str(raw)).drive.startswith("\\\\"):
+                result = {"status": "unknown", "source": source, "path": None, "reason": "network_path_not_checked"}
+            else:
+                try:
+                    slots = getattr(ctx.server, "_workspace_diagnostic_slots", None)
+                    if slots is None:
+                        slots = ctx.server._workspace_diagnostic_slots = asyncio.Semaphore(2)
+                    await asyncio.wait_for(slots.acquire(), timeout=0.05)
+                    task = asyncio.create_task(asyncio.to_thread(require_directory, str(raw)))
+                    def finished(done):
+                        slots.release()
+                        if not done.cancelled():
+                            done.exception()  # consume late errors after a timeout
+                    task.add_done_callback(finished)
+                    root = await asyncio.wait_for(asyncio.shield(task), timeout=2)
+                    result = {"status": "ok", "source": source, "path": str(root), "reason": None}
+                except TimeoutError:
+                    result = {"status": "unknown", "source": source, "path": None, "reason": "check_timed_out"}
+                except (OSError, RuntimeError):
+                    result = {"status": "unknown", "source": source, "path": None, "reason": "check_unavailable"}
+                except ValueError:
+                    result = {"status": "error", "source": source, "path": None, "reason": "directory_unavailable"}
+        if await binding() != (session, project, identity):
+            raise ValueError("Session or project binding changed during check")
+        if source == "default" and raw != (os.environ.get("MINIMAX_CODE_WORKSPACE") or os.getcwd()):
+            raise ValueError("Default workspace changed during check")
+        await require_host_session(request.session_id)
+        await ctx.reply({**base, **result})
+    except (ValidationError, ValueError, HandlerError) as exc:
+        await ctx.reply_error(INVALID_PARAMS, str(exc))
+    except Exception:
+        logger.exception("workspace diagnostic failed")
+        await ctx.reply_error(INTERNAL_ERROR, "Workspace diagnostic unavailable")
+
+
 def register_runtime_handlers(server: Any) -> None:
     """Register all ``runtime.*`` JSON-RPC methods on *server*."""
     server.register("runtime.recovery_status", _handle_runtime_recovery_status)
     server.register("runtime.research_get", _handle_research_get)
     server.register("runtime.research_set", _handle_research_set)
+    server.register("runtime.workspace_check", _handle_workspace_check)
     logger.debug("registered runtime.* handlers")
 
 

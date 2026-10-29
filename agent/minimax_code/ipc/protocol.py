@@ -344,6 +344,12 @@ class RunOutputClearParams(BaseModel):
     expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class RuntimeWorkspaceCheckParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str | None
+
+
 class RunResearchListParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1)

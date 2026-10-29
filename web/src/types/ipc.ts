@@ -1427,6 +1427,13 @@ export interface ChildWorkspaceSummary {
   collection_required: boolean;
 }
 
+export interface WorkspaceCheckResult {
+  session_id: string; project_id: string | null; service_id: string;
+  status: "ok" | "error" | "unknown";
+  source: "session" | "project" | "default" | "unknown";
+  path: string | null; reason: string | null;
+}
+
 export interface ChildWorkspaceReview {
   run_id: string; session_id: string; project_id: string | null; service_id: string;
   root: string; revision: string; state: string; kind: string; omitted: string[];
