@@ -19,6 +19,7 @@ const tabs: Array<{ id: DeliveryTab; label: string }> = [
 ];
 const officeDrafts = new Map<string, TableDraft>();
 const reportDrafts = new Map<string, RetainedReportDraft>();
+export type ReportTableTransfer = { rows: string[][]; source: string };
 type Binding = { project: string; session: string | null; host: string; service: string };
 
 export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: DeliveryTab; onSelect: (tab: DeliveryTab) => void; onClose: () => void; onEdit?: (kind: "report" | "table") => void }): JSX.Element {
@@ -26,6 +27,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: Del
   const projectName = useSessionStore((s) => s.projects.find((item) => item.id === project)?.name);
   const host = ipc.agentBaseUrl;
   const [binding, setBinding] = useState<Binding | null>(null), bindingRef = useRef<Binding | null>(null);
+  const [tableTransfer, setTableTransfer] = useState<{ scope: string; value: ReportTableTransfer } | null>(null);
   const [ready, setReady] = useState(false), [error, setError] = useState("");
   const [visited, setVisited] = useState<Set<DeliveryTab>>(() => new Set([tab]));
   const visitedRef = useRef(visited); visitedRef.current = visited;
@@ -95,8 +97,8 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: Del
         if ((tab === "attachments" || tab === "office") && /添加|删除|新增|插入|移动|转换|恢复|撤销|重做/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
       }}>
         {visited.has("artifacts") && <div className="h-full" hidden={tab !== "artifacts"}><ArtifactsPanel embedded onClose={onClose} /></div>}
-        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} /></div>}
-        {visited.has("office") && <div className="h-full" hidden={tab !== "office"}><OfficeDeliveryPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} initialDraft={officeDrafts.get(scopeKey)} onRetainDraft={(draft) => officeDrafts.set(scopeKey, draft)} /></div>}
+        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} tableTransfer={tableTransfer?.scope === scopeKey ? tableTransfer.value : null} onClearTableTransfer={() => setTableTransfer(null)} onTableApplied={() => onEdit?.("report")} /></div>}
+        {visited.has("office") && <div className="h-full" hidden={tab !== "office"}><OfficeDeliveryPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} initialDraft={officeDrafts.get(scopeKey)} onRetainDraft={(draft) => officeDrafts.set(scopeKey, draft)} tableTransferPending={tableTransfer?.scope === scopeKey} onPrepareReportTable={(value) => { setTableTransfer({ scope: scopeKey, value }); switchTab("attachments"); }} /></div>}
         {visited.has("research") && <div className="h-full" hidden={tab !== "research"}><ResearchSourcesPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} /></div>}
         {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} /></div>}
       </div>

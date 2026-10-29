@@ -11,6 +11,7 @@ import { OfficeAnalysisControls, type OfficeAnalysisOptions } from "./OfficeAnal
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ProjectXlsxImport } from "./ProjectXlsxImport";
 import { DraftFileControl } from "./DraftFileControl";
+import type { ReportTableTransfer } from "./DeliveryWorkspace";
 import { OfficeFollowupDraft } from "./OfficeFollowupDraft";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
@@ -65,7 +66,7 @@ function readTableDraft(value: unknown): TableDraft {
   return data as TableDraft;
 }
 
-export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initialDraft, onRetainDraft }: { onClose: () => void; onText: () => void; embedded?: boolean; initialDraft?: TableDraft; onRetainDraft?: (draft: TableDraft) => void }): JSX.Element {
+export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initialDraft, onRetainDraft, tableTransferPending = false, onPrepareReportTable }: { onClose: () => void; onText: () => void; embedded?: boolean; initialDraft?: TableDraft; onRetainDraft?: (draft: TableDraft) => void; tableTransferPending?: boolean; onPrepareReportTable?: (value: ReportTableTransfer) => void }): JSX.Element {
   const project = useSessionStore((state) => state.currentProjectId), host = ipc.agentBaseUrl;
   const session = useSessionStore((state) => state.currentSessionId);
   const state = useOfficeDeliveryStore();
@@ -78,6 +79,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const [analysis, setAnalysis] = useState<OfficeAnalysisOptions>(initialDraft?.analysis ?? { summaries: [], chart: null });
   const [chartPending, setChartPending] = useState(false);
   const [chartMarkerReady, setChartMarkerReady] = useState(false);
+  const [reportSource, setReportSource] = useState("");
   const [csv, setCsv] = useState(initialDraft?.csv ?? "");
   const [csvTable, setCsvTable] = useState<CsvTable | null>(initialDraft?.csvTable ?? null);
   const [originalCsvTable, setOriginalCsvTable] = useState<CsvTable | null>(initialDraft?.originalCsvTable ?? null);
@@ -274,6 +276,19 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={() => { saveCsv(csvTable); setFormError(null); }}>下载当前表格 CSV</Button>
           <Button type="button" variant="secondary" onClick={() => { try { saveJson(csvToOfficeSpec(csvTable, kinds), "表格处理结果.json"); setFormError(null); } catch (error) { setFormError(error instanceof Error ? error.message : "导出失败"); } }}>下载带类型表格 JSON</Button></div>
         <Button type="button" variant="secondary" onClick={() => { try { setSource(JSON.stringify(csvToOfficeSpec(csvTable, kinds), null, 2)); edited(); } catch (error) { setFormError(error instanceof Error ? error.message : "转换失败"); } }}>转换为表格输入</Button>
+        {onPrepareReportTable && <div className="space-y-2 rounded border border-line p-2">
+          <p>将当前编辑表格按原样复制到报告待处理区（首行为表头，单元格为文本）；请填写资料来源与处理口径。报告需另行选择章节并确认追加，不会生成或发送。</p>
+          <Input aria-label="表格报告来源说明" placeholder="例如：原始文件、工作表及筛选或汇总口径" value={reportSource} onChange={(event) => setReportSource(event.target.value)} />
+          {tableTransferPending && <p role="status">已有待处理表格，请先在报告中追加或放弃。</p>}
+          <Button type="button" variant="secondary" disabled={!scoped || !state.serviceId || tableTransferPending} onClick={() => {
+            const rows = [csvTable.headers, ...csvTable.rows].map((row) => [...row]);
+            const explanation = reportSource.trim();
+            // eslint-disable-next-line no-control-regex
+            if (!explanation || [...explanation].length > 4000 || /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(explanation)) { setFormError("请填写有效的来源和处理口径，最多 4000 字符。"); return; }
+            if (rows.length > 100 || !rows[0].length || rows[0].length > 20 || rows.some((row) => row.length !== rows[0].length)) { setFormError("报告表格最多 100 行（含表头）、20 列，且每行列数须一致；请先调整表格。"); return; }
+            setFormError(null); onPrepareReportTable({ rows, source: explanation });
+          }}>准备加入报告</Button>
+        </div>}
       </div>}
     </details>
     <form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); submit(key); }}>

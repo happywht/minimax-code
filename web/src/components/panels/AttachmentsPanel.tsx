@@ -14,6 +14,7 @@ import { ReportResearchPicker } from "./ReportResearchPicker";
 import { DraftFileControl } from "./DraftFileControl";
 import { ReportTextExcerpt } from "./ReportTextExcerpt";
 import { ReportTextReuse } from "./ReportTextReuse";
+import type { ReportTableTransfer } from "./DeliveryWorkspace";
 import { ReportArtifactReuse } from "./ReportArtifactReuse";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
@@ -61,7 +62,7 @@ function reportMarkers(body: string, sections: string, structured: boolean): num
 
 export type RetainedReportDraft = Omit<ReportDraft, "researchIds"> & { researchNeedsReview: boolean; citationNeedsReview?: boolean; file: File | null };
 
-export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void }): JSX.Element {
+export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, onTableApplied }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; onTableApplied?: () => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
@@ -82,6 +83,8 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const [structured, setStructured] = useState(initialDraft?.structured ?? false), [sections, setSections] = useState(initialDraft?.sections ?? sectionExample);
   const [visualSections, setVisualSections] = useState(initialDraft?.visualSections ?? false);
   const [excerptSection, setExcerptSection] = useState("");
+  const [tableSection, setTableSection] = useState("");
+  const [tableNotice, setTableNotice] = useState("");
   const [sources, setSources] = useState<ReportSource[]>(initialDraft?.sources ?? []);
   const [researchSources, setResearchSources] = useState<ResearchSource[]>([]);
   const [researchNeedsReview, setResearchNeedsReview] = useState(initialDraft?.researchNeedsReview ?? false);
@@ -342,6 +345,34 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           if (applied && paragraphs.some((text) => /\[[1-9][0-9]*\]/.test(text))) setCitationNeedsReview(true);
           return applied;
         }} />
+      {tableTransfer && <div className="space-y-2 rounded border border-line p-3">
+        <p>待追加表格：{tableTransfer.rows.length} 行（含表头）、{tableTransfer.rows[0].length} 列。来源与处理口径：{tableTransfer.source}</p>
+        <p>这是表格编辑草稿的文本快照，内容未经核验；不会改动源表或自动生成报告。请检查来源与数据。</p>
+        <label>目标章节 <select aria-label="表格目标章节" value={tableSection} onChange={(event) => setTableSection(event.target.value)}>
+          <option value="">选择结构化报告章节</option>
+          {structured && readEditableSections(sections)?.map((section, index) => <option key={index} value={index}>章节 {index + 1}：{section.heading}</option>)}
+        </select></label>
+        <div className="flex gap-2"><Button type="button" variant="secondary" onClick={() => {
+          const editable = structured ? readEditableSections(sections) : null;
+          const index = tableSection === "" ? -1 : Number(tableSection), rows = tableTransfer.rows;
+          if (!scoped || !state.serviceId || !editable || !Number.isInteger(index) || index < 0 || index >= editable.length) { setTableNotice("请先选择可无损编辑的结构化报告及目标章节；草稿未更改。"); return; }
+          if (editable[index].blocks.length + 2 > 100 || editable.reduce((count, section) => count + section.blocks.length, 0) + 2 > 100) { setTableNotice("追加后超过报告的 100 个内容块限制；草稿未更改。"); return; }
+          if (format !== "docx" && (rows[0].length > 10 || rows.length * rows[0].length > 1000)) { setTableNotice("此表超过 PDF 的 10 列或 1000 格限制；请调整表格或选择仅 DOCX，草稿未更改。"); return; }
+          const validText = (value: string) => [...value].length <= 4096 && [...value].every((character) => {
+            const code = character.codePointAt(0)!;
+            return code === 9 || code === 10 || (code >= 32 && code <= 0xd7ff) || (code >= 0xe000 && code <= 0xfffd) || (code >= 0x10000 && code <= 0x10ffff);
+          });
+          const attribution = `表格来源与处理口径（由用户填写，未经核验）：${tableTransfer.source}`;
+          if (!validText(attribution) || rows.some((row) => row.some((cell) => !validText(cell)))) { setTableNotice("来源或单元格含不支持字符或超过 4096 字符；草稿未更改。"); return; }
+          const next = editable.map((section, i) => i === index ? { ...section, blocks: [...section.blocks,
+            { kind: "paragraph" as const, text: attribution }, { kind: "table" as const, rows, repeat_header: true }] } : section);
+          const serialized = JSON.stringify(next, null, 2);
+          if (new TextEncoder().encode(serialized).length > 256 * 1024) { setTableNotice("追加后章节超过 256 KiB；草稿未更改。"); return; }
+          setSections(serialized); setTableSection(""); setTableNotice("表格及来源说明已追加到草稿，请核对内容；尚未生成文件。");
+          onClearTableTransfer?.(); onTableApplied?.();
+        }}>追加表格到报告</Button><Button type="button" variant="ghost" onClick={() => { onClearTableTransfer?.(); setTableSection(""); setTableNotice("已放弃待追加快照，报告草稿未更改。"); }}>放弃待追加表格</Button></div>
+      </div>}
+      {tableNotice && <p role="status">{tableNotice}</p>}
       <label>文件格式 <select aria-label="报告文件格式" value={format} onChange={(event) => {
         const next = event.target.value as "docx" | "pdf" | "both"; setFormat(next);
         setDocName((name) => `${name.replace(/\.(docx|pdf)$/i, "")}${next === "both" ? "" : `.${next}`}`);
