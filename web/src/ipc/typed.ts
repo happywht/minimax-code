@@ -138,6 +138,7 @@ export interface TypedIPC {
   listAttachments(projectId: string): Promise<import("../types/ipc").AttachmentListResult>;
   getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
   generateOfficeXlsx(params: import("../types/ipc").OfficeGenerateParams): Promise<import("../types/ipc").OfficeGetResult>;
+  generateOfficeAnalysis(params: import("../types/ipc").OfficeAnalysisParams): Promise<import("../types/ipc").OfficeAnalysisResult>;
   listOfficeDeliveries(projectId: string): Promise<import("../types/ipc").OfficeListResult>;
   getOfficeDelivery(projectId: string, deliveryId: string): Promise<import("../types/ipc").OfficeGetResult>;
 
@@ -628,6 +629,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     // Preview results retain versioned parser scope/reason independently of quality.
     getAttachment: (projectId, attachmentId) => client.request("attachment.get", { project_id: projectId, attachment_id: attachmentId }),
     generateOfficeXlsx: (params) => client.request("office.generate_xlsx", params),
+    generateOfficeAnalysis: (params) => client.request("office.generate_analysis", params),
     listOfficeDeliveries: (projectId) => client.request("office.list", { project_id: projectId }),
     getOfficeDelivery: (projectId, deliveryId) => client.request("office.get", { project_id: projectId, delivery_id: deliveryId }),
 

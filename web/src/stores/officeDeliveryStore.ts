@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { ipc, typedIPC } from "../ipc";
 import { fetchAttachmentContent } from "../ipc/attachmentContent";
-import type { OfficeEntry, OfficeGenerateParams, OfficeGetResult } from "../types/ipc";
+import type { OfficeAnalysisParams, OfficeAnalysisResult, OfficeEntry, OfficeGenerateParams, OfficeGetResult } from "../types/ipc";
 
 interface OfficeState {
   projectId: string | null;
@@ -9,13 +9,16 @@ interface OfficeState {
   serviceId: string | null;
   entries: OfficeEntry[];
   selected: OfficeGetResult | null;
+  chart: Extract<OfficeAnalysisResult, { kind: "attachment" }> | null;
   busy: boolean;
   error: string | null;
   clear: () => void;
   activate: (project: string | null) => Promise<void>;
   generate: (input: Omit<OfficeGenerateParams, "project_id" | "expected_service_id">) => Promise<OfficeGetResult | null>;
+  generateAnalysis: (input: Omit<OfficeAnalysisParams, "project_id" | "expected_service_id">) => Promise<OfficeAnalysisResult | null>;
   select: (id: string) => Promise<void>;
   download: () => Promise<void>;
+  downloadChart: () => Promise<void>;
 }
 let epoch = 0;
 let selection = 0;
@@ -46,10 +49,10 @@ export const useOfficeDeliveryStore = create<OfficeState>((set, get) => {
     return { project: state.projectId, service: state.serviceId, host: state.host, ticket: epoch };
   };
   return {
-    projectId: null, host: "", serviceId: null, entries: [], selected: null, busy: false, error: null,
+    projectId: null, host: "", serviceId: null, entries: [], selected: null, chart: null, busy: false, error: null,
     clear: () => {
       epoch++; selection++; download?.abort();
-      set({ projectId: null, host: "", serviceId: null, entries: [], selected: null, busy: false, error: null });
+      set({ projectId: null, host: "", serviceId: null, entries: [], selected: null, chart: null, busy: false, error: null });
     },
     activate: async (project) => {
       get().clear();
@@ -68,7 +71,7 @@ export const useOfficeDeliveryStore = create<OfficeState>((set, get) => {
       const scope = context();
       if (!scope || get().busy) return null;
       const { project, service, host, ticket } = scope;
-      set({ busy: true, error: null });
+      set({ busy: true, error: null, chart: null });
       try {
         const result = await typedIPC.generateOfficeXlsx({ ...input, project_id: project, expected_service_id: service });
         if (!current(ticket, project, host)) return null;
@@ -79,11 +82,40 @@ export const useOfficeDeliveryStore = create<OfficeState>((set, get) => {
       } catch (error) { if (current(ticket, project, host)) set({ error: `${message(error)}；刷新可找回已提交结果，同一请求重试不会新建版本。` }); return null; }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
     },
+    generateAnalysis: async (input) => {
+      const scope = context();
+      if (!scope || get().busy) return null;
+      const { project, service, host, ticket } = scope;
+      set({ busy: true, error: null, chart: null, selected: null });
+      try {
+        const result = await typedIPC.generateOfficeAnalysis({ ...input, project_id: project, expected_service_id: service });
+        if (!current(ticket, project, host)) return null;
+        selection++; download?.abort();
+        if (result.kind === "delivery") {
+          validate(result, project, service);
+          set({ selected: result, entries: [result, ...get().entries.filter((entry) => entry.delivery.id !== result.delivery.id)] });
+        } else if (result.kind === "attachment") {
+          const { attachment, validation_report: report } = result;
+          if (attachment.project_id !== project || attachment.service_id !== service ||
+              attachment.declared_type !== "xlsx" || attachment.recognized_type !== "xlsx" ||
+              report.scope !== "xlsx_chart_values_v1" || report.file_sha256 !== attachment.sha256 ||
+              report.size_bytes !== attachment.size_bytes || report.cell_check !== "passed" ||
+              report.chart_reference_check !== "passed" || report.render_status !== "not_attempted") throw new Error("图表成果关联或校验回执不一致");
+          set({ chart: result, selected: null });
+        } else throw new Error("未知的办公成果类型");
+        return result;
+      } catch (error) {
+        if (current(ticket, project, host)) set({ error: input.chart
+          ? `${message(error)}；图表可能已登记，请先检查项目附件，确认后再尝试。`
+          : `${message(error)}；刷新可找回已提交结果，同一请求重试不会新建版本。` });
+        return null;
+      } finally { if (current(ticket, project, host)) set({ busy: false }); }
+    },
     select: async (id) => {
       const scope = context();
       if (!scope) return;
       const { project, service, host, ticket } = scope, request = ++selection;
-      download?.abort(); set({ busy: true, selected: null, error: null });
+      download?.abort(); set({ busy: true, selected: null, chart: null, error: null });
       try {
         const result = await typedIPC.getOfficeDelivery(project, id);
         if (!current(ticket, project, host) || request !== selection) return;
@@ -105,6 +137,21 @@ export const useOfficeDeliveryStore = create<OfficeState>((set, get) => {
         if (!current(ticket, project, host) || request !== selection) return;
         const url = URL.createObjectURL(blob), anchor = document.createElement("a");
         anchor.href = url; anchor.download = selected.attachment.original_name; anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { if (current(ticket, project, host) && request === selection) set({ error: message(error) }); }
+      finally { if (current(ticket, project, host) && request === selection) set({ busy: false }); }
+    },
+    downloadChart: async () => {
+      const scope = context(), chart = get().chart;
+      if (!scope || !chart || get().busy) return;
+      const { project, service, host, ticket } = scope, request = selection;
+      if (chart.attachment.project_id !== project || chart.attachment.service_id !== service) return;
+      download?.abort(); download = new AbortController(); set({ busy: true, error: null });
+      try {
+        const blob = await fetchAttachmentContent(chart.attachment, host, download.signal);
+        if (!current(ticket, project, host) || request !== selection) return;
+        const url = URL.createObjectURL(blob), anchor = document.createElement("a");
+        anchor.href = url; anchor.download = chart.attachment.original_name; anchor.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       } catch (error) { if (current(ticket, project, host) && request === selection) set({ error: message(error) }); }
       finally { if (current(ticket, project, host) && request === selection) set({ busy: false }); }

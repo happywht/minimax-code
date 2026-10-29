@@ -121,6 +121,13 @@ export interface OfficeGenerateParams {
   run_id?: string | null;
   spec: OfficeTableSpec;
 }
+export interface OfficeSummary { column: string; operation: "sum" | "count" | "average"; decimals: number }
+export interface OfficeChart { kind: "bar" | "line"; category_column: string; value_column: string; title: string }
+export type OfficeAnalysisParams = OfficeGenerateParams & { summaries: OfficeSummary[]; chart: OfficeChart | null };
+export type OfficeAnalysisResult = ({ kind: "delivery"; materialized_spec: OfficeTableSpec } & OfficeGetResult) |
+  { kind: "attachment"; attachment: AttachmentOriginal; validation_report: { scope: "xlsx_chart_values_v1"; input_sha256: string;
+    file_sha256: string; size_bytes: number; cell_check: "passed"; chart_reference_check: "passed"; render_status: "not_attempted" };
+    analysis_spec: { spec: OfficeTableSpec; chart: OfficeChart; source_rows: number } };
 
 /** SSH credentials are referenced by identity-file path, never embedded. */
 export interface HostConfig {

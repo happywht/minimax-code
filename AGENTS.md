@@ -169,7 +169,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **218 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **219 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -192,7 +192,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `mobile.*` | 7 | 设备配对/推送 | `handlers_mobile.py` |
 | `model.*` | 4 | 模型列表/切换 | `handlers_model.py` |
 | `notification.*` | 5 | 通知中心 | `handlers_notifications.py` |
-| `office.*` | 3 | 手动生成、登记、列表与核对单表纯数据 XLSX | `handlers_office.py` |
+| `office.*` | 4 | 手动生成、登记、列表与核对单表 XLSX 和图表 | `handlers_office.py` |
 | `patch.*` | 8 | Patch Studio 应用/回退/快照 | `handlers_patch.py` |
 | `permission.*` | 6 | 权限规则管理/解析 | `handlers_permissions.py` |
 | `plugins.*` | 5 | 插件启用/禁用 | `handlers_plugins.py` |

@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..office_analysis import Chart, Summary
 from ..office_xlsx import XlsxSpec
 from ..office_xlsx import filename as office_filename
 
@@ -196,6 +197,11 @@ class OfficeGenerateParams(ArtifactListParams):
     @classmethod
     def validate_filename(cls, value):
         return office_filename(value)
+
+
+class OfficeAnalysisGenerateParams(OfficeGenerateParams):
+    summaries: list[Summary] = Field(default_factory=list, max_length=20)
+    chart: Chart | None = None
 
 
 class OfficeGetParams(ArtifactListParams):

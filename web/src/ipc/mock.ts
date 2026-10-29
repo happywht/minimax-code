@@ -522,6 +522,7 @@ function mockHandle(
       if (!p.project_id || !mockProjects.has(p.project_id)) throw new Error("An existing project is required");
       return { deliveries: [], service_id: "mock-office-unavailable" };
     }
+    case "office.generate_analysis":
     case "office.generate_xlsx":
     case "office.get":
       throw new Error("Office generation and verification require the real backend; unavailable in mock mode");

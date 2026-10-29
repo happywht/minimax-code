@@ -57,7 +57,7 @@ bundle6 仅匹配 schema46，含严格 office 清单；当前 bundle11 对应 sc
 
 ## 入口与维护
 
-认证 RPC 为 `office.generate_xlsx`、`office.list`、`office.get`，严格参数与响应见 [IPC 契约](ipc-contract.md)。普通聊天注册受权限控制的 `generate_table_xlsx` 工具，不增加 run.resume 语义。Agent 必须为一次生成选择稳定 request_key；同一会话、同一 key 和相同输入重试返回原成果，输入不同会冲突，新意图使用新 key。工具生成不关联 run，不表示业务核验。mock 仅空列表并明确拒绝生成/读取，不模拟验证成功文件。
+认证 RPC 为 `office.generate_xlsx`、`office.generate_analysis`、`office.list`、`office.get`，严格参数与响应见 [IPC 契约](ipc-contract.md)。普通聊天注册受权限控制的 `generate_table_xlsx` 工具，不增加 run.resume 语义。Agent 必须为一次生成选择稳定 request_key；同一会话、同一 key 和相同输入重试返回原成果，输入不同会冲突，新意图使用新 key。工具生成不关联 run，不表示业务核验。mock 仅空列表并明确拒绝生成/读取，不模拟验证成功文件。
 
 核心文件为 `office_xlsx.py`（模型/生成/全值验证/CLI）、`_office_xlsx_worker.py`、`office_process.py`（固定受限生命周期）、`office_deliveries.py` 与对应 DAO（原子登记）、`office_metadata.py`（共享严格元数据）及 `handlers_office.py`；前端 `OfficeDeliveryPanel` / `officeDeliveryStore` 复用现有附件下载边界。定向测试为 `test_office_xlsx.py`、`test_office_deliveries.py`、`test_handlers_office.py`、`test_office_bundle.py` 与同名 UI / e2e 测试。
 
@@ -75,6 +75,8 @@ bundle6 仅匹配 schema46，含严格 office 清单；当前 bundle11 对应 sc
 `count` 统计非空值（包含 0 和 false）；`sum`、`average` 仅接受数字列，忽略空值；全空的 sum 为 0，平均值为空。average 默认保留 2 位，可选 0–8 位，采用十进制四舍五入（中点远离零）。计算值直接写入新增的“汇总项目”“汇总值”列，**不是公式**，修改原数据不会自动重算汇总。汇总最多 20 项，输入最多 18 列，最终工作表仍遵守 1000 行及 5000 格上限；精度或范围无法安全表示时拒绝。
 
 `chart` 支持 `bar` 或 `line`，类别引用已有文本/数字列，数值引用已有数字列，图表只引用原始数据行，不含汇总行。带图表文件作为独立 XLSX 出现在“项目附件”，按返回的附件 ID 找到并下载，在 Excel 中查看图表；附件面板仅预览存储单元格，不呈现图表。生成时在受限 worker 用单独的 `xlsx_chart_values_v1` 范围检查所有存储单元格及图表系列引用，未做图表视觉验收或业务验证；该临时回执通过工具结果返回，不写入 `office_deliveries`，不属于或冒充旧 `xlsx_plain_cells_v1` 验收。既有完整附件 bundle 可备份文件，恢复不会重新验证图表。图表生成没有幂等重试，响应不明先检查项目附件，重复请求会创建新版本。用户上传的带图表文件只做有界存储单元格预览，不自动获得生成校验回执。
+
+办公成果面板也提供“静态汇总和图表”配置，使用当前 JSON 表格的列；CSV 草稿编辑后需先明确转换。无图表时生成的汇总表仍登记在办公成果并使用原有幂等请求；带图表时仅登记为项目附件，不能关联 run。面板可下载图表原件、当次校验回执和对应输入，回执只保留在当前页面。图表提交前浏览器记录待确认标记；响应不明时须先检查当前项目附件，明确确认后才能再次提交。该标记依赖浏览器本地存储，不代表服务端去重，清除浏览器数据或更换浏览器后仍需自行核对。切换项目、服务或离开页面后不保留当次回执；从附件下载的原件并不自动恢复该回执。
 
 
 ## 从项目 CSV 附件生成表格
