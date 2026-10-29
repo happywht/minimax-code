@@ -1803,7 +1803,39 @@ class AgentCore:
                 # before dispatch as cancellation may arrive during setup.
                 if self.cancelled:
                     return False, ToolResult.fail(f"tool '{name}' cancelled")
-                return True, await self.registry.dispatch(name, args)
+                # These tools own their subprocess through the shared, awaited
+                # process cleanup path. Other tools may delegate side effects
+                # to threads which cannot be stopped by cancelling a coroutine.
+                if name not in {"exec_command", "verify_subagent"}:
+                    return True, await self.registry.dispatch(name, args)
+                dispatch = asyncio.create_task(self.registry.dispatch(name, args))
+                cancellation = asyncio.create_task(self._cancel.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        (dispatch, cancellation), return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if cancellation in done:
+                        return False, ToolResult.fail(
+                            f"tool '{name}' cancelled; side effects may have occurred"
+                        )
+                    return True, dispatch.result()
+                finally:
+                    # Do not release the tool's ownership until its cleanup
+                    # has finished, even if cancellation is requested again.
+                    for task in (dispatch, cancellation):
+                        if not task.done():
+                            task.cancel()
+                    cleanup = asyncio.gather(dispatch, cancellation, return_exceptions=True)
+                    interrupted = None
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError as exc:
+                            interrupted = interrupted or exc
+                    if interrupted is not None:
+                        raise interrupted
+                    if not dispatch.cancelled() and dispatch.exception() is not None:
+                        raise dispatch.exception()
 
             try:
                 dispatched, result = await asyncio.wait_for(
