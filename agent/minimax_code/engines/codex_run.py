@@ -42,6 +42,19 @@ _APPROVAL_METHODS = frozenset({
 _APPROVAL_TIMEOUT_S = 300.0
 
 
+def _json_preview(value: Any, limit: int) -> tuple[str, bool]:
+    """Bound the stored representation, including arbitrary MCP JSON content."""
+    parts: list[str] = []
+    remaining = limit
+    for chunk in json.JSONEncoder(ensure_ascii=False).iterencode(value):
+        if len(chunk) > remaining:
+            parts.append(chunk[:remaining])
+            return "".join(parts), True
+        parts.append(chunk)
+        remaining -= len(chunk)
+    return "".join(parts), False
+
+
 @dataclass
 class _CodexApproval:
     future: asyncio.Future[bool]
@@ -163,7 +176,7 @@ async def drive_codex_run(
         if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
             return
         item = params.get("item")
-        if not isinstance(item, dict) or item.get("type") not in {"commandExecution", "fileChange"}:
+        if not isinstance(item, dict) or item.get("type") not in {"commandExecution", "fileChange", "mcpToolCall"}:
             return
         item_id = item.get("id")
         if not isinstance(item_id, str) or not item_id:
@@ -171,18 +184,29 @@ async def drive_codex_run(
         entry = tool_items.get(item_id)
         if entry is None:
             kind = item["type"]
-            name = "codex.commandExecution" if kind == "commandExecution" else "codex.fileChange"
+            name = {"commandExecution": "codex.commandExecution", "fileChange": "codex.fileChange",
+                    "mcpToolCall": "codex.mcpToolCall"}[kind]
             args: dict[str, Any] = {}
             if kind == "commandExecution":
                 for key in ("command", "cwd"):
                     if isinstance(item.get(key), str):
                         args[key] = item[key][:4000]
-            else:
+            elif kind == "fileChange":
                 preview = file_previews.get((thread_id, turn_id, item_id))
                 args["changes"] = preview or {"changes": [], "unavailable": True}
+            else:
+                if (not isinstance(item.get("server"), str) or not isinstance(item.get("tool"), str)
+                        or "arguments" not in item):
+                    raise ValueError("Invalid Codex MCP tool item")
+                arguments, truncated = _json_preview(item["arguments"], 4000)
+                args = {"server": item["server"][:1000], "tool": item["tool"][:1000],
+                        "arguments_preview": arguments,
+                        "truncated": truncated or len(item["server"]) > 1000 or len(item["tool"]) > 1000}
             call_id = f"codex:{job.run_id}:{uuid.uuid4().hex}"
             entry = {"kind": kind, "name": name, "args": args, "id": call_id,
                      "step_id": None, "completed": False}
+            if kind == "mcpToolCall":
+                entry["mcp_identity"] = (item["server"], item["tool"])
             tool_items[item_id] = entry
             if conversation:
                 step = await job.dao.create_step(run_id=job.run_id, session_id=job.session_id,
@@ -206,10 +230,22 @@ async def drive_codex_run(
                       "output": output[:16000], "truncated": len(output) > 16000}
             if type(item.get("exitCode")) is int and item["exitCode"] != 0:
                 success = False
-        else:
+        elif entry["kind"] == "fileChange":
             result = {"status": status, **(file_previews.get((thread_id, turn_id, item_id))
                                              or {"changes": [], "unavailable": True})}
+        else:
+            if (item.get("server"), item.get("tool")) != entry["mcp_identity"]:
+                raise ValueError("Codex MCP tool identity changed within a turn")
+            mcp_result = item.get("result")
+            preview, truncated = _json_preview(mcp_result, 16000)
+            mcp_error = item.get("error")
+            message = mcp_error.get("message") if isinstance(mcp_error, dict) else None
+            success = success and mcp_error is None
+            result = {"status": status, "result_preview": preview, "truncated": truncated,
+                      "result_available": mcp_result is not None}
         error = None if success else f"Codex item outcome: {status or 'unknown'}"
+        if entry["kind"] == "mcpToolCall" and error and isinstance(message, str):
+            error += f": {message[:4000]}" + ("…" if len(message) > 4000 else "")
         if not success and result.get("exit_code") is not None:
             error += f" (exit code {result['exit_code']})"
         await finish_tool(entry, result, error)

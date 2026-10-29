@@ -298,10 +298,30 @@ function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: stri
             testId="run-timeline-step-detail"
           />
         )}
+        <CodexMcpEvidence step={step} />
         <CapturedToolOutput step={step} />
       </div>
     </li>
   );
+}
+
+function CodexMcpEvidence({ step }: { step: AgentRunStep }): JSX.Element | null {
+  if (step.tool_name !== "codex.mcpToolCall") return null;
+  const args = step.payload?.args as Record<string, unknown> | undefined;
+  const result = step.payload?.result as Record<string, unknown> | undefined;
+  if (!args && !result) return null;
+  return <details className="mt-1 text-[11px] text-minimax-muted">
+    <summary>查看 Codex MCP 调用详情</summary>
+    {args && <>
+      <p>服务：{String(args.server ?? "未知")} · 工具：{String(args.tool ?? "未知")}</p>
+      <p>参数{args.truncated === true ? "（预览已截断）" : ""}</p>
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{String(args.arguments_preview ?? "未提供")}</pre>
+    </>}
+    {result && <>
+      <p>引擎状态：{String(result.status ?? "未知")} · {result.result_available === true ? "结果预览" : "未提供结果"}{result.truncated === true ? "（已截断）" : ""}</p>
+      {result.result_available === true && <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{String(result.result_preview ?? "")}</pre>}
+    </>}
+  </details>;
 }
 
 interface OutputReference { output_ref: string; service_id: string; run_id: string; session_id: string; project_id: string | null; chars: number }
