@@ -247,7 +247,8 @@ class CalculatedColumn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     left: str
     right: str
-    operation: Literal["add", "subtract", "multiply"]
+    operation: Literal["add", "subtract", "multiply", "divide"]
+    decimals: int = Field(default=2, ge=0, le=8)
 
 
 def calculate_spec(spec: dict, calculated_column: dict) -> dict:
@@ -268,8 +269,20 @@ def calculate_spec(spec: dict, calculated_column: dict) -> dict:
                 value = None
             else:
                 a, b = Decimal(str(row[left])), Decimal(str(row[right]))
-                result = a + b if config.operation == "add" else a - b if config.operation == "subtract" else a * b
-                value = int(result) if result == result.to_integral_value() else float(result)
+                if config.operation == "divide":
+                    if b.is_zero():
+                        raise ValueError("Calculated divisor cannot be zero")
+                    try:
+                        result = (a / b).quantize(
+                            Decimal(1).scaleb(-config.decimals), rounding=ROUND_HALF_UP)
+                    except InvalidOperation as exc:
+                        raise ValueError("Calculated result cannot be represented safely") from exc
+                else:
+                    result = a + b if config.operation == "add" else a - b if config.operation == "subtract" else a * b
+                try:
+                    value = int(result) if result == result.to_integral_value() else float(result)
+                except (OverflowError, ValueError) as exc:
+                    raise ValueError("Calculated result cannot be represented safely") from exc
                 if not math.isfinite(value) or Decimal(str(value)) != result:
                     raise ValueError("Calculated result cannot be represented safely")
             rows.append([*row, value])
@@ -315,7 +328,7 @@ class GenerateXlsxFromCsvTool(Tool):
         "For each column, optional trim removes surrounding Unicode whitespace and null_values maps explicit "
         "exact markers to blank before type conversion; markers are matched after trimming. "
         "Optional filters use output column names and typed values; all conditions must match. "
-        "Append an optional calculated numeric column before filters; add, subtract or multiply two numeric columns using exact decimal arithmetic. Blank operands yield blank; results are static. "
+        "Append an optional calculated numeric column before filters; add, subtract, multiply or divide two numeric columns. Division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors. Blank operands yield blank; results are static. "
         "Apply filters, optional deduplicate_by, optional group_by, then optional sort_by before summaries and chart. "
         "deduplicate_by uses exact output-column values and keeps the first matching row; blanks match blanks. "
         "Sort uses up to three output columns, typed values, stable ties and blanks last. "
@@ -340,7 +353,9 @@ class GenerateXlsxFromCsvTool(Tool):
             }, "required": ["source", "name", "kind"], "additionalProperties": False}},
             "calculated_column": {"type": "object", "properties": {
                 "name": {"type": "string"}, "left": {"type": "string"}, "right": {"type": "string"},
-                "operation": {"type": "string", "enum": ["add", "subtract", "multiply"]},
+                "operation": {"type": "string", "enum": ["add", "subtract", "multiply", "divide"]},
+                "decimals": {"type": "integer", "minimum": 0, "maximum": 8,
+                             "description": "Division precision, default 2; ignored for other operations"},
             }, "required": ["name", "left", "right", "operation"], "additionalProperties": False},
             "filters": {"type": "array", "maxItems": 10, "items": {"type": "object", "properties": {
                 "column": {"type": "string"},
@@ -397,6 +412,8 @@ class GenerateXlsxFromCsvTool(Tool):
             spec = csv_to_spec(data, sheet_name, columns, cleaning_counts)
             if calculated_column is not None:
                 spec = calculate_spec(spec, calculated_column)
+                if calculated_column["operation"] == "divide":
+                    calculated_column = {**calculated_column, "decimals": calculated_column.get("decimals", 2)}
             source_row_count = len(spec["rows"])
             spec = filter_spec(spec, filters)
             matched_row_count = len(spec["rows"])

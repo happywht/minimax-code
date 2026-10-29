@@ -42,7 +42,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Per-column trim removes surrounding Unicode whitespace; null_values maps exact markers to blank "
         "after trimming and before conversion. Optional summaries "
         "are static values and charts use output column names. Optional typed filters use output column names; "
-        "all conditions must match. Optional calculated_column appends static add, subtract or multiply results before filtering; blank operands produce blank. Optional deduplicate_by keeps the first row for exact output-column "
+        "all conditions must match. Optional calculated_column appends static add, subtract, multiply or divide results before filtering; division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors, while blank operands produce blank. Optional deduplicate_by keeps the first row for exact output-column "
         "values, with blanks matching blanks, after filtering and before grouping. "
         "Optional sort_by orders up to three output columns after grouping, with stable ties and blanks last. "
         "Optional group_by produces static grouped values: blank keys form a group, count excludes blanks, "
@@ -97,6 +97,8 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 raise ValueError(f"Worksheet columns or values are invalid: {error}") from error
             if calculated_column is not None:
                 spec = calculate_spec(spec, calculated_column)
+                if calculated_column["operation"] == "divide":
+                    calculated_column = {**calculated_column, "decimals": calculated_column.get("decimals", 2)}
             source_row_count = len(spec["rows"])
             spec = filter_spec(spec, filters)
             matched_row_count = len(spec["rows"])
