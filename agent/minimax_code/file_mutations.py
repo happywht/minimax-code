@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
@@ -14,10 +15,23 @@ from typing import BinaryIO
 from .execution import require_write_access
 
 
+# Stripes bound memory use while serializing all native mutations of the same
+# path in this process. External writers do not participate in these locks.
+_WRITE_LOCKS = tuple(threading.Lock() for _ in range(128))
+
+
 def _atomic_replace(target: Path, write: Callable[[BinaryIO], object], *, baseline_path: Path,
                     baseline_sha256: str | None) -> None:
     require_write_access()
     target = Path(target)
+    lock_key = os.path.normcase(os.path.abspath(target))
+    with _WRITE_LOCKS[hash(lock_key) % len(_WRITE_LOCKS)]:
+        _atomic_replace_locked(target, write, baseline_path=baseline_path,
+                               baseline_sha256=baseline_sha256)
+
+
+def _atomic_replace_locked(target: Path, write: Callable[[BinaryIO], object], *,
+                           baseline_path: Path, baseline_sha256: str | None) -> None:
     parent = target.parent.resolve()
     if parent != target.parent or target.is_symlink():
         raise OSError("Write target changed to a symbolic link; re-read before writing")
