@@ -24,6 +24,7 @@ import { MentionPickerDropdown } from "./MentionPickerDropdown";
 import { ComposerToolbar } from "./ComposerToolbar";
 import { TaskTemplates } from "./TaskTemplates";
 import { QueuedTaskInput } from "./QueuedTaskInput";
+import { ProjectAttachmentImport } from "./ProjectAttachmentImport";
 import { strings } from "../../ui/strings";
 
 function serviceLabel(value: string): string {
@@ -219,6 +220,7 @@ export function MessageInput({
             draft.ref.current?.focus();
           }}
         />
+        <ProjectAttachmentImport sessionId={sessionId} projectId={projectId} host={budgetHost} />
         <AttachmentRows
           attachedFiles={attachments.attachedFiles}
           attachedImages={attachments.attachedImages}
