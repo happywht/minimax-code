@@ -19,7 +19,9 @@ this module is the canonical type reference for the project.
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -108,12 +110,46 @@ class DocxSection(BaseModel):
     blocks: list[DocxBlock] = Field(min_length=1, max_length=100)
 
 
+class ReportSource(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    title: str = Field(min_length=1, max_length=200)
+    url: str = Field(min_length=1, max_length=2048)
+    accessed_at: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def check_source(self):
+        if not self.title.strip() or any(ord(char) < 32 or ord(char) == 127 for char in self.title):
+            raise ValueError("Source title must be nonempty single-line text")
+        if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in self.url) or "\\" in self.url:
+            raise ValueError("Source URL cannot contain whitespace or controls")
+        try:
+            parsed = urlsplit(self.url)
+            if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                    or parsed.username is not None or parsed.password is not None):
+                raise ValueError
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("Source URL must be an HTTP(S) address without credentials") from exc
+        if self.accessed_at is not None:
+            try:
+                if len(self.accessed_at) == 10:
+                    date.fromisoformat(self.accessed_at)
+                else:
+                    value = datetime.fromisoformat(self.accessed_at.replace("Z", "+00:00"))
+                    if value.tzinfo is None or value.utcoffset() is None:
+                        raise ValueError
+            except ValueError as exc:
+                raise ValueError("Source access time must be an ISO date or timezone-aware timestamp") from exc
+        return self
+
+
 class AttachmentGenerateDocxParams(AttachmentListParams):
     expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
     filename: str = Field(min_length=6, max_length=120)
     title: str = Field(min_length=1, max_length=200)
     paragraphs: list[str] | None = Field(default=None, min_length=1, max_length=100)
     sections: list[DocxSection] | None = Field(default=None, min_length=1, max_length=50)
+    sources: list[ReportSource] = Field(default_factory=list, max_length=30)
 
     @model_validator(mode="after")
     def check_structure(self):

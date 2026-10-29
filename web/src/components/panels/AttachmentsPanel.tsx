@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ipc } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
-import type { AttachmentParserStatus, DocxSection } from "../../types/ipc";
+import type { AttachmentParserStatus, DocxSection, ReportSource } from "../../types/ipc";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -23,11 +23,12 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
   const [body, setBody] = useState("");
   const [format, setFormat] = useState<"docx" | "pdf" | "both">("docx");
   const [structured, setStructured] = useState(false), [sections, setSections] = useState(sectionExample);
+  const [sources, setSources] = useState<ReportSource[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
-  const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body]);
+  const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources]);
   useEffect(() => {
-    setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setSections(sectionExample); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
+    setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setSections(sectionExample); setSources([]); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
@@ -46,8 +47,15 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
     </form>
     <form className="flex flex-col gap-2 rounded border border-line p-3" onSubmit={(event) => {
       event.preventDefault(); setFormError(null);
+      if (sources.some((source) => !source.title.trim() || !source.url.trim())) {
+        setFormError("请填写每条来源的标题和网址，或删除空来源。"); return;
+      }
+      const references = sources.length ? { sources: sources.map((source) => ({
+        title: source.title.trim(), url: source.url.trim(),
+        ...(source.accessed_at?.trim() ? { accessed_at: source.accessed_at.trim() } : {}),
+      })) } : {};
       if (!structured) {
-        const content = { paragraphs: body.split(/\r?\n/) };
+        const content = { paragraphs: body.split(/\r?\n/), ...references };
         if (format === "both") { setSubmittedPair(pairFingerprint); void state.generatePair(docName, title, content); }
         else void state.generateDocx(docName, title, content, format);
         return;
@@ -55,7 +63,7 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       try {
         const value: unknown = JSON.parse(sections);
         if (!Array.isArray(value)) throw new Error("章节必须是 JSON 数组");
-        const content = { sections: value as DocxSection[] };
+        const content = { sections: value as DocxSection[], ...references };
         if (format === "both") { setSubmittedPair(pairFingerprint); void state.generatePair(docName, title, content); }
         else void state.generateDocx(docName, title, content, format);
       } catch { setFormError("章节 JSON 无效，请使用示例格式。"); }
@@ -76,6 +84,16 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       {structured ? <><p>按示例填写章节标题与依次排列的段落、表格；表格每行列数必须一致，单元格均为文本。</p>
         <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => setSections(event.target.value)} /></> :
         <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />}
+      <div className="space-y-2">
+        <p>参考来源（可选，最多 30 条；正文可用 [1]、[2] 对应来源顺序。只保存提供的信息，不自动核验）</p>
+        {sources.map((source, index) => <div key={index} className="space-y-1 rounded border border-line p-2">
+          <Input aria-label={`来源 ${index + 1} 标题`} placeholder="来源标题" value={source.title} onChange={(event) => setSources((current) => current.map((item, i) => i === index ? { ...item, title: event.target.value } : item))} />
+          <Input aria-label={`来源 ${index + 1} 网址`} placeholder="https://example.com" value={source.url} onChange={(event) => setSources((current) => current.map((item, i) => i === index ? { ...item, url: event.target.value } : item))} />
+          <Input aria-label={`来源 ${index + 1} 访问时间`} placeholder="可选：2026-10-29 或带时区的 ISO 时间" value={source.accessed_at ?? ""} onChange={(event) => setSources((current) => current.map((item, i) => i === index ? { ...item, accessed_at: event.target.value } : item))} />
+          <Button type="button" variant="secondary" onClick={() => setSources((current) => current.filter((_, i) => i !== index))}>删除来源 {index + 1}</Button>
+        </div>)}
+        <Button type="button" variant="secondary" disabled={sources.length >= 30} onClick={() => setSources((current) => [...current, { title: "", url: "" }])}>添加来源</Button>
+      </div>
       {formError && <p role="alert">{formError}</p>}
       <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
       {ipc.isMock && <p role="status">演示模式不能生成报告。</p>}

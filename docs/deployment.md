@@ -229,3 +229,5 @@ Inbound hooks require a configured HMAC secret; previously configured unsigned h
 安装报告与附件依赖：在 `agent` 目录执行 `uv sync --frozen --extra attachments`。报告生成自动尝试常见 Windows/Linux 中文字体并嵌入 PDF；如果字体缺失、格式不支持或无法覆盖报告字符，安装可用的中文 TrueType 字体并在启动服务前设置 `MINIMAX_CODE_PDF_FONT` 为字体文件的绝对路径，重启服务后重试。字体文件不会被修改。PDF 文字可解析不代表排版视觉、事实或业务已验收。
 
 报告面板可选择“DOCX + PDF”，一次提交相同内容并逐格式保存。若某种格式未确认，先刷新项目附件确认其是否已保存；确认缺失后选择该单一格式重试。不要在结果不明时重新生成两种格式，否则可能产生重复版本。
+
+报告面板可添加、删除参考来源，填写标题、HTTP(S) 网址和可选访问日期或带时区时间；正文可用 `[1]`、`[2]` 对应来源顺序。生成文档在文末列出可复制网址，不会访问或核实所填来源。普通聊天 Agent 可传入同一结构的来源列表，须以实际获取或用户提供的信息填写。

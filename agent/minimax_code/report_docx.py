@@ -8,19 +8,19 @@ MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 _GATE = threading.BoundedSemaphore(1)
 
 
-def generate_document(filename: str, title: str, paragraphs=None, sections=None) -> bytes:
+def generate_document(filename: str, title: str, paragraphs=None, sections=None, sources=None) -> bytes:
     if not _GATE.acquire(blocking=False):
         raise ValueError("DOCX generation is busy; retry later")
     try:
-        return _generate_document(filename, title, paragraphs, sections)
+        return _generate_document(filename, title, paragraphs, sections, sources)
     finally:
         _GATE.release()
 
 
-def _generate_document(filename: str, title: str, paragraphs, sections) -> bytes:
+def _generate_document(filename: str, title: str, paragraphs, sections, sources) -> bytes:
     from .report_content import report_blocks
 
-    blocks = report_blocks(filename, title, paragraphs, sections, ".docx")
+    blocks = report_blocks(filename, title, paragraphs, sections, ".docx", sources)
     try:
         from docx import Document
         from docx.oxml.ns import qn

@@ -28,17 +28,17 @@ def _font_paths():
             Path("/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf")]
 
 
-def generate_pdf(filename: str, title: str, paragraphs=None, sections=None) -> bytes:
+def generate_pdf(filename: str, title: str, paragraphs=None, sections=None, sources=None) -> bytes:
     if not _GATE.acquire(blocking=False):
         raise ValueError("PDF generation is busy; retry later")
     try:
-        return _generate_pdf(filename, title, paragraphs, sections)
+        return _generate_pdf(filename, title, paragraphs, sections, sources)
     finally:
         _GATE.release()
 
 
-def _generate_pdf(filename, title, paragraphs, sections):
-    blocks = report_blocks(filename, title, paragraphs, sections, ".pdf")
+def _generate_pdf(filename, title, paragraphs, sections, sources):
+    blocks = report_blocks(filename, title, paragraphs, sections, ".pdf", sources)
     if any(kind == "table" and (len(value[0]) > 10 or sum(len(row) for row in value) > 1000)
            for kind, value in blocks):
         raise ValueError("PDF tables support at most 10 columns and 1000 cells each")

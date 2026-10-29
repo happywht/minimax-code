@@ -16,6 +16,7 @@ class GenerateReportDocxTool(Tool):
     description = (
         "Create and register a DOCX report in the current project's attachments from a title "
         "and either paragraphs or sections containing ordered paragraph/table blocks. "
+        "Provide sources as title, HTTP(S) URL, and optional actual access time; cite them in body as [1], [2] in source order. Never invent sources or access times. "
         "Use only one of paragraphs or sections. Include source citations supplied or verified by the user. "
         "The file is not rendered or fact-checked. An ambiguous failure may have committed: "
         "check project attachments before retrying."
@@ -26,6 +27,10 @@ class GenerateReportDocxTool(Tool):
             "filename": {"type": "string", "description": "A .docx display filename"},
             "title": {"type": "string"},
             "paragraphs": {"type": "array", "items": {"type": "string"}},
+            "sources": {"type": "array", "maxItems": 30, "items": {"type": "object", "properties": {
+                "title": {"type": "string"}, "url": {"type": "string", "description": "HTTP(S) URL"},
+                "accessed_at": {"type": "string", "description": "Optional ISO date or timezone-aware timestamp"},
+            }, "required": ["title", "url"], "additionalProperties": False}},
             "sections": {"type": "array", "items": {
                 "type": "object", "properties": {
                     "heading": {"type": "string"},
@@ -53,7 +58,8 @@ class GenerateReportDocxTool(Tool):
     operation = "generate_docx"
 
     async def run(self, filename: str, title: str, paragraphs: list[str] | None = None,
-                  sections: list[dict[str, Any]] | None = None) -> ToolResult:
+                  sections: list[dict[str, Any]] | None = None,
+                  sources: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
             require_write_access()
             if not isinstance(self.project_id, str) or not self.project_id:
@@ -65,6 +71,7 @@ class GenerateReportDocxTool(Tool):
             params = AttachmentGenerateDocxParams.model_validate({
                 "project_id": self.project_id, "expected_service_id": identity,
                 "filename": filename, "title": title, "paragraphs": paragraphs, "sections": sections,
+                "sources": [] if sources is None else sources,
             })
             result = await getattr(self.service, self.operation)(**params.model_dump(), expected_session=self.session_id)
             attachment = result["attachment"]
@@ -86,7 +93,7 @@ class GenerateReportPdfTool(GenerateReportDocxTool):
     description = (
         "Create and register a PDF report in the current project using a title and either "
         "paragraphs or structured sections with ordered paragraph/table blocks. Include source "
-        "citations where available. A Chinese TrueType font is embedded; missing dependencies "
+        "citations where available in sources and cite them in body as [1], [2] in source order; do not invent sources or access times. A Chinese TrueType font is embedded; missing dependencies "
         "or font coverage cause an explicit error. Facts and visual layout are not verified. "
         "If the outcome is uncertain, inspect project attachments before retrying."
     )
@@ -100,7 +107,8 @@ class GenerateReportPairTool(GenerateReportDocxTool):
     name = "generate_report_pair"
     description = (
         "Generate DOCX and PDF from the same title and paragraphs or sections, saving each in "
-        "current-project attachments. Each format is reported separately; partial success is not "
+        "current-project attachments. Provide known sources with actual URLs and optional access times, and cite them as [1], [2] in source order; never invent them. "
+        "Each format is reported separately; partial success is not "
         "full success. Check project attachments before retrying an unconfirmed format, then request "
         "only that format. Neither factual accuracy nor visual rendering is verified."
     )
@@ -112,7 +120,8 @@ class GenerateReportPairTool(GenerateReportDocxTool):
     }}
 
     async def run(self, filename: str, title: str, paragraphs: list[str] | None = None,
-                  sections: list[dict[str, Any]] | None = None, formats: list[str] | None = None) -> ToolResult:
+                  sections: list[dict[str, Any]] | None = None, formats: list[str] | None = None,
+                  sources: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
             require_write_access()
             if not isinstance(self.project_id, str) or not self.project_id:
@@ -125,6 +134,7 @@ class GenerateReportPairTool(GenerateReportDocxTool):
                 "project_id": self.project_id, "expected_service_id": identity, "filename": filename,
                 "title": title, "paragraphs": paragraphs, "sections": sections,
                 "formats": ["docx", "pdf"] if formats is None else formats,
+                "sources": [] if sources is None else sources,
             })
             result = await self.service.generate_report_pair(**params.model_dump(), expected_session=self.session_id)
             row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))

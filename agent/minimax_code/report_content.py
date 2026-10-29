@@ -12,12 +12,13 @@ def _valid_text(value: str) -> bool:
                for char in value)
 
 
-def report_blocks(filename, title, paragraphs, sections, extension):
+def report_blocks(filename, title, paragraphs, sections, extension, sources=None):
     from .ipc.protocol import AttachmentGenerateDocxParams
 
     validated = AttachmentGenerateDocxParams.model_validate({
         "project_id": "document", "expected_service_id": "svc_" + "0" * 32,
         "filename": filename, "title": title, "paragraphs": paragraphs, "sections": sections,
+        "sources": [] if sources is None else sources,
     })
     display_name(filename)
     if (not filename.lower().endswith(extension) or any(c in filename for c in '/\\:*?"<>|')
@@ -34,6 +35,13 @@ def report_blocks(filename, title, paragraphs, sections, extension):
             blocks.append(("heading1", section.heading))
             blocks.extend((block.kind, block.text if block.kind == "paragraph" else block.rows)
                           for block in section.blocks)
+    if validated.sources:
+        blocks.append(("heading1", "参考来源（由提供者填写，未自动核验）"))
+        for index, source in enumerate(validated.sources, 1):
+            blocks.append(("paragraph", f"[{index}] {source.title}"))
+            blocks.append(("paragraph", f"网址：{source.url}"))
+            if source.accessed_at is not None:
+                blocks.append(("paragraph", f"访问时间：{source.accessed_at}"))
     strings = []
     for kind, value in blocks:
         if kind == "table":

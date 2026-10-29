@@ -139,6 +139,24 @@ describe("project attachment panel and dispatch epochs", () => {
     expect(screen.getByRole("button", { name: "生成 PDF" })).toBeEnabled();
     expect(wire.request).toHaveBeenCalledWith("attachment.generate_report_pair", { project_id: "p", expected_service_id: "svc_test", filename: "报告", title: "报告", paragraphs: ["正文"] });
   });
+  it("adds and removes structured report sources and sends only entered sources", async () => {
+    const docx: AttachmentOriginal = { ...row, original_name: "报告.docx", declared_type: "docx", recognized_type: "docx", parser_version: 2, parser_scope: "docx_body_paragraphs_tables", parser_reason: "ok" };
+    wire.request.mockImplementation(async (method: string) => method === "attachment.list"
+      ? { attachments: [], service_id: "svc_test" } : { attachment: docx, preview_text: "参考来源" });
+    render(<AttachmentsPanel onClose={vi.fn()} />);
+    await screen.findByText("当前项目还没有附件原件。");
+    fireEvent.change(screen.getByLabelText("报告标题"), { target: { value: "报告" } });
+    fireEvent.change(screen.getByLabelText("报告正文（每行一个段落）"), { target: { value: "结论 [1]" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加来源" }));
+    fireEvent.change(screen.getByLabelText("来源 1 标题"), { target: { value: "机构" } });
+    fireEvent.change(screen.getByLabelText("来源 1 网址"), { target: { value: "https://example.org" } });
+    fireEvent.change(screen.getByLabelText("来源 1 访问时间"), { target: { value: "2026-10-29" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加来源" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除来源 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成 DOCX" }));
+    await screen.findByLabelText("附件纯文本预览");
+    expect(wire.request).toHaveBeenCalledWith("attachment.generate_docx", { project_id: "p", expected_service_id: "svc_test", filename: "报告.docx", title: "报告", paragraphs: ["结论 [1]"], sources: [{ title: "机构", url: "https://example.org", accessed_at: "2026-10-29" }] });
+  });
   it("uploads selected raw file, escapes preview, separates quality and downloads original", async () => {
     const createURL = vi.fn().mockReturnValue("blob:original");
     vi.stubGlobal("URL", { createObjectURL: createURL, revokeObjectURL: vi.fn() });

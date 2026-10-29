@@ -327,7 +327,7 @@ class AttachmentService:
             await _blocking(upload.close)
 
     async def generate_docx(self, project_id, expected_service_id, filename, title, paragraphs=None,
-                            sections=None, *, expected_session=None):
+                            sections=None, sources=None, *, expected_session=None):
         from .execution import require_write_access
         from .report_docx import generate_document
 
@@ -335,7 +335,7 @@ class AttachmentService:
         await self.dao.project(project_id)
         if expected_service_id != await self.dao.service_id():
             raise ValueError("Attachment service identity changed; refresh")
-        data = await _blocking(generate_document, filename, title, paragraphs, sections)
+        data = await _blocking(generate_document, filename, title, paragraphs, sections, sources)
 
         async def chunks():
             yield data
@@ -345,7 +345,7 @@ class AttachmentService:
         return await self.get(project_id, row["id"])
 
     async def generate_pdf(self, project_id, expected_service_id, filename, title, paragraphs=None,
-                           sections=None, *, expected_session=None):
+                           sections=None, sources=None, *, expected_session=None):
         from .execution import require_write_access
         from .report_pdf import generate_pdf
 
@@ -353,7 +353,7 @@ class AttachmentService:
         await self.dao.project(project_id)
         if expected_service_id != await self.dao.service_id():
             raise ValueError("Attachment service identity changed; refresh")
-        data = await _blocking(generate_pdf, filename, title, paragraphs, sections)
+        data = await _blocking(generate_pdf, filename, title, paragraphs, sections, sources)
 
         async def chunks():
             yield data
@@ -363,7 +363,7 @@ class AttachmentService:
         return await self.get(project_id, row["id"])
 
     async def generate_report_pair(self, project_id, expected_service_id, filename, title,
-                                   paragraphs=None, sections=None, formats=None, *, expected_session=None):
+                                   paragraphs=None, sections=None, formats=None, sources=None, *, expected_session=None):
         """Return per-format evidence; never claim an ambiguous commit failed."""
         from .execution import require_write_access
         from .ipc.protocol import AttachmentGenerateReportPairParams
@@ -374,13 +374,14 @@ class AttachmentService:
             "project_id": project_id, "expected_service_id": expected_service_id,
             "filename": filename, "title": title, "paragraphs": paragraphs,
             "sections": sections, "formats": formats if formats is not None else ["docx", "pdf"],
+            "sources": [] if sources is None else sources,
         })
         values = params.model_dump()
         await self.dao.project(project_id)
         if expected_service_id != await self.dao.service_id():
             raise ValueError("Attachment service identity changed; refresh")
         for kind in values["formats"]:
-            report_blocks(f"{filename}.{kind}", title, values["paragraphs"], values["sections"], f".{kind}")
+            report_blocks(f"{filename}.{kind}", title, values["paragraphs"], values["sections"], f".{kind}", values["sources"])
         results = []
         binding_lost = False
         for kind in values["formats"]:
@@ -395,7 +396,7 @@ class AttachmentService:
                         raise ValueError("Current session project binding changed")
                 operation = self.generate_docx if kind == "docx" else self.generate_pdf
                 item = await operation(project_id, expected_service_id, f"{filename}.{kind}", title,
-                                       values["paragraphs"], values["sections"], expected_session=expected_session)
+                                       values["paragraphs"], values["sections"], values["sources"], expected_session=expected_session)
                 results.append({"format": kind, "status": "saved", **item})
             except ValueError as error:
                 results.append({"format": kind, "status": "unconfirmed", "error": str(error)})
