@@ -470,6 +470,7 @@ export interface ScheduleOccurrence {
   execution_status?: string;
   result?: string | null;
 }
+export interface ScheduleOccurrenceCursor { created_at: string; id: string }
 export interface ScheduleTriggerResult { ok: true; job_id: string; occurrence_id: string; task_id: string; run_id: string | null; status: string; created: boolean }
 
 /** A skill record. */

@@ -36,9 +36,16 @@ class ScheduleOccurrencesDAO:
             )
         )
 
-    async def list(self, job_id=None, limit=100):
-        where = "WHERE job_id=?" if job_id else ""
-        args = (job_id, limit) if job_id else (limit,)
+    async def list(self, job_id=None, limit=100, before=None):
+        clauses, args = [], []
+        if job_id:
+            clauses.append("job_id=?")
+            args.append(job_id)
+        if before:
+            clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
+            args.extend((before["created_at"], before["created_at"], before["id"]))
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        args.append(limit)
         rows = [
             hydrate(row)
             for row in await self.db.fetchall(

@@ -216,8 +216,20 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
     async def handle_occurrences(params, ctx):
         try:
             sched = await scheduler_factory()
+            params = params or {}
+            before = params.get("before")
+            if before is not None and (not isinstance(before, dict) or
+                    not isinstance(before.get("created_at"), str) or not before["created_at"] or
+                    not isinstance(before.get("id"), str) or not before["id"]):
+                raise ValueError("Invalid occurrence cursor")
             await sched._reconcile_occurrences()
-            await ctx.reply({"occurrences":await sched._occurrences.list((params or {}).get("job_id"))})
+            rows = await sched._occurrences.list(params.get("job_id"), limit=101, before=before)
+            page = rows[:100]
+            next_cursor = ({"created_at": page[-1]["created_at"], "id": page[-1]["id"]}
+                           if len(rows) > 100 else None)
+            await ctx.reply({"occurrences": page, "next_cursor": next_cursor})
+        except ValueError as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception as exc:
             await ctx.reply_error(INTERNAL_ERROR,str(exc))
 

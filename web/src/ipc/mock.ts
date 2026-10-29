@@ -1098,7 +1098,7 @@ function mockHandle(
       Object.assign(job,{name:p.name,cron:p.cron_expr,prompt:p.payload.prompt,context:p.context,revision:p.expected_revision+1});
       return {job};
     }
-    case "schedule.occurrences": return {occurrences:[]};
+    case "schedule.occurrences": return {occurrences:[], next_cursor:null};
     case "schedule.enable": throw new Error("Mock 模式不执行真实调度");
     case "schedule.disable": {
       const job = mockJobs.find((entry) => entry.id === (params as {job_id:string}).job_id);

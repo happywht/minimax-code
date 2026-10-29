@@ -2116,7 +2116,7 @@ Cron 身份是 job/revision/持久 UTC scheduled_for；SQLite 原子推进 next_
 失败/中断/暂停/需核对暂停后续调度；run.resume 审查恢复使用同一快照和发生租约，子运行终态从权威 run 记录投影。放弃原恢复并启用新发生须提交精确 acknowledge_occurrence_id。
 重启已有运行只恢复为 interrupted/需要核对，不盲目重放外部效果；未接单发生可复用同一身份继续接单。幂等接单不构成外部副作用 exactly-once 保证。
 
-schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间、会话/任务/当前 run_id、status/reason，以及已有任务的 verification、execution_status 和部分 result；软删除后历史仍可查询。
+schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间、会话/任务/当前 run_id、status/reason，以及已有任务的 verification、execution_status 和部分 result；软删除后历史仍可查询。每页最多 100 条，按 created_at、id 降序排列；响应的 next_cursor 非空时，将其作为下次请求的 before 对象（created_at、id）可读取更早记录。省略 before 仍读取最新一页。
 此范围不支持远程主机、Codex 调度、一般命令调度，也尚未提供跨运行原子每日预算账本。
 
 `runtime.research_set` 可选 `provider`（`searxng` 或 `brave`）、`brave_key` 和 `clear_brave_key`；密钥写入服务主机系统密钥环，读取仅返回是否配置。Brave 请求固定域名并拒绝携带密钥重定向；配置不等于网络验证。

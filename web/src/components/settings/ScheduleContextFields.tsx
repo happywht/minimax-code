@@ -4,7 +4,7 @@ import { useModelStore, useScheduleStore, useSessionStore } from "../../stores";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { VerificationBadge } from "../chat/VerificationBadge";
 import { ipc, typedIPC } from "../../ipc";
-import { StreamEvent, type ScheduleContext, type ScheduleOccurrence, type ScheduledJob } from "../../types/ipc";
+import { StreamEvent, type ScheduleContext, type ScheduleOccurrence, type ScheduleOccurrenceCursor, type ScheduledJob } from "../../types/ipc";
 import { ScheduleRunDetail } from "./ScheduleRunDetail";
 
 const labels: Record<string,string> = {ready:"已绑定",needs_rebind:"需要重新绑定",blocked:"配置受阻",requires_review:"需要核对",pending:"待接单",running:"运行中",awaiting_approval:"等待授权",completed:"执行结束",budget_paused:"预算暂停",cancelled:"已取消",failed:"执行失败",interrupted:"运行中断",superseded:"已被重新绑定替代",manual:"手动",cron:"定时",chat:"对话（可写）",execute:"执行",plan:"只读规划"};
@@ -46,6 +46,9 @@ export function ScheduleSnapshot({ job }: { job: ScheduledJob }): JSX.Element {
 
 export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { job: ScheduledJob; expanded: boolean; serviceId?: string; onOpenSession?: () => boolean | void }): JSX.Element {
   const [history, setHistory] = useState<ScheduleOccurrence[]>([]);
+  const [cursor, setCursor] = useState<ScheduleOccurrenceCursor | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const pageEpoch = useRef(0), paging = useRef(false), paged = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [verified, setVerified] = useState<{ serviceId: string; status: string } | null>(null);
@@ -60,7 +63,8 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
     let connectionVersion = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const host = ipc.agentBaseUrl;
-    setHistory([]); setError(null); setStale(false);
+    ++pageEpoch.current; paging.current = false; paged.current = false;
+    setHistory([]); setCursor(null); setLoadingMore(false); setError(null); setStale(false);
     if (!expanded && !job.active_occurrence_id) return () => { current = false; };
     const refresh = async () => {
       if (!current) return;
@@ -69,7 +73,15 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
       const version = connectionVersion;
       try {
         const result = await typedIPC.listScheduleOccurrences(job.id);
-        if (current && version === connectionVersion && host === ipc.agentBaseUrl) { setHistory(result.occurrences.filter((row) => row.job_id === job.id)); setError(null); setStale(false); }
+        if (current && version === connectionVersion && host === ipc.agentBaseUrl) {
+          const latest = result.occurrences.filter((row) => row.job_id === job.id);
+          setHistory((previous) => {
+            const ids = new Set(latest.map((row) => row.id));
+            return [...latest, ...previous.filter((row) => !ids.has(row.id))];
+          });
+          if (!paged.current) setCursor(result.next_cursor ?? null);
+          setError(null); setStale(false);
+        }
       } catch (failure) {
         if (current) { setError(String(failure)); setStale(true); }
       } finally {
@@ -82,11 +94,30 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
       StreamEvent.PermissionRequest, StreamEvent.PermissionResolved].map((event) => ipc.on(event, wake));
     unsubs.push(ipc.onSideCar((event) => {
       if (event.status === "started") wake();
-      else { connectionVersion++; ++reviewEpoch.current; setStale(true); setVerified(null); setAcknowledged(false); setError("连接中断，状态待刷新"); }
+      else { connectionVersion++; ++pageEpoch.current; paging.current = false; setLoadingMore(false); ++reviewEpoch.current; setStale(true); setVerified(null); setAcknowledged(false); setError("连接中断，状态待刷新"); }
     }));
     void refresh();
-    return () => { current = false; if (timer) clearTimeout(timer); unsubs.forEach((unsub) => unsub()); };
+    return () => { current = false; ++pageEpoch.current; if (timer) clearTimeout(timer); unsubs.forEach((unsub) => unsub()); };
   }, [job.id, job.active_occurrence_id, expanded]);
+  const loadMore = async () => {
+    if (!cursor || stale || paging.current) return;
+    const ticket = pageEpoch.current, host = ipc.agentBaseUrl;
+    paging.current = true; paged.current = true; setLoadingMore(true); setError(null);
+    try {
+      const result = await typedIPC.listScheduleOccurrences(job.id, cursor);
+      if (ticket !== pageEpoch.current || host !== ipc.agentBaseUrl) return;
+      const older = result.occurrences.filter((row) => row.job_id === job.id);
+      setHistory((previous) => {
+        const ids = new Set(previous.map((row) => row.id));
+        return [...previous, ...older.filter((row) => !ids.has(row.id))];
+      });
+      paged.current = true; setCursor(result.next_cursor ?? null);
+    } catch (failure) {
+      if (ticket === pageEpoch.current) setError(`读取更早记录失败：${String(failure)}`);
+    } finally {
+      if (ticket === pageEpoch.current) { paging.current = false; setLoadingMore(false); }
+    }
+  };
   const active = history.find((occurrence) => occurrence.id === job.active_occurrence_id);
   const status = (occurrence: ScheduleOccurrence) => occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status;
   const terminalReview = verified && ["failed", "cancelled", "interrupted", "budget_paused"].includes(verified.status);
@@ -140,11 +171,13 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId }: { j
         {reviewError && <p role="alert" className="break-words text-status-warning">{reviewError}</p>}
       </> : <p>当前发生尚未确认；请刷新，不要重复执行。</p>}
     </div>}
-    {expanded && !error && (history.length === 0 ? "暂无发生记录" : history.map((occurrence) => <div key={occurrence.id}>
+    {expanded && (history.length === 0 ? (error ? "无法读取发生记录" : "暂无发生记录") : history.map((occurrence) => <div key={occurrence.id}>
     <p>{label(occurrence.source)} · {occurrence.scheduled_for ?? occurrence.created_at} · {label(occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status)} · {occurrence.reason}</p>
     <VerificationBadge evidence={occurrence.verification} />
     {occurrence.result && <p className="whitespace-pre-wrap">{occurrence.result}</p>}
     {!(job.binding_state === "requires_review" && occurrence.id === active?.id) && <ScheduleRunDetail occurrence={occurrence} />}
     <Button disabled={!occurrence.context?.project_id || !occurrence.session_id} onClick={() => open(occurrence)}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
-  </div>))}</div>;
+  </div>))}
+    {expanded && cursor && <Button type="button" size="sm" disabled={stale || loadingMore} loading={loadingMore} onClick={() => void loadMore()}>加载更早记录</Button>}
+  </div>;
 }
