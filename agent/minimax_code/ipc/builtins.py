@@ -1047,7 +1047,6 @@ async def _handle_agent_send_message(
     from ..agent.tools.codebase_summarize import SummarizeCodebaseTool
     from ..app import (
         ensure_codebase_indexer,
-        get_codebase_indexer,
         init_runtime,
     )
     from ..codebase import CodebaseRetriever
@@ -1317,17 +1316,17 @@ async def _handle_agent_send_message(
     # when a workspace indexer is available (v0.11.0 Milestone 2).
     # v1.3.0: the indexer follows the run's workspace root (published by
     # the caller via workspace_ctx) so a project-rooted session searches
-    # its own shard. Fail-open to the default root either way.
+    # its own shard. Never substitute the default root when this fails:
+    # its index may contain a different project's data.
     registry = ToolRegistry()
     for tool in get_default_registry().list():
         registry.register(tool)
     try:
         indexer = ensure_codebase_indexer(current_root())
     except Exception:
-        logger.debug("per-root codebase indexer unavailable", exc_info=True)
+        logger.warning("per-root codebase indexer unavailable", exc_info=True)
         indexer = None
-    if indexer is None:
-        indexer = get_codebase_indexer()
+    codebase_available = False
     if indexer is not None:
         try:
             retriever = CodebaseRetriever(
@@ -1340,6 +1339,7 @@ async def _handle_agent_send_message(
             registry.register(SummarizeCodebaseTool(retriever))
             registry.register(FindSymbolCodebaseTool(retriever))
             registry.register(NavigateCodebaseTool(indexer.graph_index))
+            codebase_available = True
         except Exception:
             logger.exception("failed to register search_codebase tool")
 
@@ -1366,15 +1366,26 @@ async def _handle_agent_send_message(
         internal_skill.install(registry)
         from ..run_ownership import owned_runtime
         owned_runtime.set({**(owned_runtime.get() or {}), "registry":registry})
+    system_prompt_extra = (
+        internal_skill.data["system_prompt_extra"] if internal_skill is not None
+        else await _build_system_prompt_extra(
+            session_id=session_id,
+            project_id=project_id,
+            **({"validate_command_override": job.validate_command} if internal_schedule is not None else {}),
+        )
+    )
+    if not codebase_available:
+        system_prompt_extra = (system_prompt_extra or "") + (
+            "\n\nThe codebase index for this workspace is unavailable. "
+            "Do not assume another project's index applies. Use available workspace "
+            "file tools to inspect the current project, and disclose the limitation "
+            "when it affects the answer."
+        )
     core = AgentCore(
         llm=llm,
         registry=registry,
         config=AgentConfig(
-            system_prompt_extra=internal_skill.data["system_prompt_extra"] if internal_skill is not None else await _build_system_prompt_extra(
-                session_id=session_id,
-                project_id=project_id,
-                **({"validate_command_override": job.validate_command} if internal_schedule is not None else {}),
-            ),
+            system_prompt_extra=system_prompt_extra,
             **({"skill_instructions":internal_skill.data["instructions"],
                 "max_iterations":internal_skill.data["max_iterations"],
                 "temperature":internal_skill.data.get("temperature")} if internal_skill is not None else {}),
