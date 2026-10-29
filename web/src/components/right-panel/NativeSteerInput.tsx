@@ -16,14 +16,19 @@ export function NativeSteerInput({ run }: { run: AgentRun }): JSX.Element | null
 function Editor({ run, host }: { run: AgentRun; host: string }): JSX.Element | null {
   const codex = run.metadata?.engine === "codex";
   const key = `minimax-code:steer:${encodeURIComponent(host)}:${run.session_id}:${run.id}`;
+  const draftKey = `${key}:draft`;
   const [intent, setIntent] = useState<Intent | null>(() => {
     try {
       const value = JSON.parse(localStorage.getItem(key) ?? "null") as Intent | null;
       return value?.run_id === run.id && value.session_id === run.session_id ? value : null;
     } catch { return null; }
   });
-  const [text, setText] = useState("");
-  const [open, setOpen] = useState(!!intent);
+  const [text, setText] = useState(() => {
+    try { return localStorage.getItem(draftKey) ?? ""; } catch { return ""; }
+  });
+  const [open, setOpen] = useState(() => {
+    try { return !!intent || !!localStorage.getItem(draftKey); } catch { return !!intent; }
+  });
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const inflight = useRef(false);
@@ -44,24 +49,36 @@ function Editor({ run, host }: { run: AgentRun; host: string }): JSX.Element | n
       if (!sameContext()) return;
       if (result.step.run_id !== run.id || result.step.session_id !== run.session_id ||
           result.step.payload?.source !== (codex ? "codex_steer" : "native_steer") || result.step.payload.text !== value.text) throw new Error("响应与请求不匹配");
-      localStorage.removeItem(key); setIntent(null); setText("");
+      const savedDraft = localStorage.getItem(draftKey);
+      if (savedDraft === value.text) localStorage.removeItem(draftKey);
+      localStorage.removeItem(key); setIntent(null);
+      setText(savedDraft === value.text ? "" : savedDraft ?? "");
       setNotice("已确认记录；请查看下方补充状态。");
       void useRunTimelineStore.getState().loadForSession(run.session_id);
     } catch (error) {
       if (sameContext()) setNotice(`无法确认是否接收：${error instanceof Error ? error.message : String(error)}。可重试同一请求。`);
     } finally { inflight.current = false; if (current()) setBusy(false); }
   };
-  if (!active && !intent && !notice) return null;
+  if (!active && !intent && !text && !notice) return null;
   return <div className="mt-2 text-xs">
     <button type="button" className="underline" onClick={() => setOpen(!open)}>向此 {codex ? "Codex" : "Native"} 任务补充</button>
     {open && <div className="mt-1 space-y-1">
       <p>{codex ? "发送给当前 Codex 轮次；接受不保证模型已处理。发送结果不确定时不会自动重发，请先核对任务。" : "在当前工具批次结束后的下一轮上下文加入；不会中断正在执行的工具。任务提前结束时可能未使用。"}</p>
+      {!active && !intent && <p>任务已结束，草稿未发送；可复制内容用于后续任务。</p>}
       <textarea aria-label="运行中补充内容" className="w-full rounded border border-line bg-surface-0 p-2" rows={2}
-        maxLength={8000} value={intent?.text ?? text} readOnly={!!intent} onChange={(event) => setText(event.target.value)} />
+        maxLength={8000} value={intent?.text ?? text} readOnly={!!intent} onChange={(event) => {
+          const draft = event.target.value;
+          setText(draft);
+          try { if (draft) localStorage.setItem(draftKey, draft); else localStorage.removeItem(draftKey); }
+          catch { setNotice("浏览器存储不可用，草稿仅保留在当前页面。"); }
+        }} />
       <Button size="sm" type="button" disabled={busy || (!intent && (!active || !text.trim()))} loading={busy}
         onClick={() => void submit()}>{intent ? "重试确认同一补充" : "发送补充"}</Button>
       {intent && <button type="button" disabled={busy} className="ml-2 underline" onClick={() => {
-        localStorage.removeItem(key); setIntent(null); setText(intent.text);
+        localStorage.removeItem(key); setIntent(null);
+        const draft = localStorage.getItem(draftKey) ?? intent.text;
+        setText(draft);
+        try { localStorage.setItem(draftKey, draft); } catch { /* draft remains in memory */ }
         setNotice("仅移除本地待确认记录；已接收的补充不会撤回。");
       }}>移除本地待确认记录</button>}
       {notice && <p role="status">{notice}</p>}
