@@ -17,7 +17,7 @@ const labels: Record<AttachmentParserStatus, string> = {
   parsed: "已解析", empty: "空文本", truncated: "预览已截断", parse_failed: "解析失败",
   type_mismatch: "类型不匹配", parser_unavailable: "解析器不可用", ocr_not_attempted: "未尝试 OCR",
 };
-export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Element {
+export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
@@ -42,7 +42,7 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
     <div className="flex items-center justify-between">
       <h2 className="text-lg font-semibold">项目附件 · {project?.name ?? "选择项目"}</h2>
-      <Button variant="ghost" onClick={onClose}>关闭</Button>
+      {!embedded && <Button variant="ghost" onClick={onClose}>关闭</Button>}
     </div>
     <p className="text-sm text-ink-1">最大 10 MiB。每次上传保留独立原件；同名文件创建新版本。</p>
     <p className="text-sm text-ink-1">TXT / CSV 严格 UTF-8 预览，最多 64 KiB / 2000 行；CSV 公式只作文本。可选 DOCX 解析仅包含正文段落和表格，保留位置标签；不含页眉页脚、修订、文本框、批注、脚注或图片文字。可选 PDF 解析按物理页序提取已有文字，最多 200 页，不保证版式或表格结构；扫描图片未尝试 OCR。可选 XLSX 解析只预览有界单元格、公式文本和未验证缓存，不计算公式，不执行宏或访问外链。</p>

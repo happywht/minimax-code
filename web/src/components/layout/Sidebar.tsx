@@ -46,9 +46,9 @@ export interface SidebarProps {
   testId?: string;
   onMobileClick?: () => void;
   /** Current top-level view — drives which NavItem is highlighted. */
-  view?: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research";
+  view?: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research" | "run-artifacts";
   /** Toggle between top-level views. */
-  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research") => void;
+  onViewChange?: (v: "chat" | "skills" | "settings" | "scheduled" | "workflows" | "webhooks" | "agents" | "preview" | "artifacts" | "attachments" | "office" | "research" | "run-artifacts") => void;
 }
 
 type NavigationGroup = "projects" | "work" | "deliveries" | "automation";
@@ -94,7 +94,7 @@ export function Sidebar({
   const batchMoveToProject = useSessionStore((s) => s.batchMoveToProject);
   const [navigationGroup, setNavigationGroup] = useState<NavigationGroup | null>("projects");
   useEffect(() => {
-    if (["artifacts", "attachments", "office", "research"].includes(view)) setNavigationGroup("deliveries");
+    if (["artifacts", "attachments", "office", "research", "run-artifacts"].includes(view)) setNavigationGroup("deliveries");
     else if (["scheduled", "workflows", "webhooks"].includes(view)) setNavigationGroup("automation");
     else if (["skills", "agents", "preview"].includes(view)) setNavigationGroup("work");
   }, [view]);
@@ -595,6 +595,7 @@ export function Sidebar({
             <NavItem icon={<Folder size={14} />} label="项目附件与报告" selected={view === "attachments"} onClick={() => onViewChange?.("attachments")} testId="sidebar-nav-attachments" />
             <NavItem icon={<Folder size={14} />} label="办公成果与表格" selected={view === "office"} onClick={() => onViewChange?.("office")} testId="sidebar-nav-office" />
             <NavItem icon={<Search size={14} />} label="研究来源" selected={view === "research"} onClick={() => onViewChange?.("research")} testId="sidebar-nav-research" />
+            <NavItem icon={<History size={14} />} label="当前会话成果" selected={view === "run-artifacts"} onClick={() => onViewChange?.("run-artifacts")} testId="sidebar-nav-run-artifacts" />
           </> },
           { id: "automation" as const, label: "自动化", icon: <CalendarClock size={14} />, items: <>
             <NavItem icon={<CalendarClock size={14} />} label="定时任务" selected={view === "scheduled"} onClick={() => { onViewChange?.("scheduled"); setFilter("all"); }} testId="sidebar-nav-scheduled" />

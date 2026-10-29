@@ -5,7 +5,7 @@ import { Button, Input } from "../../ui";
 import { OfficeDeliveryPanel } from "./OfficeDeliveryPanel";
 import { ResearchSourcesPanel } from "./ResearchSourcesPanel";
 
-export function ArtifactsPanel({ onClose }: { onClose: () => void }): JSX.Element {
+export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
   const state = useArtifactStore();
@@ -25,7 +25,7 @@ export function ArtifactsPanel({ onClose }: { onClose: () => void }): JSX.Elemen
     <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目文本成果">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">文本成果 · {project?.name ?? "选择项目"}</h2>
-        <div className="flex gap-2"><Button variant="secondary" onClick={() => setResearch(true)}>研究来源</Button><Button variant="secondary" onClick={() => setOffice(true)}>办公成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div>
+        {!embedded && <div className="flex gap-2"><Button variant="secondary" onClick={() => setResearch(true)}>研究来源</Button><Button variant="secondary" onClick={() => setOffice(true)}>办公成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div>}
       </div>
       <p className="text-sm text-ink-1">TXT / MD / CSV，UTF-8，最大 2 MiB。每次登记创建新版本，原文件保持不变。</p>
       <p className="text-sm text-ink-1">登记和可解析状态不代表质量验证或交付完成。Markdown 按纯文本显示；CSV 不计算公式。</p>
@@ -42,7 +42,7 @@ export function ArtifactsPanel({ onClose }: { onClose: () => void }): JSX.Elemen
       <ul className="space-y-1">
         {(scoped ? state.artifacts : []).map((row) => <li key={row.id}>
           <button className="rounded border border-line p-2 text-left hover:bg-surface-3" onClick={() => void state.select(row.id)}>
-            {row.source_path} · v{row.version} · {row.size_bytes} 字节 · 可解析 / 未验证
+            {row.source_path} · v{row.version} · {row.size_bytes} 字节 · 可解析 / 未验证 · {row.run_id ? `登记关联运行 ${row.run_id}` : "未关联运行"}
           </button>
         </li>)}
       </ul>

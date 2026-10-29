@@ -12,7 +12,7 @@ function safeUrl(value: string): string | null {
   } catch { return null; }
 }
 
-export function ResearchSourcesPanel({ onText, onClose }: { onText: () => void; onClose: () => void }): JSX.Element {
+export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { onText: () => void; onClose: () => void; embedded?: boolean }): JSX.Element {
   const project = useSessionStore((state) => state.currentProjectId);
   const session = useSessionStore((state) => state.currentSessionId);
   const [host, setHost] = useState(ipc.agentBaseUrl);
@@ -74,7 +74,7 @@ export function ResearchSourcesPanel({ onText, onClose }: { onText: () => void; 
 
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目研究来源">
     <div className="flex items-center justify-between"><h2 className="text-lg font-semibold">项目研究来源</h2>
-      <div className="flex gap-2"><Button variant="secondary" onClick={onText}>文本成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div></div>
+      {!embedded && <div className="flex gap-2"><Button variant="secondary" onClick={onText}>文本成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div>}</div>
     <p className="text-sm text-ink-1">仅展示本项目在此服务读取并记录的网页。页面内容和报告事实未自动核验；删除所属任务或会话会删除来源记录。</p>
     <ManualResearch project={project} session={session} service={visible ? service : null} />
     {!project || !session ? <p role="status">请先选择当前项目的会话。</p> : <>

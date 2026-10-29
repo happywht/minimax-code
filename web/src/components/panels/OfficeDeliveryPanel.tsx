@@ -21,7 +21,7 @@ function saveJson(value: unknown, name: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; onText: () => void }): JSX.Element {
+export function OfficeDeliveryPanel({ onClose, onText, embedded = false }: { onClose: () => void; onText: () => void; embedded?: boolean }): JSX.Element {
   const project = useSessionStore((state) => state.currentProjectId), host = ipc.agentBaseUrl;
   const session = useSessionStore((state) => state.currentSessionId);
   const state = useOfficeDeliveryStore();
@@ -153,7 +153,7 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
   };
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="办公成果">
     <div className="flex items-center justify-between"><h2 className="text-lg font-semibold">办公成果 · 纯数据 XLSX</h2>
-      <div className="flex gap-2"><Button variant="secondary" onClick={onText}>文本成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div></div>
+      {!embedded && <div className="flex gap-2"><Button variant="secondary" onClick={onText}>文本成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div>}</div>
     <p className="break-all text-xs text-ink-1">当前项目 {project ?? "未选择"} · Agent {host} · 服务 {scoped ? state.serviceId : "刷新中"}</p>
     <p>仅新建单表 XLSX，不读取或覆盖原文件。1–20 列、最多 1000 数据行，含表头最多 5000 格；输入 1 MiB、文件 2 MiB。空串作为空白；数字最多 15 有效位，长编号请用 text。</p>
     <p>不生成或计算公式、宏、外链。可选静态汇总或图表；不做 PDF/OCR、版式、打印分页或业务核验，文本预览不还原 Excel 排版。</p>
