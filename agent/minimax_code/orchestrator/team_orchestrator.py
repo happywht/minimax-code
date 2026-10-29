@@ -178,15 +178,23 @@ class TeamOrchestrator:
         """
         task_id = f"teamrun_{uuid.uuid4().hex[:10]}"
         run_session_id = session_id or task_id
+        self._session_id = run_session_id
 
         from ..budget import daily_budget_limit, resolve_run_budget
         from ..budget_ledger import BudgetHandle, budget_scope
+        from ..schedule_context import RetainedChildren
+        from .subagent import _team_children
+        from .team_control import register, unregister
 
         runs_dao: Any | None = None
         budget_handle: Any | None = None
         metadata: dict[str, Any] = {"team_result": None, "parent_session_id": parent_session_id,
                                    "budget": {"limit_tokens": resolve_run_budget(budget_tokens)}}
         scopes = ExitStack()
+        children = RetainedChildren()
+        owner_task = asyncio.current_task()
+        assert owner_task is not None
+        owner_token = _team_children.set(children)
 
         async def persist_start() -> None:
             # No member can call a model until the owner and its budget family
@@ -207,23 +215,37 @@ class TeamOrchestrator:
             budget_handle = await BudgetHandle.for_run(self._team_dao._db, task_id,
                                                        daily_limit=daily_budget_limit())
             scopes.enter_context(budget_scope(budget_handle))
+            register(task_id, owner_task)
 
         try:
             result = await self._run_body(
                 team_name, request, session_id=run_session_id, task_id=task_id,
                 parent_session_id=parent_session_id, on_admitted=persist_start,
             )
+            child_evidence = await children.drain()
+            if any(item.get("requires_review") for item in child_evidence):
+                result.success = False
+                result.merged_text = "后台子任务需要核对。\n\n" + result.merged_text
         except BaseException as exc:
+            try:
+                await children.drain(cancel=True)
+            except BaseException:
+                logger.warning("Team descendant cleanup was not confirmed", exc_info=True)
             if runs_dao is not None:
                 try:
                     await runs_dao.update_run_status(
-                        task_id, status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
-                        metadata=metadata,
+                        task_id, status="interrupted" if isinstance(exc, asyncio.CancelledError) else "failed",
+                        metadata={**metadata, "team_interruption": "cancel_requested_review_required"} if isinstance(exc, asyncio.CancelledError) else metadata,
                     )
                 except Exception:
                     logger.warning("Failed to persist interrupted team run", exc_info=True)
+                if isinstance(exc, asyncio.CancelledError):
+                    await self._emit_progress("interrupted", task_id, team_name,
+                        summary="已请求停止；请核对未完成操作的实际结果。", session_id=run_session_id)
             raise
         finally:
+            unregister(task_id, owner_task)
+            _team_children.reset(owner_token)
             scopes.close()
 
         if budget_handle is not None:
@@ -244,6 +266,10 @@ class TeamOrchestrator:
                 )
             except Exception:
                 logger.warning("Failed to persist team run completion", exc_info=True)
+
+        await self._emit_progress("completed" if result.success else "failed", task_id, team_name,
+                                  progress=1.0, agents_total=len(result.agents_run),
+                                  agents_completed=len(result.agents_run), summary=result.merged_text[:200])
 
         return result
 
@@ -362,12 +388,6 @@ class TeamOrchestrator:
             # Merge results
             merged_text, success = self._merge_texts(results)
             conflicts = self._detect_conflicts(results)
-
-        await self._emit_progress(
-            "completed", task_id, team_name, progress=1.0,
-            agents_total=len(agent_names), agents_completed=len(results),
-            summary=merged_text[:200],
-        )
 
         return TeamRunResult(
             team_name=team_name,
@@ -696,6 +716,7 @@ class TeamOrchestrator:
         agents_total: int = 0,
         agents_completed: int = 0,
         summary: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         """Push a ``agent.team_progress`` event if an emitter is configured."""
         if self._emit_event is None:
@@ -713,6 +734,7 @@ class TeamOrchestrator:
                 payload["agent_name"] = agent_name
             if summary:
                 payload["summary"] = summary
+            payload["session_id"] = session_id or self._session_id
             await self._emit_event("agent.team_progress", payload)
         except Exception:  # pragma: no cover — emitter failure shouldn't kill the run
             logger.warning("Failed to emit team_progress event", exc_info=True)

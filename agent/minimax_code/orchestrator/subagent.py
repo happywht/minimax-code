@@ -310,6 +310,9 @@ def _on_background_run_done(run_id: str, task: asyncio.Task) -> None:
         logger.error("background sub-agent run %s crashed", run_id, exc_info=exc)
 
 
+_team_children: ContextVar[Any | None] = ContextVar("team_background_children", default=None)
+
+
 def register_background_run(run_id: str, task: asyncio.Task) -> None:
     """Hold a strong reference to a background sub-agent run task."""
     _BACKGROUND_RUNS[run_id] = task
@@ -319,6 +322,8 @@ def register_background_run(run_id: str, task: asyncio.Task) -> None:
     schedule = owned_runtime.get() or scheduled_runtime.get()
     if schedule and schedule.get("children"):
         schedule["children"].register(run_id,task)
+    elif _team_children.get() is not None:
+        _team_children.get().register(run_id, task)
     task.add_done_callback(lambda _t, rid=run_id: _on_background_run_done(rid, _t))
 
 

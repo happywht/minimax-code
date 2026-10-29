@@ -14,11 +14,14 @@ import type { TeamProgressData } from "../types/ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import { trimArray, MAX_TEAM_RUNS } from "../lib/eviction";
 import { strings } from "../ui/strings";
+import { useSessionStore } from "./sessionStore";
 
 /** A single team run tracked in the UI. */
 export interface TeamRunEntry {
   task_id: string;
   team_name: string;
+  session_id?: string;
+  cancelling?: boolean;
   status: TeamProgressData["status"];
   progress: number;
   agents_total: number;
@@ -53,6 +56,7 @@ export interface TeamRunState {
 
   /** Remove a specific run by task_id. */
   remove: (task_id: string) => void;
+  cancel: (task_id: string) => Promise<void>;
 }
 
 /** Unsubscribe handle for the WS listener. */
@@ -72,6 +76,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
           {
             task_id: pendingId,
             team_name: opts.team_name,
+            session_id: opts.session_id ?? opts.parent_session_id,
             status: "started",
             progress: 0,
             agents_total: 0,
@@ -109,7 +114,9 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
     } catch (e) {
       // Mark the pending run as failed
       const msg = String(e);
-      toast.error(strings.toasts.teamSpawnFailed, msg);
+      if (!_get().runs.some((r) => r.session_id === opts.session_id && r.status === "interrupted")) {
+        toast.error(strings.toasts.teamSpawnFailed, msg);
+      }
       set((s) => ({
         runs: s.runs.map((r) =>
           r.task_id === pendingId ? { ...r, status: "failed", updated_at: Date.now() } : r,
@@ -123,7 +130,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
     set((s) => ({
       runs: s.runs.filter(
         (r) =>
-          (r.status !== "completed" && r.status !== "failed") ||
+          (r.status !== "completed" && r.status !== "failed" && r.status !== "interrupted") ||
           r.updated_at > cutoff,
       ),
     }));
@@ -131,6 +138,18 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
 
   remove: (task_id) => {
     set((s) => ({ runs: s.runs.filter((r) => r.task_id !== task_id) }));
+  },
+  cancel: async (task_id) => {
+    const run = _get().runs.find((r) => r.task_id === task_id);
+    if (!run || run.session_id !== useSessionStore.getState().currentSessionId || run.cancelling) return;
+    set((s) => ({ runs: s.runs.map((r) => r.task_id === task_id ? { ...r, cancelling: true } : r) }));
+    try {
+      const result = await typedIPC.cancelRun(task_id);
+      if (!result.requested) throw new Error("运行已结束或服务重启，无法发送停止请求；请刷新运行记录。");
+    } catch (error) {
+      toast.error("无法停止团队", String(error));
+      set((s) => ({ runs: s.runs.map((r) => r.task_id === task_id ? { ...r, cancelling: false } : r) }));
+    }
   },
 }));
 
@@ -158,7 +177,7 @@ export function initTeamRunListener(): () => void {
             r.task_id === evt.task_id
               ? {
                   ...r,
-                  status: evt.status,
+                  status: r.status === "interrupted" ? r.status : evt.status,
                   progress: evt.progress,
                   agents_total: evt.agents_total ?? r.agents_total,
                   agents_completed: evt.agents_completed ?? r.agents_completed,
@@ -173,11 +192,12 @@ export function initTeamRunListener(): () => void {
       // New run — replace a same-team optimistic "pending-*" entry instead
       // of appending a duplicate card.
       const pendingIdx = s.runs.findIndex(
-        (r) => r.team_name === evt.team_name && r.task_id.startsWith("pending-"),
+        (r) => r.team_name === evt.team_name && r.session_id === evt.session_id && r.task_id.startsWith("pending-"),
       );
       const entry: TeamRunEntry = {
         task_id: evt.task_id,
         team_name: evt.team_name,
+        session_id: evt.session_id,
         status: evt.status,
         progress: evt.progress,
         agents_total: evt.agents_total ?? 0,

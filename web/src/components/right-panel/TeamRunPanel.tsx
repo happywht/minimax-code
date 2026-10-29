@@ -37,6 +37,7 @@ function statusIcon(status: TeamRunEntry["status"]) {
     case "completed":
       return <CheckCircle2 size={12} className="text-status-success" />;
     case "failed":
+    case "interrupted":
       return <XCircle size={12} className="text-status-error" />;
     default:
       return null;
@@ -55,8 +56,8 @@ function ProgressBar({ progress }: { progress: number }) {
   );
 }
 
-function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void }) {
-  const isDone = run.status === "completed" || run.status === "failed";
+function RunCard({ run, onRemove, onCancel }: { run: TeamRunEntry; onRemove: () => void; onCancel: () => void }) {
+  const isDone = run.status === "completed" || run.status === "failed" || run.status === "interrupted";
   const hasConflicts = run.result?.conflicts?.length;
 
   return (
@@ -89,11 +90,18 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
               <X size={10} />
             </button>
           )}
+          {!isDone && !run.task_id.startsWith("pending-") && (
+            <button type="button" disabled={run.cancelling} onClick={onCancel}
+              className="rounded border border-line px-2 py-1 text-ink-1 disabled:opacity-50">
+              {run.cancelling ? "正在停止…" : "停止团队"}
+            </button>
+          )}
         </div>
       </div>
 
       {/* Progress bar */}
       {!isDone && <ProgressBar progress={run.progress} />}
+      {run.status === "interrupted" && <p className="mt-1 text-status-error">已中断；请核对执行中的操作和文件变化，不能自动恢复。</p>}
 
       {/* Active agent */}
       {run.agent_name && !isDone && (
@@ -132,6 +140,8 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
 
 /** One row in the persisted-runs history section. */
 function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
+  const [stopMessage, setStopMessage] = useState("");
+  const [stopping, setStopping] = useState(false);
   const done = run.status === "completed";
   const teamResult = run.metadata?.team_result as { budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean } | null } | undefined;
   const budget = teamResult?.budget;
@@ -146,10 +156,18 @@ function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
         ) : (
           <XCircle size={11} className="shrink-0 text-status-error" />
         )}
-        <span className="min-w-0 text-ink-0">{run.title || run.id}
+        <span className="min-w-0 text-ink-0">{run.title || run.id} · {run.status === "interrupted" ? "已中断，需核对" : run.status}
           {budget && <span className="block text-ink-2">结束时快照：已知下界 {budget.known_tokens}，预留 {budget.reserved_tokens}，未知请求 {budget.unknown_attempts}；{budget.usage_complete ? "用量已记录" : "用量未完整确认"}</span>}
+          {stopMessage && <span className="block text-ink-2">{stopMessage}</span>}
         </span>
       </span>
+      {run.status === "running" && <button type="button" disabled={stopping} className="rounded border border-line px-2 py-1 disabled:opacity-50" onClick={() => {
+        if (useSessionStore.getState().currentSessionId !== run.session_id) return;
+        setStopping(true);
+        void typedIPC.cancelRun(run.id).then((result) => {
+          setStopMessage(result.requested ? "已请求停止，等待清理；请刷新记录。" : "服务中没有可停止的运行；请刷新记录。");
+        }).catch((error) => setStopMessage(`停止请求失败：${String(error)}`)).finally(() => setStopping(false));
+      }}>停止</button>}
       <span className="shrink-0 text-ink-2">{formatRelative(run.created_at)}</span>
     </li>
   );
@@ -158,6 +176,7 @@ function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
 export function TeamRunPanel(): JSX.Element {
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
   const runs = useTeamRunStore((s) => s.runs);
+  const cancel = useTeamRunStore((s) => s.cancel);
   const prune = useTeamRunStore((s) => s.prune);
   const remove = useTeamRunStore((s) => s.remove);
   const [history, setHistory] = useState<AgentRun[]>([]);
@@ -208,7 +227,8 @@ export function TeamRunPanel(): JSX.Element {
     </div>
   );
 
-  if (runs.length === 0) {
+  const visibleRuns = runs.filter((r) => r.session_id === currentSessionId);
+  if (visibleRuns.length === 0) {
     return (
       <div data-testid="team-run-panel-empty" className="space-y-1.5 text-center">
         <div className="flex justify-center">
@@ -229,12 +249,12 @@ export function TeamRunPanel(): JSX.Element {
           {strings.rightPanel.teamRuns.title}
         </h3>
         <span className="text-[11px] text-minimax-muted">
-          {strings.rightPanel.teamRuns.activeCount(runs.length)}
+          {strings.rightPanel.teamRuns.activeCount(visibleRuns.length)}
         </span>
       </div>
       <div className="space-y-1.5">
-        {runs.map((r) => (
-          <RunCard key={r.task_id} run={r} onRemove={() => remove(r.task_id)} />
+        {visibleRuns.map((r) => (
+          <RunCard key={r.task_id} run={r} onRemove={() => remove(r.task_id)} onCancel={() => void cancel(r.task_id)} />
         ))}
       </div>
       {historySection}

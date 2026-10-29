@@ -1999,7 +1999,11 @@ The team has its own durable budget family, shared by concurrent members and the
 service daily ledger. The returned `budget` is a completion snapshot or null if
 unavailable; unknown usage remains unknown. Requests use estimated reservations,
 not a strict monetary ceiling. The standalone team run is not a normal chat run
-and does not inherit durable cancellation or recovery. Its working-copy boundary
+and does not inherit ordinary run recovery. `run.cancel` can request cancellation
+of a live team owned by this service process; it cancels members and drains
+tracked background descendants before recording `interrupted`, because in-flight
+side effects may need review. After a service restart there is no live owner to
+cancel; team runs cannot be resumed through `run.resume`. Its working-copy boundary
 is not an OS sandbox.
 
 ### webhook.* — Webhook

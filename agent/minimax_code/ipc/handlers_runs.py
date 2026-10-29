@@ -388,7 +388,11 @@ def register_run_handlers(server: Any) -> None:
             run = await dao.get_run(request.run_id)
             if run is None:
                 raise HandlerError(INVALID_PARAMS, "unknown run_id")
-            requested = get_run_service(ctx.server).cancel_run(request.run_id)
+            if run.get("mode") == "team":
+                from ..orchestrator.team_control import cancel as cancel_team
+                requested = cancel_team(request.run_id)
+            else:
+                requested = get_run_service(ctx.server).cancel_run(request.run_id)
             await ctx.reply({"ok": True, "requested": requested, "run": run})
         except ValidationError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
@@ -407,6 +411,8 @@ def register_run_handlers(server: Any) -> None:
             run = await dao.get_run(request.run_id)
             if run is None or run["status"] not in {"interrupted", "failed", "cancelled", "budget_paused"}:
                 raise HandlerError(INVALID_PARAMS, "Only interrupted, failed, cancelled or budget-paused runs can be resumed")
+            if run.get("mode") == "team":
+                raise HandlerError(INVALID_PARAMS, "Team runs cannot be resumed; review their results and start a new run explicitly")
             bound = {"expected_service_id", "expected_session_id", "expected_project_id", "expected_cursor"}
             if bound & request.model_fields_set:
                 if not bound <= request.model_fields_set or not request.expected_service_id or not request.expected_session_id or request.expected_cursor is None:

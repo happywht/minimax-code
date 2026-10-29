@@ -1957,7 +1957,8 @@ export interface ListTeamsResult {
 export interface TeamProgressData {
   team_name: string;
   task_id: string;
-  status: "started" | "agent_started" | "agent_completed" | "completed" | "failed";
+  session_id?: string;
+  status: "started" | "agent_started" | "agent_completed" | "completed" | "failed" | "interrupted";
   agent_name?: string;
   progress: number; // 0..1
   summary?: string;

@@ -20,6 +20,7 @@ v0.11.0 — Agent Studio orchestration enhancements.
 from __future__ import annotations
 
 import logging
+import asyncio
 from typing import Any
 
 from ..workspace_ctx import WorkspaceUnavailableError, session_root_scope
@@ -343,13 +344,14 @@ def register_team_handlers(
             # and inherit it; the scope makes this handler independent of
             # whether it was called from a parent run or directly.
             async with session_root_scope(session_id):
-                result = await orch.run(
+                team_task = asyncio.create_task(orch.run(
                     team_name,
                     request,
                     session_id=session_id,
                     parent_session_id=parent_session_id,
                     budget_tokens=budget_tokens,
-                )
+                ))
+                result = await asyncio.shield(team_task)
             await ctx.reply({
                 "team_name": result.team_name,
                 "orchestration_mode": result.orchestration_mode,
@@ -378,6 +380,8 @@ def register_team_handlers(
                 "success": result.success,
                 "budget": result.budget,
             })
+        except asyncio.CancelledError:
+            await ctx.reply_error(INTERNAL_ERROR, "Team stopped; review incomplete operations")
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
         except WorkspaceUnavailableError as exc:
