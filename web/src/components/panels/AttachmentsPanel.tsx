@@ -14,6 +14,7 @@ import { ReportResearchPicker } from "./ReportResearchPicker";
 import { DraftFileControl } from "./DraftFileControl";
 import { ReportTextExcerpt } from "./ReportTextExcerpt";
 import { ReportTextReuse } from "./ReportTextReuse";
+import { ReportDocumentReuse } from "./ReportDocumentReuse";
 import type { ReportTableTransfer } from "./DeliveryWorkspace";
 import { ReportArtifactReuse } from "./ReportArtifactReuse";
 
@@ -273,7 +274,11 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         setBody(text); setStructured(false); setVisualSections(false); setExcerptSection(""); setFormError(null);
         if (/\[[1-9][0-9]*\]/.test(text)) setCitationNeedsReview(true);
       }} />
-      {state.selected.recognized_type === "docx" && <p className="text-xs text-ink-2">DOCX 可逐段查看并选择摘录追加到报告；当前不能完整导入原有表格、排版及其他内容。原件可下载，生成报告不会修改原件。</p>}
+      <ReportDocumentReuse key={`document-reuse:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host}
+        draftVersion={JSON.stringify([body, structured, sections, title, sources, researchSources])} onApply={(text) => {
+          setBody(text); setStructured(false); setVisualSections(false); setExcerptSection(""); setFormError(null);
+          setCitationNeedsReview(true);
+        }} />
       <AttachmentImagePreview key={`image:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
       <AttachmentImageOcr key={`ocr:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={insertAttachmentExcerpt} />
       <AttachmentDocumentReader key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={insertAttachmentExcerpt} />
