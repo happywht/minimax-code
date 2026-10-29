@@ -220,6 +220,11 @@ class BudgetsDAO:
             return False
         known = normalized["known_tokens"]
         known = max(attempt["known_tokens"] or 0, known) if known is not None else attempt["known_tokens"]
+        # Callers using this transaction directly must honor the same usage
+        # completeness rule as settle(), including contradictory totals.
+        complete = complete and normalized["complete"]
+        if not complete and normalized.get("inconsistent_total") and not reason:
+            reason = "provider_usage_inconsistent"
         state = "sent" if in_flight else "settled" if complete else "unknown"
         if attempt["state"] == state and attempt["known_tokens"] == known and attempt["usage"] == dumps_json(normalized):
             return False

@@ -37,13 +37,17 @@ def normalize_usage(usage):
         value = usage.get(key)
         return value if type(value) is int and value >= 0 else None
     prompt, completion, total = (number(key) for key in ("prompt_tokens", "completion_tokens", "total_tokens"))
+    components = ((prompt or 0) + (completion or 0)
+                  if prompt is not None or completion is not None else None)
+    inconsistent = total is not None and components is not None and total < components
     if total is None and prompt is not None and completion is not None:
         total = prompt + completion
     # Cache reads/creation are separate only when the provider declares them
     # non-overlapping. Reasoning tokens are included in completion, never added.
-    known = total if total is not None else ((prompt or 0) + (completion or 0) if prompt is not None or completion is not None else None)
+    known = max(value for value in (total, components) if value is not None) if total is not None or components is not None else None
     return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total,
-            "known_tokens": known, "complete": total is not None,
+            "known_tokens": known, "complete": total is not None and not inconsistent,
+            "inconsistent_total": inconsistent,
             "cached_tokens": number("cached_tokens"), "cache_creation_tokens": number("cache_creation_tokens"),
             "reasoning_tokens": number("reasoning_tokens"), "raw": usage}
 
