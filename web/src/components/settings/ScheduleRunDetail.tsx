@@ -9,7 +9,8 @@ interface Detail { snapshot: RunStepsResult; receipt: RunGetResult; serviceId: s
 const labels: Record<string, string> = { queued: "排队中", planning: "规划中", running: "运行中", awaiting_approval: "等待授权",
   waiting_input: "等待输入", completed: "执行结束", failed: "执行失败", cancelled: "已取消", interrupted: "运行中断", budget_paused: "预算暂停" };
 
-export function ScheduleRunDetail({ occurrence }: { occurrence: ScheduleOccurrence }): JSX.Element {
+export function ScheduleRunDetail({ occurrence, onVerified }: { occurrence: ScheduleOccurrence;
+  onVerified?: (value: { serviceId: string; status: string } | null) => void }): JSX.Element {
   const activeSession = useSessionStore((state) => state.currentSessionId);
   const activeProject = useSessionStore((state) => state.currentProjectId);
   const [open, setOpen] = useState(false), [detail, setDetail] = useState<Detail | null>(null);
@@ -20,17 +21,17 @@ export function ScheduleRunDetail({ occurrence }: { occurrence: ScheduleOccurren
     occurrence.context?.workspace, occurrence.context?.host, occurrence.context?.engine, project, host, activeSession, activeProject]);
   const eligible = !!occurrence.run_id && !!project && occurrence.context?.host === "local" && occurrence.context?.engine === "native" && !!occurrence.context?.workspace;
   useEffect(() => {
-    setOpen(false); setDetail(null); setError(""); setBusy(false);
+    setOpen(false); setDetail(null); setError(""); setBusy(false); onVerified?.(null);
     const version = epoch;
     return () => { version.current++; };
   }, [scopeKey]);
-  useEffect(() => ipc.onSideCar(() => { epoch.current++; setDetail(null); setBusy(false); setError("连接变化，请重新读取本次运行。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { epoch.current++; setDetail(null); setBusy(false); onVerified?.(null); setError("连接变化，请重新读取本次运行。"); }), []);
   const load = async () => {
     if (!eligible || !occurrence.run_id || !project) return;
     const ticket = ++epoch.current, runId = occurrence.run_id;
     const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
       useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === activeProject;
-    setBusy(true); setError(""); setDetail(null);
+    setBusy(true); setError(""); setDetail(null); onVerified?.(null);
     try {
       const [snapshot, receipt, attachments] = await Promise.all([
         typedIPC.getRunSteps(runId), typedIPC.getRun(runId), typedIPC.listAttachments(project),
@@ -45,10 +46,11 @@ export function ScheduleRunDetail({ occurrence }: { occurrence: ScheduleOccurren
       if (!attachments.service_id || !matches(snapshot.run) || !matches(receipt.run) ||
           snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== occurrence.session_id)) throw new Error("运行、项目或发生记录关联不一致");
       setDetail({ snapshot, receipt, serviceId: attachments.service_id, scopeKey });
+      if (snapshot.run.status === receipt.run.status) onVerified?.({ serviceId: attachments.service_id, status: snapshot.run.status });
     } catch (failure) { if (current()) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { if (current()) setBusy(false); }
   };
-  const show = () => { if (open) { epoch.current++; setOpen(false); setDetail(null); setBusy(false); } else { setOpen(true); void load(); } };
+  const show = () => { if (open) { epoch.current++; setOpen(false); setDetail(null); setBusy(false); onVerified?.(null); } else { setOpen(true); void load(); } };
   const view = detail?.scopeKey === scopeKey ? detail : null;
   const run = view?.snapshot.run;
   const receipt = view?.receipt.result;

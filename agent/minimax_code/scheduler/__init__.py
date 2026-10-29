@@ -225,12 +225,16 @@ class JobScheduler:
         self._unregister_from_aps(job_id)
         return await self._dao.delete(job_id)
 
-    async def enable(self, job_id: str, *, acknowledge_occurrence_id=None) -> dict[str, Any] | None:
+    async def enable(self, job_id: str, *, acknowledge_occurrence_id=None, expected_revision=None) -> dict[str, Any] | None:
         from ..schedule_context import validate_context, validate_payload
         await self._reconcile_occurrences()
         row = await self._dao.get(job_id)
         if row is None or row.get("deleted_at"):
             return None
+        if expected_revision is not None:
+            _require_revision(expected_revision)
+            if row["revision"] != expected_revision:
+                raise SchedulerError("Schedule revision changed; review again")
         validate_payload(row.get("payload"))
         if row.get("binding_state") == "needs_rebind":
             raise SchedulerError("Legacy schedule requires explicit rebind")

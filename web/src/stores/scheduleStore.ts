@@ -38,7 +38,7 @@ export interface ScheduleState {
     opts: ScheduleDefinition,
     expectedService?: string,
   ) => Promise<{ job: ScheduledJobEntry | null; error?: string }>;
-  enable: (jobId: string, acknowledgeOccurrenceId?: string) => Promise<void>;
+  enable: (jobId: string, acknowledgeOccurrenceId?: string, expectedRevision?: number, expectedService?: string) => Promise<{ job: ScheduledJobEntry | null; error?: string }>;
   disable: (jobId: string) => Promise<void>;
   setEnabled: (jobId: string, enabled: boolean) => Promise<void>;
   runNow: (jobId: string) => Promise<void>;
@@ -118,19 +118,21 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
     }
   },
 
-  enable: async (jobId, acknowledgeOccurrenceId) => {
+  enable: async (jobId, acknowledgeOccurrenceId, expectedRevision, expectedService) => {
     const scope = scopeEpoch;
     try {
-      const r = await typedIPC.enableJob(jobId, acknowledgeOccurrenceId);
-      if (scope !== scopeEpoch) return;
+      const r = await typedIPC.enableJob(jobId, acknowledgeOccurrenceId, expectedRevision, expectedService);
+      if (scope !== scopeEpoch) return { job: null, error: "连接已变化，请刷新核对结果。" };
       refreshEpoch++;
       set((s) => ({
         jobs: s.jobs.map((j) => (j.id === jobId ? r.job : j)), loading: false,
       }));
+      return { job: r.job };
     } catch (err) {
-      if (scope !== scopeEpoch) return;
+      if (scope !== scopeEpoch) return { job: null, error: "连接已变化，请刷新核对结果。" };
       const message = err instanceof Error ? err.message : String(err);
       toast.error(strings.toasts.jobEnableFailed, message);
+      return { job: null, error: message };
     }
   },
 

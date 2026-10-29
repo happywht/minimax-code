@@ -2064,3 +2064,5 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 `run.project_summary` 接受 `project_id`、`expected_service_id` 和可选 `run_id`；无 run_id 时返回项目内未归档会话的有界持久运行分类及可确认的进程内执行者标记，有 run_id 时返回同项目绑定的有界已保存文本结果。排除内部子任务及未绑定项目旧记录；服务重启或断线后活动状态需重新核对。
 
 `schedule.update` 可附带 `expected_service_id`；服务端在更新前核对该身份。编辑使用打开时的 `expected_revision`；计划已变更时拒绝更新。已接单发生保留原快照，未接单旧发生可被替代；需要核对状态不会因编辑清除。
+
+`schedule.enable` 可携带 `acknowledge_occurrence_id`、`expected_revision` 与 `expected_service_id`：前者确认已核对的确切发生，后两者校验计划版本和服务身份；仍在运行或清理中的发生不能以此解除。启用未来计划不恢复或重放旧运行。

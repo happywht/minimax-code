@@ -134,7 +134,15 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"job_id"})
             job_id = str(params["job_id"])
-            job = await sched.enable(job_id, acknowledge_occurrence_id=params.get("acknowledge_occurrence_id"))
+            expected_service = params.get("expected_service_id")
+            if expected_service is not None:
+                if not isinstance(expected_service, str) or not expected_service:
+                    raise ValueError("Invalid expected service identity")
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                if await ArtifactDAO(sched._db).service_id() != expected_service:
+                    raise ValueError("Service identity changed; review again")
+            job = await sched.enable(job_id, acknowledge_occurrence_id=params.get("acknowledge_occurrence_id"),
+                                     expected_revision=params.get("expected_revision"))
             if job is None:
                 raise HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
             await ctx.reply({"job": job})

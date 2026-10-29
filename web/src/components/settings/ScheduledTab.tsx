@@ -167,8 +167,6 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
   const [editCron, setEditCron] = useState(job.cron);
   const [editPrompt, setEditPrompt] = useState(job.prompt);
   const [editContext, setEditContext] = useState(job.context ?? emptyScheduleContext());
-  const [acknowledged, setAcknowledged] = useState(false);
-  useEffect(() => { setAcknowledged(false); }, [job.active_occurrence_id]);
   const [editRevision, setEditRevision] = useState<number | null>(null);
   const [editService, setEditService] = useState<string | null>(null);
   const [initialDraft, setInitialDraft] = useState("");
@@ -242,8 +240,8 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
           <input
             type="checkbox"
             checked={job.enabled}
-            disabled={job.binding_state === "needs_rebind" || (job.binding_state === "requires_review" && !acknowledged)}
-            onChange={(e) => { if (e.target.checked && acknowledged) void useScheduleStore.getState().enable(job.id, job.active_occurrence_id ?? undefined); else onToggle(e.target.checked); }}
+            disabled={job.binding_state === "needs_rebind" || job.binding_state === "requires_review"}
+            onChange={(e) => onToggle(e.target.checked)}
             className="h-3 w-3 accent-accent"
           />
           {job.enabled ? strings.settings.scheduled.enabled : strings.settings.scheduled.disabled}
@@ -272,7 +270,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
         </IconButton>
       </div>
       <ScheduleSnapshot job={job} />
-      {job.binding_state === "requires_review" && <label className="px-3 text-xs"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />已核对 {job.active_occurrence_id} 的副作用，放弃该运行恢复并允许未来任务</label>}
+
       {editing && (
         <div data-testid={`settings-job-edit-form-${job.id}`} className="border-t border-line px-3 py-2">
           <fieldset disabled={saving}>
@@ -349,7 +347,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
         </div>
       )}
       <div data-testid={expanded ? `settings-job-tasks-${job.id}` : undefined} className={expanded ? "border-t border-line py-2" : ""}>
-        <ScheduleHistory job={job} expanded={expanded} onOpenSession={onOpenSession} />
+        <ScheduleHistory job={job} expanded={expanded} serviceId={serviceId} onOpenSession={onOpenSession} />
       </div>
     </li>
   );
