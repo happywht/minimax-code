@@ -4,8 +4,8 @@ import { useSessionStore } from "../../stores";
 import type { AgentRun, VerificationEvidence } from "../../types/ipc";
 import { Button } from "../../ui";
 
-const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
-const statuses: Record<string, string> = { completed: "运行结束", failed: "失败", cancelled: "已取消", interrupted: "已中断" };
+const terminal = new Set(["completed", "failed", "cancelled", "interrupted", "budget_paused"]);
+const statuses: Record<string, string> = { completed: "运行结束", failed: "失败", cancelled: "已取消", interrupted: "已中断", budget_paused: "预算暂停" };
 const verdicts: Record<string, string> = { passed: "配置的验证通过", failed: "验证未通过", unknown: "未知", not_applicable: "不适用" };
 const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}…（已截断）` : text;
 
@@ -63,6 +63,17 @@ export function FollowupRunDraft({ run }: { run: AgentRun }): JSX.Element | null
       lines.push(`退出码：${result.exit_code == null ? "未知" : result.exit_code} · ${result.timed_out ? "超时" : result.exit_code == null ? "结果未知" : result.ok && result.exit_code === 0 ? "命令通过" : "命令未通过"}`);
       lines.push(`命令输出未加入草稿${result.stdout_truncated || result.stderr_truncated ? "；已保存输出存在截断" : ""}，请在原运行中查看。`);
     } else lines.push("未记录可用验证命令或结果。");
+    if (saved.status !== "completed") {
+      const reviewSteps = snapshot.steps.filter((step) => step.run_id === saved.id && step.session_id === session &&
+        (step.payload?.outcome === "unknown" || step.payload?.requires_review === true ||
+          (step.kind === "tool_call" && step.status !== "completed")));
+      lines.push("待核对的已记录步骤（状态不是副作用的证明，请检查文件及外部系统）：");
+      reviewSteps.slice(-20).forEach((step) => lines.push(`- ${clip(step.tool_name || step.title || step.kind, 200)} · ${step.status}${step.payload?.outcome === "unknown" || step.payload?.requires_review === true ? " · 记录要求核对或结果未知" : ""}`));
+      if (!reviewSteps.length) lines.push("未找到符合条件的记录；不代表没有未记录的操作或副作用。");
+      if (reviewSteps.length > 20) lines.push(`另有 ${reviewSteps.length - 20} 项未列出，请查看完整时间线。`);
+      lines.push("已核对的进展：（请填写）", "未完成事项：（请填写）", "不确定的操作及外部副作用：（请核对后填写）");
+      lines.push("预算与未知用量：（请核对原运行及子任务；未知不等于零）");
+    }
     const records = snapshot.steps.filter((step) => step.run_id === saved.id && step.session_id === session && step.status === "completed" &&
       step.payload?.source === "run_attachment_v1" && step.payload?.project_id === project && step.payload?.service_id === identity.service_id);
     const rows = records.map((step) => attachments.attachments.find((item) => item.id === step.payload?.attachment_id &&
