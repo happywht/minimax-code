@@ -41,6 +41,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: uv sync --frozen --extra dev --extra attachments
         working-directory: agent
+      - name: Verify evaluation fixture checks
+        run: python -m unittest discover -s evals/real40 -p test_runner.py -q
       - name: Verify Linux service upgrade orchestration
         run: uv run --frozen --extra dev pytest -q ../scripts/tests/test_upgrade_linux_user_service.py
         working-directory: agent
