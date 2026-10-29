@@ -361,6 +361,7 @@ async def test_stop_fences_catchup_and_transport_quiesces_before_service(schedul
     state = scheduled
     job = await create(state)
     monkeypatch.setattr(module, "_SCHEDULER", state.scheduler)
+    monkeypatch.setattr(module, "_SCHEDULER_QUIESCING", False)
     state.scheduler._started = True
     ack = await state.scheduler.run_now(job["id"], idempotency_key="held", expected_revision=1)
     await wait_until(lambda: async_value(bool(state.models)))
@@ -1008,3 +1009,156 @@ async def test_double_stop_is_idempotent_and_restart_orderly(scheduled):
         assert not errors
     finally:
         loop.set_exception_handler(old_handler)
+
+
+async def test_quiesce_waits_for_lazy_initialization_and_fences_future_creation(scheduled, monkeypatch):
+    import minimax_code.scheduler as module
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_start = JobScheduler.start
+
+    async def held_start(self):
+        entered.set()
+        await release.wait()
+        await original_start(self)
+
+    monkeypatch.setattr(module, "_SCHEDULER", None)
+    monkeypatch.setattr(module, "_SCHEDULER_LOCK", asyncio.Lock())
+    monkeypatch.setattr(module, "_SCHEDULER_QUIESCING", False)
+    monkeypatch.setattr(JobScheduler, "start", held_start)
+    initializing = asyncio.create_task(module.get_scheduler(scheduled.db))
+    await entered.wait()
+    stopping = asyncio.create_task(module.quiesce_scheduler(wait=True))
+    await asyncio.sleep(0)
+    assert not stopping.done()
+    release.set()
+    with pytest.raises(SchedulerError, match="stopping"):
+        await initializing
+    await stopping
+    assert module._SCHEDULER._stopping and not module._SCHEDULER.started
+    with pytest.raises(SchedulerError, match="stopping"):
+        await module.get_scheduler(scheduled.db)
+
+
+async def test_stop_drains_claim_and_preserves_pending_for_restart(scheduled, monkeypatch):
+    state = scheduled
+    job = await create(state)
+    entered, release = asyncio.Event(), asyncio.Event()
+    claim = state.scheduler._occurrences.claim
+
+    async def held_claim(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await claim(*args, **kwargs)
+
+    monkeypatch.setattr(state.scheduler._occurrences, "claim", held_claim)
+    triggering = asyncio.create_task(
+        state.scheduler.run_now(job["id"], idempotency_key="held-claim", expected_revision=1)
+    )
+    await entered.wait()
+    stopping = asyncio.create_task(state.scheduler.stop(wait=True))
+    await asyncio.sleep(0)
+    assert state.scheduler._stopping and not stopping.done()
+    release.set()
+    ack = await triggering
+    await stopping
+    assert (await state.scheduler._occurrences.get(ack["occurrence_id"]))["status"] == "pending"
+    assert not state.scheduler._inflight
+    replay = await state.scheduler.run_now(job["id"], idempotency_key="held-claim", expected_revision=1)
+    assert not replay["created"] and replay["occurrence_id"] == ack["occurrence_id"]
+    with pytest.raises(SchedulerError, match="stopping"):
+        await state.scheduler.run_now(job["id"], idempotency_key="new", expected_revision=1)
+    state.release.set()
+    await state.scheduler.start()
+    await wait_until(lambda: settled(state, ack["occurrence_id"]))
+    await state.scheduler.stop(wait=True)
+    assert len(state.models) == 1
+
+
+async def test_stopped_dispatch_does_not_spawn_and_defers_late_admission(scheduled, monkeypatch):
+    import minimax_code.schedule_context as context_module
+
+    state = scheduled
+    job = await create(state)
+    entered, release = asyncio.Event(), asyncio.Event()
+    validate = context_module.validate_context
+
+    async def held_validate(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await validate(*args, **kwargs)
+
+    monkeypatch.setattr(context_module, "validate_context", held_validate)
+    ack = await state.scheduler.run_now(job["id"], idempotency_key="late", expected_revision=1)
+    await entered.wait()
+    await state.scheduler.stop(wait=False)
+    state.scheduler._spawn_fire(job, source="cron")
+    release.set()
+    await state.scheduler.stop(wait=True)
+    assert not state.scheduler._inflight and not state.models
+    assert (await state.scheduler._occurrences.get(ack["occurrence_id"]))["status"] == "pending"
+
+
+async def test_stop_waits_for_runservice_admission_already_in_progress(scheduled, monkeypatch):
+    import minimax_code.ipc.builtins as builtins
+
+    state = scheduled
+    job = await create(state)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = builtins.handle_agent_send_message
+
+    async def held_admission(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "handle_agent_send_message", held_admission)
+    ack = await state.scheduler.run_now(job["id"], idempotency_key="admission", expected_revision=1)
+    await entered.wait()
+    stopping = asyncio.create_task(state.scheduler.stop(wait=False))
+    await asyncio.sleep(0)
+    assert state.scheduler._stopping and not stopping.done()
+    release.set()
+    await stopping
+    occurrence = await state.scheduler._occurrences.get(ack["occurrence_id"])
+    assert occurrence["run_id"] is not None
+    await get_run_service(state.server).shutdown()
+    await state.scheduler.stop(wait=True)
+    assert not state.scheduler._inflight
+
+
+async def test_stop_invalidates_start_already_queued(scheduled):
+    scheduler = scheduled.scheduler
+    await scheduler._start_lock.acquire()
+    starting = asyncio.create_task(scheduler.start())
+    await asyncio.sleep(0)
+    stopping = asyncio.create_task(scheduler.stop(wait=True))
+    await asyncio.sleep(0)
+    scheduler._start_lock.release()
+    await asyncio.gather(starting, stopping)
+    assert scheduler._stopping and not scheduler.started and not scheduler._inflight
+    await scheduler.start()
+    assert scheduler.started
+    await scheduler.stop(wait=True)
+
+
+async def test_stop_waits_for_running_aps_tick(scheduled, monkeypatch):
+    state = scheduled
+    job = await create(state)
+    await state.scheduler.start()
+    tick = state.scheduler._aps.get_job(f"job_{job['id']}").func
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held_dispatch():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(state.scheduler, "_dispatch_due", held_dispatch)
+    ticking = asyncio.create_task(tick())
+    await entered.wait()
+    stopping = asyncio.create_task(state.scheduler.stop(wait=True))
+    await asyncio.sleep(0)
+    assert not stopping.done()
+    release.set()
+    await asyncio.gather(ticking, stopping)
+    assert not state.scheduler._inflight

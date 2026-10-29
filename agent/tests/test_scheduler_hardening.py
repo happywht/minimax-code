@@ -248,7 +248,7 @@ async def test_prompt_fire_runs_through_runservice(monkeypatch, tmp_path) -> Non
 
     from minimax_code.scheduler import JobScheduler
 
-    scheduler = JobScheduler.__new__(JobScheduler)  # skip __init__ wiring
+    scheduler = JobScheduler(None)  # The stubbed send path does not access the database.
     result = await scheduler._run_prompt_via_runservice(
         {"prompt": "refresh the dashboard", "job_id": "job-9",
          "budget_tokens": 5000},

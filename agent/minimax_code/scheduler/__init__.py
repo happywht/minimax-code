@@ -95,6 +95,9 @@ class JobScheduler:
         self._occurrence_tasks: dict[str, asyncio.Task] = {}
         self._payload_runner: PayloadFn = payload_runner or _noop_runner
         self._start_lock = asyncio.Lock()
+        self._stop_generation = 0
+        self._stops_pending = 0
+        self._admission_lock = asyncio.Lock()
         self._started = False
         self._stopping = False
         self._aps_shutdown_issued = False
@@ -118,7 +121,10 @@ class JobScheduler:
 
     async def start(self) -> None:
         """Start the underlying APScheduler and register persisted jobs."""
+        generation = self._stop_generation
         async with self._start_lock:
+            if generation != self._stop_generation or self._stops_pending:
+                return
             if self._started:
                 return
             self._stopping = False
@@ -138,14 +144,22 @@ class JobScheduler:
 
     async def stop(self, *, wait: bool = True) -> None:
         """Stop the scheduler. Safe to call multiple times."""
-        async with self._start_lock:
-            self._stopping = True
-            if self._aps.running and not self._aps_shutdown_issued:
-                self._aps_shutdown_issued = True
-                self._aps.shutdown(wait=wait)
-            self._started = False
-        if wait:
-            await asyncio.gather(*list(self._inflight), return_exceptions=True)
+        self._stopping = True
+        self._stop_generation += 1
+        self._stops_pending += 1
+        try:
+            async with self._start_lock:
+                if self._aps.running and not self._aps_shutdown_issued:
+                    self._aps_shutdown_issued = True
+                    self._aps.shutdown(wait=wait)
+                self._started = False
+                # Wait for claims and run admissions that entered before the fence.
+                async with self._admission_lock:
+                    pass
+                if wait:
+                    await asyncio.gather(*list(self._inflight), return_exceptions=True)
+        finally:
+            self._stops_pending -= 1
 
     @property
     def started(self) -> bool:
@@ -257,7 +271,8 @@ class JobScheduler:
         if not isinstance(idempotency_key,str) or not idempotency_key.strip() or len(idempotency_key)>128:
             raise SchedulerError("A stable client idempotency_key is required")
         try:
-            occurrence, created = await self._occurrences.claim(job_id, source="manual", manual_key=idempotency_key, expected_revision=expected_revision, allow_new=not self._stopping)
+            async with self._admission_lock:
+                occurrence, created = await self._occurrences.claim(job_id, source="manual", manual_key=idempotency_key, expected_revision=expected_revision, allow_new=not self._stopping)
         except ValueError as exc:
             raise SchedulerError(str(exc)) from exc
         owner = await self._dao.get(job_id)
@@ -318,6 +333,8 @@ class JobScheduler:
 
     def _spawn_fire(self, row: dict[str, Any], *, source: str) -> None:
         """Launch ``_fire`` as a tracked, crash-logging background task."""
+        if self._stopping:
+            return
         task = asyncio.get_running_loop().create_task(self._fire(row, source=source))
         self._inflight.add(task)
 
@@ -343,7 +360,14 @@ class JobScheduler:
             self._aps.remove_job(aps_id)
 
         async def _tick():
-            await self._dispatch_due()
+            if self._stopping:
+                return
+            task = asyncio.current_task()
+            self._inflight.add(task)
+            try:
+                await self._dispatch_due()
+            finally:
+                self._inflight.discard(task)
 
         try:
             self._aps.add_job(
@@ -430,7 +454,10 @@ class JobScheduler:
         if isinstance(budget, int) and budget > 0:
             params["budget_tokens"] = budget
         try:
-            await handle_agent_send_message(params, ctx, wait=False, internal_schedule={"context":occurrence["context"],"occurrence_id":occurrence["id"],"job_id":occurrence["job_id"],"revision":occurrence["revision"]})
+            async with self._admission_lock:
+                if self._stopping:
+                    return {"deferred": True}
+                await handle_agent_send_message(params, ctx, wait=False, internal_schedule={"context":occurrence["context"],"occurrence_id":occurrence["id"],"job_id":occurrence["job_id"],"revision":occurrence["revision"]})
         except Exception as exc:  # noqa: BLE001 — scheduler must survive
             logger.exception("runservice prompt fire failed")
             return {"ok": False, "error": f"runservice fire failed: {exc}"}
@@ -489,8 +516,9 @@ class JobScheduler:
         if not due:
             return
         try:
-            occurrence, created = await self._occurrences.claim(row["id"],source="cron",expected_revision=row["revision"],
-                scheduled_for=due,coalesced_through=now_iso(),next_due=_next_due(row["cron_expr"],row["timezone"]))
+            async with self._admission_lock:
+                occurrence, created = await self._occurrences.claim(row["id"],source="cron",expected_revision=row["revision"],
+                    scheduled_for=due,coalesced_through=now_iso(),next_due=_next_due(row["cron_expr"],row["timezone"]), allow_new=not self._stopping)
         except ValueError:
             return
         if created:
@@ -511,6 +539,8 @@ class JobScheduler:
             await validate_context(self._db,occurrence["context"])
             result = await self._run_prompt_via_runservice({"prompt":occurrence["prompt"]},prompt=occurrence["prompt"],
                 session_id=occurrence["session_id"],task_id=occurrence["task_id"],occurrence=occurrence)
+            if result.get("deferred"):
+                return
             current = await self._occurrences.get(occurrence["id"])
             owner = await self._dao.get(occurrence["job_id"])
             if not current["run_id"] and (current["status"]=="superseded" or not owner["enabled"] or owner.get("deleted_at")):
@@ -704,6 +734,7 @@ def _stringify_payload_result(result: Any) -> str:
 
 _SCHEDULER: JobScheduler | None = None
 _SCHEDULER_LOCK = asyncio.Lock()
+_SCHEDULER_QUIESCING = False
 
 
 def _build_default_payload_runner() -> PayloadFn | None:
@@ -728,9 +759,13 @@ async def get_scheduler(db: AsyncDatabase | None = None) -> JobScheduler:
     Production dispatch accepts only fixed-context Native prompt occurrences.
     """
     global _SCHEDULER
+    if _SCHEDULER_QUIESCING:
+        raise SchedulerError("Scheduler is stopping")
     if _SCHEDULER is not None:
         return _SCHEDULER
     async with _SCHEDULER_LOCK:
+        if _SCHEDULER_QUIESCING:
+            raise SchedulerError("Scheduler is stopping")
         if _SCHEDULER is not None:
             return _SCHEDULER
         if db is None:
@@ -741,6 +776,9 @@ async def get_scheduler(db: AsyncDatabase | None = None) -> JobScheduler:
         sched = JobScheduler(db)
         await sched.start()
         _SCHEDULER = sched
+        if _SCHEDULER_QUIESCING:
+            await sched.stop(wait=False)
+            raise SchedulerError("Scheduler is stopping")
         return sched
 
 
@@ -779,5 +817,8 @@ def _require_revision(value):
 
 async def quiesce_scheduler(*, wait=False):
     """Shutdown boundary: do not lazily create a scheduler while closing."""
-    if _SCHEDULER is not None:
-        await _SCHEDULER.stop(wait=wait)
+    global _SCHEDULER_QUIESCING
+    _SCHEDULER_QUIESCING = True
+    async with _SCHEDULER_LOCK:
+        if _SCHEDULER is not None:
+            await _SCHEDULER.stop(wait=wait)
