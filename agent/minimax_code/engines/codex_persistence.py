@@ -19,6 +19,9 @@ class CodexConversation:
         self.text = ""
         self.usage: dict[str, int] | None = None
         self.certainty = "unknown"
+        # Stream and usage events can arrive while an approval is open.
+        # Their persistence must not hide the durable waiting state.
+        self.runtime_status = "running"
         self.recovery_interval = False
         self.bound = False
         self.budget_handle = None
@@ -110,7 +113,7 @@ class CodexConversation:
 
     async def delta(self, text: str) -> None:
         self.text += text
-        await self._save("running", message=True)
+        await self._save(self.runtime_status, message=True)
 
     async def record_usage(self, total: dict[str, Any]) -> bool:
         """Return false for a reset/uncertain watermark. Never reset accounting to zero."""
@@ -122,14 +125,14 @@ class CodexConversation:
                 or self.state.get("usage_certainty") == "uncertain"):
             self.certainty = "uncertain"
             self.state["usage_certainty"] = "uncertain"
-            await self._save("running", message=True)
+            await self._save(self.runtime_status, message=True)
             return False
         increment = {k: total[k] - previous[k] for k in keys}
         self.usage = {k: (self.usage or {}).get(k, 0) + increment[k] for k in keys}
         self.state["usage_watermark"] = {k: total[k] for k in keys}
         self.certainty = "recovery_interval" if self.recovery_interval else "observed"
         self.state["usage_certainty"] = self.certainty
-        await self._save("running", message=True)
+        await self._save(self.runtime_status, message=True)
         return True
 
     def receipt(self, status: str) -> dict[str, Any]:

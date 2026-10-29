@@ -240,6 +240,7 @@ async def drive_codex_run(
         elif method == "runtime/status":
             if conversation:
                 await conversation._save(params["status"])
+                conversation.runtime_status = params["status"]
                 await emit("run.updated", {"run": await job.dao.get_run(job.run_id)})
         elif method == "item/reasoning/summaryTextDelta":
             await emit("agent.status", {"session_id": job.session_id, "run_id": job.run_id, "status": "thinking"})
