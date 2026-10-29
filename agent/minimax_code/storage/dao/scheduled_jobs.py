@@ -51,6 +51,7 @@ class ScheduledJobsDAO:
         last_run_at: str | None = None,
         next_run_at: str | None = None,
         created_at: str | None = None,
+        bound_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Insert a scheduled job.
 
@@ -59,12 +60,8 @@ class ScheduledJobsDAO:
         ``name``, ``cron_expr``, and ``payload``.
         """
         row_id = id or f"job_{uuid.uuid4().hex[:10]}"
-        sql = (
-            "INSERT INTO scheduled_jobs "
-            "(id, name, cron_expr, payload, enabled, last_run_at, next_run_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        params = (
+        columns = "id, name, cron_expr, payload, enabled, last_run_at, next_run_at, created_at"
+        params: tuple[Any, ...] = (
             row_id,
             name,
             cron_expr,
@@ -74,6 +71,10 @@ class ScheduledJobsDAO:
             next_run_at,
             created_at or now_iso(),
         )
+        if bound_context is not None:
+            columns += ", context, context_version, timezone, binding_state, binding_reason"
+            params += (dumps_json(bound_context), 1, bound_context["timezone"], "ready", None)
+        sql = f"INSERT INTO scheduled_jobs ({columns}) VALUES ({', '.join('?' for _ in params)})"
         async with self._db.transaction() as conn:
             await conn.execute(sql, params)
         row = await self._db.fetchone(

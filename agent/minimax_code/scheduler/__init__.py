@@ -191,10 +191,10 @@ class JobScheduler:
         validate_payload(payload)
         saved = await capture_context(self._db, context or {})
         next_run = _next_due(cron_expr, saved["timezone"])
-        row = await self._dao.create(name=name, cron_expr=cron_expr, payload=payload, enabled=False)
-        await self._db.execute("UPDATE scheduled_jobs SET context=?,context_version=1,timezone=?,binding_state='ready',binding_reason=NULL,enabled=?,next_run_at=? WHERE id=?",
-                               (dumps_json(saved), saved["timezone"], int(enabled), next_run, row["id"]))
-        row = await self._dao.get(row["id"])
+        row = await self._dao.create(
+            name=name, cron_expr=cron_expr, payload=payload, enabled=enabled,
+            next_run_at=next_run, bound_context=saved,
+        )
         if enabled and self._started:
             self._register_with_aps(row)
         return row

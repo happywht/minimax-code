@@ -84,6 +84,31 @@ async def create(state, **kwargs):
     )
 
 
+async def test_schedule_creation_persists_complete_snapshot_atomically(scheduled):
+    # Reject incomplete inserts and simulate a storage failure for another name.
+    # The old two-step creation inserted an unbound row before writing its context.
+    await scheduled.db.execute("""
+        CREATE TRIGGER require_complete_schedule BEFORE INSERT ON scheduled_jobs
+        WHEN NEW.context IS NULL OR NEW.context_version IS NOT 1
+             OR NEW.binding_state != 'ready' OR NEW.next_run_at IS NULL
+             OR NEW.name = 'storage failure'
+        BEGIN SELECT RAISE(ABORT, 'incomplete or rejected schedule'); END
+    """)
+    job = await create(scheduled, enabled=False)
+    assert job["enabled"] is False
+    assert job["context"]["project_id"] == "p"
+    assert job["context_version"] == 1
+    assert job["timezone"] == job["context"]["timezone"]
+    assert job["binding_state"] == "ready"
+    assert job["next_run_at"]
+    with pytest.raises(Exception, match="incomplete or rejected schedule"):
+        await scheduled.scheduler.add_job(
+            name="storage failure", cron_expr="* * * * *", payload={"prompt": "do work"},
+            context=scheduled.options,
+        )
+    assert [row["id"] for row in await scheduled.scheduler._dao.list_all()] == [job["id"]]
+
+
 async def wait_until(predicate):
     for _ in range(500):
         if await predicate():
