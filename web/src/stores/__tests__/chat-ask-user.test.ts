@@ -116,6 +116,34 @@ describe("ask_user slice", () => {
     expect(askUser?.questions).toHaveLength(2);
   });
 
+  it("does not revive a closed question from a late snapshot or event", () => {
+    const snapshot = { request_id: "ask_old", session_id: "test-session", run_id: "r", questions: QUESTIONS, timeout_s: 600, expires_at_ms: Date.now() + 60000 };
+    const version = useChat.getState().askRecoveryVersion();
+    handlers.get(StreamEvent.AskUserClosed)?.({ data: { request_id: "ask_old", session_id: "test-session", run_id: "r" } });
+    useChat.getState().reconcileAskUser(snapshot, version, "test-session");
+    handlers.get(StreamEvent.AskUser)?.({ data: snapshot });
+    expect(useChat.getState().askUser).toBeNull();
+  });
+
+  it("keeps a newer question when an older answer request returns", async () => {
+    let resolve!: (result: { ok: boolean }) => void;
+    vi.mocked(typedIPC.answerUser).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    emitAskUser("ask_old");
+    const answering = useChat.getState().submitAskUser(["x"]);
+    emitAskUser("ask_new");
+    resolve({ ok: true });
+    await answering;
+    expect(useChat.getState().askUser?.request_id).toBe("ask_new");
+  });
+
+  it("does not clear a newer question on an earlier tool result", () => {
+    handlers.get(StreamEvent.AskUser)?.({ data: { request_id: "new", session_id: "test-session", run_id: "r",
+      tool_call_id: "new-call", questions: QUESTIONS, timeout_s: 600 } });
+    handlers.get(StreamEvent.ToolResult)?.({ data: { session_id: "test-session", run_id: "r",
+      tool_call_id: "old-call", name: "ask_user", result: "old" } });
+    expect(useChat.getState().askUser?.request_id).toBe("new");
+  });
+
   it("a later questionnaire replaces the previous one", () => {
     emitAskUser("ask_1");
     emitAskUser("ask_2");

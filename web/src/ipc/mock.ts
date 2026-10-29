@@ -666,6 +666,7 @@ function mockHandle(
         run: entry.run,
         steps: entry.steps,
         cursor: mockRunEvents.get(runId)?.length ?? 0,
+        pending_ask_user: null,
       };
     }
 

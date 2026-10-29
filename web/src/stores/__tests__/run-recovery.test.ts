@@ -69,6 +69,30 @@ describe("durable run recovery", () => {
     expect(store.getState().runs.r1.status).toBe("running");
   });
 
+  it("restores a live question from a reconnect snapshot", async () => {
+    const question = { request_id: "ask-1", session_id: "s1", run_id: "r1", timeout_s: 60,
+      expires_at_ms: Date.now() + 60000, questions: [] };
+    api.getRunSteps.mockResolvedValue({ ...snapshot({ ...run, status: "waiting_input" }), pending_ask_user: question });
+    await store.getState().loadForSession("s1");
+    expect(useChat.getState().askUser).toEqual(question);
+    api.getRunSteps.mockResolvedValue({ ...snapshot(run), pending_ask_user: null });
+    api.sidecar?.({ status: "started" });
+    await idle();
+    expect(useChat.getState().askUser).toBeNull();
+  });
+
+  it("finds a live question after an earlier run with no pending question", async () => {
+    const older = { ...run, id: "r2", status: "waiting_input" as const };
+    const question = { request_id: "ask-2", session_id: "s1", run_id: "r2", timeout_s: 60,
+      remaining_ms: 60000, questions: [] };
+    api.listRuns.mockResolvedValue({ runs: [run, older] });
+    api.getRunSteps.mockImplementation(async (id: string) => id === "r1"
+      ? { ...snapshot(run), pending_ask_user: null }
+      : { ...snapshot(older), pending_ask_user: question });
+    await store.getState().loadForSession("s1");
+    expect(useChat.getState().askUser).toEqual(question);
+  });
+
   it("pages ordered events and applies the final state rather than a stale notification", async () => {
     await store.getState().loadForSession("s1");
     const step = { id: "st", run_id: "r1", session_id: "s1", kind: "tool_call",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -87,6 +88,15 @@ def register_run_handlers(server: Any) -> None:
             if snapshot is None:
                 await ctx.reply_error(INVALID_PARAMS, f"unknown run_id: {run_id!r}")
                 return
+            snapshot["pending_ask_user"] = None
+            live = getattr(ctx.server, "_live_ask_users", {}).get(run_id)
+            if live:
+                event, future, deadline = live
+                if (future is not None and not future.done()
+                        and event.get("session_id") == snapshot["run"]["session_id"]
+                        and deadline > asyncio.get_running_loop().time()):
+                    snapshot["pending_ask_user"] = {**event, "remaining_ms": max(0, int(
+                        (deadline - asyncio.get_running_loop().time()) * 1000))}
             await ctx.reply(snapshot)
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

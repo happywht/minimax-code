@@ -37,7 +37,8 @@ let conversationStamp = "";
 function validateSnapshot(snapshot: RunStepsResult, runId: string, sessionId: string): RunStepsResult {
   if (snapshot.run.id !== runId || snapshot.run.session_id !== sessionId ||
       !Number.isSafeInteger(snapshot.cursor) || snapshot.cursor < 0 ||
-      snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId)) {
+      snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId) ||
+      (snapshot.pending_ask_user != null && (snapshot.pending_ask_user.run_id !== runId || snapshot.pending_ask_user.session_id !== sessionId))) {
     throw new Error("Invalid run snapshot; refresh the timeline.");
   }
   return snapshot;
@@ -79,6 +80,7 @@ async function drain(): Promise<void> {
     const current = session;
     const epoch = generation;
     const refresh = forceSnapshot;
+    const askVersion = useChat.getState().askRecoveryVersion();
     forceSnapshot = false;
     if (!current) continue;
     const isCurrent = () => epoch === generation && current === useSessionStore.getState().currentSessionId;
@@ -95,6 +97,10 @@ async function drain(): Promise<void> {
         };
       }
       useRunTimelineStore.setState({ runs: next, order: entries.map((entry) => entry.run.id), error: null });
+      if (refresh && entries.length && entries.every((entry) => "pending_ask_user" in entry)) {
+        const question = entries.map((entry) => entry.pending_ask_user).find((value) => value != null) ?? null;
+        useChat.getState().reconcileAskUser(question, askVersion, current);
+      }
       const stamp = entries.map((entry) => `${entry.run.id}:${entry.cursor}`).join("|");
       if (refresh || stamp !== conversationStamp) {
         conversationStamp = stamp;

@@ -830,6 +830,9 @@ export interface AskUserData extends RunStreamContext {
   questions: AskUserQuestion[];
   /** Seconds the agent will wait before giving up (default 600). */
   timeout_s: number;
+  expires_at_ms?: number;
+  remaining_ms?: number;
+  tool_call_id?: string | null;
 }
 
 /** Result shape for `agent.answer_user`. */
@@ -975,6 +978,7 @@ export interface RunStepsResult {
   run: AgentRun;
   steps: AgentRunStep[];
   cursor: number;
+  pending_ask_user?: AskUserData | null;
 }
 
 export interface RunEvent {
@@ -1716,6 +1720,7 @@ export const StreamEvent = {
   ToolCall: "agent.tool_call",
   ToolResult: "agent.tool_result",
   AskUser: "agent.ask_user",
+  AskUserClosed: "agent.ask_user_closed",
   PermissionRequest: "permission.request",
   PermissionResolved: "permission.resolved",
   TaskProgress: "task.progress",

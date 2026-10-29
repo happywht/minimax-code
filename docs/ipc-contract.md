@@ -444,6 +444,11 @@ See [skill-execution.md](skill-execution.md) for ownership and permission limits
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older
 run without journal entries has cursor 0. Existing `run.list` callers are unchanged.
+It also returns `pending_ask_user`, null or a Native question whose owning
+in-process future is still pending for that run and session. This optional live
+projection is not part of the database transaction or a restartable wait. Its
+`remaining_ms` is sampled by the server; clients treat it as an estimate and
+the answer endpoint remains authoritative on expiration and resolution.
 
 `run.events({run_id, after_seq?: 0, limit?: 100})` returns
 `{events, next_seq, has_more}`. `after_seq` is a non-negative integer (at most
@@ -1446,6 +1451,7 @@ so the frontend can route them by name without a regex.
 | `agent.tool_call`       | `{session_id, tool_call_id, name, args, message_id}` (Phase 1.2) |
 | `agent.tool_result`     | `{session_id, tool_call_id, name?, result, error?, message_id}` |
 | `agent.ask_user`        | `{request_id, session_id, questions[], timeout_s}` — the model paused with structured clarification questions (v1.1.1); the UI renders an inline question card and answers via `agent.answer_user` |
+| `agent.ask_user_closed` | `{request_id, session_id, run_id}` — a Native question wait ended, timed out or was cancelled; late snapshots must not revive it. |
 | `agent.status`          | `{session_id, status, detail?}`                     |
 | `task.progress`         | `{task_id, progress, message?}`                     |
 | `permission.request`    | `{request_id, tool, args, session_id?}` — modal triggers; `session_id` (v1.2.0) tags which conversation the gated call belongs to |

@@ -482,6 +482,7 @@ class AgentCore:
         self.on_status: StatusCallback | None = None
         self.on_usage: UsageCallback | None = None
         self.on_ask_user: AskUserCallback | None = None
+        self.on_ask_user_closed: AskUserCallback | None = None
         # M2 — run state observer. When set, the loop reports waiting
         # states ("awaiting_approval" / "waiting_input") and their
         # return to "running" so the durable run row reflects why the
@@ -506,6 +507,8 @@ class AgentCore:
         # awaiting; resolved by ``resolve_ask_user`` (agent.answer_user)
         # or woken with ``None`` on cancel so the turn aborts cleanly.
         self._pending_ask_user: dict[str, asyncio.Future[list[Any] | None]] = {}
+        self._ask_user_deadlines: dict[str, float] = {}
+        self._ask_user_lock = asyncio.Lock()
         # R13 — circuit-breaker registry. One breaker per protected key
         # ("llm" + "tool:<name>"), lazily created on first check. Retry +
         # breaker knobs are read from self.config at call time so they
@@ -578,13 +581,25 @@ class AgentCore:
         can surface a precise error to the frontend.
         """
         future = self._pending_ask_user.get(request_id)
-        if future is None or future.done():
+        if (future is None or future.done()
+                or asyncio.get_running_loop().time() >= self._ask_user_deadlines.get(request_id, 0)):
             return False
         future.set_result(answers)
         return True
 
     async def _wait_for_ask_user(
-        self, questions: list[dict[str, Any]]
+        self, questions: list[dict[str, Any]], tool_call_id: str | None = None
+    ) -> ToolResult:
+        # A chat presents one question at a time even when a model submits
+        # several ask_user calls in a parallel batch.
+        async with self._ask_user_lock:
+            if self.cancelled:
+                return ToolResult.ok(output="The turn was cancelled before the user answered.",
+                                     ask_user_cancelled=True)
+            return await self._wait_for_ask_user_inner(questions, tool_call_id)
+
+    async def _wait_for_ask_user_inner(
+        self, questions: list[dict[str, Any]], tool_call_id: str | None
     ) -> ToolResult:
         """Emit ``agent.ask_user`` and suspend until the user answers.
 
@@ -603,6 +618,8 @@ class AgentCore:
         request_id = f"ask_{uuid.uuid4().hex[:12]}"
         loop = asyncio.get_running_loop()
         future: asyncio.Future[list[Any] | None] = loop.create_future()
+        deadline = loop.time() + ASK_USER_TIMEOUT_S
+        self._ask_user_deadlines[request_id] = deadline
         self._pending_ask_user[request_id] = future
         _ASK_USER_ROUTES[request_id] = self
 
@@ -610,6 +627,7 @@ class AgentCore:
             # No interactive host (e.g. a headless sub-agent core) —
             # clean up and tell the model instead of hanging.
             self._pending_ask_user.pop(request_id, None)
+            self._ask_user_deadlines.pop(request_id, None)
             _ASK_USER_ROUTES.pop(request_id, None)
             return ToolResult.ok(
                 output=(
@@ -627,12 +645,14 @@ class AgentCore:
                     "session_id": self._current_session_id,
                     "questions": questions,
                     "timeout_s": ASK_USER_TIMEOUT_S,
+                    "expires_at_ms": int((time.time() + ASK_USER_TIMEOUT_S) * 1000),
+                    "tool_call_id": tool_call_id,
                 }
             )
             # M2 — surface "waiting for the user" on the durable run row
             # while the inline question card is open.
             await self._notify_run_state("waiting_input")
-            answers = await asyncio.wait_for(future, timeout=ASK_USER_TIMEOUT_S)
+            answers = await asyncio.wait_for(future, timeout=max(0, deadline - loop.time()))
             await self._notify_run_state("running")
         except TimeoutError:
             await self._notify_run_state("running")
@@ -649,7 +669,13 @@ class AgentCore:
             return ToolResult.fail("ask_user: failed to surface the question")
         finally:
             self._pending_ask_user.pop(request_id, None)
+            self._ask_user_deadlines.pop(request_id, None)
             _ASK_USER_ROUTES.pop(request_id, None)
+            if self.on_ask_user_closed is not None:
+                try:
+                    await self.on_ask_user_closed({"request_id": request_id, "session_id": self._current_session_id})
+                except Exception:
+                    logger.exception("ask_user close notification failed for %s", request_id)
 
         if answers is None:
             return ToolResult.ok(
@@ -1752,7 +1778,7 @@ class AgentCore:
         # see the final payload, never the marker.
         ask_questions = (result.metadata or {}).get(ASK_USER_MARKER)
         if result.success and ask_questions is not None:
-            result = await self._wait_for_ask_user(ask_questions)
+            result = await self._wait_for_ask_user(ask_questions, tool_call_id)
 
         await self._maybe_emit_tool_result(call_log, result)
 

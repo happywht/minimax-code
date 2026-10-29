@@ -50,6 +50,8 @@ export interface ChatState {
    * user answers (or the backend 600 s timeout fires). Null when idle.
    */
   askUser: AskUserData | null;
+  askRecoveryVersion: () => number;
+  reconcileAskUser: (request: AskUserData | null, version: number, sessionId: string) => void;
 
   init: () => Promise<void>;
   send: (content: string | ContentPart[]) => Promise<void>;
@@ -86,6 +88,7 @@ let toolCallUnsub: (() => void) | null = null;
 let toolResultUnsub: (() => void) | null = null;
 let statusUnsub: (() => void) | null = null;
 let askUserUnsub: (() => void) | null = null;
+let askUserClosedUnsub: (() => void) | null = null;
 let pendingAssistantId: string | null = null;
 const inFlightRequests = new Map<string, Promise<unknown>>();
 
@@ -104,11 +107,13 @@ export function disposeChatSubscriptions(): void {
   toolResultUnsub?.();
   statusUnsub?.();
   askUserUnsub?.();
+  askUserClosedUnsub?.();
   chunkUnsub = null;
   toolCallUnsub = null;
   toolResultUnsub = null;
   statusUnsub = null;
   askUserUnsub = null;
+  askUserClosedUnsub = null;
 }
 
 // HMR cleanup — tear down WS listeners when this module is hot-replaced
@@ -121,6 +126,26 @@ if (import.meta.hot) {
 let _loadSeq = 0;
 let _viewRevision = 0;
 let _reconcileSeq = 0;
+let askVersion = 0;
+let askExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+const closedAskIds = new Set<string>();
+
+function setLiveQuestion(data: AskUserData | null) {
+  if (askExpiryTimer) clearTimeout(askExpiryTimer);
+  askExpiryTimer = null;
+  if (data && data.remaining_ms !== undefined) {
+    const remaining = data.remaining_ms;
+    if (remaining <= 0) data = null;
+    else {
+      const id = data.request_id;
+      askExpiryTimer = setTimeout(() => {
+        ++askVersion; closedAskIds.add(id);
+        if (useChat.getState().askUser?.request_id === id) useChat.setState({ askUser: null });
+      }, remaining);
+    }
+  }
+  useChat.setState({ askUser: data });
+}
 const recoveredMessageIds = new Set<string>();
 const recoveredRunIds = new Set<string>();
 let reconcilingRunIds = new Set<string>();
@@ -275,6 +300,14 @@ export const useChat = create<ChatState>((set, get) => ({
   agentReady: false,
   loadingMessages: false,
   askUser: null,
+  askRecoveryVersion: () => askVersion,
+  reconcileAskUser: (request, version, sessionId) => {
+    if (askVersion !== version || useSessionStore.getState().currentSessionId !== sessionId) return;
+    if (request && (request.session_id !== sessionId || closedAskIds.has(request.request_id))) return;
+    if (get().askUser?.request_id === request?.request_id) return;
+    ++askVersion;
+    setLiveQuestion(request);
+  },
 
   init: async () => {
     if (get().agentReady) return;
@@ -375,7 +408,11 @@ export const useChat = create<ChatState>((set, get) => ({
         // Either way the pending card must not linger (timeout/cancel
         // never route through submitAskUser).
         if (toolName === "ask_user") {
-          set({ askUser: null });
+          const current = get().askUser;
+          if (current && (!data.run_id || !current.run_id || data.run_id === current.run_id)
+              && (!current.tool_call_id || data.tool_call_id === current.tool_call_id)) {
+            ++askVersion; closedAskIds.add(current.request_id); setLiveQuestion(null);
+          }
         }
       });
     }
@@ -419,11 +456,21 @@ export const useChat = create<ChatState>((set, get) => ({
         const data = env.data;
         if (!data) return;
         if (!isCurrentSessionEvent(data)) return;
+        if (closedAskIds.has(data.request_id)) return;
         // A fresh questionnaire always replaces any stale one — the
         // backend serialises ask_user suspensions per run, so at most
         // one card is live at a time.
         noteStreamActivity(data);
-        set({ askUser: data });
+        ++askVersion;
+        setLiveQuestion(data);
+      });
+    }
+    if (!askUserClosedUnsub) {
+      askUserClosedUnsub = ipc.on<{ session_id: string; run_id?: string; request_id: string }>(StreamEvent.AskUserClosed, (env) => {
+        const data = env.data;
+        if (!data || data.session_id !== useSessionStore.getState().currentSessionId) return;
+        ++askVersion; closedAskIds.add(data.request_id);
+        if (get().askUser?.request_id === data.request_id) setLiveQuestion(null);
       });
     }
 
@@ -876,11 +923,11 @@ export const useChat = create<ChatState>((set, get) => ({
       if (!result.ok) {
         // The backend explicitly rejected the answer (unknown/expired
         // request_id) — the card is dead weight, drop it.
-        set({ askUser: null });
+        if (get().askUser?.request_id === current.request_id) { ++askVersion; closedAskIds.add(current.request_id); setLiveQuestion(null); }
         toast.error(strings.toasts.askUserSubmitFailed, result.error);
         return;
       }
-      set({ askUser: null });
+      if (get().askUser?.request_id === current.request_id) { ++askVersion; closedAskIds.add(current.request_id); setLiveQuestion(null); }
     } catch (err) {
       // Transport failure — keep the card so the user can retry while
       // the backend timeout window is still open.
@@ -1054,6 +1101,10 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   reset: () => {
+    ++askVersion;
+    closedAskIds.clear();
+    if (askExpiryTimer) clearTimeout(askExpiryTimer);
+    askExpiryTimer = null;
     ++_loadSeq;
     ++_viewRevision;
     ++_reconcileSeq;

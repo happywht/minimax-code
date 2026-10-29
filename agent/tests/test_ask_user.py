@@ -274,6 +274,25 @@ async def test_cancel_wakes_suspended_wait():
     assert result.metadata.get("ask_user_cancelled") is True
 
 
+async def test_concurrent_questions_are_serialized_and_closed():
+    opened, closed = [], []
+    core = _core(lambda payload: opened.append(payload) or asyncio.sleep(0))
+    core.on_ask_user_closed = lambda payload: closed.append(payload) or asyncio.sleep(0)
+    first = asyncio.create_task(core._wait_for_ask_user(VALID_QUESTIONS))
+    second = asyncio.create_task(core._wait_for_ask_user(VALID_QUESTIONS))
+    while not opened:
+        await asyncio.sleep(0)
+    assert len(opened) == 1
+    assert core.resolve_ask_user(opened[0]["request_id"], ["one"]) is True
+    await first
+    while len(opened) < 2:
+        await asyncio.sleep(0)
+    assert closed[0]["request_id"] == opened[0]["request_id"]
+    core.cancel()
+    await second
+    assert closed[1]["request_id"] == opened[1]["request_id"]
+
+
 # ---------------------------------------------------------------------------
 # resolve_ask_user semantics
 # ---------------------------------------------------------------------------

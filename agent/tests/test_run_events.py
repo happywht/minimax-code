@@ -215,6 +215,33 @@ async def test_events_rpc_and_snapshot_cursor(database, monkeypatch):
             await client.request("run.events", params)
 
 
+async def test_run_steps_only_exposes_live_matching_question(database, monkeypatch):
+    import asyncio
+    import time
+
+    from minimax_code import app
+    from minimax_code.ipc.client import IPCClient
+
+    monkeypatch.setattr(app, "_DB_SINGLETON", database)
+    run = await AgentRunsDAO(database).create_run(session_id="session")
+    client = IPCClient()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    event = {"request_id": "ask_one", "session_id": "session", "run_id": run["id"],
+             "questions": [], "timeout_s": 60, "expires_at_ms": int(time.time() * 1000) + 60000}
+    client.server._live_ask_users = {run["id"]: (event, future, loop.time() + 60)}
+    pending = (await client.request("run.steps", {"run_id": run["id"]}))["pending_ask_user"]
+    assert {key: value for key, value in pending.items() if key != "remaining_ms"} == event
+    assert 0 < pending["remaining_ms"] <= 60000
+    client.server._live_ask_users[run["id"]] = ({**event, "session_id": "foreign"}, future, loop.time() + 60)
+    assert (await client.request("run.steps", {"run_id": run["id"]}))["pending_ask_user"] is None
+    client.server._live_ask_users[run["id"]] = (event, future, loop.time() - 1)
+    assert (await client.request("run.steps", {"run_id": run["id"]}))["pending_ask_user"] is None
+    client.server._live_ask_users[run["id"]] = (event, future, loop.time() + 60)
+    future.set_result(["answer"])
+    assert (await client.request("run.steps", {"run_id": run["id"]}))["pending_ask_user"] is None
+
+
 async def test_export_import_roundtrip_and_legacy_import_clear_stale_events(database):
     from minimax_code.ipc.handlers_data import dump_database, restore_database
 

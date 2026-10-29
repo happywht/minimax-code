@@ -1488,12 +1488,29 @@ async def _handle_agent_send_message(
     async def _on_ask_user(payload: dict) -> None:
         """Push ``agent.ask_user`` so the frontend renders an inline
         question card and can answer via ``agent.answer_user``."""
+        event = {**payload, "run_id": job.run_id}
+        deadline = core._ask_user_deadlines[payload["request_id"]]
+        event["remaining_ms"] = max(0, int((deadline - asyncio.get_running_loop().time()) * 1000))
+        future = core._pending_ask_user.get(payload["request_id"])
+        registry = getattr(ctx.server, "_live_ask_users", None)
+        if registry is None:
+            registry = ctx.server._live_ask_users = {}
+        registry[job.run_id] = (event, future, deadline)
         try:
-            await ctx.emit("agent.ask_user", {**payload, "run_id": job.run_id})
+            await ctx.emit("agent.ask_user", event)
         except Exception:
             logger.exception("on_ask_user emit failed")
 
     core.on_ask_user = _on_ask_user
+
+    async def _on_ask_user_closed(payload: dict) -> None:
+        registry = getattr(ctx.server, "_live_ask_users", {})
+        entry = registry.get(job.run_id)
+        if entry and entry[0]["request_id"] == payload["request_id"]:
+            registry.pop(job.run_id, None)
+        await ctx.emit("agent.ask_user_closed", {**payload, "run_id": job.run_id})
+
+    core.on_ask_user_closed = _on_ask_user_closed
 
     async def _on_tool_result(call: dict, result: Any) -> None:
         """Push ``agent.tool_result`` events with the tool output."""

@@ -433,6 +433,7 @@ class RunSnapshotResult(_Base):
     run: dict[str, Any]
     steps: list[dict[str, Any]]
     cursor: int = Field(ge=0)
+    pending_ask_user: dict[str, Any] | None = None
 
 
 # ---- Error object ---------------------------------------------------------
