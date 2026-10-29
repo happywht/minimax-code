@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
 import logging
 import os
 import time
@@ -19,7 +20,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..execution import _finish_owned, spawn_shell, terminate_tree
+from ..execution import (
+    ExecutionDeniedError,
+    ExecutionPolicy,
+    _finish_owned,
+    execution_scope,
+    policy_workspace,
+    spawn_shell,
+    terminate_tree,
+)
 from ..workspace_ctx import WorkspaceUnavailableError, require_directory, resolve_root_for_session
 from .handler_utils import HandlerError, ensure_cwd_within_root, project_root_from_params
 from .host_session_gate import require_host_session
@@ -52,6 +61,7 @@ class TerminalSession:
     id: str
     command: str
     cwd: str
+    workspace_root: str | None = None
     chat_session_id: str | None = None
     run_id: str | None = None
     run_step_id: str | None = None
@@ -242,6 +252,11 @@ def default_working_directory() -> str:
 
 
 async def _cwd_from_params(params: dict[str, Any]) -> str:
+    cwd, _ = await _cwd_and_root_from_params(params)
+    return cwd
+
+
+async def _cwd_and_root_from_params(params: dict[str, Any]) -> tuple[str, str | None]:
     """Resolve the terminal cwd, honouring an optional project scope.
 
     Priority: explicit ``cwd`` (validated to resolve inside the project
@@ -260,7 +275,7 @@ async def _cwd_from_params(params: dict[str, Any]) -> str:
             raise HandlerError(INVALID_PARAMS, str(exc)) from exc
     raw = params.get("cwd")
     if raw is None or raw == "":
-        return str(root) if root is not None else default_working_directory()
+        return (str(root), str(root)) if root is not None else (default_working_directory(), None)
     if not isinstance(raw, str):
         raise HandlerError(INVALID_PARAMS, "'cwd' must be a string when provided")
     if root is not None:
@@ -268,7 +283,7 @@ async def _cwd_from_params(params: dict[str, Any]) -> str:
     path = Path(raw).expanduser().resolve()
     if not path.exists() or not path.is_dir():
         raise HandlerError(INVALID_PARAMS, "'cwd' must point to an existing directory")
-    return str(path)
+    return str(path), str(root) if root is not None else None
 
 
 def _timeout_from_params(params: dict[str, Any]) -> float:
@@ -459,13 +474,18 @@ async def _run_session(
         await require_host_session(session.chat_session_id)
         await _create_run_tracking(session, emit)
         await require_host_session(session.chat_session_id)
-        process = await spawn_shell(
-            session.command,
-            cwd=session.cwd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        scope = (execution_scope(ExecutionPolicy(workspace=Path(session.workspace_root)))
+                 if session.workspace_root is not None else contextlib.nullcontext())
+        with scope:
+            if session.workspace_root is not None and policy_workspace() != Path(session.workspace_root):
+                raise ExecutionDeniedError("Terminal workspace has changed; rebind before continuing.")
+            process = await spawn_shell(
+                session.command,
+                cwd=session.cwd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
         session.process = process
         if session.status == "cancelled":
             await _terminate_process(process)
@@ -549,6 +569,7 @@ async def start_terminal_command(
     timeout_s: float,
     chat_session_id: str | None,
     emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+    workspace_root: str | None = None,
 ) -> TerminalSession:
     """Start a lightweight command session and return its in-memory row."""
     await require_host_session(chat_session_id)
@@ -558,6 +579,7 @@ async def start_terminal_command(
         id=f"term_{uuid.uuid4().hex[:10]}",
         command=command,
         cwd=cwd,
+        workspace_root=workspace_root,
         chat_session_id=chat_session_id,
     )
     _SESSIONS[session.id] = session
@@ -587,7 +609,7 @@ def register_terminal_handlers(server: Any) -> None:
             command = _command_from_params(p)
             chat_session_id = _chat_session_id_from_params(p)
             await require_host_session(chat_session_id)
-            cwd = await _cwd_from_params(p)
+            cwd, workspace_root = await _cwd_and_root_from_params(p)
             timeout_s = _timeout_from_params(p)
             session = await start_terminal_command(
                 command=command,
@@ -595,6 +617,7 @@ def register_terminal_handlers(server: Any) -> None:
                 timeout_s=timeout_s,
                 chat_session_id=chat_session_id,
                 emit=ctx.emit,
+                workspace_root=workspace_root,
             )
             await ctx.reply({"session": session.to_wire()})
         except HandlerError as exc:

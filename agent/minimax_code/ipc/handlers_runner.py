@@ -17,7 +17,7 @@ from typing import Any
 
 from ..execution import capture_output, spawn_exec, spawn_shell
 from .handler_utils import HandlerError
-from .handlers_terminal import _cwd_from_params, start_terminal_command
+from .handlers_terminal import _cwd_and_root_from_params, start_terminal_command
 from .host_session_gate import require_host_session
 from .protocol import INVALID_PARAMS
 from .server import Context
@@ -263,7 +263,7 @@ def register_runner_handlers(server: Any) -> None:
             runner_id = _runner_id_from_params(p)
             chat_session_id = _chat_session_id_from_params(p)
             await require_host_session(chat_session_id)
-            cwd = await _cwd_from_params(p)
+            cwd, workspace_root = await _cwd_and_root_from_params(p)
             if runner_id == "native":
                 runner = await _runner_entry(id="native", label="Native shell", command_name=None,
                                              version_args=None, supports_prompt=False)
@@ -288,6 +288,7 @@ def register_runner_handlers(server: Any) -> None:
                 timeout_s=_timeout_from_params(p),
                 chat_session_id=chat_session_id,
                 emit=ctx.emit,
+                workspace_root=workspace_root,
             )
             await ctx.reply({"runner": runner, "session": session.to_wire()})
         except HandlerError as exc:
