@@ -13,7 +13,7 @@ from ...attachment_parser import extract_xlsx
 from ...execution import require_write_access
 from ...office_xlsx import canonical
 from .base import ToolResult
-from .generate_xlsx_from_csv import GenerateXlsxFromCsvTool, csv_to_spec, filter_spec
+from .generate_xlsx_from_csv import GenerateXlsxFromCsvTool, csv_to_spec, filter_spec, group_spec
 
 _MESSAGES = {
     "sheet_not_found": "Source sheet does not exist; use its exact name",
@@ -38,7 +38,10 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Create an XLSX from all stored cells in one visible worksheet of a current-project XLSX attachment. "
         "Select and reorder columns by exact header, converting to text, number or boolean; optional summaries "
         "are static values and charts use output column names. Optional typed filters use output column names; "
-        "all conditions must match and are applied before summaries and charts. Formula cells are never imported: "
+        "all conditions must match and are applied before grouping, summaries and charts. "
+        "Optional group_by produces static grouped values: blank keys form a group, count excludes blanks, "
+        "sum and average ignore blanks and are blank when all values are blank; average rounds half-up. "
+        "Formula cells are never imported: "
         "replace formulas with independently verified values in a copy. Hidden rows/columns, merged cells, "
         "charts, filters, error cells, ambiguous date/number formats and zero-padded identifiers are rejected. "
         "Supported dates become ISO text and must use text output columns. Percentages and currencies "
@@ -54,7 +57,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
     }
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None) -> ToolResult:
+                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -87,6 +90,11 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 raise ValueError(f"Worksheet columns or values are invalid: {error}") from error
             source_row_count = len(spec["rows"])
             spec = filter_spec(spec, filters)
+            matched_row_count = len(spec["rows"])
+            if group_by is not None:
+                if summaries:
+                    raise ValueError("group_by cannot be combined with summaries")
+                spec = group_spec(spec, group_by)
             bound_key = hashlib.sha256(canonical([request_key, attachment_id, original["sha256"], source_sheet])).hexdigest()
             result = await self.generator.run(filename, bound_key, spec, summaries=summaries, chart=chart)
             if result.success:
@@ -95,7 +103,13 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 result.output["source_sha256"] = original["sha256"]
                 result.output["filter_conditions"] = filters or []
                 result.output["source_row_count"] = source_row_count
-                result.output["matched_row_count"] = len(spec["rows"])
+                result.output["matched_row_count"] = matched_row_count
+                if group_by is not None:
+                    result.output["group_by"] = group_by
+                    result.output["group_count"] = len(spec["rows"])
+                    result.output["group_notice"] = ("Blank keys form one group; row count includes all matched rows. "
+                        "Count excludes blanks; sum and average ignore blanks and are blank if all values are blank. "
+                        "Average rounds half-up to the requested decimals. Values are static and business quality is unverified.")
                 result.output["source_sheet"] = source_sheet
                 result.output["date_columns"] = extraction["date_columns"]
                 result.output["percentage_columns"] = extraction["percentage_columns"]
