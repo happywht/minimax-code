@@ -246,7 +246,7 @@ export interface TypedIPC {
   summarizeCodebasePath(path: string, opts?: { project_id?: string }): Promise<CodebaseSummarizeResult>;
 
   getProjectRunSummary(params: { project_id: string; expected_service_id: string; run_id?: string }): Promise<import("../types/ipc").ProjectRunSummaryResult>;
-  listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number }): Promise<ListRunsResult>;
+  listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number; include_active?: boolean }): Promise<ListRunsResult>;
   startRun(params: RunStartParams): Promise<RunAdmissionResult>;
   getRun(runId: string): Promise<RunGetResult>;
   cancelRun(runId: string): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;

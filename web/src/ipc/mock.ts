@@ -668,12 +668,20 @@ function mockHandle(
     case "run.project_summary":
       throw new Error("演示模式不提供持久项目运行摘要");
     case "run.list": {
-      const p = params as { session_id?: string; limit?: number; offset?: number } | undefined;
+      const p = params as { session_id?: string; status?: string; mode?: string; limit?: number; offset?: number; include_active?: boolean } | undefined;
       let runs = Array.from(mockRuns.values()).reverse().map((r) => r.run);
       if (p?.session_id) runs = runs.filter((r) => r.session_id === p.session_id);
       runs.sort((a, b) => b.created_at.localeCompare(a.created_at));
       const offset = p?.offset ?? 0;
       const limit = p?.limit ?? 20;
+      if (p?.include_active) {
+        if (!p.session_id || p.status || p.mode || offset || limit < 1 || limit > 100) throw new Error("invalid recovery session or limit");
+        const active = runs.filter((r) => ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(r.status));
+        const ids = new Set([...runs.slice(0, limit), ...active.slice(0, 101)].map((r) => r.id));
+        return { runs: runs.filter((r) => ids.has(r.id)), active_truncated: active.length > 100 } satisfies ListRunsResult;
+      }
+      if (p?.status) runs = runs.filter((r) => r.status === p.status);
+      if (p?.mode) runs = runs.filter((r) => r.mode === p.mode);
       return { runs: runs.slice(offset, offset + limit) } satisfies ListRunsResult;
     }
 

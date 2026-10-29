@@ -44,7 +44,7 @@ beforeEach(async () => {
   usePermissionStore.setState({ pending: {}, resolving: {} });
   vi.resetAllMocks();
   useSessionStore.setState({ currentSessionId: "s1" });
-  api.listRuns.mockResolvedValue({ runs: [run] });
+  api.listRuns.mockResolvedValue({ runs: [run], active_truncated: false });
   api.getRunSteps.mockResolvedValue(snapshot());
   api.getRunEvents.mockResolvedValue({ events: [], next_seq: 1, has_more: false });
   api.listMessages.mockResolvedValue({ messages: [] });
@@ -95,7 +95,7 @@ describe("durable run recovery", () => {
     const older = { ...run, id: "r2", status: "waiting_input" as const };
     const question = { request_id: "ask-2", session_id: "s1", run_id: "r2", timeout_s: 60,
       remaining_ms: 60000, questions: [] };
-    api.listRuns.mockResolvedValue({ runs: [run, older] });
+    api.listRuns.mockResolvedValue({ runs: [run, older], active_truncated: false });
     api.getRunSteps.mockImplementation(async (id: string) => id === "r1"
       ? { ...snapshot(run), pending_ask_user: null }
       : { ...snapshot(older), pending_ask_user: question });
@@ -221,7 +221,7 @@ describe("durable run recovery", () => {
     const first = store.getState().loadForSession("s1");
     await waitFor(() => expect(api.getRunSteps).toHaveBeenCalledTimes(1));
     useSessionStore.setState({ currentSessionId: "s2" });
-    api.listRuns.mockResolvedValue({ runs: [] });
+    api.listRuns.mockResolvedValue({ runs: [], active_truncated: false });
     const second = store.getState().loadForSession("s2");
     expect(store.getState().runs).toEqual({});
     pending.reject(new Error("old session error"));

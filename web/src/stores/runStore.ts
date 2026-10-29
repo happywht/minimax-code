@@ -91,7 +91,13 @@ async function drain(): Promise<void> {
     const permissionVersion = usePermissionStore.getState().recoveryVersion(current);
     const isCurrent = () => epoch === generation && current === useSessionStore.getState().currentSessionId;
     try {
-      const { runs } = await typedIPC.listRuns({ session_id: current, limit: MAX_RUNS });
+      const { runs, active_truncated } = await typedIPC.listRuns({ session_id: current, limit: MAX_RUNS, include_active: true });
+      if (active_truncated !== false) {
+        throw new Error("Run recovery is incomplete or unsupported; timeline was not refreshed.");
+      }
+      if (runs.some((run) => run.session_id !== current)) {
+        throw new Error("Invalid run list; refresh the timeline.");
+      }
       const entries = await Promise.all(runs.map((run) => catchUp(run.id, current, refresh)));
       if (!isCurrent()) continue;
       snapshots = new Map(entries.map((entry) => [entry.run.id, entry]));

@@ -40,7 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   useSessionStore.setState({ currentSessionId: "s", sessions: [] });
   api.listMessages.mockResolvedValue({ messages });
-  api.listRuns.mockResolvedValue({ runs: [] });
+  api.listRuns.mockResolvedValue({ runs: [], active_truncated: false });
 });
 afterEach(() => store.getState().reset());
 

@@ -1000,6 +1000,7 @@ export interface ProjectRunSummaryResult {
 
 export interface ListRunsResult {
   runs: AgentRun[];
+  active_truncated?: boolean;
 }
 
 export interface RunStepsResult {

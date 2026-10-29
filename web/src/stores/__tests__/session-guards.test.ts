@@ -42,7 +42,7 @@ function makeMockIpcModule() {
       }),
     },
     IPCError: class extends Error {},
-    typedIPC: { listRuns: vi.fn().mockResolvedValue({ runs: [] }) },
+    typedIPC: { listRuns: vi.fn().mockResolvedValue({ runs: [], active_truncated: false }) },
   };
 }
 

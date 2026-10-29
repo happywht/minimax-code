@@ -321,6 +321,32 @@ class AgentRunsDAO:
         rows = await self._db.fetchall(sql, tuple(params))
         return [_hydrate_run(r) for r in rows]
 
+    async def list_recovery_runs(self, session_id: str, *, limit: int = 20) -> dict[str, Any]:
+        """Read recent and active runs from one SQLite snapshot, with a bounded active set."""
+        if not session_id or not 1 <= limit <= 100:
+            raise ValueError("invalid recovery session or limit")
+        rows = await self._db.fetchall(
+            """WITH recent AS (
+                SELECT rowid AS rid FROM agent_runs WHERE session_id=?
+                ORDER BY created_at DESC, rowid DESC LIMIT ?
+            ), active AS (
+                SELECT rowid AS rid FROM agent_runs WHERE session_id=? AND status IN
+                    ('queued','planning','running','awaiting_approval','waiting_input')
+                ORDER BY created_at DESC, rowid DESC LIMIT 101
+            )
+            SELECT *, (SELECT COUNT(*) FROM active) AS _active_count FROM agent_runs
+            WHERE rowid IN (SELECT rid FROM recent UNION SELECT rid FROM active)
+            ORDER BY created_at DESC, rowid DESC""",
+            (session_id, limit, session_id),
+        )
+        truncated = bool(rows and rows[0]["_active_count"] > 100)
+        runs = []
+        for row in rows:
+            data = dict(row)
+            data.pop("_active_count", None)
+            runs.append(_hydrate_run(data))
+        return {"runs": runs, "active_truncated": truncated}
+
     async def update_run_status(
         self,
         run_id: str,

@@ -501,6 +501,12 @@ Run, session, project and session host policy are checked.
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older
 run without journal entries has cursor 0. Existing `run.list` callers are unchanged.
+For session recovery, `run.list` accepts `include_active: true` with a required
+`session_id` and a recent-run `limit` from 1 to 100, without status, mode or
+offset filters. One database read returns the union of recent runs and up to
+101 active runs (queued, planning, running, awaiting approval, or waiting
+input), ordered newest first. `active_truncated` is true when more than 100
+active runs exist; clients must not treat that response as a complete recovery.
 New Native generation-tool results may also add completed observation steps
 with `payload.source:"run_attachment_v1"`, containing the verified attachment
 ID, project and service IDs, SHA-256, filename and generating tool. These mean

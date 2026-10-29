@@ -426,6 +426,14 @@ def register_run_handlers(server: Any) -> None:
             mode = params.get("mode")
             limit = params.get("limit", 20)
             offset = params.get("offset", 0)
+            recovery = params.get("include_active", False)
+            if not isinstance(recovery, bool):
+                raise ValueError("include_active must be a boolean")
+            if recovery:
+                if not isinstance(session_id, str) or not session_id or status or mode or offset:
+                    raise ValueError("include_active requires a session and no filters or offset")
+                await ctx.reply(await dao.list_recovery_runs(session_id, limit=int(limit)))
+                return
             runs = await dao.list_runs(
                 session_id=str(session_id) if session_id else None,
                 status=str(status) if status else None,
