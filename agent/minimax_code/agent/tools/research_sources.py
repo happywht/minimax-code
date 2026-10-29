@@ -54,6 +54,29 @@ class ResearchSources:
             await _append_event(conn, self.run_id, "step_created", {"step": step})
         return ident
 
+    async def remember_manual_page(self, page, expected_service_id):
+        """Commit a user-initiated read as its own completed, explicitly labelled run."""
+        from ...storage.dao._base import dumps_json, now_iso
+        from ...storage.dao.runs import _append_event, _fetchone, _hydrate_run, _hydrate_step
+        if await self._binding() != expected_service_id:
+            raise ValueError("Research service identity changed")
+        run_id, ident, now = "run_" + uuid.uuid4().hex, "page_" + uuid.uuid4().hex, now_iso()
+        payload = {"source": "research_page_v1", "service_id": expected_service_id, "project_id": self.project_id,
+                   "page": {key: page[key] for key in ("title", "url", "accessed_at", "excerpt", "truncated", "title_truncated", "excerpt_truncated")}}
+        async with self.db.transaction() as conn:
+            session = await _fetchone(conn, "SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
+            project = await _fetchone(conn, "SELECT id FROM projects WHERE id=?", (self.project_id,))
+            service = await _fetchone(conn, "SELECT service_id FROM artifact_service WHERE singleton=1")
+            if not session or session["project_id"] != self.project_id or not project or not service or service["service_id"] != expected_service_id:
+                raise ValueError("Research session, project or service binding changed")
+            await conn.execute("INSERT INTO agent_runs(id,session_id,mode,status,title,created_at,started_at,completed_at,metadata) VALUES(?,?,'chat','completed',?,?,?,?,?)",
+                (run_id, self.session_id, "用户手动读取网页", now, now, now, dumps_json({"project_id": self.project_id, "manual_research": True})))
+            await _append_event(conn, run_id, "created", {"run": _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (run_id,)))})
+            await conn.execute("INSERT INTO agent_run_steps(id,run_id,session_id,kind,status,title,summary,payload,started_at,completed_at,ordinal) VALUES(?,?,?,'observation','completed',?,?,?,?,?,1)",
+                (ident, run_id, self.session_id, "用户手动读取研究来源", page["url"], dumps_json(payload), now, now))
+            await _append_event(conn, run_id, "step_created", {"step": _hydrate_step(await _fetchone(conn, "SELECT * FROM agent_run_steps WHERE id=?", (ident,)))})
+        return ident, run_id
+
     async def list_pages(self, query="", limit=20, offset=0):
         import json
         identity = await self._binding()

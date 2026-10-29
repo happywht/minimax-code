@@ -2051,3 +2051,5 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 此范围不支持远程主机、Codex 调度、一般命令调度，也尚未提供跨运行原子每日预算账本。
 
 `runtime.research_set` 可选 `provider`（`searxng` 或 `brave`）、`brave_key` 和 `clear_brave_key`；密钥写入服务主机系统密钥环，读取仅返回是否配置。Brave 请求固定域名并拒绝携带密钥重定向；配置不等于网络验证。
+
+`run.research_search` 与 `run.research_read` 接受 `session_id`、`project_id`、`expected_service_id` 和分别的 `query` / `url`，由用户显式发起；网络拒绝规则优先，复用公网 HTTPS 受控读取。搜索仅返回摘要；读取成功在同一事务中创建标记为用户手动读取的独立已完成记录和真实来源，并返回来源 ID。

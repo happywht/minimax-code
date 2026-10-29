@@ -385,6 +385,22 @@ class RunResearchListParams(BaseModel):
     offset: int = Field(default=0, ge=0, le=10000)
 
 
+class RunResearchSearchParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    query: str = Field(min_length=1, max_length=500)
+
+
+class RunResearchReadParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    url: str = Field(min_length=1, max_length=4096)
+
+
 class RunResearchGetParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1)

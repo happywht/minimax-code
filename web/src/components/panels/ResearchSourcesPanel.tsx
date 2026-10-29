@@ -3,6 +3,7 @@ import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import type { ResearchSource, ResearchSourceScope } from "../../types/ipc";
 import { Button, Input } from "../../ui";
+import { ManualResearch } from "./ManualResearch";
 
 function safeUrl(value: string): string | null {
   try {
@@ -75,6 +76,7 @@ export function ResearchSourcesPanel({ onText, onClose }: { onText: () => void; 
     <div className="flex items-center justify-between"><h2 className="text-lg font-semibold">项目研究来源</h2>
       <div className="flex gap-2"><Button variant="secondary" onClick={onText}>文本成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div></div>
     <p className="text-sm text-ink-1">仅展示本项目在此服务读取并记录的网页。页面内容和报告事实未自动核验；删除所属任务或会话会删除来源记录。</p>
+    <ManualResearch project={project} session={session} service={visible ? service : null} />
     {!project || !session ? <p role="status">请先选择当前项目的会话。</p> : <>
       <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); setOffset(0); setApplied(query); }}>
         <Input aria-label="搜索研究来源" maxLength={200} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="标题、网址或摘录" />

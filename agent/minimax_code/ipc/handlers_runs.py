@@ -20,6 +20,8 @@ from .protocol import (
     RunOutputInventoryParams,
     RunOutputPageParams,
     RunResearchGetParams,
+    RunResearchSearchParams,
+    RunResearchReadParams,
     RunResearchListParams,
     RunResumeParams,
     RunStartParams,
@@ -571,6 +573,47 @@ def register_run_handlers(server: Any) -> None:
                 await ctx.reply_error(INTERNAL_ERROR, "Research source query failed")
         return handle
 
+    def manual_research_handler(model, *, read=False):
+        async def handle(params, ctx):
+            from ..agent.core import _check_rule
+            from ..agent.tools.public_research import ReadPublicPageTool, SearchPublicWebTool
+            from ..agent.tools.research_sources import ResearchSources
+            from .handlers_permissions import _ensure_permission_store
+            from .host_session_gate import require_host_session
+            try:
+                request = model.model_validate(params)
+                await require_host_session(request.session_id)
+                dao = await _get_dao()
+                sources = ResearchSources(dao._db, request.session_id, request.project_id)
+                if await sources._binding() != request.expected_service_id:
+                    raise ValueError("Research service identity changed")
+                permissions = await _ensure_permission_store(ctx.server)
+                name = "read_public_page" if read else "search_public_web"
+                if "deny" in {_check_rule(permissions, "network"), _check_rule(permissions, name)}:
+                    raise ValueError("Network access is denied by permission policy")
+                # The explicit UI action authorizes this one request; it does not
+                # change permission rules or authorize future Agent tool calls.
+                result = await (ReadPublicPageTool().run(request.url) if read else SearchPublicWebTool().run(request.query))
+                if not result.success:
+                    raise ValueError(result.error or "Research request failed")
+                if await sources._binding() != request.expected_service_id:
+                    raise ValueError("Research service or project binding changed")
+                await require_host_session(request.session_id)
+                payload = result.output
+                if read:
+                    page_id, run_id = await sources.remember_manual_page(payload, request.expected_service_id)
+                    payload = {**payload, "page_source_id": page_id, "run_id": run_id}
+                await ctx.reply({"session_id": request.session_id, "project_id": request.project_id,
+                    "service_id": request.expected_service_id, "result": payload})
+            except (ValidationError, ValueError, HandlerError) as exc:
+                await ctx.reply_error(INVALID_PARAMS, str(exc))
+            except Exception:
+                logger.exception("manual research failed")
+                await ctx.reply_error(INTERNAL_ERROR, "Research operation failed")
+        return handle
+
+    server.register("run.research_search", manual_research_handler(RunResearchSearchParams))
+    server.register("run.research_read", manual_research_handler(RunResearchReadParams, read=True))
     server.register("run.list", handle_run_list)
     server.register("run.steps", handle_run_steps)
     server.register("run.events", handle_run_events)
