@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "../../ui";
 import type { OfficeTableSpec } from "../../types/ipc";
-import { csvToOfficeSpec, type CsvTable } from "./officeCsv";
+import { calculateOfficeColumn, csvToOfficeSpec, type CsvTable } from "./officeCsv";
 
 const PAGE_SIZE = 20;
 const HISTORY_LIMIT = 20;
@@ -16,6 +16,11 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
   const [sortKind, setSortKind] = useState<"text" | "number">("text");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [sortError, setSortError] = useState<string | null>(null);
+  const [calculationName, setCalculationName] = useState("计算结果");
+  const [calculationLeft, setCalculationLeft] = useState(0);
+  const [calculationRight, setCalculationRight] = useState(0);
+  const [calculationOperation, setCalculationOperation] = useState<"add" | "subtract" | "multiply">("multiply");
+  const [calculationError, setCalculationError] = useState<string | null>(null);
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
   const snapshot = (): Snapshot => ({ table, kinds: [...kinds] });
@@ -42,7 +47,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
   useEffect(() => { setPage((current) => Math.min(current, lastPage)); }, [lastPage]);
   useEffect(() => { setPage(0); setPast([]); setFuture([]); }, [original]);
   // Column edits can change indices, so require the user to select keys again.
-  useEffect(() => { setDedupeColumns([]); setSortColumn(0); setSortError(null); }, [table.headers]);
+  useEffect(() => { setDedupeColumns([]); setSortColumn(0); setSortError(null); setCalculationLeft(0); setCalculationRight(0); setCalculationError(null); }, [table.headers]);
   const sortRows = () => {
     try {
       const values = sortKind === "number"
@@ -114,6 +119,21 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
       <Button type="button" variant="secondary" disabled={!empty} onClick={() =>
       onChange({ ...table, rows: table.rows.filter((cells) => cells.some((cell) => cell !== "")) })}>移除全空行（{empty}）</Button>
       <Button type="button" variant="secondary" onClick={() => { onChange(original, original.headers.map(() => "text" as const)); setPage(0); }}>恢复读取时的表格</Button></div>
+    <fieldset className="space-y-2 rounded border border-line p-2">
+      <legend>逐行计算新列</legend>
+      <p>按当前草稿的两列计算静态数值，空值产生空结果；不自动更新，修改源数据后需重新计算。无效数字或超出安全精度时整次操作不会改变草稿，可撤销。</p>
+      <div className="flex flex-wrap gap-2">
+        <label>新列名 <input aria-label="计算列名称" value={calculationName} onChange={(event) => setCalculationName(event.target.value)} /></label>
+        <label>左列 <select aria-label="计算左列" value={calculationLeft} onChange={(event) => setCalculationLeft(Number(event.target.value))}>{table.headers.map((header, index) => <option key={index} value={index}>{header || `第 ${index + 1} 列`}</option>)}</select></label>
+        <label>运算 <select aria-label="计算运算" value={calculationOperation} onChange={(event) => setCalculationOperation(event.target.value as typeof calculationOperation)}><option value="add">加</option><option value="subtract">减</option><option value="multiply">乘</option></select></label>
+        <label>右列 <select aria-label="计算右列" value={calculationRight} onChange={(event) => setCalculationRight(Number(event.target.value))}>{table.headers.map((header, index) => <option key={index} value={index}>{header || `第 ${index + 1} 列`}</option>)}</select></label>
+        <Button type="button" variant="secondary" disabled={table.headers.length >= 20 || (table.rows.length + 1) * (table.headers.length + 1) > 5000} onClick={() => {
+          try { const next = calculateOfficeColumn(table, calculationName, calculationLeft, calculationRight, calculationOperation); onChange(next, [...kinds, "number"]); setCalculationError(null); }
+          catch (error) { setCalculationError(error instanceof Error ? error.message : "计算失败"); }
+        }}>添加计算列</Button>
+      </div>
+      {calculationError && <p role="alert" className="text-status-error">{calculationError}；表格未更改。</p>}
+    </fieldset>
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>按列排序</legend>
       <p>文本按 UTF-16 码元顺序、区分大小写；数字使用表格的安全精度规则，非法数字会拒绝排序。空字符串始终排在最后，相同值保持原顺序。只改变草稿，可撤销。</p>

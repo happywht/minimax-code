@@ -6,7 +6,7 @@ import hashlib
 import io
 import math
 import re
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -227,6 +227,42 @@ def deduplicate_spec(spec: dict, columns: list[str]) -> dict:
     return {**source.model_dump(), "rows": rows}
 
 
+class CalculatedColumn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=80)
+    left: str
+    right: str
+    operation: Literal["add", "subtract", "multiply"]
+
+
+def calculate_spec(spec: dict, calculated_column: dict) -> dict:
+    """Append exact decimal arithmetic as static cells; blank operands yield blank."""
+    source = XlsxSpec.model_validate(spec)
+    config = CalculatedColumn.model_validate(calculated_column)
+    names = {column.name: index for index, column in enumerate(source.columns)}
+    if config.left not in names or config.right not in names:
+        raise ValueError("Calculated operands must be output columns")
+    left, right = names[config.left], names[config.right]
+    if source.columns[left].kind != "number" or source.columns[right].kind != "number":
+        raise ValueError("Calculated operands must be numeric columns")
+    rows = []
+    with localcontext() as context:
+        context.prec = 80
+        for row in source.rows:
+            if row[left] is None or row[right] is None:
+                value = None
+            else:
+                a, b = Decimal(str(row[left])), Decimal(str(row[right]))
+                result = a + b if config.operation == "add" else a - b if config.operation == "subtract" else a * b
+                value = int(result) if result == result.to_integral_value() else float(result)
+                if not math.isfinite(value) or Decimal(str(value)) != result:
+                    raise ValueError("Calculated result cannot be represented safely")
+            rows.append([*row, value])
+    return XlsxSpec.model_validate({"sheet_name": source.sheet_name,
+        "columns": [*[column.model_dump() for column in source.columns],
+                    {"name": config.name, "kind": "number"}], "rows": rows}).model_dump()
+
+
 def sort_spec(spec: dict, sort_by: list[dict[str, Any]]) -> dict:
     """Stable typed multi-column ordering, with blanks last in either direction."""
     source = XlsxSpec.model_validate(spec)
@@ -262,6 +298,7 @@ class GenerateXlsxFromCsvTool(Tool):
         "CSV must be UTF-8, with a unique header and at most 1 MiB/1000 rows. Empty cells become blank; "
         "numbers are strict decimal and booleans are true/false. Text beginning '=' remains literal. "
         "Optional filters use output column names and typed values; all conditions must match. "
+        "Append an optional calculated numeric column before filters; add, subtract or multiply two numeric columns using exact decimal arithmetic. Blank operands yield blank; results are static. "
         "Apply filters, optional deduplicate_by, optional group_by, then optional sort_by before summaries and chart. "
         "deduplicate_by uses exact output-column values and keeps the first matching row; blanks match blanks. "
         "Sort uses up to three output columns, typed values, stable ties and blanks last. "
@@ -280,6 +317,10 @@ class GenerateXlsxFromCsvTool(Tool):
                 "source": {"type": "string"}, "name": {"type": "string"},
                 "kind": {"type": "string", "enum": ["text", "number", "boolean"]},
             }, "required": ["source", "name", "kind"], "additionalProperties": False}},
+            "calculated_column": {"type": "object", "properties": {
+                "name": {"type": "string"}, "left": {"type": "string"}, "right": {"type": "string"},
+                "operation": {"type": "string", "enum": ["add", "subtract", "multiply"]},
+            }, "required": ["name", "left", "right", "operation"], "additionalProperties": False},
             "filters": {"type": "array", "maxItems": 10, "items": {"type": "object", "properties": {
                 "column": {"type": "string"},
                 "operator": {"type": "string", "enum": ["eq", "ne", "gt", "gte", "lt", "lte"]},
@@ -315,7 +356,7 @@ class GenerateXlsxFromCsvTool(Tool):
         self.generator = GenerateTableXlsxTool(db, session_id, project_id)
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None) -> ToolResult:
+                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -332,6 +373,8 @@ class GenerateXlsxFromCsvTool(Tool):
             if original["recognized_type"] != "utf8_text" or original["parser_status"] not in {"parsed", "truncated"}:
                 raise ValueError("CSV attachment is not a valid UTF-8 CSV")
             spec = csv_to_spec(data, sheet_name, columns)
+            if calculated_column is not None:
+                spec = calculate_spec(spec, calculated_column)
             source_row_count = len(spec["rows"])
             spec = filter_spec(spec, filters)
             matched_row_count = len(spec["rows"])
@@ -350,6 +393,7 @@ class GenerateXlsxFromCsvTool(Tool):
                 result.output["request_key"] = request_key
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
+                result.output["calculated_column"] = calculated_column
                 result.output["filter_conditions"] = filters or []
                 result.output["sort_by"] = sort_by or []
                 result.output["source_row_count"] = source_row_count

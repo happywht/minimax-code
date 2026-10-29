@@ -14,7 +14,7 @@ from ...execution import require_write_access
 from ...office_xlsx import canonical
 from .base import ToolResult
 from .generate_xlsx_from_csv import (
-    GenerateXlsxFromCsvTool, csv_to_spec, deduplicate_spec, filter_spec, group_spec, sort_spec,
+    GenerateXlsxFromCsvTool, calculate_spec, csv_to_spec, deduplicate_spec, filter_spec, group_spec, sort_spec,
 )
 
 _MESSAGES = {
@@ -40,7 +40,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Create an XLSX from all stored cells in one visible worksheet of a current-project XLSX attachment. "
         "Select and reorder columns by exact header, converting to text, number or boolean; optional summaries "
         "are static values and charts use output column names. Optional typed filters use output column names; "
-        "all conditions must match. Optional deduplicate_by keeps the first row for exact output-column "
+        "all conditions must match. Optional calculated_column appends static add, subtract or multiply results before filtering; blank operands produce blank. Optional deduplicate_by keeps the first row for exact output-column "
         "values, with blanks matching blanks, after filtering and before grouping. "
         "Optional sort_by orders up to three output columns after grouping, with stable ties and blanks last. "
         "Optional group_by produces static grouped values: blank keys form a group, count excludes blanks, "
@@ -61,7 +61,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
     }
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None) -> ToolResult:
+                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -92,6 +92,8 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 spec = csv_to_spec(buffer.getvalue().encode("utf-8"), sheet_name, columns)
             except ValueError as error:
                 raise ValueError(f"Worksheet columns or values are invalid: {error}") from error
+            if calculated_column is not None:
+                spec = calculate_spec(spec, calculated_column)
             source_row_count = len(spec["rows"])
             spec = filter_spec(spec, filters)
             matched_row_count = len(spec["rows"])
@@ -110,6 +112,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 result.output["request_key"] = request_key
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
+                result.output["calculated_column"] = calculated_column
                 result.output["filter_conditions"] = filters or []
                 result.output["sort_by"] = sort_by or []
                 result.output["source_row_count"] = source_row_count

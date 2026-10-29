@@ -71,3 +71,38 @@ export function csvToOfficeSpec(table: CsvTable, kinds: Kind[]): OfficeTableSpec
   }));
   return { sheet_name: "清单", columns: table.headers.map((name, index) => ({ name, kind: kinds[index] })), rows };
 }
+
+// Decimal coefficients avoid binary floating-point arithmetic when creating static cells.
+function decimalCoefficient(value: number): { coefficient: bigint; exponent: number } {
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/.exec(String(value));
+  if (!match) throw new Error("数字格式无效");
+  return { coefficient: BigInt(`${match[1]}${match[2]}${match[3] || ""}`),
+    exponent: Number(match[4] || 0) - (match[3] || "").length };
+}
+
+export function calculateOfficeColumn(table: CsvTable, name: string, left: number, right: number,
+  operation: "add" | "subtract" | "multiply"): CsvTable {
+  if (!Number.isInteger(left) || !Number.isInteger(right) || left < 0 || right < 0 ||
+      left >= table.headers.length || right >= table.headers.length) throw new Error("请选择两个数据列");
+  const operands = csvToOfficeSpec({ headers: ["左操作数", "右操作数"],
+    rows: table.rows.map((row) => [row[left], row[right]]) }, ["number", "number"]);
+  const rows = table.rows.map((row, index) => {
+    const [a, b] = operands.rows[index];
+    if (a === null || b === null) return [...row, ""];
+    const x = decimalCoefficient(a as number), y = decimalCoefficient(b as number);
+    let coefficient: bigint, exponent: number;
+    if (operation === "multiply") { coefficient = x.coefficient * y.coefficient; exponent = x.exponent + y.exponent; }
+    else {
+      exponent = Math.min(x.exponent, y.exponent);
+      const first = x.coefficient * 10n ** BigInt(x.exponent - exponent);
+      const second = y.coefficient * 10n ** BigInt(y.exponent - exponent);
+      coefficient = operation === "add" ? first + second : first - second;
+    }
+    return [...row, coefficient === 0n ? "0" : `${coefficient}e${exponent}`];
+  });
+  const next = { headers: [...table.headers, name], rows };
+  // Validate the complete table bounds and each calculated number before editing the draft.
+  csvToOfficeSpec({ headers: next.headers, rows: next.rows },
+    [...table.headers.map(() => "text" as const), "number"]);
+  return next;
+}
