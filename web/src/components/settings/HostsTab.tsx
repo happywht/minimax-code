@@ -3,6 +3,7 @@ import { typedIPC } from "../../ipc";
 import type { HostConnection, RemoteHost } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { HostFileTransfer } from "./HostFileTransfer";
 
 const STATUS_LABELS: Record<HostConnection["state"], string> = {
   connected: "已连接", disconnected: "已断开", connecting: "连接中",
@@ -188,6 +189,7 @@ export function HostsTab(): JSX.Element {
           <Button size="sm" disabled={busy || !Number.isInteger(Number(hostPorts[host.id])) || Number(hostPorts[host.id]) < 1 || Number(hostPorts[host.id]) > 65535 || Number(hostPorts[host.id]) === host.remote_port} onClick={() => void savePort(host)}>保存端口</Button>
         </div>
         <p className="text-xs text-ink-2">{!host.enabled ? "已禁用 · " : ""}状态：{connection ? STATUS_LABELS[connection.state] : "未知"}</p>
+        <HostFileTransfer host={host} />
         {connection?.error && <p role="alert" className="text-xs text-status-error">{connection.error}</p>}
         {connection?.state === "connected" && !url && <p role="alert" className="text-xs text-status-error">隧道地址无效，无法打开。</p>}
         <div className="flex flex-wrap items-center gap-2">

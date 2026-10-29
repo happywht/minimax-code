@@ -245,7 +245,7 @@ async def fetch_file(
     baseline = _sha256_file(local_path) if local_path.exists() else None
     with tempfile.TemporaryDirectory(prefix=".minimax-download-", dir=local_path.parent) as tmp:
         staged = Path(tmp) / "payload"
-        argv = _scp_args(host, f"{_target(host)}:{remote_path}", str(staged))
+        argv = _scp_args(host, f"{_target(host)}:{remote_path}", str(staged), sftp_only=True)
         result = await _run_scp(argv, timeout=timeout, runner=runner)
         if not result.ok:
             return result

@@ -284,9 +284,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
                                    f"unknown host_id: {params['host_id']!r}")
             if not host.get("enabled"):
                 raise HandlerError(INVALID_PARAMS, "host is disabled")
-            remote_path = str(params["remote_path"]).strip()
-            if not remote_path or remote_path.startswith("-"):
-                raise HandlerError(INVALID_PARAMS, "remote_path must be an absolute path")
+            remote_path = _upload_target(str(params["remote_path"]).strip())
             local_path = Path(str(params["local_path"])).expanduser()
             local_path.parent.mkdir(parents=True, exist_ok=True)
             result = await fetch_file(host, remote_path, local_path,
