@@ -96,6 +96,18 @@ node scripts/start-release.mjs --data-dir /absolute/existing-data --workspace /a
 
 此入口对已有 `data.db` 启用 schema 保护：已记录版本必须与当前程序的迁移集合完全一致，否则启动失败，不自动迁移或降级；全新空目录经明确选择才初始化。SQLite 仍需打开文件和创建正常运行时日志，应用正常运行会修改所选数据；非协作程序并发修改不受此保护。数据库升级、备份和回退应使用另行审阅的流程。常规 `start-production.mjs` 或 systemd 单元不自动启用此保护，仍遵循各自的数据和迁移策略。已安装入口不证明服务就绪，也未经安装或迁移演练。
 
+### 手动切换版本前准备备份
+
+Windows 或 Linux 上手工切换已安装版本前，可使用 `scripts/prepare-release-upgrade.py` 建立独立备份事务。先停止接单并确认服务、任务和其他写入者已停止；命令不会替用户停止服务，也不能证明外部写入者已经静默。准备两个不同且安装完成的版本、旧版本可用的 Python 环境，以及与版本和数据目录不重叠的私有备份目录（Linux 需当前用户持有且为 `0700`；Windows 应由用户自行限制目录 ACL）。例如：
+
+```powershell
+python scripts/prepare-release-upgrade.py --old-release "D:/apps/minimax-old" --new-release "D:/apps/minimax-new" --old-python "D:/apps/minimax-old/agent/.venv/Scripts/python.exe" --data-dir "D:/minimax-data" --backup-dir "D:/minimax-backups" --confirm-stopped
+```
+
+脚本使用旧版本的 bundle 命令创建和校验离线数据包；bundle 自身的数据目录租约会拒绝仍持有租约的服务。每次在备份目录新建独立事务子目录，保留 ZIP 和 `state.json`：完成时记录旧/新清单身份、schema、包哈希与排除范围；失败或中断时保留不完整状态，不覆盖任何已有包。清单身份和包哈希不证明发布者可信，也不证明恢复可行。
+
+完成后先审阅状态与排除项，再按适用流程手动决定升级。备份不含系统密钥环、环境变量、未登记工作区文件及其他 bundle 排除项；需分别保全。它不切换或启动服务、不迁移或删除数据、不自动回退，也不支持逆向 schema 迁移。版本包显式启动入口仍会拒绝 schema 不匹配的旧库；Linux systemd 的完整切换使用下文独立流程。此入口尚未做真实升级、备份恢复或跨机演练。
+
 ### Linux 用户服务配置生成（实验）
 
 在 Linux 上准备好固定版本、已安装依赖的虚拟环境和预构建前端后，可生成配置供审查：

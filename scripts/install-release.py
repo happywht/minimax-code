@@ -23,7 +23,7 @@ MAX_FILES = 10000
 MAX_MANIFEST = 4 * 1024 * 1024
 WEB_EXTENSIONS = {".html", ".js", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".woff", ".woff2", ".ttf"}
 EXACT = {"package.json", "agent/pyproject.toml", "agent/uv.lock", "agent/README.md", "scripts/start-production.mjs",
-         "Start-MiniMax-Code.cmd", "scripts/generate-linux-user-service.py", "scripts/install-linux-user-service.py", "scripts/install-release.py", "scripts/start-release.mjs", "scripts/start-release.ps1", "Start-Installed-Release.cmd"}
+         "Start-MiniMax-Code.cmd", "scripts/generate-linux-user-service.py", "scripts/install-linux-user-service.py", "scripts/install-release.py", "scripts/start-release.mjs", "scripts/start-release.ps1", "Start-Installed-Release.cmd", "scripts/prepare-release-upgrade.py"}
 REQUIRED = {"package.json", "agent/pyproject.toml", "agent/uv.lock", "agent/minimax_code/__init__.py",
             "agent/minimax_code/__main__.py", "scripts/start-production.mjs", "web/dist/index.html"}
 RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
