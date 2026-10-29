@@ -196,6 +196,10 @@ export function RunTimelinePanel({
             </div>
             {!["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) && <VerificationBadge evidence={run.metadata?.verification as VerificationEvidence | undefined} />}
             {!["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) && <VerificationDetails evidence={run.metadata?.verification as VerificationEvidence | undefined} />}
+            {run.queuedInput && <details className="my-2 text-xs"><summary>已接收、尚未开始的任务内容</summary>
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{run.queuedInput.text}</pre>
+              {run.queuedInput.truncated && <p>内容预览已截断。</p>}
+            </details>}
             <ol className="space-y-1.5">
               {run.steps.map((step) => (
                 <TimelineStep key={step.id} step={step} runStatus={run.status} />

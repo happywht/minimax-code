@@ -666,6 +666,7 @@ function mockHandle(
         run: entry.run,
         steps: entry.steps,
         cursor: mockRunEvents.get(runId)?.length ?? 0,
+        queued_input: null,
         pending_ask_user: null,
         pending_native_permissions: [],
         pending_codex_permissions: [],

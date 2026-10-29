@@ -21,6 +21,7 @@ import { AttachmentRows } from "./AttachmentRows";
 import { MentionPickerDropdown } from "./MentionPickerDropdown";
 import { ComposerToolbar } from "./ComposerToolbar";
 import { TaskTemplates } from "./TaskTemplates";
+import { QueuedTaskInput } from "./QueuedTaskInput";
 import { strings } from "../../ui/strings";
 
 export interface MessageInputProps {
@@ -298,6 +299,7 @@ export function MessageInput({
           critical={draft.critical}
           cancelling={cancelling}
         />
+        <QueuedTaskInput sessionId={sessionId} />
       </div>
     </form>
   );

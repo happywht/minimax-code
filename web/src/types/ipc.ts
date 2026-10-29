@@ -983,6 +983,7 @@ export interface RunStepsResult {
   run: AgentRun;
   steps: AgentRunStep[];
   cursor: number;
+  queued_input?: { text: string; truncated: boolean } | null;
   pending_ask_user?: AskUserData | null;
   pending_native_permissions?: PermissionRequestData[];
   pending_codex_permissions?: PermissionRequestData[];

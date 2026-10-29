@@ -91,6 +91,12 @@ def register_run_handlers(server: Any) -> None:
             snapshot["pending_ask_user"] = None
             snapshot["pending_native_permissions"] = []
             snapshot["pending_codex_permissions"] = []
+            snapshot["queued_input"] = None
+            if not snapshot["run"].get("started_at"):
+                saved = await dao.request_payload(run_id)
+                content = saved.get("content") if isinstance(saved, dict) else None
+                if isinstance(content, str):
+                    snapshot["queued_input"] = {"text": content[:8000], "truncated": len(content) > 8000}
             service = getattr(ctx.server, "_run_service", None)
             job = service.get_job(run_id) if service is not None else None
             snapshot["live_stream"] = (job.live_stream.snapshot()

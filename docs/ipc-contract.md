@@ -464,6 +464,12 @@ read failure or limits can leave it unavailable. See the user guide for limits.
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older
 run without journal entries has cursor 0. Existing `run.list` callers are unchanged.
+For a run that has never started, `queued_input` is null or
+`{text, truncated}`, projecting the saved string request up to 8000 characters.
+It is cleared after the run starts; non-text inputs do not get this projection.
+This permits recovery of accepted queued text after reconnect without treating
+it as an in-flight instruction. Startup recovery may mark queued runs as
+interrupted; it does not automatically execute them.
 It also returns `pending_ask_user`, null or a Native question whose owning
 in-process future is still pending for that run and session. This optional live
 projection is not part of the database transaction or a restartable wait. Its
