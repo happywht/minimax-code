@@ -97,6 +97,7 @@ describe("DataTab", () => {
     expect(screen.getByText("导出为 JSON")).toBeTruthy();
     expect(screen.getByText("从 JSON 导入")).toBeTruthy();
     expect(screen.getByText("备份快照")).toBeTruthy();
+    expect(screen.getByTestId("settings-data-checkpoint-scope")).toHaveTextContent("不包含检查点的未跟踪文件副本或 Git 对象");
     expect(screen.getByText("诊断包")).toBeTruthy();
   });
 

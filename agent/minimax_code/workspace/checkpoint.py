@@ -209,6 +209,8 @@ class CheckpointManager:
             restored_untracked, skipped_existing = self._restore_untracked(
                 cwd_str, checkpoint.id, checkpoint.untracked_files, warnings
             )
+        elif checkpoint.untracked_files:
+            warnings.append("untracked snapshot unavailable; listed files could not be restored")
 
         restored = applied_stash or bool(restored_untracked)
         return CheckpointRestoreResult(

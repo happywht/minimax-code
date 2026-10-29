@@ -5,6 +5,7 @@ import { typedIPC } from "../../../ipc";
 import { useSessionStore } from "../../../stores";
 import type { Checkpoint } from "../../../types/ipc";
 import { requestConfirmation } from "../../modals/ConfirmationDialog";
+import { toast } from "../../layout/ErrorBoundary";
 
 vi.mock("../../modals/ConfirmationDialog", () => ({ requestConfirmation: vi.fn().mockResolvedValue(true) }));
 vi.mock("../../layout/ErrorBoundary", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -16,6 +17,7 @@ const checkpoint = (source_root: string | null): Checkpoint => ({
 });
 
 beforeEach(() => {
+  vi.clearAllMocks();
   useSessionStore.setState({ currentSessionId: "s" });
   vi.mocked(requestConfirmation).mockResolvedValue(true);
 });
@@ -53,4 +55,30 @@ it("restores a bound checkpoint without an override", async () => {
   render(<CheckpointPanel />);
   fireEvent.click(await screen.findByTestId("checkpoint-panel-restore-ckpt1"));
   await waitFor(() => expect(restore).toHaveBeenCalledWith("ckpt1", undefined));
+});
+
+it("shows missing snapshot and skipped file details instead of claiming success", async () => {
+  vi.spyOn(typedIPC, "listCheckpoints").mockResolvedValue({ checkpoints: [checkpoint("/workspace")], count: 1 });
+  vi.spyOn(typedIPC, "restoreCheckpoint").mockResolvedValue({ result: {
+    checkpoint_id: "ckpt1", restored: true, applied_stash: true, restored_untracked: [],
+    skipped_existing: ["existing.txt"], warnings: ["restore missing.txt: snapshot missing"],
+  } });
+  render(<CheckpointPanel />);
+  fireEvent.click(await screen.findByTestId("checkpoint-panel-restore-ckpt1"));
+  expect(await screen.findByText("restore missing.txt: snapshot missing")).toBeInTheDocument();
+  expect(screen.getByText("未覆盖已有文件：existing.txt")).toBeInTheDocument();
+  expect(toast.error).toHaveBeenCalledWith("恢复未确认完整", expect.any(String));
+  expect(toast.success).not.toHaveBeenCalled();
+});
+
+it("reports a no-op without claiming that anything was restored", async () => {
+  vi.spyOn(typedIPC, "listCheckpoints").mockResolvedValue({ checkpoints: [checkpoint("/workspace")], count: 1 });
+  vi.spyOn(typedIPC, "restoreCheckpoint").mockResolvedValue({ result: {
+    checkpoint_id: "ckpt1", restored: false, applied_stash: false, restored_untracked: [],
+    skipped_existing: [], warnings: [],
+  } });
+  render(<CheckpointPanel />);
+  fireEvent.click(await screen.findByTestId("checkpoint-panel-restore-ckpt1"));
+  expect(await screen.findByText(/没有文件被恢复/)).toBeInTheDocument();
+  expect(toast.success).not.toHaveBeenCalled();
 });

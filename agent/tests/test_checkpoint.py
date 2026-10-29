@@ -191,6 +191,33 @@ class TestCheckpointDAO:
 
 class TestCheckpointManager:
     @pytest.mark.asyncio
+    async def test_missing_checkpoint_material_reports_incomplete_restore(
+        self, manager: CheckpointManager, git_repo: Path
+    ) -> None:
+        from minimax_code.workspace.types import Checkpoint
+
+        checkpoint = Checkpoint(id="ckpt_missing", session_id="s", label="old", message="",
+                                git_stash_ref="f" * 40, branch=None, tracked_files=["README.md"],
+                                untracked_files=["missing.txt"], has_untracked_snapshot=True,
+                                created_at="")
+        result = await manager.restore(git_repo, checkpoint)
+        assert not result.restored
+        assert any("stash apply:" in warning for warning in result.warnings)
+        assert any("snapshot missing" in warning for warning in result.warnings)
+        assert not (git_repo / "missing.txt").exists()
+
+    @pytest.mark.asyncio
+    async def test_failed_snapshot_copy_is_reported(self, manager: CheckpointManager, git_repo: Path) -> None:
+        from minimax_code.workspace.types import Checkpoint
+
+        checkpoint = Checkpoint(id="ckpt_no_copy", session_id="s", label="old", message="",
+                                git_stash_ref=None, branch=None, tracked_files=[],
+                                untracked_files=["missing.txt"], has_untracked_snapshot=False,
+                                created_at="")
+        result = await manager.restore(git_repo, checkpoint)
+        assert not result.restored
+        assert any("untracked snapshot unavailable" in warning for warning in result.warnings)
+    @pytest.mark.asyncio
     async def test_create_clean_repo(self, manager: CheckpointManager, git_repo: Path) -> None:
         ckpt = await manager.create(
             cwd=git_repo,

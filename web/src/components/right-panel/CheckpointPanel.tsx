@@ -31,6 +31,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   const [loadError, setLoadError] = useState<string | null>(null);
   const [legacyPaths, setLegacyPaths] = useState<Record<string, string>>({});
   const [legacyConfirmed, setLegacyConfirmed] = useState<Record<string, boolean>>({});
+  const [restoreDetails, setRestoreDetails] = useState<Record<string, string[]>>({});
 
   const legacyOptions = (ckpt: Checkpoint) => ckpt.source_root ? undefined : {
     cwd: (legacyPaths[ckpt.id] ?? "").trim(), legacy_source_confirmed: true,
@@ -110,8 +111,13 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     });
     if (!accepted) return;
     try {
-      await typedIPC.restoreCheckpoint(ckpt.id, legacyOptions(ckpt));
-      toast.success(strings.rightPanel.checkpoint.restored, ckpt.label);
+      const { result } = await typedIPC.restoreCheckpoint(ckpt.id, legacyOptions(ckpt));
+      const details = [...result.warnings];
+      if (result.skipped_existing.length) details.push(`未覆盖已有文件：${result.skipped_existing.join(", ")}`);
+      if (!result.restored) details.unshift("没有文件被恢复；检查点可能为空或所需内容不可用。");
+      setRestoreDetails((prev) => ({ ...prev, [ckpt.id]: details }));
+      if (details.length) toast.error("恢复未确认完整", "请查看检查点下方的详情。");
+      else toast.success(strings.rightPanel.checkpoint.restored, ckpt.label);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(strings.rightPanel.checkpoint.restoreFailed, msg);
@@ -215,6 +221,12 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                     <div className="truncate font-medium text-minimax-fg">{ckpt.label}</div>
                     {ckpt.message && (
                       <div className="truncate text-[11px] text-minimax-muted">{ckpt.message}</div>
+                    )}
+                    {restoreDetails[ckpt.id]?.length > 0 && (
+                      <div role="status" data-testid={`${testId}-restore-details-${ckpt.id}`} className="mt-1 text-[11px] text-status-warning">
+                        <p>恢复未确认完整：</p>
+                        {restoreDetails[ckpt.id].map((detail, index) => <p key={index}>{detail}</p>)}
+                      </div>
                     )}
                     {!ckpt.source_root && (
                       <div className="mt-1 text-[11px] text-status-warning">

@@ -194,6 +194,10 @@ function DataTab(): JSX.Element {
         hint={strings.settings.data.hint}
       />
 
+      <p data-testid="settings-data-checkpoint-scope" className="text-xs text-status-warning">
+        导出和备份只保存数据库记录，不包含检查点的未跟踪文件副本或 Git 对象；恢复数据库不能保证检查点可用。请另行保全这些原件。
+      </p>
+
       {feedback && (
         <p
           data-testid={

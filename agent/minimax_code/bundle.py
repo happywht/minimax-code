@@ -80,6 +80,7 @@ EXCLUSIONS = [
     "containers and images",
     "service locks, runtime markers and installation ownership files",
     "unregistered vault files and pending files",
+    "checkpoint untracked-file snapshots and Git stash objects",
 ]
 NOTICE = (
     "DATA-ONLY clone. Original host paths, credentials stored in SQLite, scheduling/run "
