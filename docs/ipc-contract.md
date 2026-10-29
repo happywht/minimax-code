@@ -214,6 +214,8 @@ on the next `readline() == ""`.
 | `run.cancel` | req/res | Request cancellation of one run; `requested` is acknowledgement, not completed teardown. |
 | `run.resume` | req/res | Create a linked run from saved input after review, using the original model and workspace; never replay tool steps. |
 | `run.steer` | req/res | Record idempotent Native-only in-flight input against one run. |
+| `run.research_list` | req/res | List current project's recorded page sources with session and service binding. |
+| `run.research_get` | req/res | Read a recorded page source with expected service identity. |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. **`project_id?`** |
 | `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. **`project_id?`** |
 | `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. **`project_id?`** |
@@ -1710,6 +1712,8 @@ attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）�
 DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,excerpt?,excerpt_truncated?,title_truncated?}]`，最多 30 条；标题最多 200 字，URL 最多 2048 字且须为不含凭据的 HTTP(S)，访问时间为 ISO 日期或带时区时间，摘录最多 1000 字。生成时按顺序在文末写入编号标题、网址、可选访问时间、摘录和截断提示；正文中的引用编号由调用方提供，不自动核对引用关系。来源只保存提供的内容，不联网抓取、不自动核验或证明其真实性。
 
 普通 Native 聊天的 `read_public_page` 成功后，将实际获取的页面信息写入当前 run 的持久 observation，返回 `page_source_id`；无项目绑定时只返回读取结果、不登记来源。后续同项目任务可调用 `list_research_sources({query?,limit?})` 查询最近最多 20 条，并将 ID 交给 `generate_report_docx`、`generate_report_pdf` 或 `generate_report_pair`。记录保留最终 URL、访问时间、最多 500 字标题、最多 8000 字摘录和相应截断标志；报告中标题最多 200 字、摘录最多 1000 字并标注截断。项目、当前会话及 service_id 均须匹配，未知、重复或跨项目来源 ID 失败；手工 `sources` 在前，ID 来源按请求顺序在后，合计最多 30 条。来源存入已有 run 日志，不新增数据库表；随 run/会话删除而删除，现有 SQLite 数据包会携带这些记录。service_id 是现有服务身份，不是硬件身份；数据包克隆保留该身份和来源，不能证明新主机重新访问了网页。搜索摘要不产生来源 ID，网页与报告事实、正文编号均不自动核验。
+
+`run.research_list({session_id,project_id,query?,offset?})` 返回 `{session_id,project_id,service_id,sources}`，按时间倒序每页最多 20 条，offset 不超过 10000；列表摘录最多 1000 字。`run.research_get({session_id,project_id,expected_service_id,page_source_id})` 返回相同绑定及 `source`，包含最多 8000 字的保存摘录及原始截断标志。两者均校验会话项目、服务及宿主限制，并在读取后复查绑定；详情中旧服务身份或已删除来源被拒绝。
 
 `attachment.generate_docx` 接受安全 `.docx` 显示名和单行标题（最多 200 字），内容使用两种互斥格式之一：`paragraphs` 为 1–100 个段落；或 `sections` 为 1–50 个 `{heading, blocks}`，每个 block 为 `{kind:"paragraph",text}` 或 `{kind:"table",rows:[[文本,...],...]}`，顺序保留。合计最多 100 块、2000 个单元格，每表最多 100 行、20 列且各行等宽；每段/格最多 4096 字，总 UTF-8 最多 256 KiB。章节标题也限单行 200 字。使用本地 python-docx 创建，回读并比较全部章节、段落、表格单元格及顺序，再经现有 DOCX 有界解析与不可变附件 vault 登记。不会读取或修改项目文件、调用模型或抓取资料；用户提供的来源文本需自行核实。不保证版式、分页、事实或业务质量。响应丢失时先刷新附件列表；重试会创建新版本。文件与现有附件共享备份协议及未验证状态，不作为已完成报告的质量证明。 普通聊天 Agent 可通过 `generate_report_docx` 生成当前会话项目的文档；提交时复核会话项目绑定，遵循规划模式与写入权限规则。该工具默认要求确认，拒绝规则优先，无法确认时拒绝。
 

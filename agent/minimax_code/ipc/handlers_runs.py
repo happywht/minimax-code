@@ -14,6 +14,8 @@ from .protocol import (
     INVALID_PARAMS,
     RunEventsParams,
     RunIdParams,
+    RunResearchGetParams,
+    RunResearchListParams,
     RunResumeParams,
     RunStartParams,
     RunSteerParams,
@@ -353,6 +355,34 @@ def register_run_handlers(server: Any) -> None:
             logger.exception("run.steer failed")
             await ctx.reply_error(INTERNAL_ERROR, "Could not record in-flight input")
 
+    def research_handler(model, *, detail=False):
+        async def handle(params, ctx):
+            from ..agent.tools.research_sources import ResearchSources
+            from .host_session_gate import require_host_session
+            try:
+                request = model.model_validate(params)
+                await require_host_session(request.session_id)
+                dao = await _get_dao()
+                sources = ResearchSources(dao._db, request.session_id, request.project_id)
+                identity = await sources._binding()
+                if detail:
+                    if request.expected_service_id != identity:
+                        raise ValueError("Research service identity changed")
+                    result = {"source": await sources.get_page(request.page_source_id)}
+                else:
+                    result = {"sources": await sources.list_pages(request.query, 20, request.offset)}
+                if await sources._binding() != identity:
+                    raise ValueError("Research service or project binding changed")
+                await require_host_session(request.session_id)
+                await ctx.reply({**result, "session_id": request.session_id,
+                                 "project_id": request.project_id, "service_id": identity})
+            except (ValidationError, ValueError, HandlerError) as exc:
+                await ctx.reply_error(INVALID_PARAMS, str(exc))
+            except Exception:
+                logger.exception("research source query failed")
+                await ctx.reply_error(INTERNAL_ERROR, "Research source query failed")
+        return handle
+
     server.register("run.list", handle_run_list)
     server.register("run.steps", handle_run_steps)
     server.register("run.events", handle_run_events)
@@ -361,6 +391,8 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.cancel", handle_run_cancel)
     server.register("run.resume", handle_run_resume)
     server.register("run.steer", handle_run_steer)
+    server.register("run.research_list", research_handler(RunResearchListParams))
+    server.register("run.research_get", research_handler(RunResearchGetParams, detail=True))
 
 
 async def _start_codex_run(request: RunStartParams, ctx: Context, **options: Any) -> None:

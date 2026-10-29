@@ -705,6 +705,9 @@ function mockHandle(
       const reply = mockHandle("agent.send_message", p, client, id) as import("../types/ipc").SendMessageResult;
       return { run: structuredClone(mockRuns.get(reply.run_id!)!.run), created };
     }
+    case "run.research_list":
+    case "run.research_get":
+      throw new Error("演示模式没有已读取的真实网页来源");
     case "run.steer":
       throw new Error("演示模式不支持运行中补充");
     case "run.get": {

@@ -248,6 +248,8 @@ export interface TypedIPC {
   getBudget(runId?: string, day?: string): Promise<BudgetStateResult>;
   reconcileBudget(params: BudgetReconcileParams): Promise<{ok: boolean}>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
+  listResearchSources(params: { session_id: string; project_id: string; query?: string; offset?: number }): Promise<import("../types/ipc").ResearchSourceScope & { sources: import("../types/ipc").ResearchSource[] }>;
+  getResearchSource(params: { session_id: string; project_id: string; expected_service_id: string; page_source_id: string }): Promise<import("../types/ipc").ResearchSourceScope & { source: import("../types/ipc").ResearchSource }>;
   steerRun(params: { run_id: string; session_id: string; idempotency_key: string; text: string }): Promise<{ step: import("../types/ipc").AgentRunStep }>;
   getRunEvents(runId: string, opts?: { after_seq?: number; limit?: number }): Promise<RunEventsResult>;
 
@@ -759,6 +761,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
       }),
     steerRun: (params) => client.request("run.steer", params),
+    listResearchSources: (params) => client.request("run.research_list", params),
+    getResearchSource: (params) => client.request("run.research_get", params),
     getRunSteps: (runId) =>
       client.request<RunStepsResult>("run.steps", { run_id: runId }),
     getRunEvents: (runId, opts) =>

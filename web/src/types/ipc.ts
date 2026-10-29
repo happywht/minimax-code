@@ -990,6 +990,12 @@ export interface RunStepsResult {
   live_stream?: { complete: boolean; messages: { message_id: string; text: string; seq: number; done: boolean }[] } | null;
 }
 
+export interface ResearchSource {
+  page_source_id: string; run_id: string; title: string; url: string; accessed_at: string;
+  excerpt: string | null; title_truncated: boolean; excerpt_truncated: boolean; truncated?: boolean;
+}
+export interface ResearchSourceScope { session_id: string; project_id: string; service_id: string }
+
 export interface RunEvent {
   id: string;
   run_id: string;

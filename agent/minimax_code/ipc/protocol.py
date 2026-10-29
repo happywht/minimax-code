@@ -305,6 +305,22 @@ class RunSteerParams(BaseModel):
     text: str = Field(min_length=1, max_length=8000)
 
 
+class RunResearchListParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    query: str = Field(default="", max_length=200)
+    offset: int = Field(default=0, ge=0, le=10000)
+
+
+class RunResearchGetParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    expected_service_id: str = Field(min_length=1)
+    page_source_id: str = Field(min_length=1, max_length=128)
+
+
 class ContinueRunParams(_Base):
     """Pin retries to the same truncated block; omission keeps legacy latest selection."""
 

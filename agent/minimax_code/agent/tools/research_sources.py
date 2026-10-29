@@ -15,7 +15,7 @@ class ResearchSources:
 
     async def _binding(self):
         from ...storage.dao.text_artifacts import ArtifactDAO
-        if not self.db or not self.session_id or not self.project_id or not self.run_id:
+        if not self.db or not self.session_id or not self.project_id:
             raise ValueError("Project-bound research storage is unavailable")
         identity = await ArtifactDAO(self.db).service_id()
         row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
@@ -54,10 +54,12 @@ class ResearchSources:
             await _append_event(conn, self.run_id, "step_created", {"step": step})
         return ident
 
-    async def list_pages(self, query="", limit=20):
+    async def list_pages(self, query="", limit=20, offset=0):
         import json
         identity = await self._binding()
-        if not isinstance(query, str) or len(query) > 200 or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
+        if (not isinstance(query, str) or len(query) > 200 or not isinstance(limit, int)
+                or isinstance(limit, bool) or not 1 <= limit <= 20 or not isinstance(offset, int)
+                or isinstance(offset, bool) or not 0 <= offset <= 10000):
             raise ValueError("Query must be at most 200 characters and limit 1–20")
         term = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         rows = await self.db.fetchall("""SELECT s.id,s.run_id,s.payload FROM agent_run_steps s
@@ -69,10 +71,23 @@ class ResearchSources:
             AND (json_extract(s.payload,'$.page.title') LIKE ? ESCAPE '\\'
               OR json_extract(s.payload,'$.page.url') LIKE ? ESCAPE '\\'
               OR json_extract(s.payload,'$.page.excerpt') LIKE ? ESCAPE '\\')
-            ORDER BY s.started_at DESC,s.id DESC LIMIT ?""",
-            (self.project_id, self.project_id, identity, term, term, term, limit))
+            ORDER BY s.started_at DESC,s.id DESC LIMIT ? OFFSET ?""",
+            (self.project_id, self.project_id, identity, term, term, term, limit, offset))
         return [{"page_source_id": row["id"], "run_id": row["run_id"],
                  **self._report_page(json.loads(row["payload"])["page"])} for row in rows]
+
+    async def get_page(self, source_id):
+        from ...storage.dao._base import loads_json
+        identity = await self._binding()
+        row = await self.db.fetchone("""SELECT s.id,s.run_id,s.payload FROM agent_run_steps s
+            JOIN agent_runs r ON r.id=s.run_id WHERE s.id=? AND s.kind='observation'
+            AND s.status='completed' AND json_valid(s.payload) AND json_valid(r.metadata)
+            AND json_extract(r.metadata,'$.project_id')=?""", (source_id, self.project_id))
+        payload = loads_json(row["payload"]) if row else None
+        if (not isinstance(payload, dict) or payload.get("source") != "research_page_v1"
+                or payload.get("project_id") != self.project_id or payload.get("service_id") != identity):
+            raise ValueError("Unknown page source ID for this project and service")
+        return {"page_source_id": row["id"], "run_id": row["run_id"], **payload["page"]}
 
     @staticmethod
     def _report_page(page):
