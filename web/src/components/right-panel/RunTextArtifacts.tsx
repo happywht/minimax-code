@@ -5,7 +5,9 @@ import { useSessionStore } from "../../stores/sessionStore";
 import type { TextArtifact } from "../../types/ipc";
 
 /** Explicitly registered run links only; registration does not prove authorship. */
-export function RunTextArtifacts({ runId, sessionId, projectId, serviceId }: { runId: string; sessionId: string; projectId: string; serviceId: string }): JSX.Element {
+export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, review = false }: { runId: string; sessionId: string; projectId: string; serviceId: string; review?: boolean }): JSX.Element {
+  const activeSession = useSessionStore((state) => state.currentSessionId);
+  const host = ipc.agentBaseUrl;
   const [items, setItems] = useState<TextArtifact[] | null>(null);
   const [selected, setSelected] = useState<{ row: TextArtifact; preview: string } | null>(null);
   const [message, setMessage] = useState("");
@@ -14,15 +16,25 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId }: { r
   useEffect(() => {
     ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setMessage(""); setBusy(false);
     return () => { ++epoch.current; download.current?.abort(); };
-  }, [runId, sessionId, projectId, serviceId]);
+  }, [runId, sessionId, projectId, serviceId, review, activeSession, host]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setBusy(false); setMessage("连接变化，请重新读取成果。"); }), []);
   const current = (ticket: number, host: string) => ticket === epoch.current && host === ipc.agentBaseUrl &&
-    useSessionStore.getState().currentSessionId === sessionId && useSessionStore.getState().currentProjectId === projectId &&
-    useSessionStore.getState().sessions.find((s) => s.id === sessionId)?.project_id === projectId;
+    useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === projectId &&
+    (review || (activeSession === sessionId && useSessionStore.getState().sessions.find((s) => s.id === sessionId)?.project_id === projectId));
+  // The dashboard supplies a previously verified run; recheck its binding around each read.
+  const verifyScope = async (ticket: number, origin: string) => {
+    if (!review) return;
+    const scope = await typedIPC.getProjectRunSummary({ project_id: projectId, expected_service_id: serviceId, run_id: runId });
+    if (!current(ticket, origin)) throw new Error("查看范围已变化");
+    if (scope.project_id !== projectId || scope.service_id !== serviceId || scope.detail?.id !== runId || scope.detail.session_id !== sessionId)
+      throw new Error("运行或会话归属已改变，请刷新任务。");
+  };
   const load = async () => {
     const ticket = ++epoch.current, host = ipc.agentBaseUrl; setBusy(true); setMessage(""); setSelected(null);
     try {
+      await verifyScope(ticket, host);
       const result = await typedIPC.listArtifacts(projectId, runId);
+      await verifyScope(ticket, host);
       if (!current(ticket, host)) return;
       if (result.service_id !== serviceId) throw new Error("服务身份已变化");
       setItems(result.artifacts.filter((row) => row.project_id === projectId && row.service_id === serviceId && row.run_id === runId));
@@ -33,7 +45,9 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId }: { r
   const select = async (row: TextArtifact) => {
     const ticket = ++epoch.current, host = ipc.agentBaseUrl; setBusy(true); setMessage(""); setSelected(null);
     try {
+      await verifyScope(ticket, host);
       const result = await typedIPC.getArtifact(projectId, row.id);
+      await verifyScope(ticket, host);
       if (!current(ticket, host)) return;
       const file = result.artifact;
       if (file.id !== row.id || file.project_id !== projectId || file.service_id !== serviceId || file.run_id !== runId || file.sha256 !== row.sha256)
@@ -47,7 +61,9 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId }: { r
     const ticket = epoch.current, host = ipc.agentBaseUrl, row = selected.row;
     const controller = new AbortController(); download.current?.abort(); download.current = controller; setBusy(true); setMessage("");
     try {
+      await verifyScope(ticket, host);
       const blob = await fetchArtifactContent(row, host, controller.signal);
+      await verifyScope(ticket, host);
       if (!current(ticket, host)) return;
       const url = URL.createObjectURL(blob), anchor = document.createElement("a");
       anchor.href = url; anchor.download = row.source_path.split(/[\\/]/).pop() || "artifact.txt"; anchor.click();
