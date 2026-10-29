@@ -64,7 +64,7 @@ export interface ChatState {
   addLocalMessage: (content: string) => void;
   /** Load persisted messages for a session from the backend. */
   loadMessages: (sessionId: string) => Promise<void>;
-  reconcileRuns: (runs: AgentRun[], stillCurrent: () => boolean) => Promise<void>;
+  reconcileRuns: (runs: AgentRun[], stillCurrent: () => boolean, includeActive?: boolean) => Promise<void>;
   reset: () => void;
   cancel: () => Promise<void>;
   retryMessage: (messageId: string) => Promise<void>;
@@ -353,7 +353,7 @@ export const useChat = create<ChatState>((set, get) => ({
           ? `✗ ${data.error}`
           : `✓ ${typeof data.result === "string" ? data.result : JSON.stringify(data.result)}`;
         const toolName = data.name ?? activeToolNames.get(data.tool_call_id);
-        set((s) => ({
+        if (!recoveredMessageIds.has(id)) set((s) => ({
           messages: trimArray(ensureMessage(s.messages, {
             id,
             role: "tool",
@@ -895,11 +895,50 @@ export const useChat = create<ChatState>((set, get) => ({
     await get().submitAskUser(current.questions.map(() => "(skipped by user)"));
   },
 
-  reconcileRuns: async (runs, stillCurrent) => {
+  reconcileRuns: async (runs, stillCurrent, includeActive = false) => {
     const latest = runs[0];
     const terminal = new Set(["completed", "failed", "cancelled", "interrupted", "budget_paused"]);
-    if (!latest || runs.some((run) => !terminal.has(run.status) || run.session_id !== latest.session_id)) return;
+    if (!latest || runs.some((run) => run.session_id !== latest.session_id)) return;
     const sid = latest.session_id;
+    if (runs.some((run) => !terminal.has(run.status))) {
+      if (!includeActive) return;
+      const seq = ++_reconcileSeq, loadSeq = _loadSeq;
+      const activeIds = new Set(runs.filter((run) => !terminal.has(run.status)).map((run) => run.id));
+      try {
+        const result = await typedIPC.listMessages(sid, { limit: 500 });
+        if (seq !== _reconcileSeq || loadSeq !== _loadSeq || !stillCurrent()
+            || useSessionStore.getState().currentSessionId !== sid) return;
+        const restored = (result.messages ?? []).filter((message) => message.role === "tool"
+          && !!message.tool_call_id && !!message.metadata?.run_id && activeIds.has(message.metadata.run_id));
+        const completedCalls: string[] = [];
+        set((state) => {
+          const existing = new Set(state.messages.filter((message) => message.role === "tool"
+            && !message.id.startsWith("tc-")).map((message) => message.tool_call_id));
+          const additions: Message[] = [];
+          for (const message of restored) {
+            const id = message.tool_call_id!;
+            if (existing.has(id) || state.messages.some((row) => row.id === message.id)) continue;
+            existing.add(id);
+            additions.push({ ...message, id: `tr-${id}`, text: message.text ?? message.content ?? "",
+              streaming: false, parent_id: `tc-${id}` });
+          }
+          // Never evict a local row to make room for recovered evidence.
+          const available = Math.max(0, MAX_MESSAGES - state.messages.length);
+          if (!available || !additions.length) return state;
+          const visible = additions.slice(-available);
+          visible.forEach((message) => recoveredMessageIds.add(message.id));
+          visible.forEach((message) => completedCalls.push(message.tool_call_id!));
+          const index = state.messages.findIndex((message) => message.role === "assistant" && message.streaming);
+          const insert = index < 0 ? state.messages.length : index;
+          return { messages: [...state.messages.slice(0, insert), ...visible, ...state.messages.slice(insert)] };
+        });
+        completedCalls.forEach((id) => { activeToolCalls.delete(id); activeToolNames.delete(id); });
+        if (completedCalls.length && get().status === "streaming") resetStallWatchdogForCurrentActivity();
+      } catch {
+        // Preserve live content; the next reconnect or explicit refresh retries.
+      }
+      return;
+    }
     const seq = ++_reconcileSeq;
     const loadSeq = _loadSeq;
     const revision = _viewRevision;

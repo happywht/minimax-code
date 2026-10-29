@@ -98,8 +98,9 @@ async function drain(): Promise<void> {
       const stamp = entries.map((entry) => `${entry.run.id}:${entry.cursor}`).join("|");
       if (refresh || stamp !== conversationStamp) {
         conversationStamp = stamp;
+        const active = entries.some((entry) => !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(entry.run.status));
         void useChat.getState().reconcileRuns(entries.map((entry) => entry.run),
-          () => isCurrent() && conversationStamp === stamp);
+          () => isCurrent() && (active || conversationStamp === stamp), refresh);
       }
     } catch (err) {
       if (isCurrent()) useRunTimelineStore.setState({ error: err instanceof Error ? err.message : String(err) });

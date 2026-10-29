@@ -115,6 +115,43 @@ describe("conversation reconciliation from durable runs", () => {
     expect(api.listMessages).not.toHaveBeenCalled();
   });
 
+  it("restores missing persisted tool results during an active run without replacing live state", async () => {
+    const active = { ...run, status: "running" as const };
+    const pending = deferred<{ messages: Message[] }>();
+    api.listMessages.mockReturnValueOnce(pending.promise);
+    store.setState({ status: "streaming", messages: [
+      { id: "tc-t1", role: "tool", text: "call", tool_call_id: "t1", streaming: false, created_at: 1 },
+      { id: "live", role: "assistant", text: "partial", streaming: true, created_at: 2 },
+    ] });
+    const syncing = store.getState().reconcileRuns([active], () => true, true);
+    await waitFor(() => expect(api.listMessages).toHaveBeenCalled());
+    store.getState().addLocalMessage("keep my input");
+    pending.resolve({ messages: [
+      { id: "saved-tool", role: "tool", text: "result", tool_call_id: "t1", tool_name: "read_file", streaming: false, created_at: 1, metadata: { run_id: "r" } },
+      { id: "foreign", role: "tool", text: "other run", tool_call_id: "t2", streaming: false, created_at: 1, metadata: { run_id: "other" } },
+    ] });
+    await syncing;
+    expect(store.getState().messages.map((message) => message.id)).toEqual(["tc-t1", "tr-t1", "live", expect.stringMatching(/^user-/)]);
+    expect(store.getState().messages[1]).toMatchObject({ text: "result", tool_name: "read_file" });
+    expect(store.getState().status).toBe("streaming");
+    emit(StreamEvent.ToolResult, { tool_call_id: "t1", result: "late duplicate" });
+    expect(store.getState().messages.filter((message) => message.id === "tr-t1")).toHaveLength(1);
+    expect(store.getState().messages.find((message) => message.id === "tr-t1")?.text).toBe("result");
+  });
+
+  it("discards active results after switching sessions", async () => {
+    const pending = deferred<{ messages: Message[] }>();
+    api.listMessages.mockReturnValueOnce(pending.promise);
+    const syncing = store.getState().reconcileRuns([{ ...run, status: "running" }], () => true, true);
+    await waitFor(() => expect(api.listMessages).toHaveBeenCalled());
+    store.getState().reset();
+    useSessionStore.setState({ currentSessionId: "other" });
+    store.getState().addLocalMessage("other conversation");
+    pending.resolve({ messages: [{ id: "saved", role: "tool", text: "result", tool_call_id: "t", streaming: false, created_at: 1, metadata: { run_id: "r" } }] });
+    await syncing;
+    expect(store.getState().messages.map((message) => message.text)).toEqual(["other conversation"]);
+  });
+
   it("discards history after switching sessions", async () => {
     const pending = deferred<{ messages: Message[] }>();
     api.listMessages.mockReturnValueOnce(pending.promise);

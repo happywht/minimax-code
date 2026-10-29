@@ -59,6 +59,16 @@ describe("durable run recovery", () => {
     await waitFor(() => expect(api.listMessages).toHaveBeenCalledWith("s1", { limit: 500 }));
   });
 
+  it("backfills an active run's durable tool result after reconnect", async () => {
+    await store.getState().loadForSession("s1");
+    await waitFor(() => expect(api.listMessages).toHaveBeenCalledTimes(1));
+    api.listMessages.mockResolvedValue({ messages: [{ id: "saved-tool", role: "tool", text: "persisted output",
+      tool_call_id: "call-1", tool_name: "read_file", streaming: false, created_at: 1, metadata: { run_id: "r1" } }] });
+    api.sidecar?.({ status: "started" });
+    await waitFor(() => expect(useChat.getState().messages.find((message) => message.id === "tr-call-1")?.text).toBe("persisted output"));
+    expect(store.getState().runs.r1.status).toBe("running");
+  });
+
   it("pages ordered events and applies the final state rather than a stale notification", async () => {
     await store.getState().loadForSession("s1");
     const step = { id: "st", run_id: "r1", session_id: "s1", kind: "tool_call",
