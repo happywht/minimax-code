@@ -366,7 +366,10 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
     for relative in changes:
         target = _path(child.parent, relative)
         current = _digest(target)
-        if current == final.get(relative):
+        resolution = child.record.get("resolutions", {}).get(relative, {})
+        if (current == final.get(relative) or
+                (resolution.get("parent_sha256") == current and current is not None
+                 and resolution.get("child_sha256") == final.get(relative))):
             noop.append(relative)
         elif current != baseline.get(relative):
             conflicts.append({"path": relative, "baseline_sha256": baseline.get(relative),
@@ -426,3 +429,60 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
             pass  # The last durable record remains conservative.
         raise
     return report
+
+
+def resolve_child_text(child: ChildWorkspace, relative: str, content: str,
+                       parent_sha: str, child_sha: str) -> dict[str, Any]:
+    """Record a user-authored merge with a durable backup and uncertain-write journal."""
+    require_write_access()
+    if active_child() or child.record["state"] not in {"completed", "failed", "cancelled"}:
+        raise ValueError("Child workspace cannot be resolved in its current state")
+    if len(content.encode("utf-8")) > 16384:
+        raise ValueError("Merged text exceeds the 16 KiB limit")
+    parent, source = _path(child.parent, relative), _path(child.root, relative)
+    if (not _included(relative) or not parent_sha or not child_sha
+            or child.record.get("final", {}).get(relative) != child_sha
+            or _digest(parent) != parent_sha or _digest(source) != child_sha):
+        raise ValueError("Files changed since review; review them again")
+    # Both versions must be small, regular UTF-8 files; never create or delete here.
+    for path in (parent, source):
+        if path.stat().st_size > 16384:
+            raise ValueError("File exceeds the manual merge limit")
+        path.read_bytes().decode("utf-8")
+    directory = _path(child.base, "collection-attempts")
+    directory.mkdir(parents=True, exist_ok=True)
+    attempt_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex
+    journal = _path(child.base, "collection-attempts/" + attempt_id + ".json")
+    backup = _path(child.base, "resolution-backups/" + attempt_id + "/" + relative)
+    report = {"run_id": child.run_id, "merged": [], "noop": [], "conflicts": [],
+              "complete": False, "pruned": False}
+    attempt = {"version": 1, "id": attempt_id, "run_id": child.run_id,
+               "status": "in_progress", "pending_path": relative, "report": report,
+               "operation": "manual_resolution", "backup": str(backup)}
+
+    def save_attempt() -> None:
+        atomic_write_text(journal, json.dumps(attempt, ensure_ascii=False, indent=2),
+                          baseline_path=journal, baseline_sha256=_digest(journal, max_bytes=1024 * 1024))
+
+    save_attempt()
+    try:
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        atomic_copy_file(parent, backup, baseline_sha256=None, expected_source_sha256=parent_sha)
+        if _digest(source) != child_sha:
+            raise ValueError("Child file changed since review")
+        atomic_write_text(parent, content, baseline_path=parent, baseline_sha256=parent_sha)
+        merged_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        child.record.setdefault("resolutions", {})[relative] = {
+            "parent_sha256": merged_sha, "child_sha256": child_sha, "attempt_id": attempt_id}
+        child.save()
+        report["merged"].append({"path": relative, "sha256": merged_sha})
+        attempt.update(status="complete", pending_path=None)
+        save_attempt()
+    except BaseException:
+        attempt["status"] = "interrupted"
+        try:
+            save_attempt()
+        except Exception:
+            pass
+        raise
+    return {"path": relative, "sha256": merged_sha, "backup": str(backup)}

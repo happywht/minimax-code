@@ -337,17 +337,18 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
   const [review, setReview] = useState<ReviewResult | null>(null);
   const [receipt, setReceipt] = useState<{ report: ChildWorkspaceReceipt; root: string; service: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [merge, setMerge] = useState<{ path: string; text: string } | null>(null);
   const [message, setMessage] = useState("");
   const [validation, setValidation] = useState<{ id: string; status: string; result?: Record<string, unknown> | null } | null>(null);
   const validationKey = useRef<string | null>(null);
   const generation = useRef(0);
   const projectId = useSessionStore((s) => s.sessions.find((s) => s.id === sessionId)?.project_id ?? null);
   useEffect(() => {
-    setReview(null); setReceipt(null); setMessage(""); setBusy(false); setValidation(null); validationKey.current = null;
+    setReview(null); setReceipt(null); setMerge(null); setMessage(""); setBusy(false); setValidation(null); validationKey.current = null;
     const epoch = generation;
     return () => { epoch.current++; };
   }, [runId, sessionId, projectId, teamRunId]);
-  useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setValidation(null); validationKey.current = null; setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setMerge(null); setValidation(null); validationKey.current = null; setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
   useEffect(() => {
     let cancelled = false;
     const host = ipc.agentBaseUrl;
@@ -391,7 +392,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         setMessage(result.report.complete ? "收集已完成，尚未验证。子工作区及备份仍保留。" : "收集未完成；请核对冲突与已写入文件。");
       } else {
         if (result.receipt && !validReceipt(result.receipt, runId)) throw new Error("已保存的收集回执无效");
-        setReview(result);
+        setMerge(null); setReview(result);
         setReceipt(result.receipt ? { report: result.receipt, root: result.root, service: result.service_id, kind: result.kind } : null);
       }
     } catch (error) {
@@ -399,6 +400,29 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         setReview(null); setReceipt(null);
         setMessage(`${error instanceof Error ? error.message : String(error)}${collect ? "。结果未确认，可能部分收集；请重新查看并逐项核对父目录，不能推断哪些文件已写入。" : ""}`);
       }
+    } finally { if (current()) setBusy(false); }
+  };
+  const resolveText = async () => {
+    if (!review || !merge || busy || !allowCollect) return;
+    const snapshot = review, draft = merge, ticket = ++generation.current, host = ipc.agentBaseUrl;
+    const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
+      useSessionStore.getState().currentSessionId === sessionId &&
+      (useSessionStore.getState().currentProjectId === projectId || (!projectId && useSessionStore.getState().currentProjectId === "inbox"));
+    setBusy(true); setMessage("");
+    try {
+      const accepted = await requestConfirmation({ title: "写入手动合并结果", confirmLabel: "确认写入",
+        description: `将用编辑框的完整内容替换父目录文件 ${snapshot.root} / ${draft.path}。请先核对两侧差异和编辑内容；系统会保留写入前备份与子工作区，并检查审阅版本。` });
+      if (!accepted || !current()) return;
+      const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string; resolution: { path: string; backup: string } }>("run.child_workspace", {
+        run_id: runId, session_id: sessionId, ...(teamRunId ? { team_run_id: teamRunId } : {}), action: "resolve_text",
+        revision: snapshot.revision, expected_service_id: snapshot.service_id, path: draft.path, content: draft.text,
+      });
+      if (!current()) return;
+      if (result.session_id !== sessionId || result.project_id !== projectId || result.service_id !== snapshot.service_id || result.resolution?.path !== draft.path) throw new Error("写入结果绑定无法确认");
+      setMerge(null); setReview(null); setReceipt(null);
+      setMessage(`已写入手动合并内容，备份：${result.resolution.backup}。请重新查看并收集；尚未验证或验收。`);
+    } catch (error) {
+      if (current()) { setMerge(null); setReview(null); setReceipt(null); setMessage(`${error instanceof Error ? error.message : String(error)}。写入结果可能未确认，请重新查看历史并核对父文件与备份。`); }
     } finally { if (current()) setBusy(false); }
   };
   const addFollowup = async () => {
@@ -497,27 +521,35 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       <p>对比当前父目录与子任务结果；同期用户修改不归因于 Agent。普通独立目录不是操作系统沙盒。</p>
       {!!review.collection_attempts?.length && <details open><summary>收集历史（最近 50 次）</summary>
         {review.collection_attempts.map((attempt) => <div key={attempt.id} className="my-1 rounded border border-line p-2">
-          <p>{attempt.id} · {attempt.status === "complete" ? "完成" : attempt.status === "partial" ? "部分收集" : "中断或进行中，结果未确认"}</p>
+          <p>{attempt.operation === "manual_resolution" ? "手动合并 · " : ""}{attempt.id} · {attempt.status === "complete" ? "完成" : attempt.status === "partial" ? "部分收集" : "中断或进行中，结果未确认"}</p>
           {validReceipt(attempt.report, runId) ? <>
             <p>已确认复制 {attempt.report.merged.length} 项；当时已相同 {attempt.report.noop.length} 项；冲突 {attempt.report.conflicts.length} 项。</p>
             {!!attempt.report.merged.length && <details><summary>已确认复制</summary><ul>{attempt.report.merged.map((item) => <li key={item.path} className="break-all">{item.path}</li>)}</ul></details>}
             {!!attempt.report.noop.length && <details><summary>当时已相同</summary><ul>{attempt.report.noop.map((path) => <li key={path} className="break-all">{path}</li>)}</ul></details>}
             {!!attempt.report.conflicts.length && <details><summary>当时的冲突</summary><ul>{attempt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
           </> : <p>记录格式不可用，请手动核对。</p>}
+          {attempt.backup && <p className="break-all">备份路径：{attempt.backup}</p>}
           {attempt.pending_path && <p className="break-all">复制结果待核对：{attempt.pending_path}。不能推断是否已写入。</p>}
         </div>)}
         <p>历史记录反映当时的结果，不能证明当前文件未变化，也不代表验证或验收。</p>
       </details>}
       {review.omitted.length > 0 && <p>未纳入：{review.omitted.join("、")}</p>}
       {review.files.length === 0 && <p>没有记录到文件变化。</p>}
-      {review.files.map((file) => <details key={file.path}><summary>{file.path}{file.conflict ? ` · 冲突：${file.conflict}` : ""}</summary>
+      {review.files.map((file) => <details key={file.path}><summary>{file.path}{file.conflict ? ` · 冲突：${file.conflict}` : file.resolved ? " · 已手动合并" : ""}</summary>
         {file.diff_unavailable ? <p>差异过大或非 UTF-8，请手动查看。</p> : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.diff || "（内容相同或无文本差异）"}</pre>}
         {file.diff_truncated && <p>差异已截断，请手动查看。</p>}
+        {allowCollect && file.conflict === "parent_changed" && file.merge_parent_text !== undefined && <button type="button" disabled={busy} onClick={() => setMerge({ path: file.path, text: file.merge_parent_text! })}>编辑手动合并结果</button>}
+        {merge?.path === file.path && <div className="space-y-1">
+          <p>初始内容为当前父文件；请参考上方差异自行合并子任务成果。提交将写入完整文件。</p>
+          <textarea aria-label={`合并内容 ${file.path}`} className="min-h-40 w-full rounded border border-line bg-surface-0 p-2 font-mono" value={merge.text} onChange={(event) => setMerge({ ...merge, text: event.target.value })} />
+          <button type="button" disabled={busy} onClick={() => void resolveText()}>审阅并写入合并内容</button>{" "}
+          <button type="button" disabled={busy} onClick={() => setMerge(null)}>取消编辑</button>
+        </div>}
       </details>)}
       <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>
       {review.files.some((f) => !!f.conflict) && review.files.some((f) => !f.conflict && f.parent_sha256 !== f.child_sha256) && <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected"} onClick={() => void invoke(true, true)}>仅收集无冲突文件，跳过冲突</button>}
       {!allowCollect && <p>{review.team_collection?.eligible ? "已保存成员完成及受管任务收束记录；请自行核对相关进程并明确确认。" : `不能收集：${review.team_collection?.reason || "缺少停止或成员完成证据"}。`} 工作副本不是操作系统沙箱。</p>}
-      <p>删除和冲突需手动处理；执行中出现错误时可能部分收集，请核对文件。</p>
+      <p>可对小型 UTF-8 文件手动合并；删除及其他冲突需在外部处理。执行中出现错误时可能部分写入，请核对文件。</p>
     </div>}
   </div>;
 }

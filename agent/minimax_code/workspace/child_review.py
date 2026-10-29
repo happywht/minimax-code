@@ -26,11 +26,15 @@ def preview(child: ChildWorkspace) -> dict:
         parent_path, child_path = _path(child.parent, path), _path(child.root, path)
         current = _digest(parent_path)
         after = final.get(path)
-        conflict = current != after and (current != baseline.get(path) or after is None)
+        resolution = child.record.get("resolutions", {}).get(path, {})
+        resolved = (current is not None and resolution.get("parent_sha256") == current
+                    and resolution.get("child_sha256") == after)
+        conflict = not resolved and current != after and (current != baseline.get(path) or after is None)
         reason = ("deletion_requires_review" if current == baseline.get(path) and after is None
                   else "parent_changed" if conflict else None)
         entry = {"path": path, "baseline_sha256": baseline.get(path),
-                 "parent_sha256": current, "child_sha256": after, "conflict": reason}
+                 "parent_sha256": current, "child_sha256": after, "conflict": reason,
+                 "resolved": resolved}
         # Only small UTF-8 files are rendered, and the diff budget is shared.
         try:
             if remaining and all(not f.exists() or f.stat().st_size <= 16384 for f in (parent_path, child_path)):
@@ -45,6 +49,8 @@ def preview(child: ChildWorkspace) -> dict:
 
                 before = read_verified(parent_path, current)
                 after_text = read_verified(child_path, after)
+                if reason == "parent_changed" and current is not None and after is not None:
+                    entry["merge_parent_text"] = before
                 diff = "".join(difflib.unified_diff(before.splitlines(True), after_text.splitlines(True),
                                                     fromfile="current parent", tofile="child result"))
                 entry["diff"] = diff[:remaining]
@@ -58,7 +64,7 @@ def preview(child: ChildWorkspace) -> dict:
     identity = child.parent.stat()
     revision = hashlib.sha256(json.dumps({"run_id": child.run_id, "state": child.record["state"],
         "root": str(child.parent), "device": identity.st_dev, "inode": identity.st_ino,
-        "files": [{k: v for k, v in f.items() if k not in {"diff", "diff_truncated", "diff_unavailable"}}
+        "files": [{k: v for k, v in f.items() if k not in {"diff", "diff_truncated", "diff_unavailable", "merge_parent_text"}}
                   for f in files]}, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     return {"run_id": child.run_id, "root": str(child.parent), "kind": child.record["kind"],
             "state": child.record["state"], "files": files, "revision": revision,

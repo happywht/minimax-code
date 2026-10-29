@@ -177,7 +177,7 @@ def register_run_handlers(server: Any) -> None:
         from ..execution import ExecutionPolicy, execution_scope
         from ..orchestrator.subagent import get_background_run
         from ..storage.dao.text_artifacts import ArtifactDAO
-        from ..workspace.child import collect_child, load_child
+        from ..workspace.child import collect_child, load_child, resolve_child_text
         from ..workspace.child_review import preview
         from ..workspace_ctx import require_directory, resolve_root_for_session
         from .host_session_gate import require_host_session
@@ -229,7 +229,7 @@ def register_run_handlers(server: Any) -> None:
                         team_collection = {"eligible": eligible,
                             "step_id": completed[0]["id"] if len(completed) == 1 else None,
                             "reason": None if eligible else "成员终态、受管清理证据或团队停止状态不可确认"}
-                        if req.action == "collect" and (not eligible or not req.confirmed_team_stopped
+                        if req.action in {"collect", "resolve_text"} and (not eligible or not req.confirmed_team_stopped
                                 or req.expected_team_step_id != team_collection["step_id"]):
                             raise ValueError("Interrupted team requires confirmed stop and an unchanged completed member record")
                     root = require_directory(await resolve_root_for_session(req.session_id))
@@ -259,14 +259,14 @@ def register_run_handlers(server: Any) -> None:
 
             async with child_review_lock:
                 root, project_id, identity = await binding()
-                if req.action == "collect" and (req.expected_service_id != identity or not req.revision):
+                if req.action in {"collect", "resolve_text"} and (req.expected_service_id != identity or not req.revision):
                     raise ValueError("Review this workspace again before collection")
                 if get_background_run(req.run_id) is not None:
                     raise ValueError("Child is still running")
                 child = load_child(root, req.run_id)
                 if child is None:
                     raise ValueError("No independent workspace is available for this run")
-                if req.action == "collect" and team_collection is not None and child.record.get("state") != "completed":
+                if req.action in {"collect", "resolve_text"} and team_collection is not None and child.record.get("state") != "completed":
                     raise ValueError("Interrupted team member workspace is not confirmed completed")
                 reviewed = await asyncio.to_thread(preview, child)
                 if await binding() != (root, project_id, identity):
@@ -274,9 +274,27 @@ def register_run_handlers(server: Any) -> None:
                 if team_collection is not None and reviewed["state"] not in {"completed", "collected"}:
                     team_collection = {**team_collection, "eligible": False,
                                        "reason": "成员工作区不再处于已完成状态"}
-                if req.action == "collect":
+                if req.action in {"collect", "resolve_text"}:
                     if reviewed["revision"] != req.revision:
                         raise ValueError("Workspace changed since review; refresh before collection")
+                    if req.action == "resolve_text":
+                        entry = next ( (item for item in reviewed["files"] if item["path"] == req.path), None)
+                        if (not entry or entry.get("conflict") != "parent_changed"
+                                or "merge_parent_text" not in entry or req.content is None):
+                            raise ValueError("File is not eligible for manual text resolution")
+                        def resolve():
+                            with execution_scope(ExecutionPolicy(workspace=root)):
+                                return resolve_child_text(child, req.path, req.content,
+                                    entry["parent_sha256"], entry["child_sha256"])
+                        task = asyncio.create_task(asyncio.to_thread(resolve))
+                        try:
+                            result = await asyncio.shield(task)
+                        except asyncio.CancelledError:
+                            await task
+                            raise
+                        await ctx.reply({"resolution": result, "session_id": req.session_id,
+                                         "project_id": project_id, "service_id": identity})
+                        return
                     if req.on_conflict == "fail" and any(item["conflict"] for item in reviewed["files"]):
                         raise ValueError("Conflicts must be resolved before collection")
                     # Cancellation must not leave an unobserved writer running.
