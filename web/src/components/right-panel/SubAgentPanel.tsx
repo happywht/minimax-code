@@ -362,9 +362,18 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     setBusy(true); setMessage("");
     try {
       if (collect && !review) return;
+      const interruptedCollection = collect && !allowCollect;
+      if (interruptedCollection) {
+        if (!review?.team_collection?.eligible || !review.team_collection.step_id) throw new Error("缺少可收集的完成记录或停止证据");
+        const accepted = await requestConfirmation({ title: "收集中断团队的已完成成员",
+          description: `请先核对团队及相关进程确已停止。受管任务已收束并不证明外逸进程不存在。将按已审阅版本收集到 ${review.root}；冲突和删除不会自动覆盖，异常可能造成部分写入。`,
+          confirmLabel: "确认已停止并收集" });
+        if (!accepted || !current()) return;
+      }
       const result = await ipc.request<ReviewResult & { report?: ChildWorkspaceReceipt }>(
         "run.child_workspace", { run_id: runId, session_id: sessionId, action: collect ? "collect" : "preview",
           ...(teamRunId ? { team_run_id: teamRunId } : {}),
+          ...(interruptedCollection && review?.team_collection?.step_id ? { confirmed_team_stopped: true, expected_team_step_id: review.team_collection.step_id } : {}),
           ...(collect && review ? { revision: review.revision, expected_service_id: review.service_id } : {}) },
       );
       if (!current()) return;
@@ -470,7 +479,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       {!!receipt.report.conflicts.length && <details open><summary>未处理冲突</summary><ul>{receipt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
       <p>回执记录当时结果，文件可能后来发生变化。请核对父目录并通过后续任务按权限执行需要的验证。</p>
       {receipt.report.complete && <button type="button" disabled={busy || !projectId} onClick={() => void addFollowup()}>将收集回执加入后续任务草稿</button>}
-      {teamRunId && receipt.report.complete && <button type="button" disabled={busy || !projectId || !!validation} onClick={() => void startValidation()}>审阅并运行项目验证</button>}
+      {teamRunId && allowCollect && receipt.report.complete && <button type="button" disabled={busy || !projectId || !!validation} onClick={() => void startValidation()}>审阅并运行项目验证</button>}
       {validation && <div className="rounded border border-line p-2">
         <p>验证运行 {validation.id} · {validation.status}</p>
         {validation.result ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(validation.result.verification ?? validation.result, null, 2)}</pre> : <p>结果尚未读取或仍未知。</p>}
@@ -487,8 +496,8 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         {file.diff_unavailable ? <p>差异过大或非 UTF-8，请手动查看。</p> : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.diff || "（内容相同或无文本差异）"}</pre>}
         {file.diff_truncated && <p>差异已截断，请手动查看。</p>}
       </details>)}
-      <button type="button" disabled={!allowCollect || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>
-      {!allowCollect && <p>团队已中断；此入口仅供审阅，不自动收集。</p>}
+      <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>
+      {!allowCollect && <p>{review.team_collection?.eligible ? "已保存成员完成及受管任务收束记录；请自行核对相关进程并明确确认。" : `不能收集：${review.team_collection?.reason || "缺少停止或成员完成证据"}。`} 工作副本不是操作系统沙箱。</p>}
       <p>删除和冲突需手动处理；执行中出现错误时可能部分收集，请核对文件。</p>
     </div>}
   </div>;

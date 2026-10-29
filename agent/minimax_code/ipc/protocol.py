@@ -335,6 +335,8 @@ class RunChildWorkspaceParams(BaseModel):
     action: Literal["preview", "collect"]
     revision: str | None = Field(default=None, min_length=64, max_length=64)
     expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
+    confirmed_team_stopped: bool = False
+    expected_team_step_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class RunChildListParams(BaseModel):

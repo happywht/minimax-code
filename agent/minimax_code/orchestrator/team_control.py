@@ -6,6 +6,11 @@ import asyncio
 _active: dict[str, asyncio.Task] = {}
 
 
+def is_active(run_id: str) -> bool:
+    task = _active.get(run_id)
+    return task is not None and not task.done()
+
+
 def register(run_id: str, task: asyncio.Task) -> None:
     _active[run_id] = task
 

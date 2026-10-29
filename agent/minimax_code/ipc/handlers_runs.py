@@ -184,10 +184,14 @@ def register_run_handlers(server: Any) -> None:
         try:
             req = RunChildWorkspaceParams.model_validate(params)
             dao = await _get_dao()
+            team_collection: dict[str, Any] | None = None
 
             async def binding():
+                nonlocal team_collection
                 await require_host_session(req.session_id)
                 if req.team_run_id:
+                    from ..orchestrator.team_control import is_active
+                    from ..runs import get_run_service
                     team = await dao.get_run(req.team_run_id)
                     meta = (team or {}).get("metadata") or {}
                     result = meta.get("team_result") if isinstance(meta, dict) else None
@@ -195,8 +199,8 @@ def register_run_handlers(server: Any) -> None:
                     session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
                     recorded = isinstance(agents, list) and any(isinstance(a, dict) and isinstance(a.get("workspace"), dict)
                         and a["workspace"].get("run_id") == req.run_id for a in agents)
+                    steps = await dao.list_steps(req.team_run_id) if team else []
                     if team and not recorded:
-                        steps = await dao.list_steps(req.team_run_id)
                         recorded = any(isinstance(step.get("payload"), dict)
                             and step["payload"].get("kind") == "team_member_v1"
                             and step["payload"].get("outcome") in {"completed", "incomplete"}
@@ -205,9 +209,27 @@ def register_run_handlers(server: Any) -> None:
                     if (not team or team["mode"] != "team" or team["session_id"] != req.session_id
                             or team["status"] not in {"completed", "failed", "interrupted"} or not session
                             or not recorded or "project_id" not in meta
-                            or meta["project_id"] != session["project_id"]
-                            or (req.action == "collect" and team["status"] == "interrupted")):
+                            or meta["project_id"] != session["project_id"]):
                         raise ValueError("Team member or project binding is unavailable or changed")
+                    if team["status"] == "interrupted":
+                        completed = [step for step in steps if step.get("status") == "completed"
+                            and isinstance(step.get("payload"), dict)
+                            and step["payload"].get("kind") == "team_member_v1"
+                            and step["payload"].get("outcome") == "completed"
+                            and step["payload"].get("stub") is False
+                            and isinstance(step["payload"].get("workspace"), dict)
+                            and step["payload"]["workspace"].get("run_id") == req.run_id
+                            and step["payload"]["workspace"].get("state") == "completed"]
+                        stop = meta.get("team_stop") or {}
+                        job = get_run_service(ctx.server).get_job(req.team_run_id)
+                        active = is_active(req.team_run_id) or bool(job and job.task and not job.task.done())
+                        eligible = len(completed) == 1 and stop.get("version") == 1 and stop.get("tracked_tasks_drained") is True and not active
+                        team_collection = {"eligible": eligible,
+                            "step_id": completed[0]["id"] if len(completed) == 1 else None,
+                            "reason": None if eligible else "成员终态、受管清理证据或团队停止状态不可确认"}
+                        if req.action == "collect" and (not eligible or not req.confirmed_team_stopped
+                                or req.expected_team_step_id != team_collection["step_id"]):
+                            raise ValueError("Interrupted team requires confirmed stop and an unchanged completed member record")
                     root = require_directory(await resolve_root_for_session(req.session_id))
                     if meta.get("workspace_snapshot") != str(root):
                         raise ValueError("Team workspace binding changed")
@@ -241,9 +263,14 @@ def register_run_handlers(server: Any) -> None:
                 child = load_child(root, req.run_id)
                 if child is None:
                     raise ValueError("No independent workspace is available for this run")
+                if req.action == "collect" and team_collection is not None and child.record.get("state") != "completed":
+                    raise ValueError("Interrupted team member workspace is not confirmed completed")
                 reviewed = await asyncio.to_thread(preview, child)
                 if await binding() != (root, project_id, identity):
                     raise ValueError("Session, project or service changed during review")
+                if team_collection is not None and reviewed["state"] not in {"completed", "collected"}:
+                    team_collection = {**team_collection, "eligible": False,
+                                       "reason": "成员工作区不再处于已完成状态"}
                 if req.action == "collect":
                     if reviewed["revision"] != req.revision:
                         raise ValueError("Workspace changed since review; refresh before collection")
@@ -268,7 +295,7 @@ def register_run_handlers(server: Any) -> None:
                         from ..verification import normalize_validate_command
                         project = await ProjectsDAO(dao._db).get(project_id)
                         command = normalize_validate_command((project or {}).get("validate_command"))
-                    await ctx.reply({**reviewed, "validate_command": command, "session_id": req.session_id,
+                    await ctx.reply({**reviewed, "team_collection": team_collection, "validate_command": command, "session_id": req.session_id,
                                      "project_id": project_id, "service_id": identity})
         except (ValidationError, ValueError, HandlerError, OSError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))

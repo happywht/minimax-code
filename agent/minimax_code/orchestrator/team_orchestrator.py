@@ -262,15 +262,19 @@ class TeamOrchestrator:
                 result.success = False
                 result.merged_text = "后台子任务需要核对。\n\n" + result.merged_text
         except BaseException as exc:
+            descendants_drained = False
             try:
                 await children.drain(cancel=True)
+                descendants_drained = True
             except BaseException:
                 logger.warning("Team descendant cleanup was not confirmed", exc_info=True)
             if runs_dao is not None:
                 try:
                     await runs_dao.update_run_status(
                         task_id, status="interrupted" if isinstance(exc, asyncio.CancelledError) else "failed",
-                        metadata={**metadata, "team_interruption": "cancel_requested_review_required"} if isinstance(exc, asyncio.CancelledError) else metadata,
+                        metadata={**metadata, "team_interruption": "cancel_requested_review_required",
+                                  "team_stop": {"tracked_tasks_drained": descendants_drained, "version": 1}}
+                            if isinstance(exc, asyncio.CancelledError) else metadata,
                     )
                 except Exception:
                     logger.warning("Failed to persist interrupted team run", exc_info=True)
@@ -477,10 +481,24 @@ class TeamOrchestrator:
                     cfg, request, session_id, task_id, team_name, idx, total,
                 )
 
-        results = await asyncio.gather(
-            *(_bounded(idx, cfg) for idx, cfg in enumerate(configs)),
-            return_exceptions=True,
-        )
+        tasks = [asyncio.create_task(_bounded(idx, cfg)) for idx, cfg in enumerate(configs)]
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            # A cancelled gather can return before member cleanup has reaped
+            # its tools. Retain the lease until every direct member settles.
+            for task in tasks:
+                if not task.done() and not task.cancelling():
+                    task.cancel()
+            drain = asyncio.gather(*tasks, return_exceptions=True)
+            cancelled = None
+            while not drain.done():
+                try:
+                    await asyncio.shield(drain)
+                except asyncio.CancelledError as exc:
+                    cancelled = cancelled or exc
+            if cancelled is not None:
+                raise cancelled
         out: list[AgentRunResult] = []
         for r in results:
             if isinstance(r, Exception):
