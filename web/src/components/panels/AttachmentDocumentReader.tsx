@@ -4,8 +4,9 @@ import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input } from "../../ui";
 import type { AttachmentDocumentCursor, AttachmentDocumentResult, AttachmentOriginal } from "../../types/ipc";
 
-export function AttachmentDocumentReader({ attachment, project, session, service, host }: {
+export function AttachmentDocumentReader({ attachment, project, session, service, host, onInsertReport }: {
   attachment: AttachmentOriginal; project: string | null; session: string | null; service: string | null; host: string;
+  onInsertReport?: (text: string, location: string) => void;
 }): JSX.Element | null {
   const [result, setResult] = useState<AttachmentDocumentResult | null>(null);
   const [unit, setUnit] = useState("1"), [busy, setBusy] = useState(false), [error, setError] = useState("");
@@ -56,6 +57,7 @@ export function AttachmentDocumentReader({ attachment, project, session, service
     {result && <div><p className="text-xs text-ink-1">来源：{attachment.original_name} · {attachment.id} · SHA-256 {attachment.sha256} · 位置 {result.location} · 单元 {result.unit}/{result.unit_total} · 字符 {result.start}–{result.end} · {result.status === "empty" ? "未提取到文字" : "已提取文字"} · OCR 未尝试</p>
       {result.truncated && <p role="status">此位置的文字尚未读完，请读取下一片段。</p>}
       <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3">{result.text || "（此范围未提取到文字）"}</pre>
+      {onInsertReport && <Button type="button" variant="secondary" disabled={!result.text.trim() || busy} onClick={() => onInsertReport(result.text, `${result.location}，字符 ${result.start}–${result.end}${result.truncated ? "，此位置未读完" : ""}`)}>将此片段追加到报告正文</Button>}
       {!result.next_cursor && <p>已到可读取范围末尾；不代表覆盖原件全部内容。</p>}</div>}
   </div>;
 }

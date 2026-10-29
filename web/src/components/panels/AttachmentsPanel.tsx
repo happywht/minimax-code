@@ -10,6 +10,7 @@ import { SearchableTextPreview } from "./SearchableTextPreview";
 import { ReportSectionsEditor, readEditableSections } from "./ReportSectionsEditor";
 import { ReportResearchPicker } from "./ReportResearchPicker";
 import { DraftFileControl } from "./DraftFileControl";
+import { ReportTextExcerpt } from "./ReportTextExcerpt";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -87,6 +88,29 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   useEffect(() => () => { onRetainDraft?.(draftRef.current); }, []);
   const importedSources = useRef<ResearchSource[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
+  const [excerptNotice, setExcerptNotice] = useState("");
+  const insertAttachmentExcerpt = (text: string, location: string) => {
+    const selected = state.selected;
+    const current = useAttachmentStore.getState();
+    if (structured || !scoped || !projectId || !state.serviceId || !selected || ipc.agentBaseUrl !== host ||
+        useSessionStore.getState().currentProjectId !== projectId || useSessionStore.getState().currentSessionId !== sessionId ||
+        current.projectId !== projectId || current.host !== host || current.serviceId !== state.serviceId ||
+        current.selected?.id !== selected.id || current.selected.sha256 !== selected.sha256) {
+      setExcerptNotice("上下文已变化或不是普通段落模式，请重新选择附件。"); return;
+    }
+    // Each report line is one paragraph. Normalize whitespace without executing source content.
+    const excerpt = text.replace(/\s+/g, " ").trim();
+    // eslint-disable-next-line no-control-regex
+    if (!excerpt || /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(excerpt) || Array.from(excerpt).length > 4096) {
+      setExcerptNotice("片段为空、包含不支持的控制字符或超过单段限制，请选择较短的文字。"); return;
+    }
+    const attribution = `资料摘录（未经核验）：${selected.original_name} · v${selected.version} · ${selected.id} · SHA-256 ${selected.sha256} · ${location}`;
+    const next = [body, attribution, excerpt].filter(Boolean).join("\n");
+    if (next.split(/\r?\n/).length > 100 || new TextEncoder().encode(next).length > 256 * 1024) {
+      setExcerptNotice("追加后正文超过 100 段或 256 KiB，请先精简草稿。"); return;
+    }
+    setBody(next); setExcerptNotice("已追加到普通正文草稿；空白已合并，请核对内容、来源和事实。尚未生成文件。");
+  };
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
   const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources, researchSources.map((item) => item.page_source_id), sessionId]);
   useEffect(() => {
@@ -98,7 +122,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     setResearchSources([]);
   }, [projectId, sessionId, host, state.serviceId]);
   useEffect(() => {
-    ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false);
+    ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); setExcerptNotice("");
   }, [projectId, sessionId, host, state.serviceId, state.selected?.id]);
   useEffect(() => ipc.onSideCar(() => { ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); }), []);
   const addAttachmentContext = async () => {
@@ -196,7 +220,11 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
       <p className="text-xs text-ink-2">默认仅追加附件身份；可选择加入解析摘录。不会发送或上传原件到对话，也不代表模型已读取完整文件。</p>
       {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>
-      <AttachmentDocumentReader key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
+      <AttachmentDocumentReader key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={!structured ? insertAttachmentExcerpt : undefined} />
+      {!structured && ["txt", "csv"].includes(state.selected.declared_type) && state.selected.recognized_type === "utf8_text" && ["parsed", "truncated"].includes(state.selected.parser_status) &&
+        <ReportTextExcerpt key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} truncated={state.selected.preview_truncated || state.selected.parser_status === "truncated"} onInsert={insertAttachmentExcerpt} />}
+      {structured && <p className="text-xs text-ink-2">切换报告内容形式为普通段落后，可将文档片段或文本选区追加到报告正文。</p>}
+      {excerptNotice && <p role="status">{excerptNotice}</p>}
       <PdfOriginalPreview attachment={state.selected} />
       <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
