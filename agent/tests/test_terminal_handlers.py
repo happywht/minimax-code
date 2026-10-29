@@ -333,6 +333,20 @@ def test_terminal_output_tail_tracks_discarded_chunks():
 
 
 @pytest.mark.asyncio
+async def test_terminal_stream_preserves_utf8_across_read_boundaries():
+    session = handlers_terminal.TerminalSession(id="term", command="x", cwd=".")
+    stream = asyncio.StreamReader()
+    stream.feed_data(b"x" * 4095 + "中文🙂".encode() + b"\xe2")
+    stream.feed_eof()
+
+    await handlers_terminal._read_stream(session, stream, "stdout")
+
+    assert "".join(chunk.text for chunk in session.chunks) == "x" * 4095 + "中文🙂�"
+    payload = handlers_terminal._output_payload(session, incomplete=False)
+    assert payload["output_tail"].endswith("中文🙂�")
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_write_failure_retries_and_stops_cleanly(monkeypatch):
     from unittest.mock import AsyncMock
 

@@ -9,6 +9,7 @@ in-memory because terminal processes are process-local by nature.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import logging
 import os
 import time
@@ -292,11 +293,13 @@ def _session_from_params(params: dict[str, Any]) -> TerminalSession:
 
 
 async def _read_stream(session: TerminalSession, stream: asyncio.StreamReader, name: str) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     while True:
         data = await stream.read(4096)
         if not data:
+            session.append(name, decoder.decode(b"", final=True))
             return
-        session.append(name, data.decode("utf-8", errors="replace"))
+        session.append(name, decoder.decode(data))
 
 
 async def _get_runs_dao() -> Any | None:
