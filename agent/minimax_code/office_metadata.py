@@ -24,6 +24,11 @@ REPORT_KEYS = {
     "macro_count", "structure_status", "business_quality", "render_status", "writer",
     "validator_version",
 }
+CHART_REPORT_KEYS = {
+    "version", "scope", "input_sha256", "file_sha256", "size_bytes", "sheet_name",
+    "data_rows", "column_count", "cell_count", "cell_check", "chart_reference_check",
+    "business_quality", "render_status", "writer", "validator_version",
+}
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _OFFICE = re.compile(r"off_[0-9a-f]{32}\Z")
 _ATTACHMENT = re.compile(r"att_[0-9a-f]{32}\Z")
@@ -63,7 +68,10 @@ def _sheet(value: object) -> bool:
 
 def validate_report(value: object) -> dict:
     """Return the original valid report dict, or raise ValueError."""
-    _require(type(value) is dict and set(value) in (REPORT_KEYS, REPORT_KEYS | {"processing"}), "Invalid Office report fields")
+    _require(type(value) is dict, "Invalid Office report fields")
+    chart = value.get("scope") == "xlsx_chart_values_v1"
+    keys = CHART_REPORT_KEYS if chart else REPORT_KEYS
+    _require(set(value) in (keys, keys | {"processing"}), "Invalid Office report fields")
     if "processing" in value:
         processing = value["processing"]
         _require(type(processing) is dict and set(processing) == {
@@ -111,11 +119,13 @@ def validate_report(value: object) -> dict:
                  and (processing["calculated_column"] is None or type(processing["calculated_column"]) is dict)
                  and (processing["group_by"] is None or type(processing["group_by"]) is dict),
                  "Invalid Office processing operations")
-    for key, constant in (
-        ("version", 1), ("scope", SCOPE), ("formula_count", 0),
-        ("external_relationship_count", 0), ("macro_count", 0),
-        ("structure_status", "passed"), ("business_quality", "unverified"),
-        ("render_status", "not_attempted"), ("validator_version", VALIDATOR_VERSION),
+    checks = (("cell_check", "passed"), ("chart_reference_check", "passed")) if chart else (
+        ("formula_count", 0), ("external_relationship_count", 0),
+        ("macro_count", 0), ("structure_status", "passed"))
+    for key, constant in (("version", 1),
+        ("scope", "xlsx_chart_values_v1" if chart else SCOPE), *checks,
+        ("business_quality", "unverified"), ("render_status", "not_attempted"),
+        ("validator_version", VALIDATOR_VERSION),
     ):
         _require(type(value[key]) is type(constant) and value[key] == constant,
                  "Unsupported Office report value")

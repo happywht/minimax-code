@@ -83,7 +83,7 @@ export interface OfficeTableSpec {
 }
 export interface OfficeReport {
   version: 1;
-  scope: "xlsx_plain_cells_v1";
+  scope: "xlsx_plain_cells_v1" | "xlsx_chart_values_v1";
   input_sha256: string;
   file_sha256: string;
   size_bytes: number;
@@ -91,10 +91,12 @@ export interface OfficeReport {
   data_rows: number;
   column_count: number;
   cell_count: number;
-  formula_count: 0;
-  external_relationship_count: 0;
-  macro_count: 0;
-  structure_status: "passed";
+  formula_count?: 0;
+  external_relationship_count?: 0;
+  macro_count?: 0;
+  structure_status?: "passed";
+  cell_check?: "passed";
+  chart_reference_check?: "passed";
   business_quality: "unverified";
   render_status: "not_attempted";
   writer: { name: "openpyxl"; version: "3.1.5" };

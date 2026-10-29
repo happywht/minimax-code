@@ -35,7 +35,9 @@ function validate(row: OfficeEntry, project: string, service: string): void {
   if (delivery.project_id !== project || delivery.service_id !== service || attachment.project_id !== project ||
       attachment.service_id !== service || attachment.id !== delivery.attachment_id ||
       report.file_sha256 !== attachment.sha256 || report.size_bytes !== attachment.size_bytes ||
-      report.input_sha256 !== delivery.input_sha256 || report.scope !== "xlsx_plain_cells_v1" ||
+      report.input_sha256 !== delivery.input_sha256 ||
+      (report.scope === "xlsx_plain_cells_v1" ? report.structure_status !== "passed" :
+        report.scope !== "xlsx_chart_values_v1" || report.cell_check !== "passed" || report.chart_reference_check !== "passed") ||
       report.business_quality !== "unverified" || report.render_status !== "not_attempted") {
     throw new Error("Office association changed; refresh the current project");
   }

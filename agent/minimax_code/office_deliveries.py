@@ -17,7 +17,7 @@ from pathlib import Path
 from .attachments import AttachmentService, _blocking, _Upload, read_original
 from .execution import require_write_access
 from .office_metadata import validate_record
-from .office_process import generate_xlsx
+from .office_process import generate_chart_xlsx, generate_xlsx
 from .office_xlsx import canonical, digest
 from .storage.dao.attachments import metadata
 from .storage.dao.office_deliveries import OfficeDAO
@@ -100,7 +100,7 @@ class OfficeService:
         result = await self.originals.get(project_id, attachment["id"])
         return {"delivery": delivery, **result}
 
-    async def generate(self, request, *, expected_session=None, processing=None):
+    async def generate(self, request, *, expected_session=None, processing=None, analysis=None):
         from .attachment_parser import inspect_xlsx
 
         require_write_access()
@@ -109,21 +109,33 @@ class OfficeService:
             fingerprint_input = {"request": request.model_dump(exclude={"request_key"}), "project": project}
             if processing is not None:
                 fingerprint_input["processing"] = processing
+            if analysis is not None:
+                fingerprint_input["analysis"] = analysis.model_dump()
             fingerprint = digest(fingerprint_input)
             existing = await self.dao.find(request.project_id, request.request_key, expected_session=expected_session)
             if existing is not None:
                 if existing["request_hash"] != fingerprint:
                     # Preserve retries of receipts created before processing descriptions existed.
                     legacy = digest({"request": request.model_dump(exclude={"request_key"}), "project": project})
-                    if processing is None or existing["request_hash"] != legacy:
+                    if analysis is not None or processing is None or existing["request_hash"] != legacy:
                         raise ValueError("Office request key already belongs to different input")
                 return await self.get(request.project_id, existing["id"])
             binding = await self.dao.binding(project, request.run_id)
-            data, report = await generate_xlsx(request.spec)
+            if analysis is None:
+                data, report = await generate_xlsx(request.spec)
+            else:
+                if analysis.spec != request.spec:
+                    raise ValueError("Chart analysis differs from requested table")
+                data, report = await generate_chart_xlsx(analysis)
+                report.update({"version": 1, "sheet_name": analysis.spec.sheet_name,
+                    "data_rows": len(analysis.spec.rows), "column_count": len(analysis.spec.columns),
+                    "cell_count": (len(analysis.spec.rows) + 1) * len(analysis.spec.columns),
+                    "business_quality": "unverified", "writer": {"name": "openpyxl", "version": "3.1.5"},
+                    "validator_version": 1})
             if processing is not None:
-                from .office_metadata import validate_report
                 report["processing"] = processing
-                validate_report(report)
+            from .office_metadata import validate_report
+            validate_report(report)
             parsed = await inspect_xlsx(data)
             if parsed["parser_status"] not in {"parsed", "empty", "truncated"}:
                 raise ValueError("Office preview verification is unavailable")

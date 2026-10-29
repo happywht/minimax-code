@@ -11,7 +11,6 @@ from ...execution import require_write_access
 from ...ipc.protocol import OfficeGenerateParams
 from ...office_analysis import AnalysisSpec, Chart, Summary, materialize
 from ...office_deliveries import OfficeService
-from ...office_process import generate_chart_xlsx
 from ...office_xlsx import XlsxSpec, canonical
 from .base import Tool, ToolResult
 
@@ -20,14 +19,13 @@ class GenerateTableXlsxTool(Tool):
     name = "generate_table_xlsx"
     description = (
         "Generate XLSX for the current project: plain cells in Office deliveries, "
-        "or with an embedded chart in project attachments. "
+        "including an optional embedded chart. "
         "Use only text, number, boolean, or null cells; no formulas are calculated. "
         "Use a new request_key for a new document; reuse the same key and identical input "
         "to safely retry an uncertain result. Cite sources in the surrounding response or cells. "
         "Optional summaries store actual values: count counts nonblank cells, sum ignores blanks, "
         "average ignores blanks and rounds half-up to decimals (default 2); empty average is blank. "
-        "Optional bar or line chart is a separate attachment; on uncertain chart result, inspect "
-        "attachments before retrying because chart creation is not idempotent. "
+        "Optional bar or line chart is saved as an Office delivery. "
         "Business correctness and rendering are not verified."
     )
     parameters = {
@@ -86,43 +84,20 @@ class GenerateTableXlsxTool(Tool):
                 raise ValueError("summaries must be a list")
             materialized = materialize(original, [Summary.model_validate(item) for item in summaries or []])
             service_id = await self.service.originals.dao.service_id()
+            analysis = None
             if chart is not None:
                 chart_config = Chart.model_validate(chart)
                 source_names = {column.name for column in original.columns}
                 if chart_config.category_column not in source_names or chart_config.value_column not in source_names:
                     raise ValueError("Chart columns must belong to the original data")
                 analysis = AnalysisSpec(spec=materialized, chart=chart_config, source_rows=len(original.rows))
-                # Match the same filename constraints as the plain XLSX route.
-                from ...office_xlsx import filename as validate_filename
-
-                validate_filename(filename)
-                data, report = await generate_chart_xlsx(analysis)
-
-                async def chunks():
-                    yield data
-
-                attachment = await self.service.originals.upload(
-                    self.project_id, filename, service_id, chunks(), require_parsed=True,
-                    expected_session=self.session_id)
-                row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
-                if row is None or row["project_id"] != self.project_id:
-                    raise ValueError("Session project binding changed; inspect original project attachments")
-                return ToolResult.ok({
-                    "attachment_id": attachment["id"], "filename": attachment["original_name"],
-                    "version": attachment["version"], "sha256": attachment["sha256"],
-                    "validation_scope": report["scope"], "cell_check": report["cell_check"],
-                    "chart_reference_check": report["chart_reference_check"],
-                    "validation_report": report,
-                    "business_quality": "unverified", "render_status": "not_attempted",
-                    "notice": "Open the XLSX from project attachments. Summaries are static values, "
-                              "not formulas. Chart creation is not idempotent; inspect attachments before retrying.",
-                })
             key = "agent_" + hashlib.sha256(canonical([self.session_id, request_key])).hexdigest()
             params = OfficeGenerateParams.model_validate({
                 "project_id": self.project_id, "expected_service_id": service_id,
                 "request_key": key, "filename": filename, "spec": materialized.model_dump(),
             })
-            result = await self.service.generate(params, expected_session=self.session_id, processing=processing)
+            result = await self.service.generate(params, expected_session=self.session_id,
+                                                 processing=processing, analysis=analysis)
             row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
             if row is None or row["project_id"] != self.project_id:
                 raise ValueError("Session project binding changed; refresh the original project's deliveries")
@@ -131,18 +106,19 @@ class GenerateTableXlsxTool(Tool):
                 "delivery_id": delivery["id"], "attachment_id": attachment["id"],
                 "filename": attachment["original_name"], "version": attachment["version"],
                 "sha256": attachment["sha256"], "request_key": request_key,
-                "structure_status": delivery["validation_report"]["structure_status"],
+                "structure_status": delivery["validation_report"].get("structure_status", "not_checked"),
                 "validation_scope": delivery["validation_report"]["scope"],
+                "cell_check": delivery["validation_report"].get("cell_check"),
+                "chart_reference_check": delivery["validation_report"].get("chart_reference_check"),
                 "business_quality": "unverified", "render_status": "not_attempted",
                 "processing_description_saved": "processing" in delivery["validation_report"],
                 "notice": "Open this ID in the current project's Office deliveries. "
-                          "No formulas, business verification or layout rendering were performed.",
+                          "Business verification and layout rendering were not performed.",
             })
         except ValidationError:
             return ToolResult.fail("Invalid XLSX input; check filename, key, table types and limits")
         except (ValueError, OSError, TimeoutError) as error:
-            recovery = ("inspect project attachments before retrying; chart generation is not idempotent"
-                        if chart is not None else "if the outcome is uncertain, retry the same key and input")
+            recovery = "if the outcome is uncertain, retry the same key and input"
             return ToolResult.fail(f"{error}; {recovery}")
 
 
