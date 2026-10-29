@@ -87,6 +87,8 @@ export default function App() {
   const refreshCrashReport = useCrashRecoveryStore((s) => s.loadPreviousReport);
   const [view, setView] = useState<MainView>("chat");
   const automationEdited = useRef(false);
+  // Conservative page-lifetime warning: drafts in other scopes may still exist.
+  const scheduledDraftEdited = useRef(false);
   const settingsEdited = useRef(false);
   const deliveryEdited = useRef(false);
   const officeEdited = useRef(false);
@@ -160,7 +162,7 @@ export default function App() {
 
   const leaveAutomation = useCallback(() => {
     if (!automationEdited.current) return true;
-    if (!window.confirm("自动化工作区可能有未保存的编辑。离开会丢失草稿，确定离开吗？")) return false;
+    if (!window.confirm("工作流或 Webhook 可能有未保存的编辑，离开会丢失这些草稿。定时任务草稿会保留在当前页面内存中。确定离开吗？")) return false;
     automationEdited.current = false;
     return true;
   }, []);
@@ -173,7 +175,7 @@ export default function App() {
   const leaveDelivery = useCallback(() => true, []);
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (!deliveryEdited.current && !officeEdited.current && !automationEdited.current && !settingsEdited.current) return;
+      if (!deliveryEdited.current && !officeEdited.current && !automationEdited.current && !scheduledDraftEdited.current && !settingsEdited.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -417,7 +419,7 @@ export default function App() {
                   ) : overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
                     <DeliveryWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={(kind) => { if (kind === "table") officeEdited.current = true; else deliveryEdited.current = true; }} onClose={() => { if (leaveDelivery()) setOverlayView(null); }} />
                   ) : overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks" ? (
-                    <AutomationWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (!leaveAutomation()) return false; setOverlayView(null); setView("chat"); return true; }} />
+                    <AutomationWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onScheduledEdit={() => { scheduledDraftEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (!leaveAutomation()) return false; setOverlayView(null); setView("chat"); return true; }} />
                   ) : overlayView === "skills" ? (
                     <SkillsPanel onClose={() => setOverlayView(null)} onOpenRun={() => { setOverlayView(null); setView("chat"); setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline")); }} />
                   ) : (

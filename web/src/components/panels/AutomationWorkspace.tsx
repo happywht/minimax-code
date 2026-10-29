@@ -12,8 +12,8 @@ const tabs: { id: AutomationTab; label: string }[] = [
 ];
 type Binding = { host: string; service: string };
 
-export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onEdit }: {
-  tab: AutomationTab; onSelect: (tab: AutomationTab) => void; onClose: () => void; onOpenSession: () => boolean | void; onEdit: () => void;
+export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onEdit, onScheduledEdit }: {
+  tab: AutomationTab; onSelect: (tab: AutomationTab) => void; onClose: () => void; onOpenSession: () => boolean | void; onEdit: () => void; onScheduledEdit?: () => void;
 }): JSX.Element {
   const project = useSessionStore((s) => s.currentProjectId);
   const projectName = useSessionStore((s) => s.projects.find((item) => item.id === project)?.name);
@@ -44,7 +44,7 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
       if (previous && !same) {
         invalidate(true);
         setVisited(new Set([tabRef.current]));
-        setNotice("服务身份已改变，原服务的未保存表单已清除；请重新输入并确认当前服务。");
+        setNotice("服务身份已改变；定时任务草稿按服务和项目隔离，其他未保存表单已清除。");
       }
       const next = { host, service: result.service_id };
       bindingRef.current = next; setBinding(next); setReady(true);
@@ -79,7 +79,7 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
         <p className="break-all text-xs text-ink-2">当前项目：{projectName ?? project ?? "未选择"} · 服务地址：{binding?.host ?? ipc.agentBaseUrl} · 服务身份：{ready ? binding?.service : "待确认"}</p></div>
         <Button size="sm" variant="ghost" onClick={onClose}>关闭</Button></div>
       <nav aria-label="自动化类型" className="flex flex-wrap gap-1">{tabs.map((item) => <Button key={item.id} type="button" size="sm" variant={item.id === tab ? "primary" : "ghost"} aria-current={item.id === tab ? "page" : undefined} onClick={() => select(item.id)}>{item.label}</Button>)}</nav>
-      <p className="text-xs text-ink-2">定时任务使用配置中指定的项目和执行上下文；工作流与 Webhook 属于当前服务。切换标签保留草稿，离开工作区或切换服务会丢失未保存的编辑。</p>
+      <p className="text-xs text-ink-2">定时任务使用配置中指定的项目和执行上下文；工作流与 Webhook 属于当前服务。定时任务的新建和编辑草稿仅在本页面内存中按服务地址、服务身份和当前项目保留，返回相同范围可恢复；刷新或关闭页面会丢失。工作流与 Webhook 离开工作区会丢失未保存的编辑。</p>
       <p className="text-xs text-ink-2">运行可能需要权限或用户输入；服务必须可用，不代表无人值守或远程运行已就绪。</p>
       {notice && <p role="status" className="text-xs text-status-warning">{notice}</p>}
       {!ready && <p role="status" className="text-xs text-status-warning">{error || "正在确认当前服务身份…"}</p>}
@@ -87,8 +87,8 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
     </header>
     {binding && <div key={JSON.stringify([binding.host, binding.service])} className="relative min-h-0 flex-1">
       {!ready && <div className="absolute inset-0 z-10 bg-surface-overlay/90" aria-hidden="true" />}
-      <div ref={surfaceRef} className="h-full overflow-auto p-4" aria-hidden={!ready || undefined} onChangeCapture={onEdit}>
-        {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab active={ready} serviceId={binding.service} onOpenSession={onOpenSession} /></div>}
+      <div ref={surfaceRef} className="h-full overflow-auto p-4" aria-hidden={!ready || undefined} onChangeCapture={() => { if (tab === "scheduled") onScheduledEdit?.(); else onEdit(); }}>
+        {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab key={JSON.stringify([binding.host, binding.service, project])} active={ready} serviceId={binding.service} draftScope={JSON.stringify([binding.host, binding.service, project])} onOpenSession={onOpenSession} /></div>}
         {visited.has("workflows") && <div hidden={tab !== "workflows"}><WorkflowsTab /></div>}
         {visited.has("webhooks") && <div hidden={tab !== "webhooks"}><WebhooksTab /></div>}
       </div>

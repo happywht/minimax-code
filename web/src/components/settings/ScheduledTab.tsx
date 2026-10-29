@@ -24,7 +24,13 @@ import { StreamEvent } from "../../types/ipc";
 
 export { ScheduledTab };
 
-function ScheduledTab({onOpenSession, active = true, serviceId}: {onOpenSession?: () => boolean | void; active?: boolean; serviceId?: string}): JSX.Element {
+// Deliberately process-local: drafts never leave this browser page or survive reload.
+type CreateDraft = { name: string; cron: string; prompt: string; context: ScheduleContext };
+type EditDraft = CreateDraft & { revision: number | null; service: string | null; initial: string };
+const createDrafts = new Map<string, CreateDraft>();
+const editDrafts = new Map<string, EditDraft>();
+
+function ScheduledTab({onOpenSession, active = true, serviceId, draftScope}: {onOpenSession?: () => boolean | void; active?: boolean; serviceId?: string; draftScope?: string}): JSX.Element {
   const jobs = useScheduleStore((s) => s.jobs);
   const refresh = useScheduleStore((s) => s.refresh);
   const create = useScheduleStore((s) => s.create);
@@ -34,10 +40,15 @@ function ScheduledTab({onOpenSession, active = true, serviceId}: {onOpenSession?
   const runNow = useScheduleStore((s) => s.runNow);
   const loading = useScheduleStore((s) => s.loading);
 
-  const [draftName, setDraftName] = useState("");
-  const [draftCron, setDraftCron] = useState("");
-  const [draftPrompt, setDraftPrompt] = useState("");
-  const [draftContext, setDraftContext] = useState(emptyScheduleContext);
+  const [, setDraftListVersion] = useState(0);
+  const [draftName, setDraftName] = useState(() => draftScope ? createDrafts.get(draftScope)?.name ?? "" : "");
+  const [draftCron, setDraftCron] = useState(() => draftScope ? createDrafts.get(draftScope)?.cron ?? "" : "");
+  const [draftPrompt, setDraftPrompt] = useState(() => draftScope ? createDrafts.get(draftScope)?.prompt ?? "" : "");
+  const [draftContext, setDraftContext] = useState(() => (draftScope && createDrafts.get(draftScope)?.context) || emptyScheduleContext());
+
+  useEffect(() => {
+    if (draftScope) createDrafts.set(draftScope, { name: draftName, cron: draftCron, prompt: draftPrompt, context: draftContext });
+  }, [draftScope, draftName, draftCron, draftPrompt, draftContext]);
 
   useEffect(() => { if (active && jobs.length === 0) void refresh(); }, [active, jobs.length, refresh]);
   useEffect(() => {
@@ -53,7 +64,7 @@ function ScheduledTab({onOpenSession, active = true, serviceId}: {onOpenSession?
     const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context: draftContext });
     if (job) {
       toast.success(strings.settings.scheduled.createdToast, job.name);
-      setDraftName(""); setDraftCron(""); setDraftPrompt("");
+      setDraftName(""); setDraftCron(""); setDraftPrompt(""); setDraftContext(emptyScheduleContext());
     }
   };
 
@@ -121,6 +132,18 @@ function ScheduledTab({onOpenSession, active = true, serviceId}: {onOpenSession?
         <ScheduleContextFields value={draftContext} onChange={setDraftContext} />
       </Panel>
 
+      {draftScope && !loading && [...editDrafts.entries()].filter(([key]) => {
+        const [scope, id] = JSON.parse(key) as [string, string];
+        return scope === draftScope && !jobs.some((job) => job.id === id);
+      }).map(([key, draft]) => <div key={key} className="space-y-2 rounded-lg border border-status-warning p-3 text-xs" role="status">
+        <p>原计划当前不在列表中，可能已删除或尚未载入。草稿保留在此供复制，不能直接保存。</p>
+        <pre className="whitespace-pre-wrap break-all">{JSON.stringify(draft, null, 2)}</pre>
+        <Button type="button" size="sm" variant="secondary" onClick={async () => {
+          if (await requestConfirmation({ title: "放弃此草稿？", description: "草稿内容将丢失。", confirmLabel: "放弃草稿" })) {
+            editDrafts.delete(key); setDraftListVersion((version) => version + 1);
+          }
+        }}>放弃草稿</Button>
+      </div>)}
       <ul className="space-y-1.5" data-testid="settings-jobs-list">
         {jobs.length === 0 && !loading && (
           <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">
@@ -132,6 +155,7 @@ function ScheduledTab({onOpenSession, active = true, serviceId}: {onOpenSession?
             key={j.id}
             job={j}
             serviceId={serviceId}
+            draftKey={draftScope ? JSON.stringify([draftScope, j.id]) : undefined}
             onOpenSession={onOpenSession}
             onToggle={(enabled) => void setEnabled(j.id, enabled)}
             onDelete={async () => {
@@ -155,26 +179,33 @@ function ScheduledTab({onOpenSession, active = true, serviceId}: {onOpenSession?
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession, serviceId }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession, serviceId, draftKey }: {
   onOpenSession?: () => boolean | void;
-  job: ScheduledJob; serviceId?: string; onToggle: (enabled: boolean) => void;
+  job: ScheduledJob; serviceId?: string; draftKey?: string; onToggle: (enabled: boolean) => void;
   onDelete: () => void; onRunNow: () => void;
   onUpdate: (revision: number, name: string, cron: string, prompt: string, context: ScheduleContext, expectedService: string) => Promise<{ job: ScheduledJob | null; error?: string }>;
 }): JSX.Element {
+  const [restored] = useState(() => draftKey ? editDrafts.get(draftKey) : undefined);
   const [expanded, setExpanded] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(job.name);
-  const [editCron, setEditCron] = useState(job.cron);
-  const [editPrompt, setEditPrompt] = useState(job.prompt);
-  const [editContext, setEditContext] = useState(job.context ?? emptyScheduleContext());
-  const [editRevision, setEditRevision] = useState<number | null>(null);
-  const [editService, setEditService] = useState<string | null>(null);
-  const [initialDraft, setInitialDraft] = useState("");
+  const [editing, setEditing] = useState(!!restored);
+  const [editName, setEditName] = useState(restored?.name ?? job.name);
+  const [editCron, setEditCron] = useState(restored?.cron ?? job.cron);
+  const [editPrompt, setEditPrompt] = useState(restored?.prompt ?? job.prompt);
+  const [editContext, setEditContext] = useState(restored?.context ?? job.context ?? emptyScheduleContext());
+  const [editRevision, setEditRevision] = useState<number | null>(restored?.revision ?? null);
+  const [editService, setEditService] = useState<string | null>(restored?.service ?? null);
+  const [initialDraft, setInitialDraft] = useState(restored?.initial ?? "");
   const [editError, setEditError] = useState("");
   const [saving, setSaving] = useState(false);
   const draftSignature = JSON.stringify([editName, editCron, editPrompt, editContext]);
   const changed = editing && draftSignature !== initialDraft;
   const changedOnServer = editRevision !== null && job.revision !== editRevision;
+
+  useEffect(() => {
+    if (!draftKey) return;
+    if (editing && changed) editDrafts.set(draftKey, { name: editName, cron: editCron, prompt: editPrompt, context: editContext, revision: editRevision, service: editService, initial: initialDraft });
+    else editDrafts.delete(draftKey);
+  }, [draftKey, editing, changed, editName, editCron, editPrompt, editContext, editRevision, editService, initialDraft]);
 
   const startEditing = () => {
     // Reset the draft to the current definition so reopening after a
@@ -194,6 +225,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
   const cancelEdit = async () => {
     if (saving) return;
     if (changed && !await requestConfirmation({ title: "放弃定时计划草稿？", description: "未保存的编辑将丢失。", confirmLabel: "放弃草稿" })) return;
+    if (draftKey) editDrafts.delete(draftKey);
     setEditing(false); setEditError("");
   };
   const reloadEdit = async () => {
@@ -206,7 +238,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
     setSaving(true); setEditError("");
     try {
       const result = await onUpdate(editRevision, editName.trim(), editCron.trim(), editPrompt.trim(), editContext, editService);
-      if (result.job) setEditing(false);
+      if (result.job) { if (draftKey) editDrafts.delete(draftKey); setEditing(false); }
       else setEditError(result.error || "保存未确认；请刷新计划并核对后再操作。");
     } catch (error) { setEditError(error instanceof Error ? error.message : String(error)); }
     finally { setSaving(false); }
