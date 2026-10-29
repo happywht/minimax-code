@@ -1508,6 +1508,15 @@ class AgentCore:
                       else "allow" if "allow" in actions else "ask")
             if action == "ask" and self._permission_gater is None:
                 action = "deny"
+        if name in {"search_public_web", "read_public_page"}:
+            # Network access needs an explicit rule or an interactive approval.
+            # A generic network denial must also override an individual allow.
+            network_action = _check_rule(self._permission_store, "network")
+            actions = {action, network_action}
+            action = ("deny" if "deny" in actions else "ask" if "ask" in actions
+                      else "allow" if "allow" in actions else "ask")
+            if action == "ask" and self._permission_gater is None:
+                action = "deny"
         if action == "deny":
             denied = ToolResult.fail(
                 f"tool '{name}' denied by permission policy (action=deny)",
