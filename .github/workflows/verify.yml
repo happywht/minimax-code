@@ -10,7 +10,9 @@ permissions:
 
 concurrency:
   group: verification-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Let the current run finish so frequent pushes do not erase all evidence;
+  # GitHub retains the latest pending run in the same concurrency group.
+  cancel-in-progress: false
 
 jobs:
   baseline:
