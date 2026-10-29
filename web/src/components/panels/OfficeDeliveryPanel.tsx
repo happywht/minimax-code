@@ -225,6 +225,10 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <p>校验范围 {state.selected.delivery.validation_report.scope} · 全部 {state.selected.delivery.validation_report.cell_count} 格（含表头） · 未做版式或业务验收</p>
       <p>来源 run: {state.selected.delivery.run_id ?? "未关联 run"}</p>
       <p className="break-all text-xs">SHA-256: {state.selected.attachment.sha256}</p>
+      {state.selected.delivery.validation_report.processing && <details><summary>表格处理说明</summary>
+        <p>记录生成时的来源和处理参数，业务正确性未核验。筛选值和空值标记可能包含敏感内容。</p>
+        <pre className="whitespace-pre-wrap break-words">{JSON.stringify(state.selected.delivery.validation_report.processing, null, 2)}</pre>
+      </details>}
       <OfficeFollowupDraft selected={state.selected} />
       <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
         <Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>

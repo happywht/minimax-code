@@ -109,8 +109,26 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 spec = group_spec(spec, group_by)
             if sort_by is not None:
                 spec = sort_spec(spec, sort_by)
+            processing = {
+                "version": 1,
+                "source": {"type": "xlsx", "attachment_id": attachment_id, "sha256": original["sha256"],
+                          "sheet": source_sheet, "date_columns": extraction["date_columns"],
+                          "percentage_columns": extraction["percentage_columns"],
+                          "currency_columns": extraction["currency_columns"]},
+                "columns": [{"source": column["source"], "name": column["name"],
+                             "kind": column["kind"], "trim": column.get("trim", False),
+                             "null_values": column.get("null_values", []),
+                             "changed_cells": cleaning_counts[column["name"]]} for column in columns],
+                "calculated_column": calculated_column, "filters": filters or [],
+                "deduplicate_by": deduplicate_by or [], "group_by": group_by,
+                "sort_by": sort_by or [], "summaries": summaries or [],
+                "counts": {"source_rows": source_row_count, "matched_rows": matched_row_count,
+                           "removed_duplicates": removed_duplicate_count,
+                           "output_rows": len(spec["rows"])},
+            }
             bound_key = hashlib.sha256(canonical([request_key, attachment_id, original["sha256"], source_sheet])).hexdigest()
-            result = await self.generator.run(filename, bound_key, spec, summaries=summaries, chart=chart)
+            result = await self.generator.run(filename, bound_key, spec, summaries=summaries, chart=chart,
+                                              processing=processing if chart is None else None)
             if result.success:
                 result.output["request_key"] = request_key
                 result.output["source_attachment_id"] = attachment_id

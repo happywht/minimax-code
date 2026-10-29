@@ -100,20 +100,30 @@ class OfficeService:
         result = await self.originals.get(project_id, attachment["id"])
         return {"delivery": delivery, **result}
 
-    async def generate(self, request, *, expected_session=None):
+    async def generate(self, request, *, expected_session=None, processing=None):
         from .attachment_parser import inspect_xlsx
 
         require_write_access()
         async with asyncio.timeout(TOTAL_SECONDS), _slot():
             project = await self._identity(request.project_id, request.expected_service_id)
-            fingerprint = digest({"request": request.model_dump(exclude={"request_key"}), "project": project})
+            fingerprint_input = {"request": request.model_dump(exclude={"request_key"}), "project": project}
+            if processing is not None:
+                fingerprint_input["processing"] = processing
+            fingerprint = digest(fingerprint_input)
             existing = await self.dao.find(request.project_id, request.request_key, expected_session=expected_session)
             if existing is not None:
                 if existing["request_hash"] != fingerprint:
-                    raise ValueError("Office request key already belongs to different input")
+                    # Preserve retries of receipts created before processing descriptions existed.
+                    legacy = digest({"request": request.model_dump(exclude={"request_key"}), "project": project})
+                    if processing is None or existing["request_hash"] != legacy:
+                        raise ValueError("Office request key already belongs to different input")
                 return await self.get(request.project_id, existing["id"])
             binding = await self.dao.binding(project, request.run_id)
             data, report = await generate_xlsx(request.spec)
+            if processing is not None:
+                from .office_metadata import validate_report
+                report["processing"] = processing
+                validate_report(report)
             parsed = await inspect_xlsx(data)
             if parsed["parser_status"] not in {"parsed", "empty", "truncated"}:
                 raise ValueError("Office preview verification is unavailable")

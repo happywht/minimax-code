@@ -70,7 +70,8 @@ class GenerateTableXlsxTool(Tool):
         self.service = OfficeService(db, db.path.parent)
 
     async def run(self, filename: str, request_key: str, spec: dict[str, Any],
-                  summaries: list[dict[str, Any]] | None = None, chart: dict[str, Any] | None = None) -> ToolResult:
+                  summaries: list[dict[str, Any]] | None = None, chart: dict[str, Any] | None = None,
+                  *, processing: dict[str, Any] | None = None) -> ToolResult:
         try:
             require_write_access()
             if not isinstance(self.project_id, str) or not self.project_id:
@@ -121,7 +122,7 @@ class GenerateTableXlsxTool(Tool):
                 "project_id": self.project_id, "expected_service_id": service_id,
                 "request_key": key, "filename": filename, "spec": materialized.model_dump(),
             })
-            result = await self.service.generate(params, expected_session=self.session_id)
+            result = await self.service.generate(params, expected_session=self.session_id, processing=processing)
             row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
             if row is None or row["project_id"] != self.project_id:
                 raise ValueError("Session project binding changed; refresh the original project's deliveries")
@@ -133,6 +134,7 @@ class GenerateTableXlsxTool(Tool):
                 "structure_status": delivery["validation_report"]["structure_status"],
                 "validation_scope": delivery["validation_report"]["scope"],
                 "business_quality": "unverified", "render_status": "not_attempted",
+                "processing_description_saved": "processing" in delivery["validation_report"],
                 "notice": "Open this ID in the current project's Office deliveries. "
                           "No formulas, business verification or layout rendering were performed.",
             })

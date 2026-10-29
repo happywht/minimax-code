@@ -99,6 +99,7 @@ export interface OfficeReport {
   render_status: "not_attempted";
   writer: { name: "openpyxl"; version: "3.1.5" };
   validator_version: 1;
+  processing?: Record<string, unknown>;
 }
 export interface OfficeDelivery {
   id: string;
