@@ -465,7 +465,7 @@ See [skill-execution.md](skill-execution.md) for ownership and permission limits
 
 For task review, `git.diff({run_id, session_id})` reads the **current** bound
 workspace for a Native or Codex run and returns `{run_id, session_id, project_id,
-workspace, scope:"current_workspace", diff, staged_diff, untracked}`. The two
+workspace, workspace_identity, service_id, scope:"current_workspace", diff, staged_diff, untracked}`. The two
 diffs cover tracked unstaged and staged changes; `untracked` lists names only.
 Git status paths retain whitespace, including leading and trailing spaces.
 No committed changes are included. No other parameters may be supplied. The
@@ -473,6 +473,14 @@ run's recorded project, engine and workspace must still match the session, and
 host restrictions apply. Runs without these bindings cannot use this view.
 Results can include edits by the user or other runs and are not attribution to
 the selected run. The separate Git reads are not an atomic snapshot.
+
+`git.diff({run_id,session_id,project_id,workspace,workspace_identity,expected_service_id,untracked_path})`
+previews one explicitly selected current untracked file. It rechecks all bindings and
+Git status before and after reading, rejects links, reparse points, hard links,
+non-regular files, non-UTF-8 or control-character content and files over 64 KiB.
+It returns the binding, `path` and `text`; it does not write or download files.
+The checks are not an atomic snapshot across other processes, and files or bindings
+may change after the response. This is not an OS sandbox or task attribution.
 In `git.status`, a rename is listed under its destination; its source is not a
 separate entry.
 

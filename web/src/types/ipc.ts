@@ -1525,6 +1525,8 @@ export interface RunWorkspaceDiffResult {
   session_id: string;
   project_id: string | null;
   workspace: string;
+  workspace_identity: string;
+  service_id: string;
   scope: "current_workspace";
   diff: string;
   staged_diff: string;

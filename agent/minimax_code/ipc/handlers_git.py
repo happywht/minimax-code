@@ -182,6 +182,7 @@ async def _run_workspace_diff(params: dict[str, Any]) -> dict[str, Any]:
     from ..app import ensure_db
     from ..execution import ExecutionPolicy, execution_scope
     from ..storage.dao.runs import AgentRunsDAO
+    from ..storage.dao.text_artifacts import ArtifactDAO
     from ..workspace_ctx import require_directory, resolve_root_for_session
     from .host_session_gate import require_host_session
 
@@ -217,6 +218,7 @@ async def _run_workspace_diff(params: dict[str, Any]) -> dict[str, Any]:
         info = root.stat()
         return root, (info.st_dev, info.st_ino), session["project_id"]
 
+    service_id = await ArtifactDAO(db).service_id()
     root, identity, project_id = await binding()
     with execution_scope(ExecutionPolicy(workspace=root)):
         repo_root = Path((await _run_git(["rev-parse", "--show-toplevel"], cwd=root)).strip()).resolve()
@@ -227,7 +229,7 @@ async def _run_workspace_diff(params: dict[str, Any]) -> dict[str, Any]:
         staged = await _run_git([*common, "--staged", "--", "."], cwd=root)
         status = await _run_git(["-c", "status.relativePaths=true", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--", "."], cwd=root)
     current_root, current_identity, current_project = await binding()
-    if (current_root, current_identity, current_project) != (root, identity, project_id):
+    if (current_root, current_identity, current_project) != (root, identity, project_id) or await ArtifactDAO(db).service_id() != service_id:
         raise HandlerError(INVALID_PARAMS, "Run workspace binding changed during review")
     _, paths, _ = _parse_status_porcelain_v2(status)
     untracked = []
@@ -237,8 +239,81 @@ async def _run_workspace_diff(params: dict[str, Any]) -> dict[str, Any]:
             raise HandlerError(INVALID_PARAMS, "Git returned a path outside the task workspace")
         untracked.append(path.relative_to(root).as_posix())
     return {"run_id": run_id, "session_id": session_id, "project_id": project_id,
-            "workspace": str(root), "scope": "current_workspace", "diff": working,
+            "workspace": str(root), "workspace_identity": f"{identity[0]}:{identity[1]}",
+            "service_id": service_id, "scope": "current_workspace", "diff": working,
             "staged_diff": staged, "untracked": untracked}
+
+async def _preview_untracked(params: dict[str, Any]) -> dict[str, Any]:
+    """Read one explicitly selected current untracked UTF-8 file, without writing it."""
+    from pathlib import PurePosixPath
+    from ..text_artifacts import _identity, _regular, _safe_open
+    import hashlib
+
+    keys = {"run_id", "session_id", "project_id", "workspace", "workspace_identity",
+            "expected_service_id", "untracked_path"}
+    if set(params) != keys:
+        raise HandlerError(INVALID_PARAMS, "Missing preview binding")
+    name = params["untracked_path"]
+    if not isinstance(name, str) or not name or len(name) > 1024:
+        raise HandlerError(INVALID_PARAMS, "Invalid relative file path")
+    relative = PurePosixPath(name)
+    if (relative.is_absolute() or relative.as_posix() != name or ".." in relative.parts
+            or any(c in name for c in "\\:\x00") or any(ord(c) < 32 for c in name)):
+        raise HandlerError(INVALID_PARAMS, "Invalid relative file path")
+    if os.name != "nt" and not all(hasattr(os, attr) for attr in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK")):
+        raise HandlerError(INVALID_PARAMS, "Safe file reading is unavailable on this platform")
+
+    async def check():
+        review = await _run_workspace_diff({"run_id": params["run_id"], "session_id": params["session_id"]})
+        if (review["project_id"] != params["project_id"] or review["workspace"] != params["workspace"]
+                or review["workspace_identity"] != params["workspace_identity"]
+                or review["service_id"] != params["expected_service_id"] or name not in review["untracked"]):
+            raise HandlerError(INVALID_PARAMS, "Workspace binding or untracked file changed; refresh review")
+        return review
+
+    review = await check()
+    path = Path(review["workspace"]) / name
+    try:
+        with _safe_open(path) as fd:
+            before = os.fstat(fd)
+            _regular(before)
+            limit = 65536
+            if before.st_size > limit:
+                raise ValueError("File exceeds 64 KiB")
+            data = b""
+            while len(data) <= limit:
+                chunk = os.read(fd, min(65536, limit + 1 - len(data)))
+                if not chunk:
+                    break
+                data += chunk
+            if len(data) > limit:
+                raise ValueError("File exceeds 64 KiB")
+            os.lseek(fd, 0, os.SEEK_SET)
+            again = b""
+            while len(again) <= limit:
+                chunk = os.read(fd, min(65536, limit + 1 - len(again)))
+                if not chunk:
+                    break
+                again += chunk
+            if (_identity(before) != _identity(os.fstat(fd)) or len(data) != before.st_size
+                    or hashlib.sha256(data).digest() != hashlib.sha256(again).digest()
+                    or _identity(before)[:4] != _identity(path.lstat())[:4]):
+                raise ValueError("File changed while reading")
+            text = data.decode("utf-8", errors="strict")
+            if any(ord(c) < 32 and c not in "\n\r\t" for c in text):
+                raise ValueError("Binary or control characters are not supported")
+            await check()
+            after = path.lstat()
+            _regular(after)
+            if _identity(before) != _identity(os.fstat(fd)) or _identity(before)[:4] != _identity(after)[:4]:
+                raise ValueError("File changed during review")
+    except (ValueError, OSError, UnicodeError) as exc:
+        raise HandlerError(INVALID_PARAMS, f"Cannot safely preview file: {exc}") from exc
+    return {"run_id": params["run_id"], "session_id": params["session_id"],
+            "project_id": review["project_id"], "workspace": review["workspace"],
+            "workspace_identity": review["workspace_identity"], "service_id": review["service_id"],
+            "path": name, "text": text}
+
 
 def _parse_status_porcelain_v2(text: str) -> tuple[list[str], list[str], list[str]]:
     """Split ``git status --porcelain=v2 -z`` output into three buckets.
@@ -383,6 +458,9 @@ def register_git_handlers(server: Any) -> None:
     async def handle_git_diff(params: Any, ctx: Context) -> None:
         try:
             p = params if isinstance(params, dict) else {}
+            if "untracked_path" in p:
+                await ctx.reply(await _preview_untracked(p))
+                return
             if "run_id" in p:
                 await ctx.reply(await _run_workspace_diff(p))
                 return

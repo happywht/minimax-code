@@ -405,6 +405,7 @@ export interface TypedIPC {
   gitStatus(opts?: { project_id?: string }): Promise<GitStatusResult>;
   gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string; project_id?: string; session_id?: string }): Promise<GitDiffResult>;
   gitRunWorkspaceDiff(runId: string, sessionId: string): Promise<RunWorkspaceDiffResult>;
+  previewRunUntracked(params: { run_id: string; session_id: string; project_id: string | null; workspace: string; workspace_identity: string; expected_service_id: string; untracked_path: string }): Promise<{ run_id: string; session_id: string; project_id: string | null; workspace: string; workspace_identity: string; service_id: string; path: string; text: string }>;
   gitLog(opts?: { n?: number; project_id?: string }): Promise<GitLogResult>;
   // crash recovery (R231) — read persisted crash-report files written at boot.
   crashPreviousReport(): Promise<CrashPreviousReportResult>;
@@ -960,6 +961,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<GitStatusResult>("git.status", { project_id: opts?.project_id }),
     gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
     gitRunWorkspaceDiff: (runId, sessionId) => client.request<RunWorkspaceDiffResult>("git.diff", { run_id: runId, session_id: sessionId }),
+    previewRunUntracked: (params) => client.request("git.diff", params),
     gitLog: (opts) => client.request<GitLogResult>("git.log", opts ?? {}),
     // ── Crash recovery (R231) — read persisted crash-report files written at boot ──
     crashPreviousReport: () =>
