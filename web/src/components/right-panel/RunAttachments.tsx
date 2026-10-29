@@ -7,9 +7,11 @@ import { Button } from "../../ui";
 import { PdfOriginalPreview } from "../panels/PdfOriginalPreview";
 import { XlsxTablePreview } from "../panels/XlsxTablePreview";
 
-export function RunAttachments({ run, steps }: { run: AgentRun; steps: AgentRunStep[] }): JSX.Element | null {
-  const session = useSessionStore((state) => state.currentSessionId);
-  const project = useSessionStore((state) => state.currentProjectId) ?? "inbox";
+export function RunAttachments({ run, steps, reviewScope }: { run: AgentRun; steps: AgentRunStep[]; reviewScope?: { sessionId: string; projectId: string; serviceId: string } }): JSX.Element | null {
+  const activeSession = useSessionStore((state) => state.currentSessionId);
+  const activeProject = useSessionStore((state) => state.currentProjectId) ?? "inbox";
+  const session = reviewScope?.sessionId ?? activeSession;
+  const project = reviewScope?.projectId ?? activeProject;
   const host = ipc.agentBaseUrl;
   const [selected, setSelected] = useState<AttachmentOriginal | null>(null);
   const [preview, setPreview] = useState("");
@@ -19,16 +21,18 @@ export function RunAttachments({ run, steps }: { run: AgentRun; steps: AgentRunS
   const rows = steps.filter((step) => step.status === "completed" && step.run_id === run.id
     && step.session_id === run.session_id && step.payload?.source === "run_attachment_v1"
     && step.payload?.project_id === project && typeof step.payload?.attachment_id === "string"
-    && typeof step.payload?.service_id === "string" && typeof step.payload?.sha256 === "string");
+    && typeof step.payload?.service_id === "string" && typeof step.payload?.sha256 === "string"
+    && (!reviewScope || step.payload.service_id === reviewScope.serviceId));
   const available = session === run.session_id && run.metadata?.project_id === project;
+  const visible = selected && selected.project_id === project && (!reviewScope || selected.service_id === reviewScope.serviceId) ? selected : null;
   const current = (ticket: number, origin: string) => ticket === version.current && ipc.agentBaseUrl === origin
-    && useSessionStore.getState().currentSessionId === session
-    && (useSessionStore.getState().currentProjectId ?? "inbox") === project;
+    && useSessionStore.getState().currentSessionId === activeSession
+    && (useSessionStore.getState().currentProjectId ?? "inbox") === activeProject;
   useEffect(() => {
     const ref = version;
     ++ref.current; download.current?.abort(); setSelected(null); setPreview(""); setError(null); setLoading(false);
     return () => { ++ref.current; download.current?.abort(); };
-  }, [run.id, session, project, host]);
+  }, [run.id, session, project, host, activeSession, activeProject, reviewScope?.serviceId]);
   useEffect(() => ipc.onSideCar(() => {
     ++version.current; download.current?.abort(); setSelected(null); setPreview(""); setError(null); setLoading(false);
   }), []);
@@ -77,10 +81,10 @@ export function RunAttachments({ run, steps }: { run: AgentRun; steps: AgentRunS
     {rows.map((step) => <Button key={step.id} size="sm" variant="secondary" disabled={loading}
       onClick={() => void select(step)}>{String(step.payload?.filename || "查看成果")}</Button>)}
     {error && <p role="alert">{error}</p>}
-    {selected && <div className="space-y-1"><p>解析状态：{selected.parser_status}；质量未验证</p>
+    {visible && <div className="space-y-1"><p>解析状态：{visible.parser_status}；质量未验证</p>
       <Button size="sm" disabled={loading} onClick={() => void save()}>下载原件</Button>
-      <PdfOriginalPreview attachment={selected} />
-      <XlsxTablePreview key={`${selected.id}:${selected.sha256}`} attachment={selected} preview={preview} />
+      {project === activeProject && activeSession ? <PdfOriginalPreview attachment={visible} /> : visible.declared_type === "pdf" ? <p>切换到对应项目会话后可打开 PDF 原件预览；此处仍可下载原件。</p> : null}
+      <XlsxTablePreview key={`${visible.id}:${visible.sha256}`} attachment={visible} preview={preview} />
       <pre aria-label="任务成果预览" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{preview || "（无可用预览）"}</pre></div>}
   </div>;
 }

@@ -4,6 +4,7 @@ import { useModelStore, useSessionStore } from "../../stores";
 import { VerificationBadge } from "../chat/VerificationBadge";
 import { ipc, typedIPC } from "../../ipc";
 import { StreamEvent, type ScheduleContext, type ScheduleOccurrence, type ScheduledJob } from "../../types/ipc";
+import { ScheduleRunDetail } from "./ScheduleRunDetail";
 
 const labels: Record<string,string> = {ready:"已绑定",needs_rebind:"需要重新绑定",blocked:"配置受阻",requires_review:"需要核对",pending:"待接单",running:"运行中",awaiting_approval:"等待授权",completed:"执行结束",budget_paused:"预算暂停",cancelled:"已取消",failed:"执行失败",interrupted:"运行中断",superseded:"已被重新绑定替代",manual:"手动",cron:"定时",chat:"对话（可写）",execute:"执行",plan:"只读规划"};
 const label = (value: string) => labels[value] ?? value;
@@ -79,6 +80,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession }: { job: Schedul
   const active = history.find((occurrence) => occurrence.id === job.active_occurrence_id);
   const status = (occurrence: ScheduleOccurrence) => occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status;
   const open = (occurrence: ScheduleOccurrence) => {
+    if (!occurrence.context?.project_id || !occurrence.session_id) return;
     useSessionStore.getState().setCurrentProject(occurrence.context.project_id);
     useSessionStore.getState().setCurrent(occurrence.session_id);
     void useSessionStore.getState().refresh({ loadCurrent: false });
@@ -92,6 +94,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession }: { job: Schedul
     <p>{label(occurrence.source)} · {occurrence.scheduled_for ?? occurrence.created_at} · {label(occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status)} · {occurrence.reason}</p>
     <VerificationBadge evidence={occurrence.verification} />
     {occurrence.result && <p className="whitespace-pre-wrap">{occurrence.result}</p>}
-    <Button onClick={() => open(occurrence)}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
+    <ScheduleRunDetail occurrence={occurrence} />
+    <Button disabled={!occurrence.context?.project_id || !occurrence.session_id} onClick={() => open(occurrence)}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
   </div>))}</div>;
 }
