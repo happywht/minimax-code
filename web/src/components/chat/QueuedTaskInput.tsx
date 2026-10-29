@@ -26,12 +26,16 @@ function QueuedTaskEditor({ sessionId, host, budgetTokens, budgetValid }: { sess
     } catch { return null; }
   });
   const [open, setOpen] = useState(!!text || !!pending);
+  const [queueBudget, setQueueBudget] = useState(() => budgetValid ? (budgetTokens === undefined ? "" : String(budgetTokens)) : "无效");
+  const [budgetInitialized, setBudgetInitialized] = useState(!!text || !!pending);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const inFlight = useRef(false);
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const current = () => live.current && ipc.agentBaseUrl === host && useSessionStore.getState().currentSessionId === sessionId;
+  const queueBudgetNumber = queueBudget ? Number(queueBudget) : undefined;
+  const queueBudgetValid = !queueBudget || (/^[1-9]\d*$/.test(queueBudget) && queueBudgetNumber !== undefined && Number.isSafeInteger(queueBudgetNumber));
 
   const submit = async () => {
     if (inFlight.current) return;
@@ -41,10 +45,10 @@ function QueuedTaskEditor({ sessionId, host, budgetTokens, budgetValid }: { sess
       session_id: sessionId, content: text.trim(), idempotency_key: crypto.randomUUID(),
       engine: state.sessions.find((s) => s.id === sessionId)?.engine ?? "native",
       mode: useChat.getState().executionMode,
-      ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
+      ...(queueBudgetNumber !== undefined ? { budget_tokens: queueBudgetNumber } : {}),
       ...(useChat.getState().captureFileChanges ? { capture_file_changes: true } : {}),
     } };
-    if (!pending && (!text.trim() || text.length > MAX_INPUT_CHARS || !budgetValid)) return;
+    if (!pending && (!text.trim() || text.length > MAX_INPUT_CHARS || !queueBudgetValid)) return;
     if (value.project !== project || !current()) {
       setNotice("会话或项目已切换；请回到原项目核对待确认请求。"); return;
     }
@@ -71,15 +75,29 @@ function QueuedTaskEditor({ sessionId, host, budgetTokens, budgetValid }: { sess
   };
 
   return <div className="px-2 py-1 text-xs">
-    <button type="button" aria-expanded={open} className="rounded px-1 py-1 text-ink-1 underline decoration-line-strong underline-offset-2 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setOpen(!open)}>{open ? "收起排队任务" : "排队一个新任务"}</button>
+    <button type="button" aria-expanded={open} className="rounded px-1 py-1 text-ink-1 underline decoration-line-strong underline-offset-2 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => {
+      if (!open && !budgetInitialized) {
+        setQueueBudget(budgetValid ? (budgetTokens === undefined ? "" : String(budgetTokens)) : "无效");
+        setBudgetInitialized(true);
+      }
+      setOpen(!open);
+    }}>{open ? "收起排队任务" : "排队一个新任务"}</button>
     {open && <div className="mt-2 space-y-2">
       <p>这是独立任务，会在同会话前面的任务之后执行；不向当前任务中途追加。没有前序任务时会立即开始。停止当前会话会同时取消其排队任务。</p>
-      <p>此任务 token 上限：{pending ? pending.request.budget_tokens ?? "服务默认（接收时确定）" : !budgetValid ? "输入无效" : budgetTokens ?? "服务默认（接收时确定）"}；{pending ? "重试使用原接单快照。" : "提交时固定，之后修改输入不会改变已接收任务。"}</p>
+      {pending ? <p>此任务 token 上限：{pending.request.budget_tokens ?? "服务默认（接收时确定）"}；重试使用原接单快照。</p> : <>
+        <label className="flex flex-wrap items-center gap-2">排队任务 token 上限
+          <input aria-label="排队任务 token 上限" inputMode="numeric" pattern="[0-9]*" maxLength={16} value={queueBudget}
+            onChange={(event) => setQueueBudget(event.target.value)} placeholder="空白：服务默认"
+            className="w-36 rounded border border-line bg-surface-0 px-2 py-1" />
+        </label>
+        {!queueBudgetValid && <p role="alert">请输入安全范围内的正整数，或留空使用服务默认。</p>}
+        <p>首次展开时取上方输入；之后可独立修改。空白使用服务默认（当前值未知）；提交时固定，不影响普通发送。此上限为 token 数量，非费用上限。</p>
+      </>}
       <textarea aria-label="排队任务内容" value={pending ? String(pending.request.content) : text}
         readOnly={!!pending} maxLength={MAX_INPUT_CHARS} rows={3}
         className="w-full rounded border border-line bg-surface-0 p-2"
         onChange={(event) => { setText(event.target.value); try { localStorage.setItem(storageKey, event.target.value); } catch { /* admission checks storage */ } }} />
-      <Button type="button" size="sm" disabled={busy || (!pending && (!text.trim() || !budgetValid))} loading={busy}
+      <Button type="button" size="sm" disabled={busy || (!pending && (!text.trim() || !queueBudgetValid))} loading={busy}
         onClick={() => void submit()}>{pending ? "重试确认同一任务" : "提交排队任务"}</Button>
       {pending && <button type="button" disabled={busy} className="ml-2 underline" onClick={() => {
         localStorage.removeItem(pendingKey); setPending(null);
