@@ -217,6 +217,52 @@ def release_run_writes(run_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _read_large_line_range(
+    path: Path, start: int, end: int | None, max_bytes: int
+) -> tuple[str, bool, int | None]:
+    """Read a line range without retaining the preceding portion of a large file.
+
+    A bounded readline also prevents a single very long line from consuming
+    unbounded memory. Line endings are normalized as in the ordinary range
+    reader. The total is unknown when the requested range ends before EOF.
+    """
+    def read_with_encoding(encoding: str) -> tuple[str, bool, int | None]:
+        parts: list[str] = []
+        size = 0
+        line = 1
+        saw_text = False
+        ended_line = False
+        with path.open("r", encoding=encoding, newline=None) as fh:
+            while True:
+                piece = fh.readline(65536)
+                if not piece:
+                    total = line - 1 if not saw_text or ended_line else line
+                    if start > total:
+                        raise ValueError(f"start_line {start} beyond file length ({total} lines)")
+                    return "".join(parts), False, total
+                saw_text = True
+                ended_line = piece.endswith("\n")
+                if line >= start:
+                    if size < 8192 and "\x00" in piece[:8192 - size]:
+                        raise ValueError("binary file detected (NUL byte) — refusing to read")
+                    encoded = piece.encode("utf-8")
+                    remaining = max_bytes - size
+                    if len(encoded) > remaining:
+                        parts.append(encoded[:remaining].decode("utf-8", errors="ignore"))
+                        return "".join(parts), True, None
+                    parts.append(piece)
+                    size += len(encoded)
+                if ended_line:
+                    if end is not None and line >= end:
+                        return "".join(parts), False, None
+                    line += 1
+
+    try:
+        return read_with_encoding("utf-8")
+    except UnicodeDecodeError:
+        return read_with_encoding("latin-1")
+
+
 @register_tool
 class ReadFileTool(Tool):
     name = "read_file"
@@ -279,6 +325,35 @@ class ReadFileTool(Tool):
         if b"\x00" in data[:8192]:
             return ToolResult.fail(
                 "binary file detected (NUL byte) — refusing to read"
+            )
+
+        # The prefix limit must not prevent seeking to later requested lines.
+        # Keep the ordinary path for small files (including its whole-file CAS).
+        if truncated and (start_line is not None or end_line is not None):
+            start = max(1, int(start_line or 1))
+            end = int(end_line) if end_line is not None else None
+            if end is not None and end < start:
+                return ToolResult.fail("'end_line' must be greater than or equal to 'start_line'")
+            try:
+                text, range_truncated, total_lines = _read_large_line_range(
+                    read_target, start, end, max_bytes
+                )
+            except (OSError, ValueError) as exc:
+                return ToolResult.fail(f"read failed: {exc}")
+            output: dict[str, Any] = {
+                "path": str(target),
+                "content": text,
+                "truncated": range_truncated,
+                # A partial streaming read is not a whole-file fingerprint.
+                "sha256": None,
+            }
+            if read_target != target:
+                output["sandboxed"] = True
+                output["sandbox_path"] = str(read_target)
+            return ToolResult.ok(
+                output=output,
+                total_lines=total_lines,
+                returned_bytes=len(text.encode("utf-8")),
             )
 
         try:
