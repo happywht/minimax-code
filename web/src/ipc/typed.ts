@@ -507,6 +507,7 @@ export interface TypedIPC {
     parent_session_id?: string;
     budget_tokens?: number;
     mode?: "execute";
+    idempotency_key?: string;
   }): Promise<{
     team_name: string;
     orchestration_mode: string;

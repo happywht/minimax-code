@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import uuid
 from typing import Any
 
 from ..workspace_ctx import WorkspaceUnavailableError, session_root_scope
@@ -298,6 +299,11 @@ def register_team_handlers(
             parent_session_id = params.get("parent_session_id")
             if parent_session_id is not None:
                 parent_session_id = str(parent_session_id)
+            request_key = params.get("idempotency_key")
+            if request_key is not None and (not isinstance(request_key, str) or not request_key.strip() or len(request_key) > 128):
+                await ctx.reply_error(INVALID_PARAMS, "idempotency_key must be 1–128 characters")
+                return
+            request_key = request_key or f"team_legacy_{uuid.uuid4().hex}"
 
             # Direct team execution has no enclosing chat run to supply an
             # authority or workspace. Never silently fall back to the server
@@ -337,6 +343,9 @@ def register_team_handlers(
             # boot not yet run) keeps the legacy stub path for tests.
             from ..app import get_sessions_dao, get_subagent_llm
             from ..orchestrator.team_orchestrator import TeamOrchestrator
+            from ..runs import get_run_service
+            from ..storage.dao.runs import AgentRunsDAO
+            from ..budget import resolve_run_budget
             from .handlers_permissions import _ensure_permission_store
 
             permission_store = await _ensure_permission_store(ctx.server)
@@ -349,6 +358,7 @@ def register_team_handlers(
                 permission_store=permission_store,
                 permission_server=ctx.server,
             )
+            orch._request_key = request_key
             # v1.3.0: scope the whole team run to the driving session's
             # root — members spawned via ``create_task`` copy the context
             # and inherit it; the scope makes this handler independent of
@@ -359,16 +369,54 @@ def register_team_handlers(
                 if not session:
                     await ctx.reply_error(INVALID_PARAMS, "Team session is unavailable")
                     return
-                team_task = asyncio.create_task(orch.run(
-                    team_name,
-                    request,
-                    session_id=session_id,
-                    parent_session_id=parent_session_id,
-                    budget_tokens=budget_tokens,
-                    workspace_snapshot=str(root),
-                    project_id=session.get("project_id"),
-                ))
-                result = await asyncio.shield(team_task)
+                service = get_run_service(ctx.server)
+                dao = AgentRunsDAO(team_dao._db)
+                project_id = session.get("project_id")
+                workspace = str(root)
+                async def operation(job):
+                    # Queueing may outlive a project/session change or a revoked
+                    # host permission; never execute using the stale snapshot.
+                    from ..workspace_ctx import resolve_root_for_session
+                    await require_host_session(session_id)
+                    if parent_session_id and parent_session_id != session_id:
+                        await require_host_session(parent_session_id)
+                        await resolve_root_for_session(parent_session_id)
+                    current = await session_dao.get(session_id)
+                    if (not current or current.get("project_id") != project_id
+                            or str(await resolve_root_for_session(session_id)) != workspace):
+                        raise ValueError("Team session, project or workspace changed while queued")
+                    return await orch.run(team_name, request, session_id=session_id,
+                        parent_session_id=parent_session_id, budget_tokens=budget_tokens,
+                        workspace_snapshot=workspace, project_id=project_id, admitted_run_id=job.run_id)
+
+                async def finalize(job, error):
+                    row = await dao.get_run(job.run_id)
+                    if row and row["status"] in {"queued", "running"} and error is not None:
+                        status = "cancelled" if row["status"] == "queued" and isinstance(error, asyncio.CancelledError) else "interrupted" if isinstance(error, asyncio.CancelledError) else "failed"
+                        await dao.update_run_status(job.run_id, status=status, error=str(error) or type(error).__name__)
+                        await orch._emit_progress(status, job.run_id, team_name,
+                            summary="团队未完成；请查看运行状态并核对。", session_id=session_id)
+
+                payload = {"mode": "team", "kind": "team_spawn", "team_name": team_name,
+                           "request": request, "parent_session_id": parent_session_id, "budget_tokens": budget_tokens}
+                run, job, created = await service.admit(dao=dao, session_id=session_id, request=payload,
+                    request_key=request_key, title=f"Team run: {team_name}",
+                    metadata={"team_result": None, "parent_session_id": parent_session_id,
+                              "workspace_snapshot": workspace, "project_id": project_id,
+                              "budget": {"limit_tokens": resolve_run_budget(budget_tokens)}},
+                    workspace=workspace, project_id=project_id, operation=operation, finalize=finalize)
+                if created:
+                    await ctx.emit("agent.team_progress", {"task_id": run["id"], "team_name": team_name,
+                        "session_id": session_id, "status": "queued", "progress": 0,
+                        "agents_total": 0, "agents_completed": 0, "idempotency_key": request_key})
+                if job is None:
+                    saved = (run.get("metadata") or {}).get("team_result")
+                    if not isinstance(saved, dict):
+                        await ctx.reply_error(INVALID_PARAMS, "Team run has no completed result; review its status")
+                        return
+                    await ctx.reply({**saved, "task_id": run["id"]})
+                    return
+                result = await service.wait(job)
             await ctx.reply({
                 "team_name": result.team_name,
                 "orchestration_mode": result.orchestration_mode,

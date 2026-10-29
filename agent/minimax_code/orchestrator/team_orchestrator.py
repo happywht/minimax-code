@@ -174,6 +174,7 @@ class TeamOrchestrator:
         budget_tokens: int | None = None,
         workspace_snapshot: str | None = None,
         project_id: str | None = None,
+        admitted_run_id: str | None = None,
     ) -> TeamRunResult:
         """Execute a team run and persist the result.
 
@@ -182,7 +183,7 @@ class TeamOrchestrator:
         returns a merged :class:`TeamRunResult`. The result is stored
         in ``agent_runs`` (``mode="team"``) under ``task_id``.
         """
-        task_id = f"teamrun_{uuid.uuid4().hex[:10]}"
+        task_id = admitted_run_id or f"teamrun_{uuid.uuid4().hex[:10]}"
         run_session_id = session_id or task_id
         self._session_id = run_session_id
 
@@ -215,7 +216,13 @@ class TeamOrchestrator:
                 raise RuntimeError("Team permission service is unavailable")
             runs_dao = self._make_runs_dao()
             await self._ensure_session(run_session_id)
-            row = await runs_dao.create_run(
+            if admitted_run_id:
+                row = await runs_dao.claim_run(task_id)
+                if (row is None or row["session_id"] != run_session_id or row["mode"] != "team"
+                        or row["status"] != "running"):
+                    raise RuntimeError("Team admission is unavailable or changed")
+            else:
+                row = await runs_dao.create_run(
                     id=task_id,
                     session_id=run_session_id,
                     mode="team",
@@ -284,6 +291,15 @@ class TeamOrchestrator:
                 result.budget = await budget_handle.snapshot()
             except Exception:
                 logger.warning("Failed to read team budget snapshot", exc_info=True)
+
+        # Rejected/empty teams can finish before on_admitted is reached;
+        # still close the already queued durable record.
+        if admitted_run_id and runs_dao is None:
+            runs_dao = self._make_runs_dao()
+            saved = await runs_dao.get_run(task_id)
+            if saved is None:
+                raise RuntimeError("Team admission disappeared")
+            metadata = saved["metadata"]
 
         if runs_dao is not None:
             try:
@@ -771,6 +787,8 @@ class TeamOrchestrator:
             if summary:
                 payload["summary"] = summary
             payload["session_id"] = session_id or self._session_id
+            if getattr(self, "_request_key", None):
+                payload["idempotency_key"] = self._request_key
             await self._emit_event("agent.team_progress", payload)
         except Exception:  # pragma: no cover — emitter failure shouldn't kill the run
             logger.warning("Failed to emit team_progress event", exc_info=True)

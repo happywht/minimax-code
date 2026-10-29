@@ -22,6 +22,7 @@ export interface TeamRunEntry {
   team_name: string;
   session_id?: string;
   cancelling?: boolean;
+  idempotency_key?: string;
   status: TeamProgressData["status"];
   progress: number;
   agents_total: number;
@@ -51,6 +52,7 @@ export interface TeamRunState {
     parent_session_id?: string;
     budget_tokens?: number;
     mode?: "execute";
+    idempotency_key?: string;
   }) => Promise<void>;
 
   /** Clear completed/failed runs older than `maxAgeMs`. */
@@ -71,6 +73,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
     // Insert an optimistic entry immediately so the panel shows the run
     // even before the first WS progress event arrives (or if WS is down).
     const pendingId = `pending-${opts.team_name}-${Date.now()}`;
+    const requestKey = opts.idempotency_key ?? crypto.randomUUID();
     set((s) => ({
       runs: trimArray(
         [
@@ -79,7 +82,8 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
             task_id: pendingId,
             team_name: opts.team_name,
             session_id: opts.session_id ?? opts.parent_session_id,
-            status: "started",
+            idempotency_key: requestKey,
+            status: "queued",
             progress: 0,
             agents_total: 0,
             agents_completed: 0,
@@ -91,7 +95,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
       ),
     }));
     try {
-      const result = await typedIPC.spawnTeam(opts);
+      const result = await typedIPC.spawnTeam({ ...opts, idempotency_key: requestKey });
       set((s) => ({
         runs: s.runs.map((r) =>
           // The pending entry we just inserted, or the real-task_id entry
@@ -117,7 +121,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
     } catch (e) {
       // Mark the pending run as failed
       const msg = String(e);
-      if (!_get().runs.some((r) => r.session_id === opts.session_id && r.status === "interrupted")) {
+      if (!_get().runs.some((r) => r.idempotency_key === requestKey && (r.status === "interrupted" || r.status === "cancelled"))) {
         toast.error(strings.toasts.teamSpawnFailed, msg);
       }
       set((s) => ({
@@ -133,7 +137,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
     set((s) => ({
       runs: s.runs.filter(
         (r) =>
-          (r.status !== "completed" && r.status !== "failed" && r.status !== "interrupted") ||
+          (r.status !== "completed" && r.status !== "failed" && r.status !== "cancelled" && r.status !== "interrupted") ||
           r.updated_at > cutoff,
       ),
     }));
@@ -180,7 +184,7 @@ export function initTeamRunListener(): () => void {
             r.task_id === evt.task_id
               ? {
                   ...r,
-                  status: r.status === "interrupted" ? r.status : evt.status,
+                  status: r.status === "interrupted" || (evt.status === "queued" && r.status !== "queued") ? r.status : evt.status,
                   progress: evt.progress,
                   agents_total: evt.agents_total ?? r.agents_total,
                   agents_completed: evt.agents_completed ?? r.agents_completed,
@@ -195,12 +199,14 @@ export function initTeamRunListener(): () => void {
       // New run — replace a same-team optimistic "pending-*" entry instead
       // of appending a duplicate card.
       const pendingIdx = s.runs.findIndex(
-        (r) => r.team_name === evt.team_name && r.session_id === evt.session_id && r.task_id.startsWith("pending-"),
+        (r) => r.team_name === evt.team_name && r.session_id === evt.session_id && r.task_id.startsWith("pending-") &&
+          (!evt.idempotency_key || r.idempotency_key === evt.idempotency_key),
       );
       const entry: TeamRunEntry = {
         task_id: evt.task_id,
         team_name: evt.team_name,
         session_id: evt.session_id,
+        idempotency_key: evt.idempotency_key,
         status: evt.status,
         progress: evt.progress,
         agents_total: evt.agents_total ?? 0,

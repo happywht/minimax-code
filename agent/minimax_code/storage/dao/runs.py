@@ -75,7 +75,7 @@ class AgentRunsDAO:
         ):
             raise ValueError("idempotency_key must be a non-empty string of at most 128 characters")
         mode = request.get("mode", "chat")
-        if mode not in {"chat", "plan", "execute"}:
+        if mode not in {"chat", "plan", "execute"} and not (mode == "team" and request.get("kind") == "team_spawn"):
             raise ValueError("native admission requires chat, plan or execute mode")
         canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         fingerprint = _request_hash(request)

@@ -2003,6 +2003,12 @@ execution scope rejects it. Members use the current permission store and a
 team-run-scoped explicit-once consent gate, including parallel members. Pending
 consents are exposed in `run.steps` while this service process remains alive;
 the team does not inherit the ordinary chat run's consent registry entry.
+Team admission uses the same per-session RunService queue as Native, Codex and
+manual validation. The queued record and budget family are durable; workspace,
+project and host permissions are rechecked at dispatch. An optional
+`idempotency_key` replays the same request without running it twice; callers
+omitting it retain distinct legacy submissions. Queue cancellation is recorded
+as cancelled before execution, while an in-flight cancellation is interrupted.
 `budget_tokens` is an optional positive integer; otherwise the service default applies.
 The team has its own durable budget family, shared by concurrent members and the
 service daily ledger. The returned `budget` is a completion snapshot or null if

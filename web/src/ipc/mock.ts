@@ -161,6 +161,7 @@ const mockRunRequests = new Map<string, import("../types/ipc").SendMessageParams
 const mockAgentKeys = new Map<string, { signature: string; runId: string }>();
 const mockSkillKeys = new Map<string, { signature: string; runId: string }>();
 const mockRequestKeys = new Map<string, { signature: string; runId: string }>();
+const mockTeamRequests = new Map<string, { signature: string; result: Record<string, unknown> }>();
 const mockRunEvents = new Map<string, import("../types/ipc").RunEvent[]>();
 const mockMessages = new Map<string, ProtocolMessage[]>();
 
@@ -2073,13 +2074,20 @@ function mockHandle(
       return { team: t } satisfies { team: AgentTeam };
     }
     case "team.spawn": {
-      const p = params as { team_name: string; request: string; session_id?: string; parent_session_id?: string; mode?: string };
+      const p = params as { team_name: string; request: string; session_id?: string; parent_session_id?: string; mode?: string; budget_tokens?: number; idempotency_key?: string };
       if (p.mode !== undefined && p.mode !== "execute") throw new Error("Team execution is unavailable in planning mode");
       const sessionId = p.session_id || p.parent_session_id;
       if (!sessionId || !mockSessions.has(sessionId) || (p.parent_session_id && !mockSessions.has(p.parent_session_id))) {
         throw new Error("team.spawn requires an existing session");
       }
-      return {
+      const key = p.idempotency_key ? `${sessionId}:${p.idempotency_key}` : null;
+      const signature = JSON.stringify([p.team_name, p.request, p.parent_session_id ?? null, p.budget_tokens ?? null]);
+      const previous = key ? mockTeamRequests.get(key) : undefined;
+      if (previous) {
+        if (previous.signature !== signature) throw new Error("idempotency_key already belongs to different input");
+        return structuredClone(previous.result);
+      }
+      const result = {
         team_name: p.team_name,
         orchestration_mode: "parallel",
         merged_text: `[mock] Team ${p.team_name} processed: ${p.request}`,
@@ -2087,10 +2095,12 @@ function mockHandle(
           { agent_name: "agent-1", success: true, text: `Handled: ${p.request}`, error: "", iterations: 1, stub: true },
         ],
         conflicts: [],
-        task_id: `teamrun_mock_${Date.now()}`,
+        task_id: `teamrun_mock_${crypto.randomUUID()}`,
         success: true,
         budget: null,
       };
+      if (key) mockTeamRequests.set(key, { signature, result });
+      return result;
     }
 
     // ── task.* mock (v0.11.0) ────────────────────────────────────────

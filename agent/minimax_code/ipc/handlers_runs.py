@@ -508,7 +508,7 @@ def register_run_handlers(server: Any) -> None:
                 raise HandlerError(INVALID_PARAMS, "unknown run_id")
             if run.get("mode") == "team":
                 from ..orchestrator.team_control import cancel as cancel_team
-                requested = cancel_team(request.run_id)
+                requested = get_run_service(ctx.server).cancel_run(request.run_id) or cancel_team(request.run_id)
             else:
                 requested = get_run_service(ctx.server).cancel_run(request.run_id)
             await ctx.reply({"ok": True, "requested": requested, "run": run})

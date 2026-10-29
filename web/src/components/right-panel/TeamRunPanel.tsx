@@ -31,6 +31,7 @@ import { ChildWorkspaceReview } from "./SubAgentPanel";
 
 function statusIcon(status: TeamRunEntry["status"]) {
   switch (status) {
+    case "queued":
     case "started":
     case "agent_started":
     case "agent_completed":
@@ -38,6 +39,7 @@ function statusIcon(status: TeamRunEntry["status"]) {
     case "completed":
       return <CheckCircle2 size={12} className="text-status-success" />;
     case "failed":
+    case "cancelled":
     case "interrupted":
       return <XCircle size={12} className="text-status-error" />;
     default:
@@ -58,7 +60,7 @@ function ProgressBar({ progress }: { progress: number }) {
 }
 
 function RunCard({ run, onRemove, onCancel }: { run: TeamRunEntry; onRemove: () => void; onCancel: () => void }) {
-  const isDone = run.status === "completed" || run.status === "failed" || run.status === "interrupted";
+  const isDone = run.status === "completed" || run.status === "failed" || run.status === "cancelled" || run.status === "interrupted";
   const hasConflicts = run.result?.conflicts?.length;
 
   return (
@@ -102,7 +104,9 @@ function RunCard({ run, onRemove, onCancel }: { run: TeamRunEntry; onRemove: () 
 
       {/* Progress bar */}
       {!isDone && <ProgressBar progress={run.progress} />}
+      {run.status === "queued" && <p className="mt-1 text-minimax-muted">等待同会话的任务完成；尚未开始团队执行。</p>}
       {run.status === "interrupted" && <p className="mt-1 text-status-error">已中断；请核对执行中的操作和文件变化，不能自动恢复。</p>}
+      {run.status === "cancelled" && <p className="mt-1 text-ink-2">排队时已取消，团队未开始执行。</p>}
 
       {/* Active agent */}
       {run.agent_name && !isDone && (
