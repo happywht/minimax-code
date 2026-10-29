@@ -505,6 +505,7 @@ export interface TypedIPC {
     request: string;
     session_id?: string;
     parent_session_id?: string;
+    budget_tokens?: number;
   }): Promise<{
     team_name: string;
     orchestration_mode: string;
@@ -525,6 +526,7 @@ export interface TypedIPC {
     }>;
     task_id: string | null;
     success: boolean;
+    budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean; limit_tokens: number | null } | null;
   }>;
 
   // plugins (platform pillar #3) — drive the Settings page's Plugins tab.

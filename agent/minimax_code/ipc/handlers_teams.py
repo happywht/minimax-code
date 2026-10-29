@@ -282,6 +282,10 @@ def register_team_handlers(
             check_params(params, expected_keys={"team_name", "request"})
             team_name = str(params["team_name"])
             request = str(params["request"])
+            budget_tokens = params.get("budget_tokens")
+            if budget_tokens is not None and (type(budget_tokens) is not int or budget_tokens <= 0):
+                await ctx.reply_error(INVALID_PARAMS, "budget_tokens must be a positive integer")
+                return
             session_id = params.get("session_id")
             if session_id is not None:
                 session_id = str(session_id)
@@ -344,6 +348,7 @@ def register_team_handlers(
                     request,
                     session_id=session_id,
                     parent_session_id=parent_session_id,
+                    budget_tokens=budget_tokens,
                 )
             await ctx.reply({
                 "team_name": result.team_name,
@@ -371,6 +376,7 @@ def register_team_handlers(
                 ],
                 "task_id": result.task_id,
                 "success": result.success,
+                "budget": result.budget,
             })
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)

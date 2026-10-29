@@ -26,6 +26,7 @@ import { typedIPC } from "../../ipc";
 import { formatRelative } from "../../lib/time";
 import { strings } from "../../ui/strings";
 import type { AgentRun } from "../../types/ipc";
+import { useSessionStore } from "../../stores/sessionStore";
 
 function statusIcon(status: TeamRunEntry["status"]) {
   switch (status) {
@@ -112,6 +113,14 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
       ) : null}
 
       {/* Summary for completed */}
+      {isDone && <div className="mt-1 text-[11px] text-minimax-muted">
+        {run.result?.budget
+          ? <>已知 token 下界 {run.result.budget.known_tokens}；预留 {run.result.budget.reserved_tokens}；
+              未知请求 {run.result.budget.unknown_attempts}；
+              {run.result.budget.usage_complete ? "用量已记录" : "用量未完整确认"}；
+              上限 {run.result.budget.limit_tokens ?? "未设置"}</>
+          : "预算用量快照不可用"}
+      </div>}
       {run.result?.merged_text && isDone && (
         <p className="mt-1 line-clamp-3 text-[11px] text-minimax-muted">
           {run.result.merged_text.slice(0, 300)}
@@ -124,6 +133,8 @@ function RunCard({ run, onRemove }: { run: TeamRunEntry; onRemove: () => void })
 /** One row in the persisted-runs history section. */
 function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
   const done = run.status === "completed";
+  const teamResult = run.metadata?.team_result as { budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean } | null } | undefined;
+  const budget = teamResult?.budget;
   return (
     <li
       data-testid={`teamrun-history-${run.id}`}
@@ -135,7 +146,9 @@ function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
         ) : (
           <XCircle size={11} className="shrink-0 text-status-error" />
         )}
-        <span className="truncate text-ink-0">{run.title || run.id}</span>
+        <span className="min-w-0 text-ink-0">{run.title || run.id}
+          {budget && <span className="block text-ink-2">结束时快照：已知下界 {budget.known_tokens}，预留 {budget.reserved_tokens}，未知请求 {budget.unknown_attempts}；{budget.usage_complete ? "用量已记录" : "用量未完整确认"}</span>}
+        </span>
       </span>
       <span className="shrink-0 text-ink-2">{formatRelative(run.created_at)}</span>
     </li>
@@ -143,6 +156,7 @@ function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
 }
 
 export function TeamRunPanel(): JSX.Element {
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
   const runs = useTeamRunStore((s) => s.runs);
   const prune = useTeamRunStore((s) => s.prune);
   const remove = useTeamRunStore((s) => s.remove);
@@ -164,8 +178,10 @@ export function TeamRunPanel(): JSX.Element {
   // runs of every mode, so filter to mode === "team" and keep the latest 5.
   useEffect(() => {
     let cancelled = false;
+    setHistory([]);
+    if (!currentSessionId) return;
     typedIPC
-      .listRuns({ limit: 30 })
+      .listRuns({ session_id: currentSessionId, limit: 30 })
       .then((result) => {
         if (cancelled) return;
         setHistory(result.runs.filter((r) => r.mode === "team").slice(0, 5));
@@ -176,7 +192,7 @@ export function TeamRunPanel(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [currentSessionId]);
 
   const historySection = history.length > 0 && (
     <div data-testid="teamrun-history" className="mt-2 border-t border-line/50 pt-2">

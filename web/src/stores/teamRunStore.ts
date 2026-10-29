@@ -32,6 +32,7 @@ export interface TeamRunEntry {
     merged_text: string;
     success: boolean;
     conflicts: Array<{ file_path: string; agents: string[]; conflict_type: string }>;
+    budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean; limit_tokens: number | null } | null;
   };
 }
 
@@ -44,6 +45,7 @@ export interface TeamRunState {
     request: string;
     session_id?: string;
     parent_session_id?: string;
+    budget_tokens?: number;
   }) => Promise<void>;
 
   /** Clear completed/failed runs older than `maxAgeMs`. */
@@ -98,6 +100,7 @@ export const useTeamRunStore = create<TeamRunState>((set, _get) => ({
                   merged_text: result.merged_text,
                   success: result.success,
                   conflicts: result.conflicts,
+                  budget: result.budget,
                 },
               }
             : r,

@@ -2086,6 +2086,7 @@ function mockHandle(
         conflicts: [],
         task_id: `teamrun_mock_${Date.now()}`,
         success: true,
+        budget: null,
       };
     }
 

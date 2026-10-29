@@ -16,18 +16,20 @@ export interface TeamRowProps {
   onToggleEnabled: () => void;
   onDelete: () => void;
   /** Start a team run with the given request text. */
-  onRun: (request: string) => void;
+  onRun: (request: string, budgetTokens?: number) => void;
   canRun: boolean;
 }
 
 export function TeamRow({ team, onToggleEnabled, onDelete, onRun, canRun }: TeamRowProps): JSX.Element {
   const [showRunForm, setShowRunForm] = useState(false);
   const [request, setRequest] = useState("");
+  const [budget, setBudget] = useState("");
+  const budgetValid = !budget || (/^[1-9]\d*$/.test(budget) && Number.isSafeInteger(Number(budget)));
 
   const submitRun = () => {
     const trimmed = request.trim();
-    if (!trimmed || !canRun) return;
-    onRun(trimmed);
+    if (!trimmed || !canRun || !budgetValid) return;
+    onRun(trimmed, budget ? Number(budget) : undefined);
     setShowRunForm(false);
     setRequest("");
   };
@@ -110,6 +112,13 @@ export function TeamRow({ team, onToggleEnabled, onDelete, onRun, canRun }: Team
             rows={2}
             className="w-full resize-none rounded-md border border-line bg-surface-1 px-2 py-1.5 text-xs text-ink-0 placeholder:text-ink-2 focus:border-accent/50 focus:outline-none"
           />
+          <label className="block text-[11px] text-ink-1" htmlFor={`team-budget-${team.name}`}>
+            团队共享 token 上限（可选；留空使用服务默认）
+          </label>
+          <input id={`team-budget-${team.name}`} type="text" inputMode="numeric" value={budget}
+            onChange={(e) => setBudget(e.target.value)} placeholder="正整数" className="w-full rounded-md border border-line bg-surface-1 px-2 py-1.5 text-xs text-ink-0" />
+          {!budgetValid && <p className="text-xs text-status-error">请输入有效的正整数。</p>}
+          <p className="text-[11px] text-ink-2">按请求估算并共享每日预算；不是金额或严格费用上限。</p>
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="ghost" onClick={() => setShowRunForm(false)}>
               {strings.settings.teams.runCancel}
@@ -118,7 +127,7 @@ export function TeamRow({ team, onToggleEnabled, onDelete, onRun, canRun }: Team
               size="sm"
               variant="subtle"
               data-testid={`settings-team-run-submit-${team.name}`}
-              disabled={!request.trim() || !canRun}
+              disabled={!request.trim() || !canRun || !budgetValid}
               onClick={submitRun}
             >
               {strings.settings.teams.runSubmit}

@@ -231,6 +231,7 @@ class AgentRunsDAO:
         user_message_id: str | None = None,
         assistant_message_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        attach_budget_family: bool = False,
     ) -> dict[str, Any]:
         if mode not in _VALID_RUN_MODES:
             raise ValueError(f"mode must be one of {sorted(_VALID_RUN_MODES)}")
@@ -257,6 +258,10 @@ class AgentRunsDAO:
                     dumps_json(metadata),
                 ),
             )
+            if attach_budget_family:
+                from .budgets import attach_family
+                metadata = dict(metadata or {})
+                await attach_family(conn, run_id, metadata)
             run = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id = ?", (run_id,)))
             await _append_event(conn, run_id, "created", {"run": run})
         return run

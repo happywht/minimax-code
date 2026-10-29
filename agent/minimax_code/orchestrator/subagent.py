@@ -786,7 +786,9 @@ class SubAgentRuntime:
                     raise RunPersistenceError("Owned sub-agent durable run/session/budget binding is unavailable")
             else:
                 inherited = current_handle()
-            budget_owner = durable_owner or (child.run_id if child is not None else current_run_id())
+            # Standalone team children have no durable child run row. Keep
+            # their attempts on the durable team owner, not a workspace id.
+            budget_owner = durable_owner or (inherited.run_id if inherited else current_run_id())
             descendant = inherited.descendant(budget_owner or inherited.run_id) if inherited else None
             from contextlib import ExitStack
             with ExitStack() as scopes:

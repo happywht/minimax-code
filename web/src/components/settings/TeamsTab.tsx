@@ -51,13 +51,14 @@ function TeamsTab(): JSX.Element {
     if (accepted) await remove(t.name);
   };
 
-  const handleRun = (teamName: string, request: string) => {
+  const handleRun = (teamName: string, request: string, budgetTokens?: number) => {
     if (!currentSessionId) return;
     toast.info(strings.settings.teams.runStartedToast, strings.settings.teams.runStartedDetail);
     void spawnRun({
       team_name: teamName,
       request,
       session_id: currentSessionId,
+      budget_tokens: budgetTokens,
     });
   };
 
@@ -105,7 +106,7 @@ function TeamsTab(): JSX.Element {
               team={t}
               onToggleEnabled={() => void (t.enabled ? disable(t.name) : enable(t.name))}
               onDelete={() => void handleDelete(t)}
-              onRun={(request) => handleRun(t.name, request)}
+              onRun={(request, budgetTokens) => handleRun(t.name, request, budgetTokens)}
               canRun={Boolean(currentSessionId)}
             />
           ))}

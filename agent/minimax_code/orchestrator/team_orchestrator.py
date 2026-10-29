@@ -39,6 +39,7 @@ import asyncio
 import logging
 import os
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -119,6 +120,7 @@ class TeamRunResult:
     conflicts: list[TeamConflict] = field(default_factory=list)
     task_id: str | None = None
     success: bool = True
+    budget: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +167,7 @@ class TeamOrchestrator:
         *,
         session_id: str | None = None,
         parent_session_id: str | None = None,
+        budget_tokens: int | None = None,
     ) -> TeamRunResult:
         """Execute a team run and persist the result.
 
@@ -176,42 +179,65 @@ class TeamOrchestrator:
         task_id = f"teamrun_{uuid.uuid4().hex[:10]}"
         run_session_id = session_id or task_id
 
+        from ..budget import daily_budget_limit, resolve_run_budget
+        from ..budget_ledger import BudgetHandle, budget_scope
+
         runs_dao: Any | None = None
+        budget_handle: Any | None = None
+        metadata: dict[str, Any] = {"team_result": None, "parent_session_id": parent_session_id,
+                                   "budget": {"limit_tokens": resolve_run_budget(budget_tokens)}}
+        scopes = ExitStack()
 
         async def persist_start() -> None:
-            # Only admitted teams may create run/session records. Persistence
-            # remains fail-open after the complete member selection is checked.
-            nonlocal runs_dao
-            try:
-                runs_dao = self._make_runs_dao()
-                await self._ensure_session(run_session_id)
-                await runs_dao.create_run(
+            # No member can call a model until the owner and its budget family
+            # have both been committed in the same transaction.
+            nonlocal runs_dao, budget_handle, metadata
+            runs_dao = self._make_runs_dao()
+            await self._ensure_session(run_session_id)
+            row = await runs_dao.create_run(
                     id=task_id,
                     session_id=run_session_id,
                     mode="team",
                     status="running",
                     title=f"Team run: {team_name}",
-                    metadata={"team_result": None, "parent_session_id": parent_session_id},
+                    metadata=metadata,
+                    attach_budget_family=True,
                 )
-            except Exception:
-                logger.warning("Failed to persist team run start", exc_info=True)
-                runs_dao = None
+            metadata = row["metadata"]
+            budget_handle = await BudgetHandle.for_run(self._team_dao._db, task_id,
+                                                       daily_limit=daily_budget_limit())
+            scopes.enter_context(budget_scope(budget_handle))
 
-        result = await self._run_body(
-            team_name,
-            request,
-            session_id=run_session_id,
-            task_id=task_id,
-            parent_session_id=parent_session_id,
-            on_admitted=persist_start,
-        )
+        try:
+            result = await self._run_body(
+                team_name, request, session_id=run_session_id, task_id=task_id,
+                parent_session_id=parent_session_id, on_admitted=persist_start,
+            )
+        except BaseException as exc:
+            if runs_dao is not None:
+                try:
+                    await runs_dao.update_run_status(
+                        task_id, status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
+                        metadata=metadata,
+                    )
+                except Exception:
+                    logger.warning("Failed to persist interrupted team run", exc_info=True)
+            raise
+        finally:
+            scopes.close()
+
+        if budget_handle is not None:
+            try:
+                result.budget = await budget_handle.snapshot()
+            except Exception:
+                logger.warning("Failed to read team budget snapshot", exc_info=True)
 
         if runs_dao is not None:
             try:
                 await runs_dao.update_run_status(
                     task_id,
                     status="completed" if result.success else "failed",
-                    metadata={
+                    metadata={**metadata,
                         "team_result": self._result_to_dict(result),
                         "parent_session_id": parent_session_id,
                     },
@@ -717,6 +743,7 @@ class TeamOrchestrator:
             "orchestration_mode": result.orchestration_mode,
             "merged_text": result.merged_text,
             "success": result.success,
+            "budget": result.budget,
             "agents_run": [
                 {
                     "agent_name": r.agent_name,

@@ -1994,8 +1994,13 @@ UI 依据 `cancel_supported` 禁用动作，不能只改任务账本制造已停
 `team.spawn` requires an existing `session_id` (or, for older callers, an
 existing `parent_session_id`); the selected session determines the workspace.
 Any supplied parent session is also checked against host-execution restrictions.
-The standalone team run is not a normal chat run and does not inherit its
-durable cancellation or shared budget. Its working-copy boundary is not an OS sandbox.
+`budget_tokens` is an optional positive integer; otherwise the service default applies.
+The team has its own durable budget family, shared by concurrent members and the
+service daily ledger. The returned `budget` is a completion snapshot or null if
+unavailable; unknown usage remains unknown. Requests use estimated reservations,
+not a strict monetary ceiling. The standalone team run is not a normal chat run
+and does not inherit durable cancellation or recovery. Its working-copy boundary
+is not an OS sandbox.
 
 ### webhook.* — Webhook
 
