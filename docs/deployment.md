@@ -90,6 +90,8 @@ python scripts/install-release.py --archive "D:/incoming/minimax-code-1.6.0-0123
 
 Windows 启动器也可在输入路径后选择保存一个新的外部 JSON 启动配置，之后选择 `L` 并输入该文件的绝对路径，核对显示的路径并输入 `YES` 启动。配置只保存数据目录和工作区路径，不保存密钥或初始化选项；加载配置始终要求已有数据库。配置文件必须放在安装目录、数据目录和工作区之外，且不会覆盖已有文件。保存时这些目录及配置文件父目录的路径不能经过符号链接或 junction。配置可能暴露本机路径，应由用户存放在可信的私有目录；启动时仍会执行原有安装、目录和数据库检查。首次初始化失败后，不能通过加载配置自动重新初始化，须检查数据目录并自行决定下一步。
 
+Windows 安装版可双击 `Diagnose-Installed-Release.cmd` 做只读环境检查，按提示输入已有数据和工作区绝对路径，或留空跳过。它汇总 Node、安装文件、前端、所选 Python 和路径的存在性，并给出手工处理方向；不会启动服务、打开数据库、联网或安装依赖。它不检查版本、依赖导入、清单内容、路径重叠、schema、权限、端口或服务就绪；全部显示 OK 也不代表可启动。旧发行包可能不含此入口。此功能尚未进行安装演练或验证。
+
 ```bash
 node scripts/start-release.mjs --data-dir /absolute/existing-data --workspace /absolute/workspace
 ```
