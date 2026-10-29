@@ -22,10 +22,10 @@ import {
   initTeamRunListener,
   type TeamRunEntry,
 } from "../../stores/teamRunStore";
-import { typedIPC } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import { formatRelative } from "../../lib/time";
 import { strings } from "../../ui/strings";
-import type { AgentRun } from "../../types/ipc";
+import type { AgentRun, AgentRunStep } from "../../types/ipc";
 import { useSessionStore } from "../../stores/sessionStore";
 import { ChildWorkspaceReview } from "./SubAgentPanel";
 
@@ -152,9 +152,29 @@ function RunCard({ run, onRemove, onCancel }: { run: TeamRunEntry; onRemove: () 
 function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
   const [stopMessage, setStopMessage] = useState("");
   const [stopping, setStopping] = useState(false);
+  const [steps, setSteps] = useState<AgentRunStep[] | null>(null);
+  const [stepMessage, setStepMessage] = useState("");
+  const [loadingSteps, setLoadingSteps] = useState(false);
+  useEffect(() => { setSteps(null); setStepMessage(""); return ipc.onSideCar(() => { setSteps(null); setStepMessage("连接变化，请重新读取记录。"); }); }, [run.id]);
   const done = run.status === "completed";
   const teamResult = run.metadata?.team_result as { budget?: { known_tokens: number; reserved_tokens: number; unknown_attempts: number; usage_complete: boolean } | null; agents_run?: Array<{ agent_name: string; workspace?: { run_id: string } }> } | undefined;
   const budget = teamResult?.budget;
+  const loadMembers = async () => {
+    const host = ipc.agentBaseUrl;
+    const project = useSessionStore.getState().sessions.find((s) => s.id === run.session_id)?.project_id ?? null;
+    setLoadingSteps(true); setStepMessage("");
+    try {
+      const snapshot = await typedIPC.getRunSteps(run.id);
+      if (host !== ipc.agentBaseUrl || useSessionStore.getState().currentSessionId !== run.session_id ||
+          (useSessionStore.getState().sessions.find((s) => s.id === run.session_id)?.project_id ?? null) !== project) return;
+      if (snapshot.run.id !== run.id || snapshot.run.session_id !== run.session_id || snapshot.run.mode !== "team" ||
+          snapshot.steps.some((step) => step.run_id !== run.id || step.session_id !== run.session_id)) throw new Error("团队运行绑定已变化");
+      const members = snapshot.steps.filter((step) => step.payload?.kind === "team_member_v1");
+      setSteps(members);
+      if (!members.length) setStepMessage("没有已保存的成员步骤；旧记录或未开始的成员无法从此推断结果。");
+    } catch (error) { if (host === ipc.agentBaseUrl && useSessionStore.getState().currentSessionId === run.session_id) setStepMessage(String(error)); }
+    finally { if (host === ipc.agentBaseUrl && useSessionStore.getState().currentSessionId === run.session_id) setLoadingSteps(false); }
+  };
   return (
     <li
       data-testid={`teamrun-history-${run.id}`}
@@ -182,6 +202,24 @@ function HistoryRow({ run }: { run: AgentRun }): JSX.Element {
       }}>停止</button>}
       <span className="shrink-0 text-ink-2">{formatRelative(run.created_at)}</span>
       </div>
+      <button type="button" disabled={loadingSteps} onClick={() => void loadMembers()} className="mt-1 underline">{loadingSteps ? "读取中…" : "查看已保存成员记录"}</button>
+      {stepMessage && <p role="status">{stepMessage}</p>}
+      {steps?.map((step) => {
+        const data = step.payload ?? {};
+        const outcome = data.outcome;
+        const text = typeof data.text === "string" ? data.text : "";
+        const workspace = data.workspace as { run_id?: unknown } | undefined;
+        return <div key={step.id} className="mt-2 rounded border border-line p-2">
+          <p>{typeof data.agent_name === "string" ? data.agent_name : step.title} · {outcome === "completed" ? "已记录完成结果（非验收）" : outcome === "incomplete" ? "未完整结束" : run.status === "running" ? "已开始，尚无结束记录" : "结果未知，需核对"}</p>
+          {text && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{text}</pre>}
+          {data.text_truncated === true && <p>成员文本已截断。</p>}
+          {typeof data.error === "string" && data.error && <p className="break-words">{data.error}</p>}
+          {data.stub === true && <p>演示结果，未调用真实模型。</p>}
+          {typeof workspace?.run_id === "string" && outcome !== "unknown" && ["completed", "failed", "interrupted"].includes(run.status) &&
+            <ChildWorkspaceReview runId={workspace.run_id} sessionId={run.session_id} teamRunId={run.id} allowCollect={run.status !== "interrupted"} />}
+        </div>;
+      })}
+      {teamResult && typeof (teamResult as { merged_text?: unknown }).merged_text === "string" && <details><summary>团队已保存汇总</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{(teamResult as { merged_text: string }).merged_text}</pre></details>}
       {teamResult?.agents_run?.map((agent, index) => agent.workspace?.run_id &&
         <details key={`${agent.workspace.run_id}-${index}`} className="mt-2"><summary>{agent.agent_name} · 审阅独立工作区</summary>
           <ChildWorkspaceReview runId={agent.workspace.run_id} sessionId={run.session_id} teamRunId={run.id} />
@@ -197,6 +235,9 @@ export function TeamRunPanel(): JSX.Element {
   const prune = useTeamRunStore((s) => s.prune);
   const remove = useTeamRunStore((s) => s.remove);
   const [history, setHistory] = useState<AgentRun[]>([]);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [historyError, setHistoryError] = useState("");
+  useEffect(() => ipc.onSideCar(() => { setHistory([]); setHistoryVersion((v) => v + 1); }), []);
 
   // Init WS listener on first mount
   useEffect(() => {
@@ -214,28 +255,33 @@ export function TeamRunPanel(): JSX.Element {
   // runs of every mode, so filter to mode === "team" and keep the latest 5.
   useEffect(() => {
     let cancelled = false;
+    const host = ipc.agentBaseUrl;
+    setHistoryError("");
     setHistory([]);
     if (!currentSessionId) return;
     typedIPC
       .listRuns({ session_id: currentSessionId, limit: 30 })
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || host !== ipc.agentBaseUrl || useSessionStore.getState().currentSessionId !== currentSessionId) return;
         setHistory(result.runs.filter((r) => r.mode === "team").slice(0, 5));
       })
-      .catch(() => {
-        // History is best-effort; the live section still works.
+      .catch((error) => {
+        if (!cancelled && host === ipc.agentBaseUrl) setHistoryError(`团队记录读取失败：${String(error)}`);
       });
     return () => {
       cancelled = true;
     };
-  }, [currentSessionId]);
+  }, [currentSessionId, historyVersion]);
 
-  const historySection = history.length > 0 && (
+  const historySection = currentSessionId && (
     <div data-testid="teamrun-history" className="mt-2 border-t border-line/50 pt-2">
       <h4 className="mb-1 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-ink-2">
         <History size={10} />
         {strings.rightPanel.teamRuns.historyTitle}
+        <button type="button" onClick={() => setHistoryVersion((v) => v + 1)} className="ml-auto underline">刷新</button>
       </h4>
+      {historyError && <p role="status">{historyError}</p>}
+      {!historyError && history.length === 0 && <p>当前会话没有已保存的团队记录。</p>}
       <ul className="space-y-1">
         {history.map((r) => (
           <HistoryRow key={r.id} run={r} />

@@ -193,12 +193,20 @@ def register_run_handlers(server: Any) -> None:
                     result = meta.get("team_result") if isinstance(meta, dict) else None
                     agents = result.get("agents_run") if isinstance(result, dict) else None
                     session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
+                    recorded = isinstance(agents, list) and any(isinstance(a, dict) and isinstance(a.get("workspace"), dict)
+                        and a["workspace"].get("run_id") == req.run_id for a in agents)
+                    if team and not recorded:
+                        steps = await dao.list_steps(req.team_run_id)
+                        recorded = any(isinstance(step.get("payload"), dict)
+                            and step["payload"].get("kind") == "team_member_v1"
+                            and step["payload"].get("outcome") in {"completed", "incomplete"}
+                            and isinstance(step["payload"].get("workspace"), dict)
+                            and step["payload"]["workspace"].get("run_id") == req.run_id for step in steps)
                     if (not team or team["mode"] != "team" or team["session_id"] != req.session_id
-                            or team["status"] not in {"completed", "failed"} or not session
-                            or not isinstance(agents, list) or "project_id" not in meta
+                            or team["status"] not in {"completed", "failed", "interrupted"} or not session
+                            or not recorded or "project_id" not in meta
                             or meta["project_id"] != session["project_id"]
-                            or not any(isinstance(a, dict) and isinstance(a.get("workspace"), dict)
-                                       and a["workspace"].get("run_id") == req.run_id for a in agents)):
+                            or (req.action == "collect" and team["status"] == "interrupted")):
                         raise ValueError("Team member or project binding is unavailable or changed")
                     root = require_directory(await resolve_root_for_session(req.session_id))
                     if meta.get("workspace_snapshot") != str(root):

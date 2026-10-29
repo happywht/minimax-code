@@ -327,7 +327,7 @@ function validReceipt(value: ChildWorkspaceReceipt | undefined, runId: string): 
     (!value.complete || value.conflicts.length === 0);
 }
 
-export function ChildWorkspaceReview({ runId, sessionId, teamRunId }: { runId: string; sessionId: string; teamRunId?: string }): JSX.Element {
+export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect = true }: { runId: string; sessionId: string; teamRunId?: string; allowCollect?: boolean }): JSX.Element {
   const [review, setReview] = useState<ReviewResult | null>(null);
   const [receipt, setReceipt] = useState<{ report: ChildWorkspaceReceipt; root: string; service: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -487,7 +487,8 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId }: { runId: s
         {file.diff_unavailable ? <p>差异过大或非 UTF-8，请手动查看。</p> : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.diff || "（内容相同或无文本差异）"}</pre>}
         {file.diff_truncated && <p>差异已截断，请手动查看。</p>}
       </details>)}
-      <button type="button" disabled={busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>
+      <button type="button" disabled={!allowCollect || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>
+      {!allowCollect && <p>团队已中断；此入口仅供审阅，不自动收集。</p>}
       <p>删除和冲突需手动处理；执行中出现错误时可能部分收集，请核对文件。</p>
     </div>}
   </div>;

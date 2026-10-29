@@ -637,6 +637,32 @@ class TeamOrchestrator:
 
         agent_name = config.name
         sid = session_id or f"teamrun_session_{uuid.uuid4().hex[:8]}"
+        step_dao = None
+        member_step = None
+        try:
+            step_dao = self._make_runs_dao()
+            member_step = await step_dao.create_step(run_id=task_id, session_id=sid, kind="status",
+                title=f"团队成员：{agent_name}", payload={"kind": "team_member_v1", "agent_name": agent_name,
+                "outcome": "pending"})
+        except Exception:
+            logger.warning("Could not persist team member start", exc_info=True)
+
+        async def save_member(result: AgentRunResult | None, *, uncertain: bool = False) -> None:
+            if step_dao is None or member_step is None:
+                return
+            payload: dict[str, Any] = {"kind": "team_member_v1", "agent_name": agent_name,
+                                       "outcome": "unknown" if uncertain else "completed" if result and result.success else "incomplete"}
+            if result is not None:
+                payload.update(text=result.text[:8000], text_truncated=len(result.text) > 8000,
+                               error=result.error[:2000], iterations=result.iterations, stub=result.stub)
+                if result.workspace is not None:
+                    payload["workspace"] = result.workspace
+            try:
+                await step_dao.complete_step(member_step["id"], status="failed" if uncertain or not result or not result.success else "completed",
+                    summary="结果未知，需核对" if uncertain else "已记录成员结果" if result and result.success else "成员未完整结束",
+                    payload=payload)
+            except Exception:
+                logger.warning("Could not persist team member result", exc_info=True)
 
         await self._emit_progress(
             "agent_started", task_id, team_name,
@@ -672,7 +698,7 @@ class TeamOrchestrator:
                 agents_total=total,
                 agents_completed=index + 1,
             )
-            return AgentRunResult(
+            member_result = AgentRunResult(
                 agent_name=agent_name,
                 success=not incomplete,
                 error="Agent stopped before completion (budget, cancellation, or truncation)" if incomplete else "",
@@ -682,6 +708,11 @@ class TeamOrchestrator:
                 stub=envelope.get("stub", True),
                 workspace=envelope.get("workspace"),
             )
+            await save_member(member_result)
+            return member_result
+        except asyncio.CancelledError:
+            await save_member(None, uncertain=True)
+            raise
         except TimeoutError:
             # v1.2.2: a hung agent fails itself instead of hanging the
             # whole team run forever.
@@ -689,18 +720,22 @@ class TeamOrchestrator:
                 "Agent %s timed out (%ss wall clock) in team %s",
                 agent_name, timeout_s, team_name,
             )
-            return AgentRunResult(
+            member_result = AgentRunResult(
                 agent_name=agent_name,
                 success=False,
                 error=f"timed out after {timeout_s:g}s wall clock",
             )
+            await save_member(member_result, uncertain=True)
+            return member_result
         except Exception as exc:
             logger.exception("Agent %s failed in team %s", agent_name, team_name)
-            return AgentRunResult(
+            member_result = AgentRunResult(
                 agent_name=agent_name,
                 success=False,
                 error=str(exc),
             )
+            await save_member(member_result, uncertain=True)
+            return member_result
 
     # -- result merging -----------------------------------------------------
 
