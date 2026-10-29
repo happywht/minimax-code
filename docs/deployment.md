@@ -79,6 +79,22 @@ token 放入 unit 文件或命令参数。应先检查已有同名用户服务�
 将审查过的输出保存到用户 systemd 配置目录，使用 `systemctl --user daemon-reload`、
 `systemctl --user start ...` 及 `/health` 验证；启动成功不等于数据库或任务验收通过。
 
+#### 首次安装新用户服务（显式操作）
+
+在服务所在 Linux 主机上，先按上面的准备步骤创建环境、前端、私有数据目录，并确保 `~/.config/systemd/user`（或 `XDG_CONFIG_HOME/systemd/user`）已存在且由当前用户持有、不可由组或其他用户写入。以下命令默认只输出 unit，供审阅，不修改文件或 systemd：
+
+```bash
+python3 scripts/install-linux-user-service.py \
+  --unit minimax-code.service \
+  --python "$PWD/agent/.venv/bin/python" \
+  --workspace "$PWD" --data "$HOME/.local/share/minimax-code" \
+  --web-dist "$PWD/web/dist" --port 8765
+```
+
+审阅后对相同参数追加 `--install` 才创建新 unit 并执行用户级 daemon-reload；再显式追加 `--enable` 可设置用户管理器启用，追加 `--start` 可请求启动，二者可分别选择。只接受当前用户配置目录中的简单 unit 名，已有文件、已加载的同名服务或 drop-in 会拒绝，决不覆盖；不安装依赖、不创建或清理数据，也不连接远端。安装需独占人工操作，期间不要同时修改服务、目录或重命名路径。
+
+工具会显示准备的 Python 和前端路径，但不证明两者版本一致；应自行核对版本和配置。若任何步骤失败，它报告已创建的 unit 和已完成步骤，保留文件和 systemd 状态供检查，不自动回滚或重试。`--start` 仅报告 systemd 状态，不代表应用已就绪；随后按实际需要检查服务状态和 `/health`。这些功能尚未在个人 Linux 主机上进行安装、登出持续运行或故障恢复演练。
+
 登出后用户服务是否继续运行取决于该主机的用户管理器和 linger 配置；此生成器不更改
 linger。关闭服务时 systemd 管理该服务的控制组，但独立容器或其他控制组的生命周期
 仍由各自执行器管理；断电、异常重启、任务恢复、服务更新与回退必须单独验证。此功能
