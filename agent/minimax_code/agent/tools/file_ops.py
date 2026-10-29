@@ -334,7 +334,9 @@ class WriteFileTool(Tool):
     description = (
         "Overwrite a file with the given UTF-8 text content. Creates "
         "intermediate parent directories as needed. The whole file is "
-        "replaced; for surgical edits prefer the 'edit_file' tool."
+        "replaced; existing files require the sha256 from a fresh full "
+        "read. Review the content before replacing it; a hash alone is "
+        "not a review. For surgical edits prefer the 'edit_file' tool."
     )
     parameters = {
         "type": "object",
@@ -345,8 +347,9 @@ class WriteFileTool(Tool):
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
                 "description": (
-                    "Optional optimistic lock: the sha256 the file had when you "
-                    "last read it. On mismatch (or if the file no longer exists) "
+                    "Required for an existing file: sha256 returned by a fresh full "
+                    "read_file call after reviewing its content. A hash alone does not "
+                    "mean the file was reviewed. On mismatch (or if the file no longer exists) "
                     "the write fails with the current hash — re-read the file, "
                     "then reapply your change."
                 ),
@@ -407,6 +410,13 @@ class WriteFileTool(Tool):
         # than silently clobber (the v1.4.2 field report's finding #2).
         previous_sha = file_sha256(read_target) if existed else None
         expected = kwargs.get("expected_sha256")
+        if existed and expected is None:
+            return ToolResult.fail(
+                "write_file blocked: read and review the existing file first, then "
+                "supply its read_file sha256 as expected_sha256; copying a hash "
+                "alone does not mean the content was reviewed",
+                output={"path": str(target), "current_sha256": previous_sha, "file_exists": True},
+            )
         if expected is not None:
             if not isinstance(expected, str) or len(expected) != 64:
                 return ToolResult.fail("'expected_sha256' must be a 64-char hex string")

@@ -21,7 +21,8 @@ def _atomic_replace(target: Path, write: Callable[[BinaryIO], object], *, baseli
     parent = target.parent.resolve()
     if parent != target.parent or target.is_symlink():
         raise OSError("Write target changed to a symbolic link; re-read before writing")
-    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
+    target_existed = target.exists()
+    mode = stat.S_IMODE(target.stat().st_mode) if target_existed else None
     fd, temporary = tempfile.mkstemp(prefix=".minimax-write-", dir=parent)
     try:
         with os.fdopen(fd, "wb") as stream:
@@ -38,7 +39,12 @@ def _atomic_replace(target: Path, write: Callable[[BinaryIO], object], *, baseli
             raise OSError("Write target changed during preparation")
         if mode is not None:
             os.chmod(temporary, mode)
-        os.replace(temporary, target)
+        if target_existed:
+            os.replace(temporary, target)
+        else:
+            # Linking is an atomic create-if-absent. If another writer created
+            # the destination after our check, fail instead of overwriting it.
+            os.link(temporary, target)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
