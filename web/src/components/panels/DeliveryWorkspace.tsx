@@ -91,7 +91,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: Del
       }} onClickCapture={(event) => {
         const button = (event.target as HTMLElement).closest("button");
         const label = button?.textContent ?? "";
-        if ((tab === "attachments" || tab === "office") && /添加|删除|新增|插入|移动|转换|恢复/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
+        if ((tab === "attachments" || tab === "office") && /添加|删除|新增|插入|移动|转换|恢复|撤销|重做/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
       }}>
         {visited.has("artifacts") && <div className="h-full" hidden={tab !== "artifacts"}><ArtifactsPanel embedded onClose={onClose} /></div>}
         {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} /></div>}

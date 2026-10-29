@@ -4,15 +4,39 @@ import type { OfficeTableSpec } from "../../types/ipc";
 import type { CsvTable } from "./officeCsv";
 
 const PAGE_SIZE = 20;
+const HISTORY_LIMIT = 20;
 
 type Kind = OfficeTableSpec["columns"][number]["kind"];
+type Snapshot = { table: CsvTable; kinds: Kind[] };
 
-export function CsvTableEditor({ table, original, kinds, onChange }: { table: CsvTable; original: CsvTable; kinds: Kind[]; onChange: (next: CsvTable, nextKinds?: Kind[]) => void }): JSX.Element {
+export function CsvTableEditor({ table, original, kinds, onChange: applyChange }: { table: CsvTable; original: CsvTable; kinds: Kind[]; onChange: (next: CsvTable, nextKinds?: Kind[]) => void }): JSX.Element {
   const [page, setPage] = useState(0);
   const [dedupeColumns, setDedupeColumns] = useState<number[]>([]);
+  const [past, setPast] = useState<Snapshot[]>([]);
+  const [future, setFuture] = useState<Snapshot[]>([]);
+  const snapshot = (): Snapshot => ({ table, kinds: [...kinds] });
+  const onChange = (next: CsvTable, nextKinds?: Kind[]) => {
+    setPast((history) => [...history, snapshot()].slice(-HISTORY_LIMIT));
+    setFuture([]);
+    applyChange(next, nextKinds);
+  };
+  const undo = () => {
+    const previous = past[past.length - 1];
+    if (!previous) return;
+    setPast(past.slice(0, -1));
+    setFuture((history) => [...history, snapshot()].slice(-HISTORY_LIMIT));
+    applyChange(previous.table, previous.kinds);
+  };
+  const redo = () => {
+    const next = future[future.length - 1];
+    if (!next) return;
+    setFuture(future.slice(0, -1));
+    setPast((history) => [...history, snapshot()].slice(-HISTORY_LIMIT));
+    applyChange(next.table, next.kinds);
+  };
   const lastPage = Math.max(0, Math.ceil(table.rows.length / PAGE_SIZE) - 1);
   useEffect(() => { setPage((current) => Math.min(current, lastPage)); }, [lastPage]);
-  useEffect(() => { setPage(0); }, [original]);
+  useEffect(() => { setPage(0); setPast([]); setFuture([]); }, [original]);
   // Column edits can change indices, so require the user to select keys again.
   useEffect(() => { setDedupeColumns([]); }, [table.headers]);
   const edit = (row: number, column: number, value: string) => onChange({ ...table, rows: table.rows.map((cells, i) =>
@@ -57,8 +81,11 @@ export function CsvTableEditor({ table, original, kinds, onChange }: { table: Cs
   const duplicateCount = dedupeColumns.length ? table.rows.length - uniqueRows.length : 0;
   return <div className="space-y-2" data-testid="csv-table-editor">
     <p>编辑的数据仅在本页面；行号以当前表格为准（含表头），源 CSV 不变。恢复会还原本次读取的表格并将列类型重置为文本。</p>
+    <p>可撤销最近 20 次表格编辑，包括列类型快照；重新读取表格或离开编辑器后历史会清空。</p>
     <p>列清理会去除该列每个数据单元格的首尾空白，可能改变文本；不会自动清理。</p>
-    <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" disabled={table.rows.length >= 1000 || (table.rows.length + 2) * table.headers.length > 5000} onClick={addRow}>新增空行</Button>
+    <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" disabled={!past.length} onClick={undo}>撤销表格编辑</Button>
+      <Button type="button" variant="secondary" disabled={!future.length} onClick={redo}>重做表格编辑</Button>
+      <Button type="button" variant="secondary" disabled={table.rows.length >= 1000 || (table.rows.length + 2) * table.headers.length > 5000} onClick={addRow}>新增空行</Button>
       <Button type="button" variant="secondary" disabled={table.headers.length >= 20 || (table.rows.length + 1) * (table.headers.length + 1) > 5000} onClick={addColumn}>新增文本列</Button>
       <Button type="button" variant="secondary" disabled={!empty} onClick={() =>
       onChange({ ...table, rows: table.rows.filter((cells) => cells.some((cell) => cell !== "")) })}>移除全空行（{empty}）</Button>
