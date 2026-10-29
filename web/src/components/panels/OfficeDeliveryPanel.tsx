@@ -10,6 +10,7 @@ import { CsvTableEditor } from "./CsvTableEditor";
 import { OfficeAnalysisControls, type OfficeAnalysisOptions } from "./OfficeAnalysisControls";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ProjectXlsxImport } from "./ProjectXlsxImport";
+import { DraftFileControl } from "./DraftFileControl";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
   { name: "名称", kind: "text" }, { name: "数量", kind: "number" },
@@ -19,6 +20,42 @@ function saveJson(value: unknown, name: string): void {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = name; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+type TableDraft = { filename: string; runId: string; source: string; csv: string; csvTable: CsvTable | null;
+  originalCsvTable: CsvTable | null; tableDirty: boolean; kinds: OfficeTableSpec["columns"][number]["kind"][];
+  candidate: { name: string; text: string; table: CsvTable } | null; analysis: OfficeAnalysisOptions };
+function isDraftTable(value: unknown): value is CsvTable {
+  if (!value || typeof value !== "object") return false;
+  const table = value as Record<string, unknown>;
+  if (!Array.isArray(table.headers) || !Array.isArray(table.rows) || table.headers.length < 1 || table.headers.length > 20 || table.rows.length > 1000 ||
+      (table.rows.length + 1) * table.headers.length > 5000 || table.headers.some((item) => typeof item !== "string" || item.length > 4096)) return false;
+  const width = table.headers.length;
+  return table.rows.every((row) => Array.isArray(row) && row.length === width && row.every((item: unknown) => typeof item === "string" && item.length <= 4096));
+}
+function readTableDraft(value: unknown): TableDraft {
+  if (!value || typeof value !== "object") throw new Error("表格草稿格式无效");
+  const data = value as Record<string, unknown>;
+  if (typeof data.filename !== "string" || typeof data.runId !== "string" || typeof data.source !== "string" || typeof data.csv !== "string" ||
+      typeof data.tableDirty !== "boolean" || !Array.isArray(data.kinds) || data.kinds.length > 20 ||
+      data.kinds.some((kind) => !["text", "number", "boolean"].includes(kind)) ||
+      (data.csvTable !== null && !isDraftTable(data.csvTable)) || (data.originalCsvTable !== null && !isDraftTable(data.originalCsvTable)) ||
+      (data.tableDirty && (!data.csvTable || !data.originalCsvTable)) ||
+      (data.csvTable && data.kinds.length !== (data.csvTable as CsvTable).headers.length)) throw new Error("表格草稿字段无效");
+  if (data.candidate !== null) {
+    const candidate = data.candidate as Record<string, unknown>;
+    if (!candidate || typeof candidate !== "object" || typeof candidate.name !== "string" || typeof candidate.text !== "string" || !isDraftTable(candidate.table)) throw new Error("待选择的 CSV 草稿无效");
+  }
+  const analysis = data.analysis as Record<string, unknown>;
+  if (!analysis || typeof analysis !== "object" || !Array.isArray(analysis.summaries) || analysis.summaries.length > 20 ||
+      analysis.summaries.some((item) => !item || typeof item !== "object" || typeof item.column !== "string" ||
+        !["sum", "count", "average"].includes(item.operation) || typeof item.decimals !== "number" || !Number.isFinite(item.decimals))) throw new Error("汇总草稿无效");
+  if (analysis.chart !== null) {
+    const chart = analysis.chart as Record<string, unknown>;
+    if (!chart || typeof chart !== "object" || !["bar", "line"].includes(String(chart.kind)) || typeof chart.category_column !== "string" ||
+        typeof chart.value_column !== "string" || typeof chart.title !== "string") throw new Error("图表草稿无效");
+  }
+  return data as TableDraft;
 }
 
 export function OfficeDeliveryPanel({ onClose, onText, embedded = false }: { onClose: () => void; onText: () => void; embedded?: boolean }): JSX.Element {
@@ -183,6 +220,15 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false }: { onC
       <pre className="whitespace-pre-wrap break-words rounded border border-line p-3" aria-label="办公成果纯文本预览">{state.selected.preview_text}</pre>
     </div>}
     </div>
+    <DraftFileControl<TableDraft> kind="table" disabled={state.busy || filePending}
+      scope={scoped && project && state.serviceId ? { host, service: state.serviceId, project, session } : null}
+      capture={() => ({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis })}
+      decode={async (value) => readTableDraft(value)}
+      apply={(draft) => {
+        cancelFileRead(); setFilename(draft.filename); setRunId(draft.runId); setSource(draft.source);
+        csvRef.current = draft.csv; setCsv(draft.csv); setCsvTable(draft.csvTable); setOriginalCsvTable(draft.originalCsvTable);
+        setTableDirty(draft.tableDirty); setKinds(draft.kinds); setCandidate(draft.candidate); setAnalysis(draft.analysis); edited();
+      }} />
     <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} onImport={(text, table) => {
       const scope = generationScope.current, expectedService = state.serviceId;
       void (async () => {

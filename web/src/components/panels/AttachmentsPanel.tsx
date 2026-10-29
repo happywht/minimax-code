@@ -7,6 +7,7 @@ import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
 import { ReportSectionsEditor, readEditableSections } from "./ReportSectionsEditor";
 import { ReportResearchPicker } from "./ReportResearchPicker";
+import { DraftFileControl } from "./DraftFileControl";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -17,6 +18,21 @@ const labels: Record<AttachmentParserStatus, string> = {
   parsed: "已解析", empty: "空文本", truncated: "预览已截断", parse_failed: "解析失败",
   type_mismatch: "类型不匹配", parser_unavailable: "解析器不可用", ocr_not_attempted: "未尝试 OCR",
 };
+type ReportDraft = { docName: string; title: string; body: string; format: "docx" | "pdf" | "both";
+  structured: boolean; sections: string; visualSections: boolean; sources: ReportSource[]; researchIds: string[] };
+function readReportDraft(value: unknown): ReportDraft {
+  if (!value || typeof value !== "object") throw new Error("报告草稿格式无效");
+  const data = value as Record<string, unknown>;
+  if (typeof data.docName !== "string" || typeof data.title !== "string" || typeof data.body !== "string" || typeof data.sections !== "string" ||
+      !["docx", "pdf", "both"].includes(String(data.format)) || typeof data.structured !== "boolean" || typeof data.visualSections !== "boolean" ||
+      !Array.isArray(data.sources) || !Array.isArray(data.researchIds) || data.sources.length + data.researchIds.length > 30 ||
+      data.researchIds.some((id) => typeof id !== "string" || id.length > 200) || new Set(data.researchIds).size !== data.researchIds.length ||
+      data.sources.some((source) => !source || typeof source !== "object" || typeof source.title !== "string" || typeof source.url !== "string" ||
+        (source.accessed_at !== undefined && typeof source.accessed_at !== "string"))) throw new Error("报告草稿字段无效");
+  if (data.visualSections && (!data.structured || !readEditableSections(data.sections as string))) throw new Error("可视章节无法恢复；请修正草稿内容");
+  return data as ReportDraft;
+}
+
 export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
@@ -38,6 +54,7 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
   const [visualSections, setVisualSections] = useState(false);
   const [sources, setSources] = useState<ReportSource[]>([]);
   const [researchSources, setResearchSources] = useState<ResearchSource[]>([]);
+  const importedSources = useRef<ResearchSource[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
   const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources, researchSources.map((item) => item.page_source_id), sessionId]);
@@ -165,6 +182,27 @@ export function AttachmentsPanel({ onClose, embedded = false }: { onClose: () =>
       } catch { setFormError("章节 JSON 无效，请使用示例格式。"); }
     }}>
       <h3>生成报告</h3>
+      <DraftFileControl<ReportDraft> kind="report" disabled={state.busy || state.loading}
+        scope={scoped && projectId && state.serviceId ? { host, service: state.serviceId, project: projectId, session: sessionId } : null}
+        capture={() => ({ docName, title, body, format, structured, sections, visualSections, sources, researchIds: researchSources.map((item) => item.page_source_id) })}
+        decode={async (value, scope) => {
+          const draft = readReportDraft(value);
+          if (draft.researchIds.length && !scope.session) throw new Error("研究来源需要原会话");
+          const resolved: ResearchSource[] = [];
+          for (const id of draft.researchIds) {
+            const result = await typedIPC.getResearchSource({ project_id: scope.project, session_id: scope.session!, expected_service_id: scope.service, page_source_id: id });
+            if (result.project_id !== scope.project || result.session_id !== scope.session || result.service_id !== scope.service || result.source.page_source_id !== id)
+              throw new Error("研究来源归属已变化，请重新选择");
+            resolved.push(result.source);
+          }
+          importedSources.current = resolved;
+          return draft;
+        }}
+        apply={(draft) => {
+          setDocName(draft.docName); setTitle(draft.title); setBody(draft.body); setFormat(draft.format); setStructured(draft.structured);
+          setSections(draft.sections); setVisualSections(draft.visualSections); setSources(draft.sources); setFormError(null);
+          setResearchSources(importedSources.current);
+        }} />
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
       <label>文件格式 <select aria-label="报告文件格式" value={format} onChange={(event) => {
         const next = event.target.value as "docx" | "pdf" | "both"; setFormat(next);
