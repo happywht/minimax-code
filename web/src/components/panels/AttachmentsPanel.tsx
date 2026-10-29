@@ -4,6 +4,7 @@ import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
 import type { AttachmentParserStatus, DocxSection, ReportSource } from "../../types/ipc";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
+import { XlsxTablePreview } from "./XlsxTablePreview";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -125,6 +126,7 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
       <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
       <PdfOriginalPreview attachment={state.selected} />
+      <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
         ? <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" aria-label="附件纯文本预览">{state.preview}</pre>
         : <p role="status">当前状态不提供文本预览；可下载保存的原件。</p>}

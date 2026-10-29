@@ -4,6 +4,7 @@ import { useSessionStore } from "../../stores";
 import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
 import type { OfficeTableSpec } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
+import { XlsxTablePreview } from "./XlsxTablePreview";
 import { csvToOfficeSpec, parseOfficeCsv, type CsvTable } from "./officeCsv";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
@@ -132,6 +133,7 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
         <p role="status">此成果的输入未保存在当前页面，请使用生成时另行保存的输入 JSON 复验；当前编辑器内容不一定匹配。</p>}
       <p>下载 XLSX 和对应输入 JSON 后可独立全值复验；校验报告不是数字签名。空串已按空白规范化。输入快照仅保留到离开页面或切换项目。</p>
       {state.selected.attachment.preview_truncated && <p role="status">预览已截断（A1:T100 / 1500 格 / 64 KiB）；全文件值比较已另行完成，可下载完整文件。</p>}
+      <XlsxTablePreview key={`${state.selected.attachment.id}:${state.selected.attachment.sha256}`} attachment={state.selected.attachment} preview={state.selected.preview_text} />
       <pre className="whitespace-pre-wrap break-words rounded border border-line p-3" aria-label="办公成果纯文本预览">{state.selected.preview_text}</pre>
     </div>}
   </section>;

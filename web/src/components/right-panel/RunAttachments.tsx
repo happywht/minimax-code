@@ -5,6 +5,7 @@ import { useSessionStore } from "../../stores";
 import type { AgentRun, AgentRunStep, AttachmentOriginal } from "../../types/ipc";
 import { Button } from "../../ui";
 import { PdfOriginalPreview } from "../panels/PdfOriginalPreview";
+import { XlsxTablePreview } from "../panels/XlsxTablePreview";
 
 export function RunAttachments({ run, steps }: { run: AgentRun; steps: AgentRunStep[] }): JSX.Element | null {
   const session = useSessionStore((state) => state.currentSessionId);
@@ -79,6 +80,7 @@ export function RunAttachments({ run, steps }: { run: AgentRun; steps: AgentRunS
     {selected && <div className="space-y-1"><p>解析状态：{selected.parser_status}；质量未验证</p>
       <Button size="sm" disabled={loading} onClick={() => void save()}>下载原件</Button>
       <PdfOriginalPreview attachment={selected} />
+      <XlsxTablePreview key={`${selected.id}:${selected.sha256}`} attachment={selected} preview={preview} />
       <pre aria-label="任务成果预览" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{preview || "（无可用预览）"}</pre></div>}
   </div>;
 }
