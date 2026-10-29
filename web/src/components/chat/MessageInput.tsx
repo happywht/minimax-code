@@ -20,6 +20,7 @@ import { useMentionContext } from "./useMentionContext";
 import { AttachmentRows } from "./AttachmentRows";
 import { MentionPickerDropdown } from "./MentionPickerDropdown";
 import { ComposerToolbar } from "./ComposerToolbar";
+import { TaskTemplates } from "./TaskTemplates";
 import { strings } from "../../ui/strings";
 
 export interface MessageInputProps {
@@ -145,6 +146,15 @@ export function MessageInput({
             <span className="text-xs font-medium text-accent">{strings.chat.input.dropFilesHere}</span>
           </div>
         )}
+        <TaskTemplates
+          disabled={disabled}
+          codex={codex}
+          onSelect={(text) => {
+            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
+            mention.closePicker();
+            draft.ref.current?.focus();
+          }}
+        />
         <AttachmentRows
           attachedFiles={attachments.attachedFiles}
           attachedImages={attachments.attachedImages}
