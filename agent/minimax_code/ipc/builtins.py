@@ -820,6 +820,9 @@ async def handle_agent_send_message(
                 # worker actually obtains the session lease.
                 from dataclasses import replace
                 internal_skill = replace(internal_skill, tools=tuple(await internal_skill.validate(skill_runtime, db)))
+                from ..run_ownership import capture_provider_identities
+                owned_runtime.set({**owned_runtime.get(), "provider_identities":
+                    capture_provider_identities(skill_runtime, owned_runtime.get()["tool_bindings"])})
             from ..orchestrator.subagent import SubAgentRuntime, subagent_runtime_scope
 
             await check_dispatch()

@@ -122,6 +122,14 @@ class _ServerConn:
 class _BridgedTool(Tool):
     """A single MCP server tool wrapped as a MiniMax :class:`Tool`."""
 
+    def __deepcopy__(self, memo):
+        # Private Agent registries may clone their baseline. A copied MCP
+        # registry/client would become detached from disable/reconnect state.
+        # Keep the same live capability object so its call-time check observes
+        # revocation; per-run policy and argument handling remain independent.
+        memo[id(self)] = self
+        return self
+
     def __init__(
         self,
         *,

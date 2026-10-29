@@ -236,6 +236,8 @@ class ToolRegistry:
             from ...execution import require_tool_access
 
             require_tool_access(name)
+            from ...run_ownership import require_live_owned_tool
+            require_live_owned_tool(name)
             from ...process_boundary import assert_restricted_dispatch
             assert_restricted_dispatch(tool)
             # All tools speak the kwargs convention: run(**args). The former

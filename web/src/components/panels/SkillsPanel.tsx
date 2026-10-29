@@ -68,6 +68,7 @@ export function SkillsPanel({ testId = "skills-panel", onClose, onOpenRun }: Ski
           <p className="mt-1 text-[11px] text-ink-2">
             {strings.panels.skills.subtitle}
           </p>
+          <p className="mt-1 text-[11px] text-ink-2">停用或移除技能后，受管运行不会再启动该技能的后续 provider 工具；已经发出的调用可能继续。</p>
         </div>
         <div className="flex items-center gap-2">
           <Button

@@ -813,9 +813,12 @@ class SubAgentRuntime:
                         child_run_id=durable_owner, session_id=session_id, child_workspace=child)
                     scopes.enter_context(registered_child_target_scope(binding.owner,
                         parent_run_id=binding.parent_run_id))
+                from ..run_ownership import capture_provider_identities
+                child_bindings = tool_dependencies([handle.skill_profile["skill_bindings"], handle.skill_profile["inherited_tool_bindings"]], core.registry.names()) if owned else None
                 owner_token = owned_runtime.set({**owned_runtime.get(), "registry": core.registry,
                     "execution_target": target, "execution_installation_id": installation_id,
-                    "tool_bindings": tool_dependencies([handle.skill_profile["skill_bindings"], handle.skill_profile["inherited_tool_bindings"]], core.registry.names())}) if owned else None
+                    "tool_bindings": child_bindings,
+                    "provider_identities": capture_provider_identities(owned_runtime.get().get("skill_runtime"), child_bindings)}) if owned else None
                 try:
                     run_result = await core.run(session_id=session_id, user_message=request)
                 finally:

@@ -413,6 +413,12 @@ No RPC is added or removed, and no SQLite migration is required.
 
 `skill.invoke` requires `{skill_id, session_id, idempotency_key, request}`. The
 session must already exist and use Native; `request` is a non-empty string.
+Owned skill/Agent tool dispatch checks the frozen provider provenance against
+the current enabled skill, version, manifest tools and live provider object.
+Revocation blocks later provider calls but cannot retract an in-flight call or
+text already sent to a model. MCP bridge objects retain their live registry
+identity when private Agent registries are cloned, so later disable/reconnect
+checks are not detached by deepcopy. These checks do not provide OS sandboxing.
 Optional `expected_service_id` and `expected_project_id` bind admission or replay
 to the current service and session project; when the service expectation is
 supplied, a null expected project means the unbound project. Legacy callers may
