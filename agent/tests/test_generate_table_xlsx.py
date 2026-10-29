@@ -91,3 +91,87 @@ async def test_write_permissions(table_env, rules, has_gater, consent, permitted
     result = await core._dispatch_tool({"name": "generate_table_xlsx", "arguments": args()})
     assert result.success is permitted
     assert tool.run.await_count == (1 if permitted else 0)
+
+
+async def test_summaries_and_chart_are_real_xlsx_values_and_attachment(table_env):
+    from io import BytesIO
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    import openpyxl
+
+    from minimax_code.attachment_docx import Reject
+    from minimax_code.attachments import AttachmentService
+    from minimax_code.office_analysis import AnalysisSpec, Chart, Summary, materialize, verify_chart
+    from minimax_code.office_xlsx import XlsxSpec, verify
+
+    db, _, registry = table_env
+    request = args()
+    request["spec"]["rows"] = [["甲", 1], ["乙", None], ["丙", 2]]
+    request["summaries"] = [{"column": "数量", "operation": "sum"},
+                            {"column": "编号", "operation": "count"},
+                            {"column": "数量", "operation": "average", "decimals": 2}]
+    request["chart"] = {"kind": "bar", "category_column": "编号", "value_column": "数量", "title": "数量图"}
+    result = await registry.dispatch("generate_table_xlsx", request)
+    assert result.success, result.error
+    assert result.output["validation_scope"] == "xlsx_chart_values_v1"
+    assert result.output["chart_reference_check"] == "passed"
+    service = AttachmentService(db, db.path.parent)
+    row, data = await service.content("p", result.output["attachment_id"])
+    assert row["parser_status"] in {"parsed", "truncated"}
+    sheet = openpyxl.load_workbook(BytesIO(data)).active
+    assert [sheet.cell(row, 4).value for row in (5, 6, 7)] == [3, 3, 1.5]
+    assert len(sheet._charts) == 1
+    original = XlsxSpec.model_validate(request["spec"])
+    expanded = materialize(original, [Summary.model_validate(item) for item in request["summaries"]])
+    analysis = AnalysisSpec(spec=expanded, chart=Chart.model_validate(request["chart"]), source_rows=3)
+    assert verify_chart(data, analysis)["cell_check"] == "passed"
+    tampered = BytesIO()
+    with ZipFile(BytesIO(data)) as source, ZipFile(tampered, "w", ZIP_DEFLATED) as target:
+        for name in source.namelist():
+            value = source.read(name)
+            if name == "xl/charts/chart1.xml":
+                assert b"$B$2:$B$4" in value
+                value = value.replace(b"$B$2:$B$4", b"$B$2:$B$3")
+            target.writestr(name, value)
+    with pytest.raises(Reject):
+        verify_chart(tampered.getvalue(), analysis)
+    with pytest.raises(Reject):
+        verify(data, expanded)  # The historical plain-cell validator never accepts chart packages.
+    assert (await db.fetchone("SELECT COUNT(*) AS n FROM office_deliveries"))["n"] == 0
+
+
+def test_summary_null_semantics_and_rounding():
+    from minimax_code.office_analysis import Summary, materialize
+    from minimax_code.office_xlsx import XlsxSpec
+
+    spec = XlsxSpec.model_validate({"sheet_name": "表", "columns": [{"name": "数", "kind": "number"}],
+                                    "rows": [[None], [1], [2]]})
+    output = materialize(spec, [Summary(column="数", operation="count"),
+                                Summary(column="数", operation="sum"),
+                                Summary(column="数", operation="average", decimals=0)])
+    assert [row[-1] for row in output.rows[-3:]] == [2, 3, 2]
+    empty = XlsxSpec.model_validate({"sheet_name": "表", "columns": [{"name": "数", "kind": "number"}], "rows": [[None]]})
+    output = materialize(empty, [Summary(column="数", operation="sum"), Summary(column="数", operation="average")])
+    assert [row[-1] for row in output.rows[-2:]] == [0, None]
+
+
+async def test_summary_only_uses_plain_receipt_and_replays(table_env):
+    from io import BytesIO
+
+    import openpyxl
+
+    from minimax_code.office_deliveries import OfficeService
+
+    db, _, registry = table_env
+    request = args()
+    request["summaries"] = [{"column": "数量", "operation": "sum"}]
+    first = await registry.dispatch("generate_table_xlsx", request)
+    assert first.success and first.output["validation_scope"] == "xlsx_plain_cells_v1"
+    again = await registry.dispatch("generate_table_xlsx", request)
+    assert again.success and again.output["delivery_id"] == first.output["delivery_id"]
+    service = OfficeService(db, db.path.parent)
+    _, content = await service.originals.content("p", first.output["attachment_id"])
+    sheet = openpyxl.load_workbook(BytesIO(content)).active
+    assert sheet["C4"].value == "sum(数量)" and sheet["D4"].value == 5
+    request["summaries"] = [{"column": "数量", "operation": "average"}]
+    assert not (await registry.dispatch("generate_table_xlsx", request)).success

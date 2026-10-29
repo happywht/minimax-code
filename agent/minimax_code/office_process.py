@@ -28,7 +28,7 @@ class OfficeProcessError(ValueError):
         super().__init__(f"Office generation unavailable: {reason}")
 
 
-def _command():
+def _command(operation="xlsx_generate"):
     executable = getattr(sys, "_base_executable", sys.executable) if os.name == "nt" else sys.executable
     command = [executable, "-I", "-B", "-S",
                str(Path(__file__).with_name("_office_xlsx_worker.py"))]
@@ -39,10 +39,10 @@ def _command():
     elif sys.platform == "linux":
         command.append(str(os.getpid()))
     paths = sysconfig.get_paths()
-    return [*command, "xlsx_generate", paths["purelib"], paths["platlib"]]
+    return [*command, operation, paths["purelib"], paths["platlib"]]
 
 
-def _run(spec, cancelled):
+def _run(spec, cancelled, operation="xlsx_generate"):
     from .office_metadata import validate_report
 
     if sys.platform not in {"linux", "win32"}:
@@ -67,7 +67,7 @@ def _run(spec, cancelled):
         environment = {key: os.environ[key] for key in ("SystemRoot", "WINDIR", "SYSTEMDRIVE")
                        if key in os.environ}
         try:
-            process = subprocess.Popen(_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            process = subprocess.Popen(_command(operation), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, env=environment, close_fds=True,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         except (OSError, ValueError, RuntimeError) as error:
@@ -127,13 +127,20 @@ def _run(spec, cancelled):
             if type(result) is not dict or set(result) != {"data_base64", "report"}:
                 raise ValueError
             data = base64.b64decode(result["data_base64"], validate=True)
-            report = validate_report(result["report"])
+            if operation == "analysis_generate":
+                report = result["report"]
+                if (type(report) is not dict or set(report) != {"scope", "input_sha256", "file_sha256", "size_bytes", "cell_check", "chart_reference_check", "render_status"}
+                        or report["scope"] != "xlsx_chart_values_v1" or report["cell_check"] != "passed"
+                        or report["chart_reference_check"] != "passed" or report["render_status"] != "not_attempted"):
+                    raise ValueError
+            else:
+                report = validate_report(result["report"])
+                if (report["sheet_name"] != spec.sheet_name or report["data_rows"] != len(spec.rows)
+                        or report["column_count"] != len(spec.columns)):
+                    raise ValueError
             if (not 0 < len(data) <= MAX_OUTPUT or report["size_bytes"] != len(data)
                     or report["file_sha256"] != hashlib.sha256(data).hexdigest()
-                    or report["input_sha256"] != digest(spec.model_dump())
-                    or report["sheet_name"] != spec.sheet_name
-                    or report["data_rows"] != len(spec.rows)
-                    or report["column_count"] != len(spec.columns)):
+                    or report["input_sha256"] != digest(spec.model_dump())):
                 raise ValueError
             return data, report
         except OfficeProcessError:
@@ -150,8 +157,16 @@ def _run(spec, cancelled):
 
 
 async def generate_xlsx(spec: XlsxSpec):
+    return await _generate(spec, "xlsx_generate")
+
+
+async def generate_chart_xlsx(spec):
+    return await _generate(spec, "analysis_generate")
+
+
+async def _generate(spec, operation):
     cancelled = threading.Event()
-    task = asyncio.create_task(asyncio.to_thread(_run, spec, cancelled))
+    task = asyncio.create_task(asyncio.to_thread(_run, spec, cancelled, operation))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

@@ -43,6 +43,7 @@ INERT_RELS = {
         "sharedStrings",
         "theme",
         "drawing",
+        "chart",
         "image",
         "comments",
         "vmlDrawing",

@@ -76,7 +76,7 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
     {scoped && !state.loading && !state.attachments.length && <p>当前项目还没有附件原件。</p>}
     <ul className="space-y-1">{(scoped ? state.attachments : []).map((row) => <li key={row.id}>
       <button disabled={state.busy} className="max-w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3" onClick={() => void state.select(row.id)}>
-        {row.original_name} · v{row.version} · {row.size_bytes} 字节 · {labels[row.parser_status]} / 未验证
+        {row.original_name} · v{row.version} · {row.id} · {row.size_bytes} 字节 · {labels[row.parser_status]} / 未验证
       </button>
     </li>)}</ul>
     {scoped && state.selected && <div className="space-y-2">

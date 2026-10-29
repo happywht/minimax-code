@@ -7,7 +7,7 @@ import sys
 
 def main():
     try:
-        if len(sys.argv) < 4 or sys.argv[-3] != "xlsx_generate":
+        if len(sys.argv) < 4 or sys.argv[-3] not in {"xlsx_generate", "analysis_generate"}:
             raise RuntimeError("Invalid fixed operation")
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from _attachment_parser_worker import establish_limits
@@ -27,9 +27,16 @@ def main():
     try:
         from minimax_code.office_xlsx import XlsxSpec, generate, verify
 
-        spec = XlsxSpec.model_validate_json(raw)
-        data = generate(spec)
-        report = verify(data, spec)
+        if sys.argv[-3] == "analysis_generate":
+            from minimax_code.office_analysis import AnalysisSpec, generate_chart, verify_chart
+
+            spec = AnalysisSpec.model_validate_json(raw)
+            data = generate_chart(spec)
+            report = verify_chart(data, spec)
+        else:
+            spec = XlsxSpec.model_validate_json(raw)
+            data = generate(spec)
+            report = verify(data, spec)
         result = {"data_base64": base64.b64encode(data).decode("ascii"), "report": report}
     except ImportError:
         result = {"error": "missing_dependency"}

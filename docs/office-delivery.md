@@ -60,3 +60,16 @@ bundle6 仅匹配 schema46，含严格 office 清单；当前 bundle11 对应 sc
 核心文件为 `office_xlsx.py`（模型/生成/全值验证/CLI）、`_office_xlsx_worker.py`、`office_process.py`（固定受限生命周期）、`office_deliveries.py` 与对应 DAO（原子登记）、`office_metadata.py`（共享严格元数据）及 `handlers_office.py`；前端 `OfficeDeliveryPanel` / `officeDeliveryStore` 复用现有附件下载边界。定向测试为 `test_office_xlsx.py`、`test_office_deliveries.py`、`test_handlers_office.py`、`test_office_bundle.py` 与同名 UI / e2e 测试。
 
 官方库说明：[openpyxl 3.1.5 与 wheel 哈希](https://pypi.org/project/openpyxl/3.1.5/)、[新建与保存工作簿](https://openpyxl.readthedocs.io/en/stable/tutorial.html)、[公式不由 openpyxl 计算](https://openpyxl.readthedocs.io/en/stable/simple_formulae.html)、[Cell 类型推断源码](https://openpyxl.readthedocs.io/en/stable/_modules/openpyxl/cell/cell.html)。实际锁定安装版本与全值测试是本片行为依据，stable 文档页版本号不替代 lockfile。
+
+
+## 聊天中的汇总和图表
+
+普通聊天可要求 Agent 调用 `generate_table_xlsx` 的可选 `summaries` 与 `chart`。例如在原有 `spec` 之外添加：
+
+```json
+{"summaries":[{"column":"数量","operation":"sum"},{"column":"数量","operation":"count"},{"column":"数量","operation":"average","decimals":2}],"chart":{"kind":"bar","category_column":"名称","value_column":"数量","title":"数量比较"}}
+```
+
+`count` 统计非空值（包含 0 和 false）；`sum`、`average` 仅接受数字列，忽略空值；全空的 sum 为 0，平均值为空。average 默认保留 2 位，可选 0–8 位，采用十进制四舍五入（中点远离零）。计算值直接写入新增的“汇总项目”“汇总值”列，**不是公式**，修改原数据不会自动重算汇总。汇总最多 20 项，输入最多 18 列，最终工作表仍遵守 1000 行及 5000 格上限；精度或范围无法安全表示时拒绝。
+
+`chart` 支持 `bar` 或 `line`，类别引用已有文本/数字列，数值引用已有数字列，图表只引用原始数据行，不含汇总行。带图表文件作为独立 XLSX 出现在“项目附件”，按返回的附件 ID 找到并下载，在 Excel 中查看图表；附件面板仅预览存储单元格，不呈现图表。生成时在受限 worker 用单独的 `xlsx_chart_values_v1` 范围检查所有存储单元格及图表系列引用，未做图表视觉验收或业务验证；该临时回执通过工具结果返回，不写入 `office_deliveries`，不属于或冒充旧 `xlsx_plain_cells_v1` 验收。既有完整附件 bundle 可备份文件，恢复不会重新验证图表。图表生成没有幂等重试，响应不明先检查项目附件，重复请求会创建新版本。用户上传的带图表文件只做有界存储单元格预览，不自动获得生成校验回执。
