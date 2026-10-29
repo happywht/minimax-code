@@ -4,6 +4,7 @@ import { useArtifactStore, useAttachmentStore, useRunTimelineStore, useSessionSt
 import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
 import { Button } from "../../ui";
 import { RunAttachments } from "../right-panel/RunAttachments";
+import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 import { ArtifactsPanel } from "./ArtifactsPanel";
 import { AttachmentsPanel } from "./AttachmentsPanel";
 import { OfficeDeliveryPanel } from "./OfficeDeliveryPanel";
@@ -111,7 +112,7 @@ function SessionDeliveries({ binding }: { binding: Binding }): JSX.Element {
   return <div className="space-y-3 text-sm"><h3 className="font-semibold">当前会话的任务关联成果</h3>
     <p>仅列出最近运行中已持久记录、与当前项目及服务匹配的工具返回附件。旧记录、手工生成或未成功记录关联的成果请到项目附件查看；幂等调用可能复用旧成果，内容未验证。</p>
     {!binding.session ? <p>请先选择会话。</p> : error ? <p role="alert">无法读取运行记录：{error}</p> : loading ? <p role="status">正在读取运行记录…</p> : !associated.length ? <p>当前会话最近运行没有可确认的关联成果。</p> : associated.map((run) => <article key={run.id} className="rounded border border-line p-3">
-      <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p><RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} />
+      <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p><RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} /><FollowupRunDraft run={run} />
     </article>)}
   </div>;
 }

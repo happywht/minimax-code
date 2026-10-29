@@ -22,6 +22,7 @@ import { VerificationDetails } from "../chat/VerificationDetails";
 import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
 import { NativeSteerInput } from "./NativeSteerInput";
 import { RunAttachments } from "./RunAttachments";
+import { FollowupRunDraft } from "./FollowupRunDraft";
 import type { VerificationEvidence } from "../../types/ipc";
 import { ipc } from "../../ipc";
 import { StreamEvent } from "../../types/ipc";
@@ -227,6 +228,7 @@ export function RunTimelinePanel({
             <div className="space-y-2 border-t border-line pt-2"><h4 className="text-[11px] font-semibold text-ink-1">预算、成果与操作</h4>
             <RunBudgetPanel run={run} />
             <RunAttachments run={run} steps={run.steps} />
+            <FollowupRunDraft run={run} />
             <NativeSteerInput run={run} />
             <RunWorkspaceDiff run={run} />
             <RunRecoveryActions run={run} refresh={() => loadForSession(currentSessionId)} /></div>
