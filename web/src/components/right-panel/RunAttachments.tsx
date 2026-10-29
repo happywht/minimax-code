@@ -77,14 +77,14 @@ export function RunAttachments({ run, steps, reviewScope }: { run: AgentRun; ste
   };
 
   if (!available || !rows.length) return null;
-  return <div className="mt-2 space-y-1 text-xs"><p>任务生成工具返回的关联成果（可能为幂等复用；内容未验证）</p>
+  return <div className="mt-2 space-y-2 text-xs"><p className="font-medium text-ink-1">关联成果 · {rows.length} 项</p><p className="text-ink-2">任务生成工具返回的关联成果（可能为幂等复用；内容未验证）</p><div className="flex flex-wrap gap-1">
     {rows.map((step) => <Button key={step.id} size="sm" variant="secondary" disabled={loading}
-      onClick={() => void select(step)}>{String(step.payload?.filename || "查看成果")}</Button>)}
-    {error && <p role="alert">{error}</p>}
+      onClick={() => void select(step)}>{String(step.payload?.filename || "查看成果")}</Button>)}</div>
+    {error && <p role="alert" className="break-words text-status-warning">{error}</p>}
     {visible && <div className="space-y-1"><p>解析状态：{visible.parser_status}；质量未验证</p>
       <Button size="sm" disabled={loading} onClick={() => void save()}>下载原件</Button>
       {project === activeProject && activeSession ? <PdfOriginalPreview attachment={visible} /> : visible.declared_type === "pdf" ? <p>切换到对应项目会话后可打开 PDF 原件预览；此处仍可下载原件。</p> : null}
       <XlsxTablePreview key={`${visible.id}:${visible.sha256}`} attachment={visible} preview={preview} />
-      <pre aria-label="任务成果预览" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{preview || "（无可用预览）"}</pre></div>}
+      <pre aria-label="任务成果预览" className="max-h-60 overflow-auto rounded bg-surface-2 p-2 whitespace-pre-wrap break-all">{preview || "（无可用预览）"}</pre></div>}
   </div>;
 }

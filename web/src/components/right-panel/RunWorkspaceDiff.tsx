@@ -64,8 +64,10 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   };
 
   return <div className="mt-2 text-xs" data-testid={`run-workspace-diff-${run.id}`}>
+    <div className="flex flex-wrap gap-1">
     <Button variant="secondary" size="sm" disabled={!available || loading} loading={loading} onClick={() => void load()}>查看工作区当前差异</Button>
     <Button variant="secondary" size="sm" disabled={!available || loading} onClick={() => void loadComparison()}>查看任务前后文件变化</Button>
+    </div>
     {!available && <p className="text-ink-2">任务的工作区或项目绑定不可确认，不能打开此视图。</p>}
     {error && <p role="alert" className="break-words text-status-warning">{error}</p>}
     {comparison && <div className="mt-2 space-y-1">

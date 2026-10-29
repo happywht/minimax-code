@@ -58,11 +58,11 @@ export function RunTimelinePanel({
   }, [currentSessionId, loadForSession]);
 
   const visibleRuns = useMemo(
-    () => order.map((id) => runs[id]).filter((r) => r && (!currentSessionId || r.session_id === currentSessionId)),
+    () => order.map((id) => runs[id]).filter((r) => r && !!currentSessionId && r.session_id === currentSessionId),
     [order, runs, currentSessionId],
   );
 
-  const pending = Object.values(pendingPermissions).sort((a, b) => a.received_at - b.received_at);
+  const pending = Object.values(pendingPermissions).filter((request) => !!currentSessionId && request.session_id === currentSessionId).sort((a, b) => a.received_at - b.received_at);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isFollowing, setIsFollowing] = useState(true);
   const [hasNewEvents, setHasNewEvents] = useState(false);
@@ -114,7 +114,7 @@ export function RunTimelinePanel({
   };
 
   const syncError = error ? (
-    <div role="alert" className="px-3 py-2 text-xs text-status-warning">
+    <div role="alert" className="mx-3 my-2 rounded-md border border-status-warning/30 bg-surface-1 px-3 py-2 text-xs text-status-warning">
       <p>{strings.rightPanel.timeline.unavailable} {error}</p>
       {visibleRuns.length > 0 && <p>{strings.rightPanel.timeline.stale}</p>}
       <Button size="sm" variant="ghost" loading={loading}
@@ -137,7 +137,10 @@ export function RunTimelinePanel({
 
   return (
     <div data-testid={testId} className="relative">
-      <OutputStorage />
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
+        <div><h3 className="text-xs font-semibold text-ink-0">任务时间线</h3><p className="text-[11px] text-ink-2">当前会话的运行与已记录证据</p></div>
+        <OutputStorage />
+      </div>
       {syncError}
       <div
         ref={scrollRef}
@@ -156,7 +159,7 @@ export function RunTimelinePanel({
               <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2">
                 <div className="flex items-center gap-1.5 text-xs font-medium text-amber-200">
                   <ShieldQuestion size={13} />
-                  <span className="truncate">{request.tool}</span>
+                  <span className="break-all">等待授权 · {request.tool}</span>
                 </div>
                 <ExpandablePre
                   text={formatArgs(request.args)}
@@ -168,7 +171,8 @@ export function RunTimelinePanel({
                   files={patchFiles}
                   testId="run-timeline-approval-patch-preview"
                 />
-                <div className="mt-2 flex justify-end gap-1.5">
+                <p className="mt-1 text-[11px] text-ink-2">请核对请求内容后选择；拒绝或允许只处理此请求。</p>
+                <div className="mt-2 flex flex-wrap justify-end gap-1.5">
                   <button
                     type="button"
                     onClick={() => void resolvePermission(request.request_id, "deny")}
@@ -189,10 +193,10 @@ export function RunTimelinePanel({
           );
         })}
         {visibleRuns.map((run) => (
-          <article key={run.id} className="px-3 py-2.5">
-            <div className="mb-2 flex items-center justify-between gap-2">
+          <article key={run.id} className="space-y-3 px-3 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="min-w-0">
-                <div className="truncate text-xs font-medium text-minimax-fg">
+                <div className="break-words text-xs font-semibold text-ink-0">
                   {run.title || strings.rightPanel.timeline.runFallbackTitle}
                 </div>
                 <div className="mt-0.5 font-mono text-[11px] text-minimax-muted">
@@ -201,22 +205,31 @@ export function RunTimelinePanel({
               </div>
               <RunStatusBadge status={run.status} />
             </div>
+            {run.status === "awaiting_approval" && <p className="rounded border border-status-warning/30 bg-surface-1 p-2 text-xs text-status-warning">此任务等待授权；请在当前会话的授权请求中处理。</p>}
+            {run.status === "waiting_input" && <p className="rounded border border-status-warning/30 bg-surface-1 p-2 text-xs text-status-warning">此任务等待回答；请查看聊天中的问题卡片。</p>}
+            {run.status === "budget_paused" && <p className="rounded border border-status-warning/30 bg-surface-1 p-2 text-xs text-status-warning">预算已暂停；请查看预算记录及下方可用操作。</p>}
+            {["failed", "interrupted", "cancelled"].includes(run.status) && <p className="rounded border border-status-warning/30 bg-surface-1 p-2 text-xs text-status-warning">请核对已记录的步骤与文件，再决定是否继续。</p>}
+            <div className="space-y-1" aria-label="验证记录">
             {!["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) && <VerificationBadge evidence={run.metadata?.verification as VerificationEvidence | undefined} />}
             {!["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) && <VerificationDetails evidence={run.metadata?.verification as VerificationEvidence | undefined} />}
+            </div>
             {run.queuedInput && <details className="my-2 text-xs"><summary>已接收、尚未开始的任务内容</summary>
               <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{run.queuedInput.text}</pre>
               {run.queuedInput.truncated && <p>内容预览已截断。</p>}
             </details>}
+            <div><h4 className="mb-1 text-[11px] font-semibold text-ink-1">执行步骤</h4>
+            {run.steps.length === 0 && <p className="text-[11px] text-ink-2">暂无已记录步骤。</p>}
             <ol className="space-y-1.5">
               {run.steps.map((step) => (
                 <TimelineStep key={step.id} step={step} runStatus={run.status} />
               ))}
-            </ol>
+            </ol></div>
+            <div className="space-y-2 border-t border-line pt-2"><h4 className="text-[11px] font-semibold text-ink-1">预算、成果与操作</h4>
             <RunBudgetPanel run={run} />
             <RunAttachments run={run} steps={run.steps} />
             <NativeSteerInput run={run} />
             <RunWorkspaceDiff run={run} />
-            <RunRecoveryActions run={run} refresh={() => loadForSession(currentSessionId)} />
+            <RunRecoveryActions run={run} refresh={() => loadForSession(currentSessionId)} /></div>
           </article>
         ))}
       </div>
@@ -261,6 +274,7 @@ function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: stri
           <span className="truncate text-[11px] font-medium text-minimax-fg">
             {step.title || labelForKind(step.kind)}
           </span>
+          <span className={"shrink-0 text-[10px] " + statusClass}>{({ pending: "待处理", running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消" } as Record<string, string>)[step.status] ?? step.status}</span>
           {step.duration_ms != null && (
             <span className="shrink-0 font-mono text-[11px] text-minimax-muted">
               {formatDuration(step.duration_ms)}
@@ -434,10 +448,12 @@ function RunStatusBadge({ status }: { status: string }): JSX.Element {
       ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
       : status === "failed" || status === "cancelled" || status === "interrupted"
         ? "border-red-500/30 bg-red-500/10 text-status-error"
-        : "border-minimax-accent/30 bg-minimax-accent/10 text-minimax-accent";
+        : ["awaiting_approval", "waiting_input", "budget_paused"].includes(status)
+          ? "border-status-warning/30 bg-surface-1 text-status-warning"
+          : "border-minimax-accent/30 bg-minimax-accent/10 text-minimax-accent";
   return (
     <span className={"shrink-0 rounded border px-1.5 py-0.5 text-[11px] " + cls}>
-      {({ queued: "排队中", interrupted: "中断，待核对", waiting_input: "等待输入", budget_paused: "预算暂停" } as Record<string, string>)[status] ?? status}
+      {({ queued: "排队中", planning: "规划中", running: "运行中", awaiting_approval: "等待授权", waiting_input: "等待回答", budget_paused: "预算暂停", completed: "已结束", failed: "失败", cancelled: "已取消", interrupted: "中断，待核对" } as Record<string, string>)[status] ?? `未知状态：${status}`}
     </span>
   );
 }
