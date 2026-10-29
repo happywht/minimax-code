@@ -78,6 +78,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const [format, setFormat] = useState<"docx" | "pdf" | "both">(initialDraft?.format ?? "docx");
   const [structured, setStructured] = useState(initialDraft?.structured ?? false), [sections, setSections] = useState(initialDraft?.sections ?? sectionExample);
   const [visualSections, setVisualSections] = useState(initialDraft?.visualSections ?? false);
+  const [excerptSection, setExcerptSection] = useState("");
   const [sources, setSources] = useState<ReportSource[]>(initialDraft?.sources ?? []);
   const [researchSources, setResearchSources] = useState<ResearchSource[]>([]);
   const [researchNeedsReview, setResearchNeedsReview] = useState(initialDraft?.researchNeedsReview ?? false);
@@ -90,14 +91,47 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const importedSources = useRef<ResearchSource[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [excerptNotice, setExcerptNotice] = useState("");
+  const appendExcerpt = (paragraphs: string[]): boolean => {
+    // eslint-disable-next-line no-control-regex
+    if (paragraphs.some((text) => !text.trim() || Array.from(text).length > 4096 || /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(text))) {
+      setExcerptNotice("片段为空、包含不支持的控制字符或超过单段限制，请选择较短的文字。"); return false;
+    }
+    if (!structured) {
+      const next = [body, ...paragraphs].filter(Boolean).join("\n");
+      if (next.split(/\r?\n/).length > 100 || new TextEncoder().encode(next).length > 256 * 1024) {
+        setExcerptNotice("追加后正文超过 100 段或 256 KiB，请先精简草稿。"); return false;
+      }
+      setBody(next);
+    } else {
+      const editable = readEditableSections(sections);
+      const index = excerptSection === "" ? -1 : Number(excerptSection);
+      if (!editable || !Number.isInteger(index) || index < 0 || index >= editable.length) {
+        setExcerptNotice("请先选择目标章节；无法无损读取的章节 JSON 不会被改写。"); return false;
+      }
+      if (editable[index].blocks.length + paragraphs.length > 100 ||
+          editable.reduce((total, section) => total + section.blocks.length, 0) + paragraphs.length > 100) {
+        setExcerptNotice("追加后报告超过 100 个内容块，请先精简草稿。"); return false;
+      }
+      const next = editable.map((section, i) => i === index ? { ...section, blocks: [
+        ...section.blocks, ...paragraphs.map((text) => ({ kind: "paragraph" as const, text })),
+      ] } : section);
+      const serialized = JSON.stringify(next, null, 2);
+      if (new TextEncoder().encode(serialized).length > 256 * 1024) {
+        setExcerptNotice("追加后章节超过 256 KiB，请先精简草稿。"); return false;
+      }
+      setSections(serialized); setExcerptSection("");
+    }
+    setExcerptNotice("已追加可编辑的正文段落；空白已合并，请核对内容、来源和事实。尚未生成文件。");
+    return true;
+  };
   const insertAttachmentExcerpt = (text: string, location: string) => {
     const selected = state.selected;
     const current = useAttachmentStore.getState();
-    if (structured || !scoped || !projectId || !sessionId || !state.serviceId || !selected || ipc.agentBaseUrl !== host ||
+    if (!scoped || !projectId || !sessionId || !state.serviceId || !selected || ipc.agentBaseUrl !== host ||
         useSessionStore.getState().currentProjectId !== projectId || useSessionStore.getState().currentSessionId !== sessionId ||
         current.projectId !== projectId || current.host !== host || current.serviceId !== state.serviceId ||
         current.selected?.id !== selected.id || current.selected.sha256 !== selected.sha256) {
-      setExcerptNotice("上下文已变化或不是普通段落模式，请重新选择附件。"); return;
+      setExcerptNotice("上下文已变化，请重新选择附件。"); return;
     }
     // Each report line is one paragraph. Normalize whitespace without executing source content.
     const excerpt = text.replace(/\s+/g, " ").trim();
@@ -106,11 +140,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       setExcerptNotice("片段为空、包含不支持的控制字符或超过单段限制，请选择较短的文字。"); return;
     }
     const attribution = `资料摘录（未经核验）：${selected.original_name} · v${selected.version} · ${selected.id} · SHA-256 ${selected.sha256} · ${location}`;
-    const next = [body, attribution, excerpt].filter(Boolean).join("\n");
-    if (next.split(/\r?\n/).length > 100 || new TextEncoder().encode(next).length > 256 * 1024) {
-      setExcerptNotice("追加后正文超过 100 段或 256 KiB，请先精简草稿。"); return;
-    }
-    setBody(next); setExcerptNotice("已追加到普通正文草稿；空白已合并，请核对内容、来源和事实。尚未生成文件。");
+    appendExcerpt([attribution, excerpt]);
   };
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
   const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources, researchSources.map((item) => item.page_source_id), sessionId]);
@@ -123,7 +153,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     setResearchSources([]);
   }, [projectId, sessionId, host, state.serviceId]);
   useEffect(() => {
-    ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); setExcerptNotice("");
+    ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); setExcerptNotice(""); setExcerptSection("");
   }, [projectId, sessionId, host, state.serviceId, state.selected?.id]);
   useEffect(() => ipc.onSideCar(() => { ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); }), []);
   const addAttachmentContext = async () => {
@@ -180,6 +210,14 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <h2 className="text-lg font-semibold">项目附件 · {project?.name ?? "选择项目"}</h2>
       {!embedded && <Button variant="ghost" onClick={onClose}>关闭</Button>}
     </div>
+    {structured && <div className="rounded border border-line p-2">
+      <label>摘录追加到章节 <select aria-label="摘录目标章节" value={excerptSection} onChange={(event) => setExcerptSection(event.target.value)}>
+        <option value="">选择目标章节</option>
+        {readEditableSections(sections)?.map((section, index) => <option key={index} value={index}>章节 {index + 1}{section.heading ? `：${section.heading}` : ""}</option>)}
+      </select></label>
+      <p className="text-xs text-ink-2">附件、OCR 和研究摘录会追加到所选章节末尾；每次追加或编辑章节后请重新选择目标。</p>
+    </div>}
+    {excerptNotice && <p role="status">{excerptNotice}</p>}
     <p className="text-sm text-ink-1">最大 10 MiB。每次上传保留独立原件；同名文件创建新版本。</p>
     <p className="text-sm text-ink-1">TXT / CSV 严格 UTF-8 预览，最多 64 KiB / 2000 行；CSV 公式只作文本。可选 DOCX 解析仅包含正文段落和表格，保留位置标签；不含页眉页脚、修订、文本框、批注、脚注或图片文字。可选 PDF 解析按物理页序提取已有文字，最多 200 页，不保证版式或表格结构；扫描图片未尝试 OCR。可选 XLSX 解析只预览有界单元格、公式文本和未验证缓存，不计算公式，不执行宏或访问外链。</p>
     <p className="text-sm text-ink-1">原件保存、可解析、质量验证与交付是不同状态；当前质量均为未验证。附件不会自动加入对话上下文。</p>
@@ -221,12 +259,10 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
       <p className="text-xs text-ink-2">默认仅追加附件身份；可选择加入解析摘录。不会发送或上传原件到对话，也不代表模型已读取完整文件。</p>
       {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>
-      <AttachmentImageOcr key={`ocr:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={!structured ? insertAttachmentExcerpt : undefined} />
-      <AttachmentDocumentReader key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={!structured ? insertAttachmentExcerpt : undefined} />
-      {!structured && ["txt", "csv"].includes(state.selected.declared_type) && state.selected.recognized_type === "utf8_text" && ["parsed", "truncated"].includes(state.selected.parser_status) &&
+      <AttachmentImageOcr key={`ocr:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={insertAttachmentExcerpt} />
+      <AttachmentDocumentReader key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={insertAttachmentExcerpt} />
+      {["txt", "csv"].includes(state.selected.declared_type) && state.selected.recognized_type === "utf8_text" && ["parsed", "truncated"].includes(state.selected.parser_status) &&
         <ReportTextExcerpt key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} truncated={state.selected.preview_truncated || state.selected.parser_status === "truncated"} onInsert={insertAttachmentExcerpt} />}
-      {structured && <p className="text-xs text-ink-2">切换报告内容形式为普通段落后，可将文档片段、文本选区或 OCR 识别文字追加到报告正文。</p>}
-      {excerptNotice && <p role="status">{excerptNotice}</p>}
       <PdfOriginalPreview attachment={state.selected} />
       <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
@@ -282,7 +318,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           return draft;
         }}
         apply={(draft) => {
-          setDocName(draft.docName); setTitle(draft.title); setBody(draft.body); setFormat(draft.format); setStructured(draft.structured);
+          setExcerptSection(""); setDocName(draft.docName); setTitle(draft.title); setBody(draft.body); setFormat(draft.format); setStructured(draft.structured);
           setSections(draft.sections); setVisualSections(draft.visualSections); setSources(draft.sources); setFormError(null);
           setResearchSources(importedSources.current); setResearchNeedsReview(false);
           const restoredMarkers = reportMarkers(draft.body, draft.sections, draft.structured);
@@ -300,15 +336,15 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <label>内容形式 <select aria-label="报告内容形式" value={!structured ? "plain" : visualSections ? "visual" : "sections"} onChange={(event) => {
         const next = event.target.value; setFormError(null);
         if (next === "visual" && !readEditableSections(sections)) { setFormError("当前 JSON 无法无损显示为可视编辑，请先修正 JSON。原内容已保留。"); return; }
-        setStructured(next !== "plain"); setVisualSections(next === "visual");
+        setStructured(next !== "plain"); setVisualSections(next === "visual"); setExcerptSection("");
       }}>
         <option value="plain">普通段落</option><option value="visual">章节可视编辑</option><option value="sections">章节和表格 JSON</option>
       </select></label>
       {structured ? visualSections ? (() => {
         const editable = readEditableSections(sections);
-        return editable ? <ReportSectionsEditor value={editable} onChange={(value) => setSections(JSON.stringify(value, null, 2))} /> : <p role="alert">章节内容无法显示，请切换 JSON 查看。</p>;
+        return editable ? <ReportSectionsEditor value={editable} onChange={(value) => { setSections(JSON.stringify(value, null, 2)); setExcerptSection(""); }} /> : <p role="alert">章节内容无法显示，请切换 JSON 查看。</p>;
       })() : <><p>按示例填写章节标题与依次排列的段落、表格；表格每行列数必须一致，单元格均为文本。</p>
-        <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => setSections(event.target.value)} /></> :
+        <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => { setSections(event.target.value); setExcerptSection(""); }} /></> :
         <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />}
       <div className="space-y-2">
         <p>参考来源（可选，最多 30 条；正文可用 [1]、[2] 对应来源顺序。只保存提供的信息，不自动核验）</p>
@@ -326,14 +362,13 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       </div>}
       <ReportResearchPicker project={projectId} session={sessionId} service={scoped ? state.serviceId : null}
         selected={researchSources} onChange={(items) => { noteSourceChange(); setResearchSources(items); }} manualCount={sources.length}
-        onInsertExcerpt={!structured ? (source, number) => {
+        onInsertExcerpt={(source, number) => {
           const excerpt = Array.from(source.excerpt ?? "");
           const clipped = excerpt.length > 600 || source.excerpt_truncated || source.truncated;
           const text = excerpt.slice(0, 600).join("").replace(/\s+/g, " ").trim();
-          setBody((current) => [current, `来源摘录（未经核验${clipped ? "，已截断" : ""}）：${text} [${number}]`].filter(Boolean).join("\n"));
-          setCitationNeedsReview(true);
-        } : undefined} />
-      {!structured && <p className="text-xs text-ink-2">可将已选来源的最多 600 字摘录及当前编号追加到正文；请核对摘录、引用和事实。</p>}
+          if (appendExcerpt([`来源摘录（未经核验${clipped ? "，已截断" : ""}）：${text} [${number}]`])) setCitationNeedsReview(true);
+        }} />
+      <p className="text-xs text-ink-2">可将已选来源的最多 600 字摘录及当前编号追加到正文；请核对摘录、引用和事实。</p>
       <div className="space-y-2 rounded border border-line p-2" aria-label="正文来源编号对照">
         <p>正文编号对照：仅识别形如 [1] 的独立数字标记；其他引用写法无法检查。请自行核对每处对应关系与事实。</p>
         {markers === null ? <p role="status">章节 JSON 无法读取，不能检查编号；原草稿未更改。</p> : <>

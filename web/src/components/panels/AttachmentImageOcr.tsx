@@ -63,7 +63,7 @@ export function AttachmentImageOcr({ attachment, project, session, service, host
         className="w-full rounded border border-line bg-surface-1 p-2"
         onSelect={(event) => setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })} />
         : <p>（未识别到文字，不代表此页或图片没有文字）</p>}
-      {onInsertReport && result.text && <><p className="text-xs text-ink-1">选择识别文字后可追加到普通报告正文；请核对原件，选区中的空白会合并。</p>
+      {onInsertReport && result.text && <><p className="text-xs text-ink-1">选择识别文字后可追加到报告正文；请核对原件，选区中的空白会合并。</p>
         <Button type="button" variant="secondary" disabled={!result.text.slice(selection.start, selection.end).trim() || selection.end - selection.start > 4000}
           onClick={() => onInsertReport(result.text.slice(selection.start, selection.end),
             `本地 OCR${isPdf && "page" in result ? `，PDF 物理页 ${result.page}` : "，图片"}，语言 ${result.language}，选区 ${selection.start}–${selection.end}，识别结果未经核验${result.truncated ? "，识别结果已截断" : ""}`)}>将所选 OCR 文字追加到报告正文</Button>

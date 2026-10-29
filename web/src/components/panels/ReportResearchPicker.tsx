@@ -16,8 +16,8 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
   const [error, setError] = useState("");
   const epoch = useRef(0);
   const host = ipc.agentBaseUrl;
-  const selection = useRef({ service, manualCount, ids: "" });
-  selection.current = { service, manualCount, ids: selected.map((item) => item.page_source_id).join("\n") };
+  const selection = useRef({ service, manualCount, ids: "", onInsertExcerpt });
+  selection.current = { service, manualCount, ids: selected.map((item) => item.page_source_id).join("\n"), onInsertExcerpt };
   useEffect(() => {
     const off = ipc.onSideCar(() => { epoch.current++; setRows([]); setBusy(false); setError("连接变化，请重新搜索来源。"); });
     return () => { epoch.current++; off(); };
@@ -44,7 +44,7 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
     const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
       useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === session &&
       selection.current.service === expected.service && selection.current.manualCount === expected.manualCount &&
-      selection.current.ids === expected.ids;
+      selection.current.ids === expected.ids && selection.current.onInsertExcerpt === expected.onInsertExcerpt;
     setBusy(true); setError("");
     try {
       const result = await typedIPC.getResearchSource({ project_id: project, session_id: session,
