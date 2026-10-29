@@ -68,6 +68,7 @@ import type {
   RunStepsResult,
   RunEventsResult,
   RuntimeRecoveryResult,
+  ResearchConfigResult,
   ScheduledJob,
   SecretStatus,
   SendMessageResult,
@@ -434,6 +435,8 @@ export interface TypedIPC {
 
   // runtime — boot-time crash-recovery diagnostics (R12).
   runtimeRecoveryStatus(): Promise<RuntimeRecoveryResult>;
+  getResearchConfig(): Promise<ResearchConfigResult>;
+  setResearchConfig(searchUrl: string | null): Promise<ResearchConfigResult>;
 
   // webhook — drive the Settings page's Webhooks tab.
   listWebhooks(opts?: { limit?: number; offset?: number; source?: string }): Promise<ListWebhooksResult>;
@@ -951,6 +954,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<TelemetryTraceResult>("telemetry.trace", { trace_id }),
     runtimeRecoveryStatus: () =>
       client.request<RuntimeRecoveryResult>("runtime.recovery_status", {}),
+    getResearchConfig: () => client.request<ResearchConfigResult>("runtime.research_get", {}),
+    setResearchConfig: (searchUrl) => client.request<ResearchConfigResult>("runtime.research_set", { search_url: searchUrl }),
 
     listWebhooks: (opts) => client.request<ListWebhooksResult>("webhook.list", opts ?? {}),
     createWebhook: (opts) => client.request<WebhookConfig>("webhook.create", opts),

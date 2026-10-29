@@ -6,6 +6,7 @@
  * preset templates in `providers/presets`.
  */
 import { useEffect } from "react";
+import { ResearchSettings } from "./ResearchSettings";
 import { Plus } from "lucide-react";
 import { Button, EmptyState, Spinner } from "../../ui";
 import { strings } from "../../ui/strings";
@@ -108,6 +109,7 @@ function ProvidersTab(): JSX.Element {
           ))}
         </ul>
       )}
+    <ResearchSettings />
     </section>
   );
 }

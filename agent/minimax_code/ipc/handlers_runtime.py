@@ -16,8 +16,11 @@ Methods
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
+
+from pydantic import ValidationError
 
 from .handler_utils import HandlerError
 from .protocol import INTERNAL_ERROR
@@ -48,9 +51,38 @@ async def _handle_runtime_recovery_status(params: Any, ctx: Context) -> None:
         await ctx.reply_error(INTERNAL_ERROR, "runtime.recovery_status failed")
 
 
+async def _research_config(params: Any, ctx: Context, *, write: bool) -> None:
+    from ..app import ensure_db
+    from ..research_settings import get_config, set_config
+    from .protocol import INVALID_PARAMS, ResearchConfigGetParams, ResearchConfigSetParams
+
+    try:
+        values = (ResearchConfigSetParams if write else ResearchConfigGetParams).model_validate(params)
+        db = await ensure_db()
+        if db is None:
+            raise RuntimeError("Storage unavailable")
+        result = await asyncio.to_thread(set_config, db.path.parent, values.search_url) if write else await asyncio.to_thread(get_config, db.path.parent)
+        await ctx.reply(result)
+    except (ValidationError, ValueError):
+        await ctx.reply_error(INVALID_PARAMS, "Invalid or unavailable research settings")
+    except Exception:
+        logger.exception("research settings operation failed")
+        await ctx.reply_error(INTERNAL_ERROR, "Research settings unavailable")
+
+
+async def _handle_research_get(params: Any, ctx: Context) -> None:
+    await _research_config(params, ctx, write=False)
+
+
+async def _handle_research_set(params: Any, ctx: Context) -> None:
+    await _research_config(params, ctx, write=True)
+
+
 def register_runtime_handlers(server: Any) -> None:
     """Register all ``runtime.*`` JSON-RPC methods on *server*."""
     server.register("runtime.recovery_status", _handle_runtime_recovery_status)
+    server.register("runtime.research_get", _handle_research_get)
+    server.register("runtime.research_set", _handle_research_set)
     logger.debug("registered runtime.* handlers")
 
 

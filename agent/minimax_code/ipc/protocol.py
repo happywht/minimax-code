@@ -34,6 +34,15 @@ class _Base(BaseModel):
 McpTransport = Literal["stdio", "sse", "streamable_http"]
 
 
+class ResearchConfigGetParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ResearchConfigSetParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    search_url: str | None = Field(max_length=2048)
+
+
 class CheckpointRebindParams(BaseModel):
     """Explicit user-authorized checkpoint migration target."""
     model_config = ConfigDict(extra="forbid", strict=True)

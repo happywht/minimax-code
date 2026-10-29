@@ -698,6 +698,12 @@ export interface RuntimeCrashReport {
 /** Snapshot of boot-time crash recovery — result of `runtime.recovery_status` (R12).
  *  `available:false` before recovery has run; `clean_start:true` when the
  *  previous boot exited cleanly and no orphan runs were recovered. */
+export interface ResearchConfigResult {
+  saved_url: string | null;
+  effective_url: string | null;
+  source: "settings" | "environment" | "environment_invalid" | "unconfigured";
+}
+
 export interface RuntimeRecoveryResult {
   available: boolean;
   /** Set once recovery has executed this boot. */

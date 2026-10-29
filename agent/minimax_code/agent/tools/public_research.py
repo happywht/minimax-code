@@ -5,7 +5,6 @@ import asyncio
 import http.client
 import ipaddress
 import json
-import os
 import socket
 import ssl
 import threading
@@ -207,9 +206,14 @@ class SearchPublicWebTool(Tool):
             _require_public_network(self.name)
             if not isinstance(query, str) or not query.strip() or len(query) > 500:
                 raise ValueError("query must contain 1–500 characters")
-            endpoint = os.environ.get("MINIMAX_CODE_SEARCH_URL", "")
+            from ...app import get_db
+            from ...research_settings import resolve_endpoint
+            from ...storage.db import default_data_dir
+
+            db = get_db()
+            endpoint = await asyncio.to_thread(resolve_endpoint, db.path.parent if db is not None else default_data_dir())
             if not endpoint:
-                raise ValueError("Search service not configured: set MINIMAX_CODE_SEARCH_URL")
+                raise ValueError("Search service not configured: open Settings → 联网研究 or set MINIMAX_CODE_SEARCH_URL")
             url, _, _ = _url(endpoint)
             if urlsplit(url).query:
                 raise ValueError("Search endpoint must not contain query parameters")

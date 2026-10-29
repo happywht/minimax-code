@@ -145,6 +145,7 @@ export function mockNotify(method: string, params: unknown, client: IPCClient): 
 // R61 backend write-side read-back — the frontend badge switcher consumes it
 // from `model.list` so it stays in sync with the store without a second round-trip.
 let mockReasoningEffort: string | null = null;
+let mockResearchUrl: string | null = null;
 const mockMcpServers = new Map<string, McpServer>();
 const mockMemories = new Map<string, MemoryEntry>();
 // R18 — user-created permission rules in *wire* shape (the factory
@@ -1776,6 +1777,18 @@ function mockHandle(
       return { trace_id: null, spans: [], tree: [], span_count: 0, enabled: false };
 
     // ── runtime.* mock (R12) — clean start, nothing recovered ──────────
+    case "runtime.research_get":
+      return { saved_url: mockResearchUrl, effective_url: mockResearchUrl, source: mockResearchUrl ? "settings" : "unconfigured" };
+    case "runtime.research_set": {
+      const value = (params as { search_url: string | null }).search_url;
+      if (value !== null) {
+        let parsed: URL;
+        try { parsed = new URL(value); } catch { throw new Error("Invalid search endpoint"); }
+        if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash || !/^\/search\/?$/.test(parsed.pathname) || parsed.hostname === "localhost" || parsed.hostname.endsWith(".local") || parsed.hostname === "127.0.0.1") throw new Error("Invalid search endpoint");
+      }
+      mockResearchUrl = value;
+      return { saved_url: value, effective_url: value, source: value ? "settings" : "unconfigured" };
+    }
     case "runtime.recovery_status":
       return {
         available: true,

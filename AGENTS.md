@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (205 methods: 39 dotted namespaces + 3 standalone methods)
+  |- IPCServer (207 methods: 39 dotted namespaces + 3 standalone methods)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (built-in tools + skill/MCP bridges)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -169,7 +169,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **205 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **207 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -200,7 +200,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `provider.*` | 7 | 多 Provider 接入 | `handlers_providers.py` |
 | `run.*` | 7 | 持久接单、幂等、取消、恢复及事件 | `handlers_runs.py` |
 | `runner.*` | 2 | Runner 状态 | `handlers_runner.py` |
-| `runtime.*` | 1 | 运行时信息 | `handlers_runtime.py` |
+| `runtime.*` | 3 | 运行时信息 | `handlers_runtime.py` |
 | `schedule.*` | 8 | 定时任务 CRUD/启停 | `handlers_scheduled.py` |
 | `secrets.*` | 3 | API 密钥管理 | `handlers_secrets.py` |
 | `session.*` | 12 | 会话 CRUD/归档/批量 | `handlers_sessions.py` |

@@ -1257,6 +1257,8 @@ pipeline is fail-open: a recovery fault never blocks boot.
 | Method | Params | Result | Notes |
 |--------|--------|--------|-------|
 | `runtime.recovery_status` | `{}` | `{ available, clean_start?, previous_crash?, crash?, recovered_runs?, run_ids?, sessions?, reason? }` | `available:false` before recovery has run this boot. `clean_start:true` when the previous boot exited cleanly and nothing was recovered. `crash` carries `{crashed_pid, started_at, detected_at}` from the consumed marker. `reason` is set only when recovery could not import its deps (fail-open). |
+| `runtime.research_get` | `{}` | `{saved_url, effective_url, source}` | 搜索地址及来源；环境变量值不回显。 |
+| `runtime.research_set` | `{search_url: string|null}` | `{saved_url, effective_url, source}` | 原子保存公开 HTTPS /search 地址；null 清除并回退环境变量。拒绝 URL 凭据、查询及片段；不进行联网测试。 |
 
 Lifecycle: `install_faulthandler()` + `mark_dirty_start()` run once in
 `cli_entry()` before the event loop; `mark_clean_exit()` is armed via
