@@ -819,3 +819,7 @@ HostTunnelManager 使用真实 Windows OpenSSH 隧道打开浏览器，页面加
 同一标签页经原地址恢复。前端主机面板显示重连及失败状态。实测脚本为
 `.verification/live-tunnel-reconnect.py` 和 `.verification/browser-tunnel-reconnect.py`；
 未模拟物理网络断开或远端机器重启。
+
+自动重试耗尽后，针对同一主机和远端端口的手动连接优先复用原本地端口；若端口被
+占用则选择新端口，不影响占用者。真实主机复测在关闭 SSH 后手动连接保留 URL，
+健康检查通过；脚本 `.verification/live-manual-tunnel-reconnect.py`。

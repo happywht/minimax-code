@@ -157,6 +157,78 @@ async def test_failed_reconnect_health_reaps_attempt_and_reports_failure():
     await manager.close()
 
 
+async def test_manual_connect_after_retry_exhaustion_reuses_local_url():
+    first, second = Process(), Process()
+    spawn = AsyncMock(side_effect=[first, second])
+    manager = HostTunnelManager(spawn=spawn, health=AsyncMock(return_value=True),
+                                reconnect_delays=())
+    original = await manager.connect(HOST)
+    first.exit(255)
+    await manager._tunnels[HOST["id"]].watcher
+    assert manager.connection(HOST["id"])["state"] == "failed"
+    assert await manager.connect(HOST) == original
+    assert spawn.await_args_list[0].args == spawn.await_args_list[1].args
+    await manager.close()
+
+
+async def test_manual_reconnect_uses_free_port_when_previous_port_is_occupied():
+    first, second = Process(), Process()
+    spawn = AsyncMock(side_effect=[first, second])
+    manager = HostTunnelManager(spawn=spawn, health=AsyncMock(return_value=True),
+                                reconnect_delays=())
+    original = await manager.connect(HOST)
+    port = int(original["local_url"].rsplit(":", 1)[1])
+    first.exit(255)
+    await manager._tunnels[HOST["id"]].watcher
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", port))
+        occupied.listen()
+        result = await manager.connect(HOST)
+        assert result["state"] == "connected"
+        assert result["local_url"] != original["local_url"]
+        assert occupied.getsockname()[1] == port
+    await manager.close()
+
+
+@pytest.mark.parametrize("host,remote_port", [
+    ({**HOST, "hostname": "different-host"}, 8765),
+    (HOST, 9876),
+])
+async def test_manual_reconnect_changed_endpoint_does_not_request_old_port(
+    monkeypatch, host, remote_port,
+):
+    first, second = Process(), Process()
+    manager = HostTunnelManager(spawn=AsyncMock(side_effect=[first, second]),
+                                health=AsyncMock(return_value=True), reconnect_delays=())
+    await manager.connect(HOST)
+    first.exit(255)
+    await manager._tunnels[HOST["id"]].watcher
+    real_socket = socket.socket
+    requested = []
+
+    class RecordingSocket:
+        def __init__(self):
+            self.inner = real_socket()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.inner.close()
+
+        def bind(self, address):
+            requested.append(address)
+            self.inner.bind(address)
+
+        def getsockname(self):
+            return self.inner.getsockname()
+
+    monkeypatch.setattr("minimax_code.hosts.tunnel.socket.socket", RecordingSocket)
+    assert (await manager.connect(host, remote_port=remote_port))["state"] == "connected"
+    assert requested == [("127.0.0.1", 0)]
+    await manager.close()
+
+
 async def test_disconnect_cancels_pending_reconnect():
     process = Process()
     spawn = AsyncMock(return_value=process)

@@ -210,12 +210,20 @@ class HostTunnelManager:
                     and old.identity == identity and old.remote_port == remote_port
                     and local_port in {0, old.local_port}):
                 return self.connection(host_id)
+            preferred_port = (old.local_port if old and old.state == "failed"
+                              and old.identity == identity and old.remote_port == remote_port
+                              and local_port == 0 else 0)
             if old:
                 old.state = "disconnected"
                 await self._stop(old)
             try:
                 with socket.socket() as reservation:
-                    reservation.bind(("127.0.0.1", local_port))
+                    try:
+                        reservation.bind(("127.0.0.1", preferred_port or local_port))
+                    except OSError:
+                        if not preferred_port:
+                            raise
+                        reservation.bind(("127.0.0.1", 0))
                     local_port = reservation.getsockname()[1]
             except OSError as exc:
                 failure = {"host_id": host_id, "state": "failed", "local_url": None,

@@ -97,7 +97,7 @@ export function HostsTab(): JSX.Element {
 
   return <section className="space-y-4" data-testid="settings-hosts">
     <h2 className="text-sm font-semibold">远程主机</h2>
-    <p className="text-xs text-ink-2">通过 SSH 隧道在新标签页打开远端服务。远端拥有独立的会话、文件和设置；当前页面仍连接本机。请仅连接可信主机，并确认远端服务正在运行。</p>
+    <p className="text-xs text-ink-2">通过 SSH 隧道在新标签页打开远端服务。远端拥有独立的会话、文件和设置；当前页面仍连接本机。SSH 隧道不限制远端命令的访问权限，执行环境由远端配置决定。请仅连接可信主机，并确认远端服务正在运行。</p>
     {error && <p role="alert" className="text-xs text-status-error">{error}</p>}
     <form onSubmit={(event) => void register(event)} className="space-y-2 rounded-md border border-line p-3">
       <h3 className="text-xs font-medium">登记主机</h3>
