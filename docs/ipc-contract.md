@@ -1735,7 +1735,7 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 `run.research_list({session_id,project_id,query?,offset?})` 返回 `{session_id,project_id,service_id,sources}`，按时间倒序每页最多 20 条，offset 不超过 10000；列表摘录最多 1000 字。`run.research_get({session_id,project_id,expected_service_id,page_source_id})` 返回相同绑定及 `source`，包含最多 8000 字的保存摘录及原始截断标志。两者均校验会话项目、服务及宿主限制，并在读取后复查绑定；详情中旧服务身份或已删除来源被拒绝。
 
-`run.child_workspace({run_id,session_id,action:"preview"})` 仅审阅有持久父运行、会话、项目和工作区绑定的直接子工作区；受限进程、旧无绑定记录及嵌套工作区不通过该入口处理。返回当前父目录与子结果的文件和有限文本差异，以及 `revision` 和 `service_id`；大于 500 个变化拒绝预览。`action:"collect"` 必须附带该版本的 `revision` 与 `expected_service_id`，重新检查文件、绑定和冲突。删除及父目录同期修改不会被自动覆盖；复制期间如发生错误可能已有部分文件写入，应重新核对。独立目录不是操作系统沙盒。
+`run.child_workspace({run_id,session_id,action:"preview"})` 仅审阅有持久父运行、会话、项目和工作区绑定的直接子工作区；受限进程、旧无绑定记录及嵌套工作区不通过该入口处理。返回当前父目录与子结果的文件和有限文本差异，以及 `revision` 和 `service_id`；已收集状态附带服务端保存的 `receipt`（merged、noop 和 conflicts），不表示验证通过；大于 500 个变化拒绝预览。`action:"collect"` 必须附带该版本的 `revision` 与 `expected_service_id`，重新检查文件、绑定和冲突。删除及父目录同期修改不会被自动覆盖；复制期间如发生错误可能已有部分文件写入，应重新核对。独立目录不是操作系统沙盒。
 
 `run.child_list({session_id})` 返回同一父会话及其持久父运行、当前项目绑定的最近 100 条直接子运行，包含 `service_id` 和真实持久 `status`。`live` 仅表示服务内可确认的后台任务，缺失不能证明同步子任务已停止；活动状态但 `live=false` 时客户端应显示待核对，不应推断仍在运行。历史缺少父运行绑定的记录不包含在内。
 

@@ -62,4 +62,5 @@ def preview(child: ChildWorkspace) -> dict:
                   for f in files]}, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     return {"run_id": child.run_id, "root": str(child.parent), "kind": child.record["kind"],
             "state": child.record["state"], "files": files, "revision": revision,
-            "omitted": child.record.get("omitted", [])}
+            "omitted": child.record.get("omitted", []),
+            **({"receipt": child.record["receipt"]} if child.record["state"] == "collected" else {})}

@@ -26,7 +26,7 @@ import {
   runsForSession,
   type SubAgentState,
 } from "../../stores";
-import type { ChildWorkspaceReview as ReviewResult, SubAgentRun, SubAgentStatus } from "../../types/ipc";
+import type { ChildWorkspaceReceipt, ChildWorkspaceReview as ReviewResult, SubAgentRun, SubAgentStatus } from "../../types/ipc";
 import { StructuredErrorCallout } from "../StructuredErrorCallout";
 import { strings } from "../../ui/strings";
 import { useSessionStore } from "../../stores/sessionStore";
@@ -318,43 +318,97 @@ function SubAgentRow({
   );
 }
 
+function validReceipt(value: ChildWorkspaceReceipt | undefined, runId: string): value is ChildWorkspaceReceipt {
+  return !!value && value.run_id === runId && typeof value.complete === "boolean" && typeof value.pruned === "boolean" &&
+    Array.isArray(value.merged) && value.merged.length <= 500 && value.merged.every((item) => item && typeof item.path === "string" && typeof item.sha256 === "string") &&
+    Array.isArray(value.noop) && value.noop.length <= 500 && value.noop.every((item) => typeof item === "string") &&
+    Array.isArray(value.conflicts) && value.conflicts.length <= 500 && value.conflicts.every((item) => item && typeof item.path === "string") &&
+    (!value.complete || value.conflicts.length === 0);
+}
+
 function ChildWorkspaceReview({ runId, sessionId }: { runId: string; sessionId: string }): JSX.Element {
   const [review, setReview] = useState<ReviewResult | null>(null);
+  const [receipt, setReceipt] = useState<{ report: ChildWorkspaceReceipt; root: string; service: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const generation = useRef(0);
   const projectId = useSessionStore((s) => s.sessions.find((s) => s.id === sessionId)?.project_id ?? null);
   useEffect(() => {
-    setReview(null); setMessage(""); setBusy(false);
+    setReview(null); setReceipt(null); setMessage(""); setBusy(false);
     const epoch = generation;
     return () => { epoch.current++; };
-  }, [sessionId, projectId]);
+  }, [runId, sessionId, projectId]);
+  useEffect(() => ipc.onSideCar(() => { ++generation.current; setReview(null); setReceipt(null); setBusy(false); setMessage("连接变化，请重新查看子工作区和收集结果。"); }), []);
   const invoke = async (collect: boolean) => {
-    const ticket = ++generation.current;
-    const host = ipc.agentBaseUrl;
+    const ticket = ++generation.current, host = ipc.agentBaseUrl;
+    const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
+      useSessionStore.getState().currentSessionId === sessionId &&
+      (useSessionStore.getState().currentProjectId === projectId || (!projectId && useSessionStore.getState().currentProjectId === "inbox"));
     setBusy(true); setMessage("");
     try {
       if (collect && !review) return;
-      const result = await ipc.request<ReviewResult & { report?: { complete: boolean; conflicts: unknown[] } }>(
+      const result = await ipc.request<ReviewResult & { report?: ChildWorkspaceReceipt }>(
         "run.child_workspace", { run_id: runId, session_id: sessionId, action: collect ? "collect" : "preview",
           ...(collect && review ? { revision: review.revision, expected_service_id: review.service_id } : {}) },
       );
-      if (ticket !== generation.current || host !== ipc.agentBaseUrl) return;
-      if (result.session_id !== sessionId || result.project_id !== projectId || (collect && result.service_id !== review?.service_id)) throw new Error("会话、项目或服务已变化，请重新查看");
+      if (!current()) return;
+      if (result.session_id !== sessionId || result.project_id !== projectId || !result.service_id ||
+          (collect && result.service_id !== review?.service_id) || (!collect && result.run_id !== runId)) throw new Error("会话、项目或服务已变化，请重新查看");
       if (collect) {
+        if (!validReceipt(result.report, runId)) throw new Error("收集回执无效，请重新查看并核对文件");
+        setReceipt({ report: result.report, root: review!.root, service: result.service_id, kind: review!.kind });
         setReview(null);
-        setMessage(result.report?.complete ? "收集完成；原子任务工作区及备份仍保留。" : "未完整收集，请重新查看冲突。");
-      } else setReview(result);
-    } catch (error) {
-      if (ticket === generation.current) {
-        setReview(null);
-        setMessage(`${error instanceof Error ? error.message : String(error)}${collect ? "。收集可能部分完成，请重新查看并核对文件。" : ""}`);
+        setMessage(result.report.complete ? "收集已完成，尚未验证。子工作区及备份仍保留。" : "收集未完成；请核对冲突与已写入文件。");
+      } else {
+        if (result.receipt && !validReceipt(result.receipt, runId)) throw new Error("已保存的收集回执无效");
+        setReview(result);
+        setReceipt(result.receipt ? { report: result.receipt, root: result.root, service: result.service_id, kind: result.kind } : null);
       }
-    } finally { if (ticket === generation.current) setBusy(false); }
+    } catch (error) {
+      if (current()) {
+        setReview(null); setReceipt(null);
+        setMessage(`${error instanceof Error ? error.message : String(error)}${collect ? "。结果未确认，可能部分收集；请重新查看并逐项核对父目录，不能推断哪些文件已写入。" : ""}`);
+      }
+    } finally { if (current()) setBusy(false); }
   };
-  return <div className="space-y-1 border-t border-minimax-border/60 pt-1">
+  const addFollowup = async () => {
+    if (!receipt?.report.complete || !projectId || busy) return;
+    const expected = receipt, ticket = ++generation.current, host = ipc.agentBaseUrl;
+    const current = () => ticket === generation.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === sessionId && useSessionStore.getState().currentProjectId === projectId;
+    setBusy(true); setMessage("");
+    try {
+      const result = await ipc.request<ReviewResult>("run.child_workspace", { run_id: runId, session_id: sessionId, action: "preview" });
+      if (!current()) return;
+      if (result.run_id !== runId || result.session_id !== sessionId || result.project_id !== projectId || result.service_id !== expected.service ||
+          result.root !== expected.root || result.state !== "collected" || !validReceipt(result.receipt, runId) ||
+          JSON.stringify(result.receipt) !== JSON.stringify(expected.report)) throw new Error("收集回执或工作区绑定已变化，请重新查看");
+      const merged = result.receipt.merged, noop = result.receipt.noop;
+      const lines = [`子任务 ${runId} 的工作区收集回执（未执行验证）：`, `父目录：${result.root}`, `工作区类型：${result.kind}`,
+        `已复制文件：${merged.length} 项`, ...merged.slice(0, 30).map((item) => `- ${item.path}`),
+        ...(merged.length > 30 ? [`另有 ${merged.length - 30} 项未列出。`] : []),
+        `父目录原已相同：${noop.length} 项`, ...noop.slice(0, 20).map((path) => `- ${path}`),
+        ...(noop.length > 20 ? [`另有 ${noop.length - 20} 项未列出。`] : []),
+        "此回执不证明文件此刻未变化，也不代表验证或验收通过。请先核对当前文件，再按当前任务权限和项目配置决定验证步骤。",
+        "后续目标：（请填写）"];
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project: projectId, session: sessionId, text: lines.join("\n") };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      setMessage(detail.result ?? "当前聊天输入区未打开；请先切换到聊天再试。");
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { if (current()) setBusy(false); }
+  };
+  return <div className="space-y-2 border-t border-line pt-2 text-xs">
     <button type="button" disabled={busy} onClick={() => void invoke(false)}>查看子任务工作区结果</button>
-    {message && <p role="status">{message}</p>}
+    {message && <p role="status" className="break-words text-ink-1">{message}</p>}
+    {receipt && <div className="space-y-1 rounded border border-line bg-surface-1 p-2">
+      <p className="font-medium">{receipt.report.complete ? "收集回执 · 已完成" : "收集回执 · 未完成"}</p>
+      <p>已复制 {receipt.report.merged.length} 项；父目录原已相同 {receipt.report.noop.length} 项；冲突 {receipt.report.conflicts.length} 项。尚未验证或验收。</p>
+      {!!receipt.report.merged.length && <details><summary>已复制文件</summary><ul>{receipt.report.merged.map((item) => <li key={item.path} className="break-all">{item.path}</li>)}</ul></details>}
+      {!!receipt.report.noop.length && <details><summary>父目录原已相同的文件</summary><ul>{receipt.report.noop.map((path) => <li key={path} className="break-all">{path}</li>)}</ul></details>}
+      {!!receipt.report.conflicts.length && <details open><summary>未处理冲突</summary><ul>{receipt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
+      <p>回执记录当时结果，文件可能后来发生变化。请核对父目录并通过后续任务按权限执行需要的验证。</p>
+      {receipt.report.complete && <button type="button" disabled={busy || !projectId} onClick={() => void addFollowup()}>将收集回执加入后续任务草稿</button>}
+    </div>}
     {review && <div className="space-y-1">
       <p>父目录：{review.root} · {review.kind} · {review.state}</p>
       <p>对比当前父目录与子任务结果；同期用户修改不归因于 Agent。普通独立目录不是操作系统沙盒。</p>
