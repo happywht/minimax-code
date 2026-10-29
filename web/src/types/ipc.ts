@@ -64,6 +64,12 @@ export type AttachmentGenerateDocxParams = {
   project_id: string; expected_service_id: string; filename: string; title: string;
 } & DocxContent;
 export interface AttachmentGetResult { attachment: AttachmentOriginal; preview_text: string }
+export type ReportFormat = "docx" | "pdf";
+export type AttachmentReportPairParams = AttachmentGenerateDocxParams & { formats?: ReportFormat[] };
+export type ReportPairItem = { format: ReportFormat; status: "saved"; attachment: AttachmentOriginal; preview_text: string }
+  | { format: ReportFormat; status: "unconfirmed"; error: string };
+export interface ReportPairResult { status: "complete" | "partial" | "unconfirmed"; results: ReportPairItem[] }
+
 
 export interface OfficeTableSpec {
   sheet_name: string;

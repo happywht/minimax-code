@@ -129,6 +129,19 @@ class AttachmentGenerateDocxParams(AttachmentListParams):
         return self
 
 
+class AttachmentGenerateReportPairParams(AttachmentGenerateDocxParams):
+    filename: str = Field(min_length=1, max_length=115)
+    formats: list[Literal["docx", "pdf"]] = Field(default_factory=lambda: ["docx", "pdf"], min_length=1, max_length=2)
+
+    @model_validator(mode="after")
+    def check_formats(self):
+        if len(set(self.formats)) != len(self.formats):
+            raise ValueError("Report formats must be unique")
+        if self.filename.lower().endswith((".docx", ".pdf")):
+            raise ValueError("Use a filename stem without an extension")
+        return self
+
+
 class AttachmentGetParams(AttachmentListParams):
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
 

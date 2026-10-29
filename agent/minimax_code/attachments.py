@@ -362,6 +362,55 @@ class AttachmentService:
                                 expected_session=expected_session)
         return await self.get(project_id, row["id"])
 
+    async def generate_report_pair(self, project_id, expected_service_id, filename, title,
+                                   paragraphs=None, sections=None, formats=None, *, expected_session=None):
+        """Return per-format evidence; never claim an ambiguous commit failed."""
+        from .execution import require_write_access
+        from .ipc.protocol import AttachmentGenerateReportPairParams
+        from .report_content import report_blocks
+
+        require_write_access()
+        params = AttachmentGenerateReportPairParams.model_validate({
+            "project_id": project_id, "expected_service_id": expected_service_id,
+            "filename": filename, "title": title, "paragraphs": paragraphs,
+            "sections": sections, "formats": formats if formats is not None else ["docx", "pdf"],
+        })
+        values = params.model_dump()
+        await self.dao.project(project_id)
+        if expected_service_id != await self.dao.service_id():
+            raise ValueError("Attachment service identity changed; refresh")
+        for kind in values["formats"]:
+            report_blocks(f"{filename}.{kind}", title, values["paragraphs"], values["sections"], f".{kind}")
+        results = []
+        binding_lost = False
+        for kind in values["formats"]:
+            if binding_lost:
+                results.append({"format": kind, "status": "unconfirmed", "error": "Session project binding changed; stopped"})
+                continue
+            try:
+                if expected_session is not None:
+                    row = await self.dao.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (expected_session,))
+                    if row is None or row["project_id"] != project_id:
+                        binding_lost = True
+                        raise ValueError("Current session project binding changed")
+                operation = self.generate_docx if kind == "docx" else self.generate_pdf
+                item = await operation(project_id, expected_service_id, f"{filename}.{kind}", title,
+                                       values["paragraphs"], values["sections"], expected_session=expected_session)
+                results.append({"format": kind, "status": "saved", **item})
+            except ValueError as error:
+                results.append({"format": kind, "status": "unconfirmed", "error": str(error)})
+            except OSError:
+                results.append({"format": kind, "status": "unconfirmed", "error": "Storage or generation unavailable"})
+            except Exception:
+                results.append({"format": kind, "status": "unconfirmed", "error": "Generation unavailable"})
+            if expected_session is not None:
+                row = await self.dao.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (expected_session,))
+                if row is None or row["project_id"] != project_id:
+                    binding_lost = True
+        saved = sum(item["status"] == "saved" for item in results)
+        return {"status": "complete" if saved == len(results) else "partial" if saved else "unconfirmed",
+                "results": results}
+
     async def list(self, project_id):
         await self.dao.project(project_id)
         return {"attachments": await self.dao.list(project_id), "service_id": await self.dao.service_id()}

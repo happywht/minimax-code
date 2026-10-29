@@ -113,6 +113,32 @@ describe("project attachment panel and dispatch epochs", () => {
     await screen.findByLabelText("附件纯文本预览");
     expect(wire.request).toHaveBeenCalledWith("attachment.generate_pdf", { project_id: "p", expected_service_id: "svc_test", filename: "报告.pdf", title: "报告", paragraphs: ["中文正文"] });
   });
+  it("shows saved and unconfirmed results separately for a two-format report", async () => {
+    const docx: AttachmentOriginal = { ...row, original_name: "报告.docx", declared_type: "docx", recognized_type: "docx", parser_version: 2, parser_scope: "docx_body_paragraphs_tables", parser_reason: "ok" };
+    wire.request.mockImplementation(async (method: string) => {
+      if (method === "attachment.list") return { attachments: [], service_id: "svc_test" };
+      if (method === "attachment.generate_report_pair") return { status: "partial", results: [
+        { format: "docx", status: "saved", attachment: docx, preview_text: "正文" },
+        { format: "pdf", status: "unconfirmed", error: "No compatible font" },
+      ] };
+      if (method === "attachment.get") return { attachment: docx, preview_text: "正文" };
+      throw new Error("Unexpected method");
+    });
+    render(<AttachmentsPanel onClose={vi.fn()} />);
+    await screen.findByText("当前项目还没有附件原件。");
+    fireEvent.change(screen.getByLabelText("报告文件格式"), { target: { value: "both" } });
+    fireEvent.change(screen.getByLabelText("报告标题"), { target: { value: "报告" } });
+    fireEvent.change(screen.getByLabelText("报告正文（每行一个段落）"), { target: { value: "正文" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成 DOCX + PDF" }));
+    await screen.findByText("并非所有格式都已确认保存");
+    expect(screen.getByText(/DOCX：已保存 报告.docx/)).toBeVisible();
+    expect(screen.getByText(/PDF：未确认：No compatible font/)).toBeVisible();
+    expect(screen.getByText(/先刷新附件核对未确认格式/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "生成 DOCX + PDF" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("报告文件格式"), { target: { value: "pdf" } });
+    expect(screen.getByRole("button", { name: "生成 PDF" })).toBeEnabled();
+    expect(wire.request).toHaveBeenCalledWith("attachment.generate_report_pair", { project_id: "p", expected_service_id: "svc_test", filename: "报告", title: "报告", paragraphs: ["正文"] });
+  });
   it("uploads selected raw file, escapes preview, separates quality and downloads original", async () => {
     const createURL = vi.fn().mockReturnValue("blob:original");
     vi.stubGlobal("URL", { createObjectURL: createURL, revokeObjectURL: vi.fn() });

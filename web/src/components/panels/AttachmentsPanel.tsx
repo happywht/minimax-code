@@ -21,11 +21,13 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
   const [file, setFile] = useState<File | null>(null);
   const [docName, setDocName] = useState("报告.docx"), [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [format, setFormat] = useState<"docx" | "pdf">("docx");
+  const [format, setFormat] = useState<"docx" | "pdf" | "both">("docx");
   const [structured, setStructured] = useState(false), [sections, setSections] = useState(sectionExample);
   const [formError, setFormError] = useState<string | null>(null);
+  const [submittedPair, setSubmittedPair] = useState<string | null>(null);
+  const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body]);
   useEffect(() => {
-    setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setSections(sectionExample); setFormError(null); void useAttachmentStore.getState().activate(projectId);
+    setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setSections(sectionExample); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
@@ -44,20 +46,28 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
     </form>
     <form className="flex flex-col gap-2 rounded border border-line p-3" onSubmit={(event) => {
       event.preventDefault(); setFormError(null);
-      if (!structured) { void state.generateDocx(docName, title, { paragraphs: body.split(/\r?\n/) }, format); return; }
+      if (!structured) {
+        const content = { paragraphs: body.split(/\r?\n/) };
+        if (format === "both") { setSubmittedPair(pairFingerprint); void state.generatePair(docName, title, content); }
+        else void state.generateDocx(docName, title, content, format);
+        return;
+      }
       try {
         const value: unknown = JSON.parse(sections);
         if (!Array.isArray(value)) throw new Error("章节必须是 JSON 数组");
-        void state.generateDocx(docName, title, { sections: value as DocxSection[] }, format);
+        const content = { sections: value as DocxSection[] };
+        if (format === "both") { setSubmittedPair(pairFingerprint); void state.generatePair(docName, title, content); }
+        else void state.generateDocx(docName, title, content, format);
       } catch { setFormError("章节 JSON 无效，请使用示例格式。"); }
     }}>
       <h3>生成报告</h3>
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
       <label>文件格式 <select aria-label="报告文件格式" value={format} onChange={(event) => {
-        const next = event.target.value as "docx" | "pdf"; setFormat(next);
-        setDocName((name) => name.replace(/\.(docx|pdf)$/i, `.${next}`));
-      }}><option value="docx">DOCX</option><option value="pdf">PDF</option></select></label>
-      {format === "pdf" && <p>PDF 需要已安装的中文 TrueType 字体；缺失或字符不受支持时请按提示配置。表格最多 10 列、每表 1000 格。</p>}
+        const next = event.target.value as "docx" | "pdf" | "both"; setFormat(next);
+        setDocName((name) => `${name.replace(/\.(docx|pdf)$/i, "")}${next === "both" ? "" : `.${next}`}`);
+      }}><option value="docx">DOCX</option><option value="pdf">PDF</option><option value="both">DOCX + PDF</option></select></label>
+      {format === "both" && <p>文件名填写不带扩展名的公共名称。逐项保存；同一输入已有结果后，请选择单一格式重试或修改输入以创建新版本。不确定结果时先刷新附件。</p>}
+      {format !== "docx" && <p>PDF 需要已安装的中文 TrueType 字体；缺失或字符不受支持时请按提示配置。表格最多 10 列、每表 1000 格。</p>}
       <Input aria-label="报告文件名" value={docName} onChange={(event) => setDocName(event.target.value)} />
       <Input aria-label="报告标题" value={title} onChange={(event) => setTitle(event.target.value)} />
       <label>内容形式 <select aria-label="报告内容形式" value={structured ? "sections" : "plain"} onChange={(event) => { setStructured(event.target.value === "sections"); setFormError(null); }}>
@@ -67,9 +77,15 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
         <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => setSections(event.target.value)} /></> :
         <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />}
       {formError && <p role="alert">{formError}</p>}
-      <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim())}>生成 {format.toUpperCase()}</Button>
+      <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
       {ipc.isMock && <p role="status">演示模式不能生成报告。</p>}
     </form>
+    {scoped && state.reportBatch && <div role="status" className="rounded border border-line p-2">
+      <p>{state.reportBatch.status === "complete" ? "请求的格式均已保存" : "并非所有格式都已确认保存"}</p>
+      <ul>{state.reportBatch.results.map((item) => <li key={item.format}>{item.format.toUpperCase()}：{item.status === "saved"
+        ? `已保存 ${item.attachment.original_name} · ${item.attachment.id}` : `未确认：${item.error}`}</li>)}</ul>
+      {state.reportBatch.status !== "complete" && <p>先刷新附件核对未确认格式；确认缺失后选择该单一格式重试，避免重复版本。</p>}
+    </div>}
     {file && file.size > 10485760 && <p role="alert">文件超过 10 MiB，未上传。</p>}
     {scoped && state.error && <p role="alert" className="text-status-error">{state.error}</p>}
     {scoped && state.loading && <p role="status">正在读取附件…</p>}

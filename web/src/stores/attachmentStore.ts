@@ -1,15 +1,16 @@
 import { create } from "zustand";
 import { ipc, typedIPC } from "../ipc";
 import { fetchAttachmentContent, uploadAttachment } from "../ipc/attachmentContent";
-import type { AttachmentOriginal, DocxContent } from "../types/ipc";
+import type { AttachmentOriginal, DocxContent, ReportPairResult } from "../types/ipc";
 
 interface AttachmentState {
   projectId: string | null; host: string; serviceId: string | null;
   attachments: AttachmentOriginal[]; selected: AttachmentOriginal | null; preview: string;
-  loading: boolean; busy: boolean; error: string | null;
+  loading: boolean; busy: boolean; error: string | null; reportBatch: ReportPairResult | null;
   activate: (projectId: string | null) => Promise<void>;
   upload: (file: File) => Promise<void>;
   generateDocx: (filename: string, title: string, content: DocxContent, format?: "docx" | "pdf") => Promise<void>;
+  generatePair: (filename: string, title: string, content: DocxContent) => Promise<void>;
   select: (id: string) => Promise<void>;
   download: () => Promise<void>;
   clear: () => void;
@@ -37,10 +38,10 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
     get().clear(); set({ error: "Attachment context changed; refresh the current project" }); return false;
   };
   return {
-    projectId: null, host: "", serviceId: null, attachments: [], selected: null, preview: "", loading: false, busy: false, error: null,
+    projectId: null, host: "", serviceId: null, attachments: [], selected: null, preview: "", loading: false, busy: false, error: null, reportBatch: null,
     clear: () => {
       epoch++; selection++; uploading?.abort(); downloading?.abort();
-      set({ projectId: null, serviceId: null, attachments: [], selected: null, preview: "", loading: false, busy: false, error: null });
+      set({ projectId: null, serviceId: null, attachments: [], selected: null, preview: "", loading: false, busy: false, error: null, reportBatch: null });
     },
     activate: async (project) => {
       get().clear(); if (!project) return;
@@ -74,7 +75,7 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
       const { projectId: project, host, serviceId } = get();
       if (get().busy || !ready(project, host, serviceId) || !project || !serviceId) return;
       const ticket = epoch;
-      set({ busy: true, error: null });
+      set({ busy: true, error: null, reportBatch: null });
       try {
         const params = { project_id: project, expected_service_id: serviceId, filename, title, ...content };
         const result = await (format === "pdf" ? typedIPC.generatePdf(params) : typedIPC.generateDocx(params));
@@ -83,6 +84,31 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
         set({ attachments: [result.attachment, ...get().attachments].slice(0, 200) });
         await get().select(result.attachment.id);
       } catch (error) { if (current(ticket, project, host)) set({ error: `${errorText(error)}；如响应丢失，请先刷新检查是否已生成。` }); }
+      finally { if (current(ticket, project, host)) set({ busy: false }); }
+    },
+    generatePair: async (filename, title, content) => {
+      const { projectId: project, host, serviceId } = get();
+      if (get().busy || !ready(project, host, serviceId) || !project || !serviceId) return;
+      const ticket = epoch;
+      set({ busy: true, error: null, reportBatch: null });
+      try {
+        const result = await typedIPC.generateReportPair({ project_id: project, expected_service_id: serviceId, filename, title, ...content });
+        if (!current(ticket, project, host)) return;
+        const items = result.results;
+        if (items.length !== 2 || new Set(items.map((item) => item.format)).size !== 2 ||
+            items.some((item) => !["docx", "pdf"].includes(item.format) || !["saved", "unconfirmed"].includes(item.status))) throw new Error("Report result is inconsistent; refresh");
+        const saved = items.filter((item) => item.status === "saved");
+        const expected = saved.length === 2 ? "complete" : saved.length ? "partial" : "unconfirmed";
+        if (result.status !== expected) throw new Error("Report result is inconsistent; refresh");
+        saved.forEach((item) => {
+          validate(item.attachment, project, serviceId);
+          if (item.attachment.declared_type !== item.format || item.attachment.recognized_type !== item.format) {
+            throw new Error("Report format association changed; refresh");
+          }
+        });
+        set({ reportBatch: result, attachments: [...saved.map((item) => item.attachment), ...get().attachments].slice(0, 200) });
+        if (saved.length) await get().select(saved[0].attachment.id);
+      } catch (error) { if (current(ticket, project, host)) set({ error: `${errorText(error)}；结果不明，请刷新附件后再重试缺失格式。` }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
     },
     select: async (id) => {

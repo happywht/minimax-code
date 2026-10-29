@@ -508,6 +508,7 @@ function mockHandle(
       const p = (params ?? {}) as Record<string, unknown>;
       return artifactMock(method, p, mockProjects.has(String(p.project_id)));
     }
+    case "attachment.generate_report_pair":
     case "attachment.generate_pdf":
     case "attachment.generate_docx":
       throw new Error("演示模式不生成报告；请连接真实后端。");

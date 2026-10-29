@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from ...attachments import AttachmentService
 from ...execution import require_write_access
-from ...ipc.protocol import AttachmentGenerateDocxParams
+from ...ipc.protocol import AttachmentGenerateDocxParams, AttachmentGenerateReportPairParams
 from .base import Tool, ToolResult
 
 
@@ -95,7 +95,57 @@ class GenerateReportPdfTool(GenerateReportDocxTool):
         "filename": {"type": "string", "description": "A .pdf display filename"},
     }}
 
+
+class GenerateReportPairTool(GenerateReportDocxTool):
+    name = "generate_report_pair"
+    description = (
+        "Generate DOCX and PDF from the same title and paragraphs or sections, saving each in "
+        "current-project attachments. Each format is reported separately; partial success is not "
+        "full success. Check project attachments before retrying an unconfirmed format, then request "
+        "only that format. Neither factual accuracy nor visual rendering is verified."
+    )
+    parameters = {**GenerateReportDocxTool.parameters, "properties": {
+        **GenerateReportDocxTool.parameters["properties"],
+        "filename": {"type": "string", "description": "Common filename stem without .docx or .pdf"},
+        "formats": {"type": "array", "items": {"type": "string", "enum": ["docx", "pdf"]},
+                    "minItems": 1, "maxItems": 2, "uniqueItems": True},
+    }}
+
+    async def run(self, filename: str, title: str, paragraphs: list[str] | None = None,
+                  sections: list[dict[str, Any]] | None = None, formats: list[str] | None = None) -> ToolResult:
+        try:
+            require_write_access()
+            if not isinstance(self.project_id, str) or not self.project_id:
+                raise ValueError("Current session has no project")
+            row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
+            if row is None or row["project_id"] != self.project_id:
+                raise ValueError("Current session project binding changed")
+            identity = await self.service.dao.service_id()
+            params = AttachmentGenerateReportPairParams.model_validate({
+                "project_id": self.project_id, "expected_service_id": identity, "filename": filename,
+                "title": title, "paragraphs": paragraphs, "sections": sections,
+                "formats": ["docx", "pdf"] if formats is None else formats,
+            })
+            result = await self.service.generate_report_pair(**params.model_dump(), expected_session=self.session_id)
+            row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
+            if row is None or row["project_id"] != self.project_id:
+                raise ValueError("Session project changed; inspect the original project's attachments")
+            for item in result["results"]:
+                if item["status"] == "saved":
+                    attachment = item.pop("attachment")
+                    item.pop("preview_text", None)
+                    item.update({"attachment_id": attachment["id"], "filename": attachment["original_name"],
+                                 "version": attachment["version"], "sha256": attachment["sha256"]})
+            result["notice"] = ("Inspect project attachments for unconfirmed results before retrying only those formats; "
+                                "generation is not idempotent. Facts and layout remain unverified.")
+            if result["status"] != "complete":
+                return ToolResult.fail("Not all requested formats were confirmed saved", output=result)
+            return ToolResult.ok(result)
+        except (ValueError, OSError, ValidationError) as error:
+            return ToolResult.fail(str(error))
+
 def register_report_docx_tool(registry: Any, db: Any, session_id: str,
                               project_id: str | None) -> None:
     registry.register(GenerateReportDocxTool(db, session_id, project_id))
     registry.register(GenerateReportPdfTool(db, session_id, project_id))
+    registry.register(GenerateReportPairTool(db, session_id, project_id))

@@ -227,3 +227,5 @@ Inbound hooks require a configured HMAC secret; previously configured unsigned h
 ### PDF 报告生成
 
 安装报告与附件依赖：在 `agent` 目录执行 `uv sync --frozen --extra attachments`。报告生成自动尝试常见 Windows/Linux 中文字体并嵌入 PDF；如果字体缺失、格式不支持或无法覆盖报告字符，安装可用的中文 TrueType 字体并在启动服务前设置 `MINIMAX_CODE_PDF_FONT` 为字体文件的绝对路径，重启服务后重试。字体文件不会被修改。PDF 文字可解析不代表排版视觉、事实或业务已验收。
+
+报告面板可选择“DOCX + PDF”，一次提交相同内容并逐格式保存。若某种格式未确认，先刷新项目附件确认其是否已保存；确认缺失后选择该单一格式重试。不要在结果不明时重新生成两种格式，否则可能产生重复版本。

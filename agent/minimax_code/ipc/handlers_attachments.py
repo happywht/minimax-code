@@ -10,6 +10,7 @@ from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     AttachmentGenerateDocxParams,
+    AttachmentGenerateReportPairParams,
     AttachmentGetParams,
     AttachmentListParams,
 )
@@ -32,6 +33,7 @@ def register_attachment_handlers(server):
                 logger.exception("attachment.%s failed", operation)
                 await ctx.reply_error(INTERNAL_ERROR, "Attachment storage operation failed")
         return handle
+    server.register("attachment.generate_report_pair", handler(AttachmentGenerateReportPairParams, "generate_report_pair"))
     server.register("attachment.generate_pdf", handler(AttachmentGenerateDocxParams, "generate_pdf"))
     server.register("attachment.generate_docx", handler(AttachmentGenerateDocxParams, "generate_docx"))
     server.register("attachment.list", handler(AttachmentListParams, "list"))
