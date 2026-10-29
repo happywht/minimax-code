@@ -1255,13 +1255,15 @@ async def _handle_agent_send_message(
         from ..agent.tools.generate_xlsx_from_xlsx import register_xlsx_import_tool
         from ..agent.tools.project_attachments import register_project_attachment_tools
         from ..agent.tools.public_research import register_public_research_tools
+        from ..agent.tools.research_sources import ResearchSources
 
+        research_sources = ResearchSources()
         register_project_attachment_tools(registry, db, session_id, project_id)
-        register_report_docx_tool(registry, db, session_id, project_id)
+        register_report_docx_tool(registry, db, session_id, project_id, research_sources)
         register_table_xlsx_tool(registry, db, session_id, project_id)
         register_csv_xlsx_tool(registry, db, session_id, project_id)
         register_xlsx_import_tool(registry, db, session_id, project_id)
-        register_public_research_tools(registry)
+        register_public_research_tools(registry, research_sources)
 
     if internal_skill is not None:
         internal_skill.install(registry)

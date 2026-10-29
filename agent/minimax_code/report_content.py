@@ -39,9 +39,15 @@ def report_blocks(filename, title, paragraphs, sections, extension, sources=None
         blocks.append(("heading1", "参考来源（由提供者填写，未自动核验）"))
         for index, source in enumerate(validated.sources, 1):
             blocks.append(("paragraph", f"[{index}] {source.title}"))
+            if source.title_truncated:
+                blocks.append(("paragraph", "页面标题已截断。"))
             blocks.append(("paragraph", f"网址：{source.url}"))
             if source.accessed_at is not None:
                 blocks.append(("paragraph", f"访问时间：{source.accessed_at}"))
+            if source.excerpt is not None:
+                blocks.append(("paragraph", f"来源摘录（未经核验）：{source.excerpt}"))
+            if source.excerpt_truncated:
+                blocks.append(("paragraph", "页面内容或摘录已截断，不能代表全文。"))
     strings = []
     for kind, value in blocks:
         if kind == "table":

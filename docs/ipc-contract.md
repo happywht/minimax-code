@@ -1707,7 +1707,9 @@ attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）�
 原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，Schema046/bundle v6新增办公成果关联表；Schema047/bundle v7保存各主机远端服务端口；Schema048/bundle v8保存Webhook投递记录；Schema049/bundle v9记录检查点来源，bundle v10 保存检查点未跟踪文件副本，当前 v11 增加 Git 对象包，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
 旧v1/041至v7/047仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
 
-DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?}]`，最多 30 条；标题最多 200 字，URL 最多 2048 字且须为不含凭据的 HTTP(S)，访问时间为 ISO 日期或带时区时间。生成时按顺序在文末写入编号标题、可复制网址和可选访问时间；正文中的引用编号由调用方提供，不自动核对引用关系。来源只保存提供的内容，不联网抓取、不自动核验或证明其真实性。
+DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,excerpt?,excerpt_truncated?,title_truncated?}]`，最多 30 条；标题最多 200 字，URL 最多 2048 字且须为不含凭据的 HTTP(S)，访问时间为 ISO 日期或带时区时间，摘录最多 1000 字。生成时按顺序在文末写入编号标题、网址、可选访问时间、摘录和截断提示；正文中的引用编号由调用方提供，不自动核对引用关系。来源只保存提供的内容，不联网抓取、不自动核验或证明其真实性。
+
+普通 Native 聊天的 `read_public_page` 成功后另返回本次任务内有效的 `page_source_id`；`generate_report_docx`、`generate_report_pdf` 和 `generate_report_pair` 可传 `page_source_ids` 复用实际读取的最终 URL、访问时间、页面标题和最多 1000 字的提取摘录。手工 `sources` 排在前面，随后按 ID 顺序编号，合计最多 30 条；未知、重复或跨任务 ID 失败。标题缺失时标明页面未提供标题，标题、正文或摘录超限时在报告注明截断。来源 ID 保存在运行内存，不跨任务或服务重启；读取正文仍是未可信输入，不证明报告事实，也不核对正文编号。搜索摘要不会产生此来源 ID。
 
 `attachment.generate_docx` 接受安全 `.docx` 显示名和单行标题（最多 200 字），内容使用两种互斥格式之一：`paragraphs` 为 1–100 个段落；或 `sections` 为 1–50 个 `{heading, blocks}`，每个 block 为 `{kind:"paragraph",text}` 或 `{kind:"table",rows:[[文本,...],...]}`，顺序保留。合计最多 100 块、2000 个单元格，每表最多 100 行、20 列且各行等宽；每段/格最多 4096 字，总 UTF-8 最多 256 KiB。章节标题也限单行 200 字。使用本地 python-docx 创建，回读并比较全部章节、段落、表格单元格及顺序，再经现有 DOCX 有界解析与不可变附件 vault 登记。不会读取或修改项目文件、调用模型或抓取资料；用户提供的来源文本需自行核实。不保证版式、分页、事实或业务质量。响应丢失时先刷新附件列表；重试会创建新版本。文件与现有附件共享备份协议及未验证状态，不作为已完成报告的质量证明。 普通聊天 Agent 可通过 `generate_report_docx` 生成当前会话项目的文档；提交时复核会话项目绑定，遵循规划模式与写入权限规则。该工具默认要求确认，拒绝规则优先，无法确认时拒绝。
 

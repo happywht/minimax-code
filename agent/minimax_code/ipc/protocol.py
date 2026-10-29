@@ -115,6 +115,9 @@ class ReportSource(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     url: str = Field(min_length=1, max_length=2048)
     accessed_at: str | None = Field(default=None, min_length=1, max_length=64)
+    excerpt: str | None = Field(default=None, max_length=1000)
+    excerpt_truncated: bool = False
+    title_truncated: bool = False
 
     @model_validator(mode="after")
     def check_source(self):

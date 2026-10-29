@@ -59,7 +59,7 @@ export interface AttachmentOriginal {
 export interface AttachmentListResult { attachments: AttachmentOriginal[]; service_id: string }
 export type DocxBlock = { kind: "paragraph"; text: string } | { kind: "table"; rows: string[][] };
 export interface DocxSection { heading: string; blocks: DocxBlock[] }
-export interface ReportSource { title: string; url: string; accessed_at?: string }
+export interface ReportSource { title: string; url: string; accessed_at?: string; excerpt?: string | null; excerpt_truncated?: boolean; title_truncated?: boolean }
 export type DocxContent = ({ paragraphs: string[]; sections?: never } | { sections: DocxSection[]; paragraphs?: never }) & { sources?: ReportSource[] };
 export type AttachmentGenerateDocxParams = {
   project_id: string; expected_service_id: string; filename: string; title: string;
