@@ -1344,6 +1344,9 @@ function mockHandle(
       return { imported, skipped_tables: [] } satisfies DataImportSummary;
     }
 
+    case "data.backup_list":
+      return { directory: "mock://backups", items: [], truncated: false };
+
     case "data.backup": {
       const now = new Date();
       const stamp = now.toISOString().replace(/[:.]/g, "-");

@@ -15,16 +15,20 @@
 
 from __future__ import annotations
 
+import heapq
 import logging
 import os
 import sqlite3
+import stat
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from .handler_utils import HandlerError
-from .protocol import INTERNAL_ERROR, INVALID_PARAMS
+from .protocol import INTERNAL_ERROR, INVALID_PARAMS, DataBackupListParams
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -286,6 +290,58 @@ async def backup_database(db: Any, target_dir: Path | str | None = None, *,
     return {"path": str(dest), "bytes": dest.stat().st_size}
 
 
+def list_backups(target_dir: str | None = None) -> dict[str, Any]:
+    """List up to 100 newest named SQLite backups without opening their contents."""
+    from ..storage.db import default_data_dir
+
+    directory = Path(target_dir).expanduser() if target_dir else default_data_dir() / "backups"
+    if target_dir and (not directory.is_absolute() or not directory.is_dir()):
+        raise ValueError("backup directory must be an existing absolute path on the agent host")
+    if not directory.exists() and not target_dir:
+        return {"directory": str(directory), "items": [], "truncated": False}
+    candidates = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if not entry.name.startswith("minimax-code-backup-") or not entry.name.endswith(".db"):
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue  # A concurrent removal is not an inventory failure.
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            item = (info.st_mtime_ns, entry.name, info.st_size)
+            if len(candidates) < 101:
+                heapq.heappush(candidates, item)
+            elif item > candidates[0]:
+                heapq.heapreplace(candidates, item)
+    newest = sorted(candidates, reverse=True)
+    return {
+        "directory": str(directory),
+        "items": [
+            {"path": str(directory / name), "bytes": size,
+             "modified_at": datetime.fromtimestamp(ns / 1_000_000_000, UTC).isoformat()}
+            for ns, name, size in newest[:100]
+        ],
+        "truncated": len(newest) > 100,
+    }
+
+
+async def _handle_backup_list(params: Any, ctx: Context) -> None:
+    try:
+        request = DataBackupListParams.model_validate(params if params is not None else {})
+        if request.target_dir is not None and not request.target_dir.strip():
+            raise ValueError("target_dir must be a nonempty path")
+        await ctx.reply(list_backups(request.target_dir))
+    except ValidationError:
+        await ctx.reply_error(INVALID_PARAMS, "Invalid backup list parameters")
+    except ValueError as exc:
+        await ctx.reply_error(INVALID_PARAMS, str(exc))
+    except OSError:
+        logger.exception("data.backup_list failed")
+        await ctx.reply_error(INTERNAL_ERROR, "data.backup_list failed")
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -379,6 +435,7 @@ def register_data_handlers(server: Any) -> None:
     server.register("data.export", _handle_data_export)
     server.register("data.import", _handle_data_import)
     server.register("data.backup", _handle_data_backup)
+    server.register("data.backup_list", _handle_backup_list)
     logger.debug("registered data.* handlers")
 
 

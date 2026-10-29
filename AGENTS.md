@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (222 methods: 39 dotted namespaces + 3 standalone methods)
+  |- IPCServer (223 methods: 39 dotted namespaces + 3 standalone methods)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (built-in tools + skill/MCP bridges)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -169,7 +169,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **222 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **223 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -181,7 +181,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `checkpoint.*` | 6 | 上下文检查点 | `handlers_checkpoint.py` |
 | `codebase.*` | 4 | 代码库索引/检索 | `handlers_codebase.py` |
 | `crash.*` | 3 | 崩溃恢复会话 | `handlers_crash.py` |
-| `data.*` | 3 | 全量导出/导入/备份 | `handlers_data.py` |
+| `data.*` | 4 | 全量导出/导入/备份 | `handlers_data.py` |
 | `engine.*` | 2 | 引擎注册表能力卡（native/Codex 可用性探测） | `handlers_engines.py` |
 | `host.*` | 13 | 远程 Linux 主机：注册/诊断/SSH 隧道/执行/文件传输 | `handlers_hosts.py` |
 | `diag.*` | 1 | 诊断包导出 | `handlers_diag.py` |

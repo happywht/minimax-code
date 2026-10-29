@@ -37,6 +37,11 @@ class _Base(BaseModel):
 McpTransport = Literal["stdio", "sse", "streamable_http"]
 
 
+class DataBackupListParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    target_dir: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
 class ResearchConfigGetParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

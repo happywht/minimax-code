@@ -280,6 +280,7 @@ on the next `readline() == ""`.
 | `memory.list` / `memory.add` / `memory.delete` / `memory.search` / `memory.extract` | req/res | Long-term memory management (v0.11.0 Milestone 3). |
 | `data.export`               | req/res   | Data portability (R21): dump every business table into one self-describing JSON envelope. See §6 for the envelope shape. |
 | `data.import`               | req/res   | Data portability (R22): validate + replace-import such an envelope in one transaction (idempotent). See §6. |
+| `data.backup_list`          | req/res   | List up to 100 recent SQLite backup files without opening or deleting them. |
 | `data.backup`               | req/res   | Data portability (R23): online file-level snapshot via the SQLite backup API. See §6. |
 | `diag.export`               | req/res   | Diagnostics (R45): sanitized diagnostic bundle — version / platform / config (enums & counts only, never secret values) / per-table row counts / sanitized log tail. Degrades to `storage: {db_available: false}` when storage is down instead of erroring. |
 
@@ -1498,6 +1499,7 @@ real behaviour.
 |--------|--------|--------|-------|
 | `data.export` | `{}` | envelope (below) | Dump every business table into a single JSON document; the frontend turns it into a downloaded file. |
 | `data.import` | `{envelope}` | `{imported: {table: rows}, skipped_tables: [...]}` | Validate and replace-import an export envelope inside one transaction. |
+| `data.backup_list` | `{target_dir?}` | `{directory, items, truncated}` | List regular named SQLite backups by modification time, newest first, capped at 100. Optional directory must be an existing absolute path on the agent host; missing default directory yields an empty list. Symlinks are excluded. Entries contain `path`, `bytes`, `modified_at`; presence does not verify integrity or include vault files. No file is deleted. |
 | `data.backup` | `{target_dir?, require_existing_dir?}` | `{path, bytes}` | Online file-level snapshot via the SQLite backup API; default target is `<data_dir>/backups/`. |
 
 **Export envelope** (the RPC result itself):

@@ -16,6 +16,7 @@ import { strings } from "../../ui/strings";
 import { typedIPC } from "../../ipc";
 import type {
   DataBackupResult,
+  DataBackupList,
   DataExportEnvelope,
   DataImportSummary,
   DiagnosticBundle,
@@ -81,6 +82,8 @@ function DataTab(): JSX.Element {
   const [importing, setImporting] = useState(false);
   const [backing, setBacking] = useState(false);
   const [backupDirectory, setBackupDirectory] = useState("");
+  const [listingBackups, setListingBackups] = useState(false);
+  const [backups, setBackups] = useState<DataBackupList | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -173,8 +176,22 @@ function DataTab(): JSX.Element {
     }
   };
 
+  const onListBackups = async () => {
+    setListingBackups(true);
+    setFeedback(null);
+    setBackups(null);
+    try {
+      setBackups(await typedIPC.listDataBackups(backupDirectory.trim() || undefined));
+    } catch (err) {
+      setFeedback({ kind: "error", text: `读取备份清单失败：${String(err)}` });
+    } finally {
+      setListingBackups(false);
+    }
+  };
+
   const onBackup = async () => {
     setBacking(true);
+    setBackups(null);
     setFeedback(null);
     try {
       const directory = backupDirectory.trim();
@@ -228,7 +245,7 @@ function DataTab(): JSX.Element {
             variant="primary"
             data-testid="settings-data-export"
             icon={<Download />}
-            disabled={exporting || importing || backing || diagnosing}
+            disabled={exporting || importing || backing || diagnosing || listingBackups}
             loading={exporting}
             onClick={() => void onExport()}
           >
@@ -237,7 +254,7 @@ function DataTab(): JSX.Element {
         </div>
       </Panel>
 
-      <TableArchive disabled={exporting || importing || backing || diagnosing} />
+      <TableArchive disabled={exporting || importing || backing || diagnosing || listingBackups} />
 
       <Panel title={strings.settings.data.importTitle}>
         <p className="text-[11px] text-ink-2">
@@ -260,7 +277,7 @@ function DataTab(): JSX.Element {
             variant="secondary"
             data-testid="settings-data-import"
             icon={<Upload />}
-            disabled={exporting || importing || backing || diagnosing}
+            disabled={exporting || importing || backing || diagnosing || listingBackups}
             loading={importing}
             onClick={() => fileInputRef.current?.click()}
           >
@@ -283,8 +300,8 @@ function DataTab(): JSX.Element {
           data-testid="settings-data-backup-directory"
           className="mt-1"
           value={backupDirectory}
-          onChange={(event) => setBackupDirectory(event.target.value)}
-          disabled={exporting || importing || backing || diagnosing}
+          onChange={(event) => { setBackupDirectory(event.target.value); setBackups(null); }}
+          disabled={exporting || importing || backing || diagnosing || listingBackups}
           placeholder={strings.settings.data.backupDirectoryPlaceholder}
           aria-describedby="backup-directory-hint"
         />
@@ -297,13 +314,36 @@ function DataTab(): JSX.Element {
             variant="secondary"
             data-testid="settings-data-backup"
             icon={<HardDriveDownload />}
-            disabled={exporting || importing || backing || diagnosing}
+            disabled={exporting || importing || backing || diagnosing || listingBackups}
             loading={backing}
             onClick={() => void onBackup()}
           >
             {strings.settings.data.backupButton}
           </Button>
         </div>
+        <div className="mt-3">
+          <Button size="sm" variant="secondary" data-testid="settings-data-backup-list"
+            disabled={exporting || importing || backing || diagnosing || listingBackups}
+            loading={listingBackups} onClick={() => void onListBackups()}>
+            查看已有备份
+          </Button>
+        </div>
+        {backups && (
+          <div className="mt-3 text-xs text-ink-2" data-testid="settings-data-backup-inventory">
+            <p className="break-all">目录：{backups.directory}</p>
+            <p>仅列出 SQLite 备份文件，未检查完整性，也不包含附件等独立文件。</p>
+            {backups.items.length === 0 ? <p>未找到备份文件。</p> : (
+              <ul className="mt-2 space-y-2">
+                {backups.items.map((item) => (
+                  <li key={item.path} className="break-all">
+                    {item.path} · {formatBytes(item.bytes)} · {new Date(item.modified_at).toLocaleString()}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {backups.truncated && <p>只显示最近修改的 100 个文件。</p>}
+          </div>
+        )}
       </Panel>
 
       <Panel title={strings.settings.data.diagTitle}>
@@ -316,7 +356,7 @@ function DataTab(): JSX.Element {
             variant="secondary"
             data-testid="settings-data-diagnostic"
             icon={<Activity />}
-            disabled={exporting || importing || backing || diagnosing}
+            disabled={exporting || importing || backing || diagnosing || listingBackups}
             loading={diagnosing}
             onClick={() => void onDiagnostic()}
           >

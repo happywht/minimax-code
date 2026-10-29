@@ -95,6 +95,7 @@ import type {
   BatchArchiveSessionsResult,
   BatchUpdateSessionProjectResult,
   DataBackupResult,
+  DataBackupList,
   DataExportEnvelope,
   DataImportSummary,
   DiagnosticBundle,
@@ -374,6 +375,7 @@ export interface TypedIPC {
   exportData(): Promise<DataExportEnvelope>;
   importData(envelope: DataExportEnvelope): Promise<DataImportSummary>;
   backupData(targetDir?: string, requireExistingDir?: boolean): Promise<DataBackupResult>;
+  listDataBackups(targetDir?: string): Promise<DataBackupList>;
 
   // diagnostics (R45+) — sanitized bug-report bundle for the Data tab.
   exportDiagnostic(): Promise<DiagnosticBundle>;
@@ -950,6 +952,9 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         "data.backup",
         targetDir ? { target_dir: targetDir, require_existing_dir: requireExistingDir === true } : {},
       ),
+
+    listDataBackups: (targetDir) =>
+      client.request<DataBackupList>("data.backup_list", targetDir ? { target_dir: targetDir } : {}),
 
     listProviders: () => client.request<ListProvidersResult>("provider.list", {}),
     createProvider: (opts) =>

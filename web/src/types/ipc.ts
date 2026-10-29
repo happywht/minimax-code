@@ -1371,6 +1371,13 @@ export interface DataBackupResult {
   bytes: number;
 }
 
+/** File metadata only; presence does not establish backup integrity. */
+export interface DataBackupList {
+  directory: string;
+  items: { path: string; bytes: number; modified_at: string }[];
+  truncated: boolean;
+}
+
 /**
  * Sanitized diagnostic bundle — return shape of `diag.export` (R45).
  * Safe to attach to a bug report by construction: config carries enums /
