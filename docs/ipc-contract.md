@@ -413,6 +413,10 @@ No RPC is added or removed, and no SQLite migration is required.
 
 `skill.invoke` requires `{skill_id, session_id, idempotency_key, request}`. The
 session must already exist and use Native; `request` is a non-empty string.
+Optional `expected_service_id` and `expected_project_id` bind admission or replay
+to the current service and session project; when the service expectation is
+supplied, a null expected project means the unbound project. Legacy callers may
+omit these fields. They do not alter the idempotency fingerprint.
 Optional fields are `diff` (non-empty unified diff, code-review only),
 `max_iterations` (1–100), `model` (must match the selected model),
 `budget_tokens` (positive cumulative family ceiling), `expected_workspace`

@@ -12,6 +12,7 @@ import { useSkillStore } from "../../stores";
 import { Badge, Button, EmptyState, IconButton, Modal, Spinner } from "../../ui";
 import { toast } from "../layout/ErrorBoundary";
 import { strings } from "../../ui/strings";
+import { SkillRunPanel } from "./SkillRunPanel";
 
 function readTextFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -38,7 +39,9 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
   const setEnabled = useSkillStore((s) => s.setEnabled);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [removeId, setRemoveId] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
   const skillToRemove = removeId ? skills.find((s) => s.id === removeId) : undefined;
+  const skillToRun = runId ? skills.find((s) => s.id === runId) : undefined;
 
   useEffect(() => {
     void refresh();
@@ -108,6 +111,7 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
       </header>
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
+        {skillToRun && <div className="mb-4"><SkillRunPanel skill={skillToRun} onClose={() => setRunId(null)} /></div>}
         {loading && skills.length === 0 ? (
           <p data-testid="skills-loading" className="flex items-center gap-2 text-sm text-ink-1">
             <Spinner size={14} />
@@ -144,6 +148,7 @@ export function SkillsPanel({ testId = "skills-panel", onClose }: SkillsPanelPro
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  <button type="button" disabled={!skill.enabled} onClick={() => setRunId(skill.id)} className="rounded border border-line px-2 py-1 text-xs disabled:opacity-50">运行</button>
                   <label
                     data-testid={`skills-toggle-${skill.id}`}
                     className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-2"

@@ -780,6 +780,8 @@ class SkillInvokeParams(_Base):
     expected_workspace: str | None = None
     label: Literal["overview", "security", "performance", "style"] | None = None
     admission_only: bool = False
+    expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_project_id: str | None = None
 
     @field_validator("skill_id", "request", "session_id", "idempotency_key")
     @classmethod

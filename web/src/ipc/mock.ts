@@ -1049,6 +1049,8 @@ function mockHandle(
         throw new Error("skill.invoke requires an explicit Native session, request and stable key");
       const session = mockSessions.get(p.session_id);
       if (!session || session.engine === "codex") throw new Error("skill.invoke requires an existing Native session");
+      if (p.expected_service_id && (p.expected_service_id !== "mock" || (session.project_id ?? null) !== (p.expected_project_id ?? null)))
+        throw new Error("Skill service, session or project binding changed");
       const key = p.session_id + "\0" + p.idempotency_key;
       const signature = JSON.stringify({ ...p, admission_only: undefined });
       const previous = mockSkillKeys.get(key);

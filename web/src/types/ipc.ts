@@ -493,6 +493,8 @@ export interface SkillInvokeArgs {
   request: string;
   session_id: string;
   idempotency_key: string;
+  expected_service_id?: string;
+  expected_project_id?: string | null;
   diff?: string;
   model?: string;
   max_iterations?: number;

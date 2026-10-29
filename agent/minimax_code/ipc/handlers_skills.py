@@ -179,6 +179,12 @@ def register_skill_handlers(
                 db = get_db()
             if db is None:
                 raise RuntimeError("Skill admission requires durable storage")
+            if parsed.expected_service_id is not None:
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                session_binding = await db.fetchone("SELECT project_id FROM sessions WHERE id=?", (parsed.session_id,))
+                if (await ArtifactDAO(db).service_id() != parsed.expected_service_id or not session_binding
+                        or session_binding["project_id"] != parsed.expected_project_id):
+                    raise ValueError("Skill service, session or project binding changed")
             dao, service = AgentRunsDAO(db), get_run_service(ctx.server)
             # Replay needs only persisted intent and receipt. Live skill/model
             # settings may be disabled, removed or changed after acceptance.
