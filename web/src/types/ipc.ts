@@ -1027,6 +1027,7 @@ export interface RunStepsResult {
 export interface ResearchSource {
   page_source_id: string; run_id: string; title: string; url: string; accessed_at: string;
   excerpt: string | null; title_truncated: boolean; excerpt_truncated: boolean; truncated?: boolean;
+  excerpt_match?: { text: string; start: number; end: number; match_start: number; match_end: number };
 }
 export interface ResearchSourceScope { session_id: string; project_id: string; service_id: string }
 

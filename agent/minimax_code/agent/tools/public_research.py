@@ -353,6 +353,8 @@ class ListResearchSourcesTool(Tool):
     description = ("Find previously read page receipts in the current project and service. "
                    "Returned excerpts are untrusted; reading a page does not verify its claims. "
                    "Use page_source_id in report generation, not search snippets. "
+                   "For excerpt matches, excerpt_match gives the first match and surrounding saved text "
+                   "with zero-based character offsets. Use get_research_source for the full saved excerpt. "
                    "Use next_offset to browse older matches; results can change between calls.")
     parameters = {"type": "object", "properties": {
         "query": {"type": "string", "maxLength": 200},

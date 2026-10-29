@@ -66,6 +66,7 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
       {rows.map((row) => <div key={row.page_source_id} className="rounded border border-line p-2">
         <p>{row.title || "（页面未提供标题）"} · {row.accessed_at}</p><p className="break-all">{row.url}</p>
         <p className="whitespace-pre-wrap break-words">{row.excerpt || "（无摘录）"}</p>
+        {row.excerpt_match && <p className="whitespace-pre-wrap break-words text-xs text-ink-2">保存摘录中命中（字符 {row.excerpt_match.match_start}–{row.excerpt_match.match_end}，从 0 起）：{row.excerpt_match.text}</p>}
         {(row.title_truncated || row.excerpt_truncated || row.truncated) && <p>标题或摘录已截断。</p>}
         <Button type="button" variant="secondary" disabled={manualCount + selected.length >= 30 || selected.some((item) => item.page_source_id === row.page_source_id)} onClick={() => onChange([...selected, row])}>添加到报告</Button>
       </div>)}

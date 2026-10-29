@@ -124,6 +124,9 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
           onChange={(event) => { const checked = event.target.checked; setBatchIds((ids) => checked ? [...ids, row.page_source_id] : ids.filter((id) => id !== row.page_source_id)); }} />
         <button type="button" className="w-full rounded border border-line p-2 text-left" disabled={adding} onClick={() => void select(row.page_source_id)}>
           {row.title || "（页面未提供标题）"} · {row.accessed_at}
+          {row.excerpt_match && <span className="mt-1 block whitespace-pre-wrap break-words text-xs text-ink-2">
+            保存摘录中命中（字符 {row.excerpt_match.match_start}–{row.excerpt_match.match_end}，从 0 起）：{row.excerpt_match.text}
+          </span>}
         </button></li>)}</ul>
       <div className="flex flex-wrap items-center gap-2"><Button type="button" variant="secondary" loading={adding}
         disabled={loading || adding || !visible || batchIds.length === 0} onClick={() => void addToDraft(batchIds)}>将所选 {batchIds.length} 条加入草稿</Button>

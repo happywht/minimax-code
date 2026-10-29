@@ -96,8 +96,25 @@ class ResearchSources:
               OR json_extract(payload,'$.page.excerpt') LIKE ? ESCAPE '\\')
             ORDER BY recorded_at DESC,id DESC LIMIT ? OFFSET ?""",
             (self.project_id, identity, term, term, term, limit, offset))
-        return [{"page_source_id": row["id"], "run_id": row["run_id"],
-                 **self._report_page(json.loads(row["payload"])["page"])} for row in rows]
+        results = []
+        for row in rows:
+            page = json.loads(row["payload"])["page"]
+            result = {"page_source_id": row["id"], "run_id": row["run_id"],
+                      **self._report_page(page)}
+            # SQLite LIKE folds ASCII case only. Preserve character offsets while
+            # applying the same folding to find the first excerpt match.
+            if query:
+                fold = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+                excerpt = page["excerpt"]
+                position = excerpt.translate(fold).find(query.translate(fold))
+                if position >= 0:
+                    start = max(0, position - 120)
+                    end = min(len(excerpt), position + len(query) + 120)
+                    result["excerpt_match"] = {"text": excerpt[start:end], "start": start,
+                                               "end": end, "match_start": position,
+                                               "match_end": position + len(query)}
+            results.append(result)
+        return results
 
     async def get_page(self, source_id):
         from ...storage.dao._base import loads_json
