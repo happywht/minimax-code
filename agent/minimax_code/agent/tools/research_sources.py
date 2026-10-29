@@ -1,4 +1,4 @@
-"""Project-scoped page receipts stored in the existing durable run journal."""
+"""Project-scoped page receipts retained independently of their run journal."""
 from __future__ import annotations
 
 import uuid
@@ -50,6 +50,8 @@ class ResearchSources:
             now = now_iso()
             await conn.execute("INSERT INTO agent_run_steps(id,run_id,session_id,kind,status,title,summary,payload,started_at,completed_at,ordinal) VALUES(?,?,?,'observation','completed',?,?,?,?,?,?)",
                 (ident, self.run_id, self.session_id, "已读取研究来源", page["url"], dumps_json(payload), now, now, ordinal_row["n"]))
+            await conn.execute("INSERT INTO research_sources VALUES(?,?,?,?,?,?)",
+                (ident, self.project_id, identity, self.run_id, dumps_json(payload), now))
             step = _hydrate_step(await _fetchone(conn, "SELECT * FROM agent_run_steps WHERE id=?", (ident,)))
             await _append_event(conn, self.run_id, "step_created", {"step": step})
         return ident
@@ -74,6 +76,8 @@ class ResearchSources:
             await _append_event(conn, run_id, "created", {"run": _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (run_id,)))})
             await conn.execute("INSERT INTO agent_run_steps(id,run_id,session_id,kind,status,title,summary,payload,started_at,completed_at,ordinal) VALUES(?,?,?,'observation','completed',?,?,?,?,?,1)",
                 (ident, run_id, self.session_id, "用户手动读取研究来源", page["url"], dumps_json(payload), now, now))
+            await conn.execute("INSERT INTO research_sources VALUES(?,?,?,?,?,?)",
+                (ident, self.project_id, expected_service_id, run_id, dumps_json(payload), now))
             await _append_event(conn, run_id, "step_created", {"step": _hydrate_step(await _fetchone(conn, "SELECT * FROM agent_run_steps WHERE id=?", (ident,)))})
         return ident, run_id
 
@@ -85,27 +89,21 @@ class ResearchSources:
                 or isinstance(offset, bool) or not 0 <= offset <= 10000):
             raise ValueError("Query must be at most 200 characters and limit 1–20")
         term = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        rows = await self.db.fetchall("""SELECT s.id,s.run_id,s.payload FROM agent_run_steps s
-            JOIN agent_runs r ON r.id=s.run_id
-            WHERE s.kind='observation' AND s.status='completed' AND json_valid(s.payload)
-            AND json_valid(r.metadata) AND json_extract(r.metadata,'$.project_id')=?
-            AND json_extract(s.payload,'$.source')='research_page_v1'
-            AND json_extract(s.payload,'$.project_id')=? AND json_extract(s.payload,'$.service_id')=?
-            AND (json_extract(s.payload,'$.page.title') LIKE ? ESCAPE '\\'
-              OR json_extract(s.payload,'$.page.url') LIKE ? ESCAPE '\\'
-              OR json_extract(s.payload,'$.page.excerpt') LIKE ? ESCAPE '\\')
-            ORDER BY s.started_at DESC,s.id DESC LIMIT ? OFFSET ?""",
-            (self.project_id, self.project_id, identity, term, term, term, limit, offset))
+        rows = await self.db.fetchall("""SELECT id,run_id,payload FROM research_sources
+            WHERE project_id=? AND service_id=?
+            AND (json_extract(payload,'$.page.title') LIKE ? ESCAPE '\\'
+              OR json_extract(payload,'$.page.url') LIKE ? ESCAPE '\\'
+              OR json_extract(payload,'$.page.excerpt') LIKE ? ESCAPE '\\')
+            ORDER BY recorded_at DESC,id DESC LIMIT ? OFFSET ?""",
+            (self.project_id, identity, term, term, term, limit, offset))
         return [{"page_source_id": row["id"], "run_id": row["run_id"],
                  **self._report_page(json.loads(row["payload"])["page"])} for row in rows]
 
     async def get_page(self, source_id):
         from ...storage.dao._base import loads_json
         identity = await self._binding()
-        row = await self.db.fetchone("""SELECT s.id,s.run_id,s.payload FROM agent_run_steps s
-            JOIN agent_runs r ON r.id=s.run_id WHERE s.id=? AND s.kind='observation'
-            AND s.status='completed' AND json_valid(s.payload) AND json_valid(r.metadata)
-            AND json_extract(r.metadata,'$.project_id')=?""", (source_id, self.project_id))
+        row = await self.db.fetchone("""SELECT id,run_id,payload FROM research_sources
+            WHERE id=? AND project_id=? AND service_id=?""", (source_id, self.project_id, identity))
         payload = loads_json(row["payload"]) if row else None
         if (not isinstance(payload, dict) or payload.get("source") != "research_page_v1"
                 or payload.get("project_id") != self.project_id or payload.get("service_id") != identity):
@@ -134,9 +132,8 @@ class ResearchSources:
             raise ValueError("page_source_ids must contain at most 30 unique source IDs")
         result = list(manual or [])
         for ident in source_ids:
-            row = await self.db.fetchone("""SELECT s.payload FROM agent_run_steps s JOIN agent_runs r ON r.id=s.run_id
-                WHERE s.id=? AND s.status='completed' AND s.kind='observation' AND json_valid(s.payload)
-                AND json_valid(r.metadata) AND json_extract(r.metadata,'$.project_id')=?""", (ident, self.project_id))
+            row = await self.db.fetchone("""SELECT payload FROM research_sources
+                WHERE id=? AND project_id=? AND service_id=?""", (ident, self.project_id, identity))
             payload = loads_json(row["payload"]) if row else None
             if (not isinstance(payload, dict) or payload.get("source") != "research_page_v1"
                     or payload.get("project_id") != self.project_id or payload.get("service_id") != identity):

@@ -58,7 +58,7 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2">
-    <p>项目研究来源：从此服务实际读取的记录中选择；手工来源在前，所选来源按下方顺序编号。页面与报告事实未自动核验，删除来源所属任务或会话后无法生成。</p>
+    <p>项目研究来源：从此服务实际读取的记录中选择；手工来源在前，所选来源按下方顺序编号。页面与报告事实未自动核验，来源独立于任务和会话保留；删除项目后无法使用。</p>
     {!session || !project ? <p>请先选择当前项目的会话。</p> : <>
       <div className="flex gap-2"><Input aria-label="搜索报告研究来源" maxLength={200} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="标题、网址或摘录" />
         <Button type="button" disabled={busy || !service} onClick={() => void search(query, 0)}>搜索来源</Button></div>
