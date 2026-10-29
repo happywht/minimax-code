@@ -24,6 +24,8 @@ import { NativeSteerInput } from "./NativeSteerInput";
 import { RunAttachments } from "./RunAttachments";
 import type { VerificationEvidence } from "../../types/ipc";
 import { ipc } from "../../ipc";
+import { StreamEvent } from "../../types/ipc";
+import { OutputStorage } from "./OutputStorage";
 
 export interface RunTimelinePanelProps {
   testId?: string;
@@ -123,6 +125,7 @@ export function RunTimelinePanel({
   if (visibleRuns.length === 0 && pending.length === 0) {
     return (
       <div data-testid={testId} className="px-3 py-4 text-xs text-minimax-muted">
+        <OutputStorage />
         {loading
           ? strings.rightPanel.timeline.loading
           : error
@@ -134,6 +137,7 @@ export function RunTimelinePanel({
 
   return (
     <div data-testid={testId} className="relative">
+      <OutputStorage />
       {syncError}
       <div
         ref={scrollRef}
@@ -285,12 +289,13 @@ function CapturedToolOutput({ step }: { step: AgentRunStep }): JSX.Element | nul
   const project = useSessionStore((s) => s.sessions.find((item) => item.id === session)?.project_id ?? null);
   const [page, setPage] = useState<OutputPage | null>(null);
   const [error, setError] = useState("");
+  const [cleared, setCleared] = useState(false);
   const [busy, setBusy] = useState(false);
   const epoch = useRef(0);
   const meta = step.payload?.metadata as Record<string, unknown> | undefined;
   const ref = meta?.tool_output as OutputReference | undefined;
   useEffect(() => {
-    setPage(null); setError(""); setBusy(false);
+    setPage(null); setError(""); setBusy(false); setCleared(false);
     const version = epoch;
     return () => { version.current++; };
   }, [session, project, step.id]);
@@ -298,6 +303,13 @@ function CapturedToolOutput({ step }: { step: AgentRunStep }): JSX.Element | nul
     if (!ref?.output_ref) return;
     return ipc.onSideCar(() => { epoch.current++; setPage(null); setBusy(false); setError("连接变化，请重新读取输出。"); });
   }, [ref?.output_ref]);
+  useEffect(() => ipc.on<{ run_id: string; session_id: string; output_ref: string; service_id: string }>(StreamEvent.RunOutputCleared, (event) => {
+    const item = event.data;
+    if (item && ref && item.output_ref === ref.output_ref && item.run_id === ref.run_id &&
+        item.session_id === ref.session_id && item.service_id === ref.service_id) {
+      epoch.current++; setPage(null); setBusy(false); setCleared(true); setError("");
+    }
+  }), [ref]);
   if (!ref || typeof ref.output_ref !== "string" || ref.run_id !== step.run_id || ref.session_id !== session || ref.project_id !== project) return null;
   const load = async (offset: number) => {
     const ticket = ++epoch.current, host = ipc.agentBaseUrl;
@@ -305,15 +317,18 @@ function CapturedToolOutput({ step }: { step: AgentRunStep }): JSX.Element | nul
     try {
       const data = await ipc.request<OutputPage>("run.output_page", { run_id: ref.run_id, session_id: ref.session_id,
         output_ref: ref.output_ref, expected_service_id: ref.service_id, offset, limit: 4000 });
-      if (ticket !== epoch.current || host !== ipc.agentBaseUrl) return;
+      const state = useSessionStore.getState();
+      if (ticket !== epoch.current || host !== ipc.agentBaseUrl || state.currentSessionId !== session ||
+          (state.sessions.find((item) => item.id === session)?.project_id ?? null) !== project) return;
       if (data.id !== ref.output_ref || data.run_id !== ref.run_id || data.session_id !== ref.session_id ||
           data.project_id !== ref.project_id || data.service_id !== ref.service_id || data.offset !== offset) throw new Error("输出归属已变化");
       setPage(data);
-    } catch (failure) { if (ticket === epoch.current) { setPage(null); setError(String(failure)); } }
+    } catch (failure) { if (ticket === epoch.current) { setPage(null); if (String(failure).includes("explicitly cleared")) { setCleared(true); setError(""); } else setError(String(failure)); } }
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <div className="mt-1 text-[11px] text-minimax-muted">
-    <button type="button" disabled={busy} onClick={() => void load(0)}>查看已捕获输出</button>
+    <button type="button" disabled={busy || cleared} onClick={() => void load(0)}>查看已捕获输出</button>
+    {cleared && <p>已清理，无法再读取。</p>}
     <p>仅包含工具实际捕获内容；{meta?.truncated_stdout === true || meta?.truncated_stderr === true ? "命令输出在捕获时已截断。" : "请核对原始截断标记。"}</p>
     {error && <p role="alert">{error}</p>}
     {page && <><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{page.page}</pre>

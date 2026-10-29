@@ -54,6 +54,7 @@ KNOWN_EVENTS = {
     "run.step.started",
     "run.step.completed",
     "run.completed",
+    "run.output_cleared",
 }
 PROTOCOL_FRAMES = {"agent.ready", "agent.ping"}
 

@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { RunTimelinePanel } from "../RunTimelinePanel";
 import { usePermissionStore, useRunTimelineStore, useSessionStore } from "../../../stores";
 import type { AgentRun, AgentRunStep } from "../../../types/ipc";
-import { ipc } from "../../../ipc";
+import { ipc, typedIPC } from "../../../ipc";
 
 function makeRun(): AgentRun {
   return {
@@ -94,6 +94,28 @@ describe("RunTimelinePanel", () => {
       project_id: null, service_id: "service", offset: 0, next_offset: 4, chars: 4, page: "secret" }); });
     expect(screen.queryByText("secret")).not.toBeInTheDocument();
     request.mockRestore();
+  });
+
+  it("discards an in-flight page when the output is cleared", async () => {
+    let resolve!: (value: unknown) => void;
+    const listeners: Array<(data: unknown) => void> = [];
+    const budget = vi.spyOn(typedIPC, "getBudget").mockRejectedValue(new Error("offline"));
+    const request = vi.spyOn(ipc, "request").mockReturnValue(new Promise((done) => { resolve = done; }));
+    const on = vi.spyOn(ipc, "on").mockImplementation((event, callback) => {
+      if (event === "run.output_cleared") listeners.push((data) => callback({ data } as never));
+      return () => {};
+    });
+    useSessionStore.setState({ currentSessionId: "session-1", sessions: [] });
+    renderWithStep(makeStep({ payload: { metadata: { tool_output: { output_ref: "output-1", run_id: "run-1234567890",
+      session_id: "session-1", project_id: null, service_id: "service", chars: 4 } } } }));
+    fireEvent.click(screen.getByRole("button", { name: "查看已捕获输出" }));
+    act(() => listeners.forEach((listener) => listener({ output_ref: "output-1", run_id: "run-1234567890",
+      session_id: "session-1", service_id: "service", cleared_at: "now" })));
+    await act(async () => { resolve({ id: "output-1", run_id: "run-1234567890", session_id: "session-1",
+      project_id: null, service_id: "service", offset: 0, next_offset: 4, chars: 4, page: "secret" }); });
+    expect(screen.queryByText("secret")).not.toBeInTheDocument();
+    expect(screen.getByText("已清理，无法再读取。")).toBeVisible();
+    on.mockRestore(); request.mockRestore(); budget.mockRestore();
   });
 
   it("distinguishes missing output from an empty saved tail and unknown truncation", () => {

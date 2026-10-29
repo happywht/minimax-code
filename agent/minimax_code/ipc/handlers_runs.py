@@ -16,6 +16,8 @@ from .protocol import (
     RunChildWorkspaceParams,
     RunEventsParams,
     RunIdParams,
+    RunOutputClearParams,
+    RunOutputInventoryParams,
     RunOutputPageParams,
     RunResearchGetParams,
     RunResearchListParams,
@@ -56,6 +58,49 @@ def register_run_handlers(server: Any) -> None:
     """Register run timeline read APIs."""
 
     child_review_lock = asyncio.Lock()
+
+    async def handle_output_inventory(params: Any, ctx: Context) -> None:
+        from ..tool_outputs import inventory
+        from .host_session_gate import require_host_session
+        try:
+            req = RunOutputInventoryParams.model_validate(params)
+            await require_host_session(req.session_id)
+            dao = await _get_read_control_dao(ctx)
+            result = await inventory(dao._db, req.session_id, req.offset)
+            await require_host_session(req.session_id)
+            await ctx.reply(result)
+        except (ValidationError, ValueError, HandlerError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("tool output inventory failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Output inventory unavailable")
+
+    async def handle_output_clear(params: Any, ctx: Context) -> None:
+        from ..tool_outputs import clear
+        from .host_session_gate import require_host_session
+        try:
+            req = RunOutputClearParams.model_validate(params)
+            await require_host_session(req.session_id)
+            service = getattr(ctx.server, "_run_service", None)
+            job = service.get_job(req.run_id) if service is not None else None
+            if job is not None and job.task is not None and not job.task.done():
+                raise ValueError("Run cleanup is still active")
+            dao = await _get_dao()
+            result = await clear(dao._db, run_id=req.run_id, session_id=req.session_id,
+                ref=req.output_ref, service_id=req.expected_service_id, expected_sha256=req.expected_sha256)
+            try:
+                await ctx.emit("run.output_cleared", {"run_id": req.run_id, "session_id": req.session_id,
+                    "output_ref": req.output_ref, "service_id": req.expected_service_id,
+                    "cleared_at": result["cleared_at"]})
+            except Exception:
+                logger.warning("Output cleared but notification failed", exc_info=True)
+            await ctx.reply({**result, "run_id": req.run_id, "session_id": req.session_id,
+                             "output_ref": req.output_ref, "service_id": req.expected_service_id})
+        except (ValidationError, ValueError, HandlerError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("tool output clear failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Could not clear captured output")
 
     async def handle_output_page(params: Any, ctx: Context) -> None:
         from ..tool_outputs import read
@@ -539,6 +584,8 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.child_workspace", handle_child_workspace)
     server.register("run.child_list", handle_child_list)
     server.register("run.output_page", handle_output_page)
+    server.register("run.output_inventory", handle_output_inventory)
+    server.register("run.output_clear", handle_output_clear)
 
 
 async def _start_codex_run(request: RunStartParams, ctx: Context, **options: Any) -> None:

@@ -217,6 +217,8 @@ on the next `readline() == ""`.
 | `run.child_workspace` | req/res | Review or explicitly collect a directly owned child workspace with binding and conflict checks. |
 | `run.child_list` | req/res | Recover recent direct child runs scoped to the parent session, parent runs, project and service. |
 | `run.output_page` | req/res | Read a bounded page of captured tool output bound to a run, session, project and service. |
+| `run.output_inventory` | req/res | Inspect global usage and current-session captured-output records. |
+| `run.output_clear` | req/res | Explicitly clear one finished run's captured output, retaining a tombstone. |
 | `run.research_list` | req/res | List current project's recorded page sources with session and service binding. |
 | `run.research_get` | req/res | Read a recorded page source with expected service identity. |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. **`project_id?`** |
@@ -1534,6 +1536,7 @@ so the frontend can route them by name without a regex.
 | `permission.resolved`   | `{request_id, decision}`                            |
 | `run.created`           | `{run}`                                              |
 | `run.updated` | `{run}`; queued request claimed for execution. |
+| `run.output_cleared` | `{run_id,session_id,output_ref,service_id,cleared_at}`; captured output was cleared, not a task deletion. |
 | `run.step.started`      | `{run_id, step}`                                    |
 | `run.step.completed`    | `{run_id, step}`                                    |
 | `run.completed`         | `{run}`                                              |
@@ -1732,6 +1735,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 `run.child_list({session_id})` 返回同一父会话及其持久父运行、当前项目绑定的最近 100 条直接子运行，包含 `service_id` 和真实持久 `status`。`live` 仅表示服务内可确认的后台任务，缺失不能证明同步子任务已停止；活动状态但 `live=false` 时客户端应显示待核对，不应推断仍在运行。历史缺少父运行绑定的记录不包含在内。
 
 `run.output_page({run_id,session_id,output_ref,expected_service_id,offset?,limit?})` 按字符分页读取该运行的捕获输出 JSON；最多 8000 字符，返回当前/下一偏移、总字符数和绑定标识。输出仅包含工具捕获到的内容，命令捕获上限和截断标记仍然适用；引用不跨项目、会话或服务使用。
+
+`run.output_inventory({session_id,offset?})` 返回全库与当前会话逻辑用量、当前会话按页 50 条已绑定的输出记录及服务身份；全库统计包括其他会话和不可访问的旧记录，但不暴露其详情。`run.output_clear({run_id,session_id,output_ref,expected_service_id,expected_sha256})` 仅清理明确指定、已终结且不再清理中的运行的正文，保留不可读取的清理标记；调用不会删除运行、摘要或原文件，重试同一记录幂等。清理与新读请求按数据库事务排序，已取出的并发页可能仍被返回；通知供客户端清除已显示或在途页面。数据库文件、旧备份与存储介质可能保留原始字节，并非安全擦除。
 
 `attachment.generate_docx` 接受安全 `.docx` 显示名和单行标题（最多 200 字），内容使用两种互斥格式之一：`paragraphs` 为 1–100 个段落；或 `sections` 为 1–50 个 `{heading, blocks}`，每个 block 为 `{kind:"paragraph",text}` 或 `{kind:"table",rows:[[文本,...],...]}`，顺序保留。合计最多 100 块、2000 个单元格，每表最多 100 行、20 列且各行等宽；每段/格最多 4096 字，总 UTF-8 最多 256 KiB。章节标题也限单行 200 字。使用本地 python-docx 创建，回读并比较全部章节、段落、表格单元格及顺序，再经现有 DOCX 有界解析与不可变附件 vault 登记。不会读取或修改项目文件、调用模型或抓取资料；用户提供的来源文本需自行核实。不保证版式、分页、事实或业务质量。响应丢失时先刷新附件列表；重试会创建新版本。文件与现有附件共享备份协议及未验证状态，不作为已完成报告的质量证明。 普通聊天 Agent 可通过 `generate_report_docx` 生成当前会话项目的文档；提交时复核会话项目绑定，遵循规划模式与写入权限规则。该工具默认要求确认，拒绝规则优先，无法确认时拒绝。
 

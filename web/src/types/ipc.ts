@@ -1772,6 +1772,7 @@ export const StreamEvent = {
   RunStepStarted: "run.step.started",
   RunStepCompleted: "run.step.completed",
   RunCompleted: "run.completed",
+  RunOutputCleared: "run.output_cleared",
 } as const;
 
 export type StreamEventName = (typeof StreamEvent)[keyof typeof StreamEvent];

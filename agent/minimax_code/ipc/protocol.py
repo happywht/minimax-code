@@ -329,6 +329,21 @@ class RunOutputPageParams(BaseModel):
     limit: int = Field(default=4000, ge=1, le=8000)
 
 
+class RunOutputInventoryParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+    offset: int = Field(default=0, ge=0, le=10000)
+
+
+class RunOutputClearParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    output_ref: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RunResearchListParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1)
