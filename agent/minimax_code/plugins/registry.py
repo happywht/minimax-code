@@ -9,6 +9,7 @@ so a plugin's lifecycle hooks become agent-active with one call.
 from __future__ import annotations
 
 import logging
+import weakref
 
 from ..hooks import HookRegistry
 from .loader import Plugin
@@ -21,6 +22,21 @@ class PluginRegistry:
 
     def __init__(self) -> None:
         self._plugins: dict[str, Plugin] = {}
+        self._hook_registries: weakref.WeakSet[HookRegistry] = weakref.WeakSet()
+
+    def _sync_hooks(self) -> int:
+        sources = []
+        for plugin in self.enabled():
+            try:
+                hooks = plugin.manifest.normalized_hooks()
+                if hooks:
+                    sources.append((plugin.name, hooks))
+            except Exception:
+                logger.exception("Could not load hooks for plugin %s; skipping", plugin.name)
+        count = 0
+        for registry in list(self._hook_registries):
+            count = registry.replace_plugin_hooks(sources)
+        return count
 
     # -- mutation -----------------------------------------------------------
 
@@ -31,6 +47,7 @@ class PluginRegistry:
             logger.warning("plugin %r already registered, skipping", name)
             return False
         self._plugins[name] = plugin
+        self._sync_hooks()
         return True
 
     def add_many(self, plugins: list[Plugin]) -> int:
@@ -41,10 +58,14 @@ class PluginRegistry:
         return added
 
     def remove(self, name: str) -> bool:
-        return self._plugins.pop(name, None) is not None
+        removed = self._plugins.pop(name, None) is not None
+        if removed:
+            self._sync_hooks()
+        return removed
 
     def clear(self) -> None:
         self._plugins.clear()
+        self._sync_hooks()
 
     # -- queries ------------------------------------------------------------
 
@@ -85,6 +106,7 @@ class PluginRegistry:
         if plugin is None:
             return False
         plugin.runtime_enabled = enabled
+        self._sync_hooks()
         return True
 
     # -- application --------------------------------------------------------
@@ -94,16 +116,8 @@ class PluginRegistry:
 
         Returns the total number of hook specs loaded.
         """
-        total = 0
-        for plugin in self.enabled():
-            hooks = plugin.manifest.normalized_hooks()
-            if not hooks:
-                continue
-            loaded = hook_registry.load_dict({"hooks": hooks})
-            if loaded:
-                logger.info("plugin %s contributed %d hook(s)", plugin.name, loaded)
-            total += loaded
-        return total
+        self._hook_registries.add(hook_registry)
+        return self._sync_hooks()
 
 
 __all__ = ["PluginRegistry"]

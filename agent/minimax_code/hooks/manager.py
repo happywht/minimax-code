@@ -115,6 +115,8 @@ class HookManager:
         hooks = self.registry.for_event(HookEvent.PRE_TOOL_USE, tool_name=tool_name)
         outcome = PreToolOutcome()
         for hook in hooks:
+            if not self.registry.is_active(hook):
+                continue
             ctx = HookContext(
                 event=HookEvent.PRE_TOOL_USE,
                 session_id=session_id,
@@ -166,6 +168,8 @@ class HookManager:
         hooks = self.registry.for_event(event, tool_name=tool_name)
         results: list[HookExecutionResult] = []
         for hook in hooks:
+            if not self.registry.is_active(hook):
+                continue
             ctx = HookContext(
                 event=event,
                 session_id=session_id,

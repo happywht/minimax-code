@@ -35,6 +35,8 @@ class HookRegistry:
 
     def __init__(self) -> None:
         self._hooks: dict[HookEvent, list[HookConfig]] = defaultdict(list)
+        self._plugin_hook_ids: set[int] = set()
+        self._plugin_groups: dict[str, tuple[str, list[HookConfig]]] = {}
 
     # -- mutation ----------------------------------------------------------
 
@@ -86,6 +88,33 @@ class HookRegistry:
 
     def clear(self) -> None:
         self._hooks.clear()
+        self._plugin_hook_ids.clear()
+        self._plugin_groups.clear()
+
+    def replace_plugin_hooks(self, sources: list[tuple[str, dict]]) -> int:
+        """Atomically replace plugin contributions while retaining local hooks."""
+        groups: dict[str, tuple[str, list[HookConfig]]] = {}
+        for name, source in sources:
+            signature = json.dumps(source, sort_keys=True, ensure_ascii=False)
+            prior = self._plugin_groups.get(name)
+            if prior is not None and prior[0] == signature:
+                groups[name] = prior
+            else:
+                incoming = HookRegistry()
+                incoming.load_dict({"hooks": source})
+                groups[name] = (signature, incoming.all())
+        for event, hooks in list(self._hooks.items()):
+            self._hooks[event] = [hook for hook in hooks if id(hook) not in self._plugin_hook_ids]
+        added = [hook for _, hooks in groups.values() for hook in hooks]
+        for hook in added:
+            self.add(hook)
+        self._plugin_hook_ids = {id(hook) for hook in added}
+        self._plugin_groups = groups
+        return len(added)
+
+    def is_active(self, hook: HookConfig) -> bool:
+        """Use object identity: an old hook is not revived by a new manifest."""
+        return any(candidate is hook for candidate in self._hooks.get(hook.event, ()))
 
     # -- queries -----------------------------------------------------------
 
