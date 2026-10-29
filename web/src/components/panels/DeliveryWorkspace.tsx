@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
+import type { TextArtifact } from "../../types/ipc";
 import { useArtifactStore, useAttachmentStore, useRunTimelineStore, useSessionStore } from "../../stores";
 import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
 import { Button } from "../../ui";
@@ -27,6 +28,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: Del
   const projectName = useSessionStore((s) => s.projects.find((item) => item.id === project)?.name);
   const host = ipc.agentBaseUrl;
   const [binding, setBinding] = useState<Binding | null>(null), bindingRef = useRef<Binding | null>(null);
+  const [artifactTransfer, setArtifactTransfer] = useState<{ scope: string; row: TextArtifact } | null>(null);
   const [tableTransfer, setTableTransfer] = useState<{ scope: string; value: ReportTableTransfer } | null>(null);
   const [ready, setReady] = useState(false), [error, setError] = useState("");
   const [visited, setVisited] = useState<Set<DeliveryTab>>(() => new Set([tab]));
@@ -94,19 +96,19 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit }: { tab: Del
       }} onClickCapture={(event) => {
         const button = (event.target as HTMLElement).closest("button");
         const label = button?.textContent ?? "";
-        if ((tab === "attachments" || tab === "office") && /添加|删除|新增|插入|移动|转换|恢复|撤销|重做/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
+        if ((tab === "attachments" || tab === "office") && /添加|追加|删除|新增|插入|移动|转换|恢复|撤销|重做/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
       }}>
         {visited.has("artifacts") && <div className="h-full" hidden={tab !== "artifacts"}><ArtifactsPanel embedded onClose={onClose} /></div>}
-        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} tableTransfer={tableTransfer?.scope === scopeKey ? tableTransfer.value : null} onClearTableTransfer={() => setTableTransfer(null)} onTableApplied={() => onEdit?.("report")} /></div>}
+        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} tableTransfer={tableTransfer?.scope === scopeKey ? tableTransfer.value : null} onClearTableTransfer={() => setTableTransfer(null)} onTableApplied={() => onEdit?.("report")} artifactTransfer={artifactTransfer?.scope === scopeKey ? artifactTransfer.row : null} onClearArtifactTransfer={() => setArtifactTransfer(null)} /></div>}
         {visited.has("office") && <div className="h-full" hidden={tab !== "office"}><OfficeDeliveryPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} initialDraft={officeDrafts.get(scopeKey)} onRetainDraft={(draft) => officeDrafts.set(scopeKey, draft)} tableTransferPending={tableTransfer?.scope === scopeKey} onPrepareReportTable={(value) => { setTableTransfer({ scope: scopeKey, value }); switchTab("attachments"); }} /></div>}
         {visited.has("research") && <div className="h-full" hidden={tab !== "research"}><ResearchSourcesPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} /></div>}
-        {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} /></div>}
+        {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} onPrepareReport={(row) => { setArtifactTransfer({ scope: scopeKey, row }); switchTab("attachments"); }} /></div>}
       </div>
     </div>}
   </section>;
 }
 
-function SessionDeliveries({ binding }: { binding: Binding }): JSX.Element {
+function SessionDeliveries({ binding, onPrepareReport }: { binding: Binding; onPrepareReport: (row: TextArtifact) => void }): JSX.Element {
   const runs = useRunTimelineStore((s) => s.runs), order = useRunTimelineStore((s) => s.order);
   const loading = useRunTimelineStore((s) => s.loading), error = useRunTimelineStore((s) => s.error);
   const load = useRunTimelineStore((s) => s.loadForSession);
@@ -118,7 +120,7 @@ function SessionDeliveries({ binding }: { binding: Binding }): JSX.Element {
     {binding.session && <Button type="button" size="sm" variant="secondary" disabled={loading} onClick={() => void load(binding.session)}>刷新运行</Button>}
     {!binding.session ? <p>请先选择会话。</p> : error ? <p role="alert">无法读取运行记录：{error}</p> : loading ? <p role="status">正在读取运行记录…</p> : !associated.length ? <p>当前会话没有可确认项目归属的近期运行。</p> : associated.map((run) => <article key={run.id} className="rounded border border-line p-3">
       <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p><RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} />
-      <details className="mt-2"><summary>登记关联的文本成果</summary><RunTextArtifacts runId={run.id} sessionId={binding.session!} projectId={binding.project} serviceId={binding.service} /></details>
+      <details className="mt-2"><summary>登记关联的文本成果</summary><RunTextArtifacts runId={run.id} sessionId={binding.session!} projectId={binding.project} serviceId={binding.service} onPrepareReport={onPrepareReport} /></details>
       <FollowupRunDraft run={run} />
     </article>)}
   </div>;

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
-import type { AttachmentParserStatus, DocxSection, ReportSource, ResearchSource } from "../../types/ipc";
+import type { AttachmentParserStatus, DocxSection, ReportSource, ResearchSource, TextArtifact } from "../../types/ipc";
 import { AttachmentImageOcr } from "./AttachmentImageOcr";
 import { AttachmentImagePreview } from "./AttachmentImagePreview";
 import { AttachmentDocumentReader } from "./AttachmentDocumentReader";
@@ -63,7 +63,7 @@ function reportMarkers(body: string, sections: string, structured: boolean): num
 
 export type RetainedReportDraft = Omit<ReportDraft, "researchIds"> & { researchNeedsReview: boolean; citationNeedsReview?: boolean; file: File | null };
 
-export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, onTableApplied }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; onTableApplied?: () => void }): JSX.Element {
+export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, onTableApplied, artifactTransfer, onClearArtifactTransfer }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; onTableApplied?: () => void; artifactTransfer?: TextArtifact | null; onClearArtifactTransfer?: () => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
@@ -346,7 +346,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           setCitationNeedsReview(restoredMarkers === null || restoredMarkers.length > 0);
         }} />
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
-      <ReportArtifactReuse project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host}
+      <ReportArtifactReuse project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host} transfer={artifactTransfer} onClearTransfer={onClearArtifactTransfer}
         onApply={(paragraphs) => {
           const applied = appendExcerpt(paragraphs);
           if (applied && paragraphs.some((text) => /\[[1-9][0-9]*\]/.test(text))) setCitationNeedsReview(true);
