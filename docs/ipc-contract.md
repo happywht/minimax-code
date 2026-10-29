@@ -2153,7 +2153,7 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 
 `runtime.research_set` 可选 `provider`（`searxng` 或 `brave`）、`brave_key` 和 `clear_brave_key`；密钥写入服务主机系统密钥环，读取仅返回是否配置。Brave 请求固定域名并拒绝携带密钥重定向；配置不等于网络验证。
 
-`run.research_search` 与 `run.research_read` 接受 `session_id`、`project_id`、`expected_service_id` 和分别的 `query` / `url`，由用户显式发起；网络拒绝规则优先，复用公网 HTTPS 受控读取。搜索仅返回摘要；读取成功在同一事务中创建标记为用户手动读取的独立已完成记录和真实来源，并返回来源 ID。
+`run.research_search` 与 `run.research_read` 接受 `session_id`、`project_id`、`expected_service_id` 和分别的 `query` / `url`，由用户显式发起；网络拒绝规则优先，复用公网 HTTPS 受控读取。`run.research_read` 和 Agent 工具 `read_public_page` 可选接受 1–200 字符的 `focus`，在最多 512 KiB 的下载内容中对提取文本做不区分大小写的字面匹配，保存首个命中前最多 300 字符起的摘录；未命中则返回错误且不登记来源。留空时保存开头摘录；被省略的前后内容也计入截断标志。搜索仅返回摘要；读取成功在同一事务中创建标记为用户手动读取的独立已完成记录和真实来源，并返回来源 ID。
 
 `host.fetch` 仅接受远端绝对路径，文件传输强制使用 SFTP，不回退到旧式远端 shell SCP；本机目标校验后替换，不自动备份。
 

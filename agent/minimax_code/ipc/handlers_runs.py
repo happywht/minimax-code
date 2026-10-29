@@ -925,7 +925,7 @@ def register_run_handlers(server: Any) -> None:
                     raise ValueError("Network access is denied by permission policy")
                 # The explicit UI action authorizes this one request; it does not
                 # change permission rules or authorize future Agent tool calls.
-                result = await (ReadPublicPageTool().run(request.url) if read else SearchPublicWebTool().run(request.query))
+                result = await (ReadPublicPageTool().run(request.url, request.focus) if read else SearchPublicWebTool().run(request.query))
                 if not result.success:
                     raise ValueError(result.error or "Research request failed")
                 if await sources._binding() != request.expected_service_id:

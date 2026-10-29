@@ -6,12 +6,12 @@ import { Button, Input } from "../../ui";
 
 type Result = { title: string; url: string; snippet: string; title_truncated: boolean; snippet_truncated: boolean };
 export function ManualResearch({ project, session, service }: { project: string | null; session: string | null; service: string | null }): JSX.Element {
-  const [query, setQuery] = useState(""), [url, setUrl] = useState("");
+  const [query, setQuery] = useState(""), [url, setUrl] = useState(""), [focus, setFocus] = useState("");
   const [results, setResults] = useState<Result[]>([]), [page, setPage] = useState<ResearchSource | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [searched, setSearched] = useState(false);
   const [provider, setProvider] = useState("提供方待读取");
   const epoch = useRef(0), host = ipc.agentBaseUrl;
-  useEffect(() => { epoch.current++; setQuery(""); setUrl(""); setResults([]); setPage(null); setBusy(false); setError(""); setSearched(false); }, [project, session, service, host]);
+  useEffect(() => { epoch.current++; setQuery(""); setUrl(""); setFocus(""); setResults([]); setPage(null); setBusy(false); setError(""); setSearched(false); }, [project, session, service, host]);
   useEffect(() => {
     let active = true; setProvider("提供方待读取");
     void typedIPC.getResearchConfig().then((config) => { if (active) setProvider(config.provider === "brave" ? "Brave Search API" : "SearXNG"); }, () => { if (active) setProvider("无法读取提供方设置"); });
@@ -35,7 +35,7 @@ export function ManualResearch({ project, session, service }: { project: string 
     if (!project || !session || !service || !target.trim()) return;
     const ticket = ++epoch.current; setBusy(true); setError(""); setPage(null);
     try {
-      const response = await typedIPC.readPublicResearch({ project_id: project, session_id: session, expected_service_id: service, url: target.trim() });
+      const response = await typedIPC.readPublicResearch({ project_id: project, session_id: session, expected_service_id: service, url: target.trim(), ...(focus.trim() ? { focus: focus.trim() } : {}) });
       if (!current(ticket)) return;
       if (response.project_id !== project || response.session_id !== session || response.service_id !== service || !response.result.page_source_id || !response.result.run_id) throw new Error("来源保存回执关联不匹配");
       setPage(response.result);
@@ -45,6 +45,9 @@ export function ManualResearch({ project, session, service }: { project: string 
   return <details className="rounded border border-line p-3"><summary>搜索网页并保存来源</summary>
     <p>点击搜索会将查询发送给设置中的搜索服务，可能产生提供方费用。搜索摘要未经核验，也不是已读取来源；仅点击“读取并保存”才访问对应页面。仅支持公网 HTTPS；已设置的网络拒绝规则仍生效。</p>
     <p>当前配置：{provider}（不表示网络可用；设置可在 Providers → 联网研究中修改）。</p>
+    <label className="block">页内定位词（可选，适用于下方所有读取操作）
+      <Input aria-label="页内定位词" maxLength={200} value={focus} onChange={(e) => setFocus(e.target.value)} placeholder="输入网页中需要引用的原文" /></label>
+    <p>读取时在已下载的文本内查找首个匹配，并保存其上下文；未找到时不保存。仅查找最多 512 KiB 的网页响应，不支持未下载或动态加载的内容。留空则保存开头摘录。</p>
     <div className="flex gap-2"><Input aria-label="网页搜索内容" maxLength={500} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="输入搜索内容" />
       <Button type="button" disabled={busy || !project || !session || !service || !query.trim()} onClick={() => void search()}>搜索网页</Button></div>
     {searched && !results.length && <p>搜索服务未返回可用结果。</p>}

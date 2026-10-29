@@ -258,7 +258,7 @@ export interface TypedIPC {
   reconcileBudget(params: BudgetReconcileParams): Promise<{ok: boolean}>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
   searchPublicResearch(params: { session_id: string; project_id: string; expected_service_id: string; query: string }): Promise<import("../types/ipc").ResearchSourceScope & { result: { results: { title: string; url: string; snippet: string; title_truncated: boolean; snippet_truncated: boolean }[]; accessed_at: string; results_truncated: boolean } }>;
-  readPublicResearch(params: { session_id: string; project_id: string; expected_service_id: string; url: string }): Promise<import("../types/ipc").ResearchSourceScope & { result: import("../types/ipc").ResearchSource }>;
+  readPublicResearch(params: { session_id: string; project_id: string; expected_service_id: string; url: string; focus?: string }): Promise<import("../types/ipc").ResearchSourceScope & { result: import("../types/ipc").ResearchSource }>;
   listResearchSources(params: { session_id: string; project_id: string; query?: string; offset?: number }): Promise<import("../types/ipc").ResearchSourceScope & { sources: import("../types/ipc").ResearchSource[] }>;
   getResearchSource(params: { session_id: string; project_id: string; expected_service_id: string; page_source_id: string }): Promise<import("../types/ipc").ResearchSourceScope & { source: import("../types/ipc").ResearchSource }>;
   steerRun(params: { run_id: string; session_id: string; idempotency_key: string; text: string }): Promise<{ step: import("../types/ipc").AgentRunStep }>;
