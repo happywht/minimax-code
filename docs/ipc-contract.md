@@ -1844,6 +1844,17 @@ UI 依据 `cancel_supported` 禁用动作，不能只改任务账本制造已停
 
 ### webhook.* — Webhook
 
+Inbound `POST /hooks/{path}` awaits the mapped action. An action failure returns
+HTTP 500 with `ok: false` and an `error_id` that can be correlated with server
+logs; exception details and payloads are not returned. Existing validation
+responses (including signature mismatch) retain their HTTP 200 behavior. A
+sender may retry a 500, but this endpoint has no delivery deduplication: an
+earlier notification or other side effect may already have succeeded, so a
+retry can duplicate it. Eligible push events mapped to code-review currently
+fail closed because webhook execution is not admitted through the authorized
+skill execution boundary; non-push or empty-commit events are skipped.
+
+
 | 方法 | 说明 |
 |------|------|
 | `webhook.create` / `webhook.list` / `webhook.update` / `webhook.delete` | Webhook CRUD |

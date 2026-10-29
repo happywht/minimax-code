@@ -6,21 +6,24 @@ Takes a :class:`WebhookPayload` and the webhook's ``action_type`` /
 * ``send-message`` — create a notification + optionally inject into a session
 * ``code-review`` — trigger a code review via the code-review skill
 
-Both actions are fire-and-forget: errors are logged but never propagated
-to the caller (the inbound HTTP handler always returns 200 so the sender
-does not retry).
+Dispatch errors propagate to the HTTP handler. Code review remains unavailable
+until it can be admitted through the existing authorized execution boundary.
 
-v0.7.0 — real execution using NotificationManager.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from .receiver import WebhookPayload
 
-logger = logging.getLogger(__name__)
+
+class WebhookDispatchError(RuntimeError):
+    """Safe, non-sensitive failure stage for a webhook action."""
+
+    def __init__(self, stage: str) -> None:
+        self.stage = stage
+        super().__init__(stage)
 
 
 async def dispatch_webhook_action(
@@ -36,11 +39,7 @@ async def dispatch_webhook_action(
     elif action_type == "code-review":
         await _action_code_review(payload, action_config, webhook_id)
     else:
-        logger.warning(
-            "Unknown webhook action_type=%s for webhook=%s",
-            action_type,
-            webhook_id,
-        )
+        raise WebhookDispatchError("unknown_action")
 
 
 # ---------------------------------------------------------------------------
@@ -96,54 +95,37 @@ async def _action_send_message(
     body = _build_message_body(payload)
     priority = int(config.get("priority", 0))
 
-    # 1. Create a notification (persists + pushes to all WS clients)
+    # Each operation is required. Earlier operations may already have committed
+    # if a later one fails; callers must not assume a retry is deduplicated.
     try:
         from ..notifications import get_notification_manager
 
         mgr = get_notification_manager()
         await mgr.notify(
-            type="webhook",
-            title=title,
-            body=body,
-            source="webhook",
-            source_id=webhook_id,
-            priority=priority,
+            type="webhook", title=title, body=body, source="webhook",
+            source_id=webhook_id, priority=priority,
         )
-        logger.info(
-            "Webhook send-message: created notification webhook=%s event=%s",
-            webhook_id,
-            payload.event,
-        )
-    except Exception:
-        # NotificationManager not initialised — fall back to log
-        logger.warning(
-            "Webhook send-message: NotificationManager not available, "
-            "logging instead. webhook=%s\n%s",
-            webhook_id,
-            body,
-        )
+    except Exception as exc:
+        raise WebhookDispatchError("notification") from exc
 
-    # 2. Optionally inject message into a session
     if config.get("create_session"):
         try:
             from ..app import get_sessions_dao
+            from ..storage.dao.messages import MessagesDAO
 
             dao = get_sessions_dao()
             sessions = await dao.list_all(limit=1)
-            if sessions:
-                from ..storage.dao.messages import MessagesDAO
-
-                msgs_dao = MessagesDAO(dao._db)
-                await msgs_dao.create(
-                    session_id=sessions[0]["id"],
-                    role="user",
-                    text=f"[Webhook] {title}\n\n{body}",
-                )
-        except Exception:
-            logger.warning(
-                "Webhook send-message: failed to inject into session",
-                exc_info=True,
+            if not sessions:
+                raise WebhookDispatchError("session_unavailable")
+            msgs_dao = MessagesDAO(dao._db)
+            await msgs_dao.create(
+                session_id=sessions[0]["id"], role="user",
+                text=f"[Webhook] {title}\n\n{body}",
             )
+        except WebhookDispatchError:
+            raise
+        except Exception as exc:
+            raise WebhookDispatchError("session_message") from exc
 
 
 async def _action_code_review(
@@ -153,67 +135,12 @@ async def _action_code_review(
 ) -> None:
     """Trigger an automatic code review for push events."""
     if payload.event != "push" or not payload.commits:
-        logger.info(
-            "Webhook code-review skipped (event=%s, commits=%d)",
-            payload.event,
-            len(payload.commits),
-        )
         return
 
-    files: list[str] = []
-    for c in payload.commits:
-        files.extend(c.get("added", []))
-        files.extend(c.get("modified", []))
-        files.extend(c.get("removed", []))
-
-    title = f"Code Review: {payload.repo}@{payload.branch} ({len(files)} files)"
-    body = f"Automated review triggered by {len(payload.commits)} commit(s).\n"
-    if files:
-        body += "Changed files:\n" + "\n".join(f"  - {f}" for f in files[:20])
-
-    # 1. Create notification
-    try:
-        from ..notifications import get_notification_manager
-
-        mgr = get_notification_manager()
-        await mgr.notify(
-            type="webhook",
-            title=title,
-            body=body,
-            source="webhook",
-            source_id=webhook_id,
-            priority=1,
-        )
-    except Exception:
-        logger.warning(
-            "Webhook code-review: NotificationManager not available",
-            exc_info=True,
-        )
-
-    # 2. Try to invoke the code-review skill
-    try:
-        from ..agent.skills import get_runtime
-
-        runtime = get_runtime()
-        if runtime is not None:
-            result = await runtime.invoke(
-                "code-review",
-                {
-                    "repo": payload.repo,
-                    "branch": payload.branch,
-                    "files": files[:50],
-                },
-            )
-            logger.info(
-                "Webhook code-review: skill invoked, result=%s webhook=%s",
-                type(result).__name__,
-                webhook_id,
-            )
-    except Exception:
-        logger.warning(
-            "Webhook code-review: skill invocation failed",
-            exc_info=True,
-        )
+    # The old call used a nonexistent get_runtime() and an incompatible
+    # invoke signature. Direct runtime invocation would bypass the durable
+    # skill admission and permission checks, so fail closed instead.
+    raise WebhookDispatchError("code_review_unavailable")
 
 
-__all__ = ["dispatch_webhook_action"]
+__all__ = ["WebhookDispatchError", "dispatch_webhook_action"]

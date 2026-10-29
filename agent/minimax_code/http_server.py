@@ -713,7 +713,7 @@ def build_app(
         1. Look up the webhook config by ``url_path``.
         2. Verify HMAC signature (if a secret is configured).
         3. Parse the payload and dispatch the mapped action.
-        4. Always return 200 so the sender does not retry.
+        4. Report action failures without exposing payloads or exceptions.
         """
         from .storage.dao.webhooks import WebhookDAO
         from .webhooks import WebhookReceiver, dispatch_webhook_action
@@ -744,7 +744,7 @@ def build_app(
         if payload is None:
             return JSONResponse(content={"ok": False, "error": "signature mismatch"}, status_code=200)
 
-        # Fire-and-forget dispatch.
+        # Dispatch is awaited; a failure may follow a partial side effect.
         try:
             await dispatch_webhook_action(
                 payload,
@@ -752,8 +752,18 @@ def build_app(
                 action_config=cfg.get("action_config", {}),
                 webhook_id=cfg.get("id", ""),
             )
-        except Exception:
-            logger.exception("webhook action dispatch failed for %s", cfg.get("id"))
+        except Exception as exc:
+            from uuid import uuid4
+
+            from .webhooks.dispatcher import WebhookDispatchError
+
+            error_id = uuid4().hex
+            stage = exc.stage if isinstance(exc, WebhookDispatchError) else "dispatch"
+            logger.error("webhook action failed: error_id=%s stage=%s", error_id, stage)
+            return JSONResponse(
+                content={"ok": False, "error": "action failed", "error_id": error_id},
+                status_code=500,
+            )
 
         return JSONResponse(content={"ok": True}, status_code=200)
 
