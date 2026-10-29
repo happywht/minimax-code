@@ -13,7 +13,7 @@ interface OfficeState {
   error: string | null;
   clear: () => void;
   activate: (project: string | null) => Promise<void>;
-  generate: (input: Omit<OfficeGenerateParams, "project_id" | "expected_service_id">) => Promise<void>;
+  generate: (input: Omit<OfficeGenerateParams, "project_id" | "expected_service_id">) => Promise<OfficeGetResult | null>;
   select: (id: string) => Promise<void>;
   download: () => Promise<void>;
 }
@@ -66,16 +66,17 @@ export const useOfficeDeliveryStore = create<OfficeState>((set, get) => {
     },
     generate: async (input) => {
       const scope = context();
-      if (!scope || get().busy) return;
+      if (!scope || get().busy) return null;
       const { project, service, host, ticket } = scope;
       set({ busy: true, error: null });
       try {
         const result = await typedIPC.generateOfficeXlsx({ ...input, project_id: project, expected_service_id: service });
-        if (!current(ticket, project, host)) return;
+        if (!current(ticket, project, host)) return null;
         validate(result, project, service);
         selection++; download?.abort();
         set({ selected: result, entries: [result, ...get().entries.filter((entry) => entry.delivery.id !== result.delivery.id)] });
-      } catch (error) { if (current(ticket, project, host)) set({ error: `${message(error)}；刷新可找回已提交结果，同一请求重试不会新建版本。` }); }
+        return result;
+      } catch (error) { if (current(ticket, project, host)) set({ error: `${message(error)}；刷新可找回已提交结果，同一请求重试不会新建版本。` }); return null; }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
     },
     select: async (id) => {

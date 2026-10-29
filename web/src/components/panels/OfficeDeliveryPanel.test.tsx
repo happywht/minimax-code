@@ -73,6 +73,29 @@ describe("manual Office delivery", () => {
     expect(wire.request.mock.calls.filter(([method]) => method === "office.generate_xlsx")[2][1].request_key).not.toBe(sent.request_key);
   });
 
+  it("binds saved verification input to the generated receipt, not the edited form or another receipt", async () => {
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const create = vi.fn().mockReturnValue("blob:office");
+    vi.stubGlobal("URL", { createObjectURL: create, revokeObjectURL: vi.fn() });
+    render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
+    const button = screen.getByRole("button", { name: "生成并登记 XLSX" });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    fireEvent.click(button);
+    await screen.findByRole("button", { name: "下载此成果的输入 JSON" });
+    fireEvent.change(screen.getByLabelText("结构化表格 JSON"), { target: { value: '{"sheet_name":"changed","columns":[],"rows":[]}' } });
+    fireEvent.click(screen.getByRole("button", { name: "下载此成果的输入 JSON" }));
+    const blob = create.mock.calls[0][0] as Blob;
+    const text = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsText(blob);
+    });
+    expect(JSON.parse(text).sheet_name).toBe("清单");
+    const other = { ...result, delivery: { ...result.delivery, id: "off_2" } };
+    wire.request.mockResolvedValueOnce(other);
+    await act(async () => { await useOfficeDeliveryStore.getState().select("off_2"); });
+    expect(screen.queryByRole("button", { name: "下载此成果的输入 JSON" })).toBeNull();
+    expect(screen.getByText(/当前编辑器内容不一定匹配/)).toBeVisible();
+  });
+
   it("rejects malformed input locally and keeps failure recovery visible without fabricating a receipt", async () => {
     render(<OfficeDeliveryPanel onClose={vi.fn()} onText={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("生成并登记 XLSX")).not.toBeDisabled());

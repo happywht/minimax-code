@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ipc } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
@@ -20,12 +20,15 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
   const state = useOfficeDeliveryStore();
   const [filename, setFilename] = useState("清单.xlsx"), [runId, setRunId] = useState("");
   const [source, setSource] = useState(example), [key, setKey] = useState(() => crypto.randomUUID());
+  const generationScope = useRef({ active: false });
+  const [inputs, setInputs] = useState<Record<string, OfficeTableSpec>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const scoped = state.projectId === project && state.host === host;
   useEffect(() => {
-    setKey(crypto.randomUUID()); setFormError(null); setRunId("");
+    const scope = { active: true }; generationScope.current = scope;
+    setKey(crypto.randomUUID()); setFormError(null); setRunId(""); setInputs({});
     void useOfficeDeliveryStore.getState().activate(project);
-    return () => useOfficeDeliveryStore.getState().clear();
+    return () => { scope.active = false; useOfficeDeliveryStore.getState().clear(); };
   }, [project, host]);
   const edited = () => { setKey(crypto.randomUUID()); setFormError(null); };
   const parsed = () => {
@@ -36,8 +39,10 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
   };
   const submit = (requestKey: string) => {
     try {
-      const spec = parsed(); setFormError(null);
-      void state.generate({ filename, spec, run_id: runId || null, request_key: requestKey });
+      const spec = parsed(), scope = generationScope.current; setFormError(null);
+      void state.generate({ filename, spec, run_id: runId || null, request_key: requestKey }).then((result) => {
+        if (result && scope.active) setInputs((previous) => ({ ...previous, [`${result.delivery.service_id}:${result.delivery.id}`]: spec }));
+      });
     } catch (error) { setFormError(error instanceof Error ? error.message : "表格 JSON 无效"); }
   };
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="办公成果">
@@ -54,7 +59,7 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
       <Textarea aria-label="结构化表格 JSON" rows={12} value={source} onChange={(event) => { setSource(event.target.value); edited(); }} />
       <div className="flex flex-wrap gap-2"><Button type="submit" disabled={!scoped || !state.serviceId || state.busy || ipc.isMock}>生成并登记 XLSX</Button>
         <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(project)}>刷新</Button>
-        <Button type="button" variant="secondary" onClick={() => { try { saveJson(parsed(), "office-input.json"); } catch { setFormError("请先输入有效表格 JSON"); } }}>保存输入 JSON</Button></div>
+        <Button type="button" variant="secondary" onClick={() => { try { saveJson(parsed(), "office-input.json"); } catch { setFormError("请先输入有效表格 JSON"); } }}>保存当前输入 JSON</Button></div>
     </form>
     {(formError || scoped && state.error) && <p role="alert" className="text-status-error">{formError || state.error}</p>}
     {state.busy && <p role="status">正在生成、核对或读取成果…</p>}
@@ -68,7 +73,9 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
       <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
         <Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>
         <Button variant="secondary" disabled={state.busy || ipc.isMock} onClick={() => { const next = crypto.randomUUID(); setKey(next); submit(next); }}>生成同名新版本</Button></div>
-      <p>下载后可用保留的输入 JSON 独立全值复验；校验报告不是数字签名。空串已按空白规范化。</p>
+      {inputs[`${state.selected.delivery.service_id}:${state.selected.delivery.id}`] ? <Button variant="secondary" onClick={() => saveJson(inputs[`${state.selected!.delivery.service_id}:${state.selected!.delivery.id}`], "office-input.json")}>下载此成果的输入 JSON</Button> :
+        <p role="status">此成果的输入未保存在当前页面，请使用生成时另行保存的输入 JSON 复验；当前编辑器内容不一定匹配。</p>}
+      <p>下载 XLSX 和对应输入 JSON 后可独立全值复验；校验报告不是数字签名。空串已按空白规范化。输入快照仅保留到离开页面或切换项目。</p>
       {state.selected.attachment.preview_truncated && <p role="status">预览已截断（A1:T100 / 1500 格 / 64 KiB）；全文件值比较已另行完成，可下载完整文件。</p>}
       <pre className="whitespace-pre-wrap break-words rounded border border-line p-3" aria-label="办公成果纯文本预览">{state.selected.preview_text}</pre>
     </div>}
