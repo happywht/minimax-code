@@ -85,7 +85,7 @@ def require_tool_access(name: str) -> None:
         "read_file", "list_directory", "list_dir", "search_files", "grep", "glob",
         "search_codebase", "summarize_codebase", "find_symbol", "navigate_codebase",
         "list_project_attachments", "read_project_attachment", "read_project_document",
-        "read_project_xlsx_sheet",
+        "list_project_xlsx_sheets", "read_project_xlsx_sheet",
         "search_public_web", "read_public_page", "list_research_sources", "get_research_source",
         "ask_user", "check_subagent", "list_agents",
     }:

@@ -31,7 +31,7 @@ def _environment():
 
 
 def _command(kind):
-    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "pdf_page", "docx_segment"}:
+    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment"}:
         raise ValueError("Invalid fixed parser kind")
     # Windows venv python.exe is a redirector. Kill/wait must target the actual
     # parser PID, so launch the base interpreter and add only trusted venv libs
@@ -52,7 +52,7 @@ def _command(kind):
 
 def _run(data, cancelled, scope=SCOPE, kind="docx"):
     def failed(reason, **kwargs):
-        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "pdf_page", "docx_segment"} else failure(reason, scope=scope, **kwargs)
+        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "xlsx_list", "pdf_page", "docx_segment"} else failure(reason, scope=scope, **kwargs)
 
     if sys.platform not in {"linux", "win32"}:
         return failed("limits_unavailable", unavailable=True)
@@ -168,6 +168,24 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
                 if cursor != expected:
                     raise ValueError
                 return result
+            if kind == "xlsx_list":
+                reasons = {"missing_dependency", "invalid_package", "unsafe_package",
+                           "package_limit", "unsupported_feature"}
+                if type(result) is not dict:
+                    raise ValueError
+                if result.get("ok") is False and set(result) == {"ok", "reason"} and result["reason"] in reasons:
+                    return result
+                if result.get("ok") is not True or set(result) != {"ok", "sheets"}:
+                    raise ValueError
+                sheets = result["sheets"]
+                if (type(sheets) is not list or not 1 <= len(sheets) <= 32
+                        or any(type(sheet) is not dict or set(sheet) != {"name", "state"}
+                               or type(sheet["name"]) is not str or not 1 <= len(sheet["name"]) <= 31
+                               or sheet["state"] not in {"visible", "hidden", "veryHidden"}
+                               for sheet in sheets)
+                        or len({sheet["name"].casefold() for sheet in sheets}) != len(sheets)):
+                    raise ValueError
+                return result
             if kind == "xlsx_extract":
                 reasons = {"sheet_name", "sheet_not_found", "hidden_sheet", "hidden_rows", "hidden_columns",
                            "complex_sheet", "import_limit", "formula", "unsupported_cell", "formatted_number", "unsupported_date", "padded_identifier",
@@ -215,6 +233,12 @@ async def inspect_pdf(data):
 
 async def inspect_xlsx(data):
     return await _inspect(data, PDF_SCOPE, "xlsx")
+
+
+async def list_xlsx_sheets(data):
+    if len(data) > 2 * 1024 * 1024:
+        return {"ok": False, "reason": "package_limit"}
+    return await _inspect(data, PDF_SCOPE, "xlsx_list")
 
 
 async def extract_xlsx(data, sheet_name):

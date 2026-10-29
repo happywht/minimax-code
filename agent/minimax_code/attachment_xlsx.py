@@ -471,6 +471,26 @@ def _preflight(parts, fromstring, *, full_sheet=None):
 
 
 
+def list_sheets(data):
+    """List workbook sheet identities after bounded package preflight, without reading rows."""
+    try:
+        from defusedxml.ElementTree import fromstring
+
+        parts = package_parts(data)
+        sheets, _, _ = _preflight(parts, fromstring)
+        result = [{"name": sheet["name"], "state": sheet["state"]} for sheet in sheets]
+        require(all(1 <= len(sheet["name"]) <= 31 for sheet in result), "unsupported_feature")
+        return {"ok": True, "sheets": result}
+    except ImportError:
+        return {"ok": False, "reason": "missing_dependency"}
+    except Reject as error:
+        return {"ok": False, "reason": error.reason}
+    except (MemoryError, RecursionError):
+        return {"ok": False, "reason": "package_limit"}
+    except Exception:
+        return {"ok": False, "reason": "invalid_package"}
+
+
 def extract_sheet(data, sheet_name):
     """Return complete bounded raw cells, never computed or cached formulas."""
     try:
