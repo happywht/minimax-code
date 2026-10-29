@@ -39,11 +39,14 @@ def _atomic_replace(target: Path, write: Callable[[BinaryIO], object], *, baseli
             raise OSError("Write target changed during preparation")
         if mode is not None:
             os.chmod(temporary, mode)
-        if target_existed:
+        if target_existed and baseline_path == target:
             os.replace(temporary, target)
         else:
-            # Linking is an atomic create-if-absent. If another writer created
-            # the destination after our check, fail instead of overwriting it.
+            # A different baseline means an overlay's first write: the
+            # destination was absent when the read view was chosen. Even if
+            # it appeared before target_existed was sampled, do not replace
+            # that other writer's mirror. Linking also protects new files
+            # created after the target_existed check.
             os.link(temporary, target)
     finally:
         if os.path.exists(temporary):
