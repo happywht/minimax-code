@@ -37,6 +37,8 @@ function receiptMessageStatus(result: SendMessageResult): MessageStatus {
 }
 
 export interface ChatState {
+  captureFileChanges: boolean;
+  setCaptureFileChanges: (enabled: boolean) => void;
   executionMode: "execute" | "plan";
   setExecutionMode: (mode: "execute" | "plan") => void;
   messages: Message[];
@@ -353,6 +355,8 @@ function applyAssistantChunk(
 }
 
 export const useChat = create<ChatState>((set, get) => ({
+  captureFileChanges: false,
+  setCaptureFileChanges: (captureFileChanges) => set({ captureFileChanges }),
   executionMode: "execute",
   setExecutionMode: (executionMode) => set({ executionMode }),
   messages: [],
@@ -682,6 +686,7 @@ export const useChat = create<ChatState>((set, get) => ({
         const admission = await trackRequest(sessionId, typedIPC.startRun({
           session_id: sessionId, engine: "codex", content: wireContent,
           idempotency_key: requestKey, mode: get().executionMode,
+          ...(get().captureFileChanges ? { capture_file_changes: true } : {}),
         }));
         if (useSessionStore.getState().currentSessionId !== sessionId) return;
         const run = admission.run;
@@ -700,6 +705,7 @@ export const useChat = create<ChatState>((set, get) => ({
         session_id: sessionId,
         content: wireContent,
         idempotency_key: requestKey,
+        ...(get().captureFileChanges ? { capture_file_changes: true } : {}),
         ...(get().executionMode === "plan" ? { mode: "plan" as const } : {}),
       }));
       if (result.session_id && result.session_id !== sessionId) {

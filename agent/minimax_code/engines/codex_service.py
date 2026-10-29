@@ -36,6 +36,8 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
     payload = {"session_id": request.session_id, "engine": "codex", "mode": request.mode,
                "content": request.content, "budget_tokens": request.budget_tokens,
                "resumed_from_id": resumed_from_id}
+    if request.capture_file_changes:
+        payload["capture_file_changes"] = True
     dao, service = AgentRunsDAO(db), get_run_service(ctx.server)
     existing = await dao.find_request(request.session_id, request.idempotency_key, payload)
     if existing is not None:

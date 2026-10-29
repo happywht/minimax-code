@@ -12,16 +12,17 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   const [result, setResult] = useState<RunWorkspaceDiffResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [comparison, setComparison] = useState<Record<string, unknown> | null>(null);
   const version = useRef(0);
   const available = !!workspace && !!runProject && run.session_id === sessionId && runProject === projectId;
 
   useEffect(() => {
     const revision = version;
-    ++revision.current; setResult(null); setError(null); setLoading(false);
+    ++revision.current; setResult(null); setComparison(null); setError(null); setLoading(false);
     return () => { ++revision.current; };
   }, [run.id, sessionId, projectId]);
   useEffect(() => ipc.onSideCar(() => {
-    ++version.current; setResult(null); setError(null); setLoading(false);
+    ++version.current; setResult(null); setComparison(null); setError(null); setLoading(false);
   }), []);
 
   const load = async () => {
@@ -42,10 +43,39 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
     } finally { if (current()) setLoading(false); }
   };
 
+  const loadComparison = async () => {
+    if (!available || !sessionId) return;
+    const request = ++version.current, host = ipc.agentBaseUrl;
+    setLoading(true); setError(null); setComparison(null);
+    const current = () => request === version.current && ipc.agentBaseUrl === host
+      && useSessionStore.getState().currentSessionId === sessionId
+      && (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
+    try {
+      const response = await typedIPC.getRunSteps(run.id);
+      if (!current()) return;
+      if (response.run.id !== run.id || response.run.session_id !== sessionId
+          || response.run.metadata?.project_id !== runProject
+          || response.run.metadata?.workspace_snapshot !== workspace) throw new Error("任务绑定不匹配");
+      const step = response.steps.find((item) => item.payload?.source === "run_file_changes");
+      setComparison(step?.payload ?? { available: false });
+    } catch (reason) {
+      if (current()) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { if (current()) setLoading(false); }
+  };
+
   return <div className="mt-2 text-xs" data-testid={`run-workspace-diff-${run.id}`}>
     <Button variant="secondary" size="sm" disabled={!available || loading} loading={loading} onClick={() => void load()}>查看工作区当前差异</Button>
+    <Button variant="secondary" size="sm" disabled={!available || loading} onClick={() => void loadComparison()}>查看任务前后文件变化</Button>
     {!available && <p className="text-ink-2">任务的工作区或项目绑定不可确认，不能打开此视图。</p>}
     {error && <p role="alert" className="break-words text-status-warning">{error}</p>}
+    {comparison && <div className="mt-2 space-y-1">
+      {comparison.available === true ? <>
+        <p>两次有界采样之间的变化，可能包括用户或其他任务的修改，不能归因于此任务。只比较 Git 可见普通文件，不含忽略文件及私有运行数据。</p>
+        {([['added', '新增'], ['modified', '修改'], ['deleted', '删除']] as const).map(([key, label]) =>
+          <details key={key}><summary>{label}（{Array.isArray(comparison[key]) ? comparison[key].length : 0}）</summary>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{Array.isArray(comparison[key]) ? (comparison[key] as string[]).join('\n') : ''}</pre></details>)}
+      </> : <p>未采集、尚未完成，或采样失败／超过限制；无法给出变化结论。</p>}
+    </div>}
     {result && <div className="mt-2 space-y-2">
       <p className="break-all">当前工作区：{result.workspace}</p>
       <p>这是当前共享工作区的状态，可能包含用户或其他任务的修改，不能归因于此任务。未跟踪文件只列名称，不显示内容；已提交变更不在此视图中。</p>

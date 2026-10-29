@@ -38,6 +38,8 @@ export function MessageInput({
   const cancel = useChat((s) => s.cancel);
   const executionMode = useChat((s) => s.executionMode);
   const setExecutionMode = useChat((s) => s.setExecutionMode);
+  const captureFileChanges = useChat((s) => s.captureFileChanges);
+  const setCaptureFileChanges = useChat((s) => s.setCaptureFileChanges);
   const sessionId = useSessionStore((s) => s.currentSessionId);
 
   const codex = useSessionStore((s) => s.sessions.find((session) => session.id === sessionId)?.engine === "codex");
@@ -282,6 +284,11 @@ export function MessageInput({
             <option value="execute">执行</option>
             <option value="plan">只读规划</option>
           </select>
+        </label>
+        <label className="flex items-center gap-2 px-2 text-xs text-minimax-text-secondary">
+          <input type="checkbox" checked={captureFileChanges} disabled={disabled}
+            onChange={(event) => setCaptureFileChanges(event.target.checked)} />
+          采集任务前后文件变化（受限于 Git 可见文件）
         </label>
         <ComposerToolbar
           valueLength={draft.value.length}

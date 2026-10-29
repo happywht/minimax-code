@@ -53,6 +53,7 @@ class RunJob:
     # M3 — the project's acceptance command, snapshotted at admission so
     # a mid-run rebind cannot swap what the run will be validated with.
     validate_command: str = ""
+    capture_file_changes: bool = False
 
 
 class RunService:
@@ -106,7 +107,16 @@ class RunService:
                     try:
                         if job.cancel_requested:
                             raise asyncio.CancelledError
-                        return await operation(job)
+                        baseline = None
+                        if job.capture_file_changes:
+                            from .run_file_changes import capture
+                            baseline = await capture(job)
+                        try:
+                            return await operation(job)
+                        finally:
+                            if job.capture_file_changes:
+                                from .run_file_changes import save_comparison
+                                await save_comparison(job, baseline)
                     except BaseException as exc:
                         error = exc
                         raise
@@ -174,7 +184,8 @@ class RunService:
                                  project_id=project_id, budget_tokens=budget_tokens,
                                  daily_baseline=daily_baseline,
                                  daily_budget_limit=daily_budget_limit,
-                                 validate_command=validate_command)
+                                 validate_command=validate_command,
+                                 capture_file_changes=request.get("capture_file_changes") is True)
                     try:
                         self.submit(session_id, operation, job=job, finalize=finalize)
                     except BaseException:

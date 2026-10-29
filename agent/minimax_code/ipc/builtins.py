@@ -610,6 +610,12 @@ async def handle_agent_send_message(
         return
     session_id = str(params.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
     request = {"session_id": session_id, "mode": mode, "content": copy.deepcopy(content)}
+    capture = params.get("capture_file_changes", False)
+    if not isinstance(capture, bool):
+        await ctx.reply_error(-32602, "capture_file_changes must be a boolean")
+        return
+    if capture:
+        request["capture_file_changes"] = True
     if internal_skill is not None:
         intent_key = "agent_intent" if internal_agent is not None else "skill_intent"
         request[intent_key] = copy.deepcopy(params[intent_key])

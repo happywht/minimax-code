@@ -47,3 +47,15 @@ it("refuses mismatched responses instead of showing another workspace", async ()
   expect(await screen.findByRole("alert")).toHaveTextContent("关联不匹配");
   expect(screen.queryByLabelText("未暂存差异")).toBeNull();
 });
+
+it("shows task interval file names without claiming authorship", async () => {
+  vi.spyOn(typedIPC, "getRunSteps").mockResolvedValue({ run, steps: [{ id: "step", run_id: "run1",
+    session_id: "s1", kind: "observation", status: "completed", title: "changes", summary: "",
+    started_at: "now", ordinal: 1, payload: { source: "run_file_changes", available: true,
+      added: ["new.txt"], modified: [], deleted: ["old.txt"] } }], cursor: 1 });
+  render(<RunWorkspaceDiff run={run} />);
+  fireEvent.click(screen.getByRole("button", { name: "查看任务前后文件变化" }));
+  expect(await screen.findByText(/可能包括用户或其他任务的修改/)).toBeVisible();
+  expect(screen.getByText("新增（1）")).toBeVisible();
+  expect(screen.getByText("删除（1）")).toBeVisible();
+});

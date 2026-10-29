@@ -449,6 +449,16 @@ host restrictions apply. Runs without these bindings cannot use this view.
 Results can include edits by the user or other runs and are not attribution to
 the selected run. The separate Git reads are not an atomic snapshot.
 
+`agent.send_message` and `run.start` accept optional boolean
+`capture_file_changes` (default false, included in request identity when true).
+When enabled, service-owned execution samples Git-visible regular files in the
+bound workspace immediately before and after execution. A durable observation
+step with `payload.source:"run_file_changes"` contains `available` and, when
+available, `added`, `modified`, and `deleted` path lists. File contents and
+hashes are not persisted. Sampling is bounded and best effort, not atomic or
+proof of authorship; cancellation, restart, changed binding, unsupported paths,
+read failure or limits can leave it unavailable. See the user guide for limits.
+
 ### Durable run journal
 
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
