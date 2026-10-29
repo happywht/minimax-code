@@ -83,17 +83,11 @@ class TestServerDispatchCatchesHandlerError:
 
     @pytest.mark.asyncio
     async def test_handle_request_catches_handler_error(self):
-        from unittest.mock import AsyncMock
-
+        from minimax_code.config import Config
         from minimax_code.ipc.protocol import INVALID_PARAMS
         from minimax_code.ipc.server import IPCServer
 
-        server = IPCServer.__new__(IPCServer)
-        server._handlers = {}
-        server._notification_handlers = {}
-        server._write_lock = AsyncMock()
-        server._stop = AsyncMock()
-        server.listeners = []
+        server = IPCServer(Config())
 
         async def bad_handler(params, ctx):
             raise HandlerError(INVALID_PARAMS, "test error", data={"detail": "x"})
@@ -112,18 +106,12 @@ class TestServerDispatchCatchesHandlerError:
     async def test_handle_request_catches_generic_exception(self):
         from unittest.mock import AsyncMock
 
+        from minimax_code.config import Config
         from minimax_code.ipc.protocol import INTERNAL_ERROR
         from minimax_code.ipc.server import IPCServer
 
-        server = IPCServer.__new__(IPCServer)
-        server._handlers = {}
-        server._notification_handlers = {}
-        server._write_lock = AsyncMock()
-        server._stop = AsyncMock()
-        server.listeners = []
-
-        async def crash_handler(params, ctx):
-            raise RuntimeError("boom")
+        server = IPCServer(Config())
+        crash_handler = AsyncMock(side_effect=RuntimeError("boom"))
 
         server.register("test.crash", crash_handler)
 
@@ -133,6 +121,7 @@ class TestServerDispatchCatchesHandlerError:
         assert result is not None
         assert result["error"]["code"] == INTERNAL_ERROR
         assert "internal error" in result["error"]["message"]
+        crash_handler.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

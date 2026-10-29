@@ -41,6 +41,24 @@ def _is_loopback(host):
 
 
 @pytest.fixture
+def isolated_http_runtime(monkeypatch):
+    """Give an in-process HTTP test its own service lifetime and fences."""
+    import asyncio
+
+    from minimax_code import app, scheduler
+
+    monkeypatch.setattr(scheduler, "_SCHEDULER", None)
+    monkeypatch.setattr(scheduler, "_SCHEDULER_LOCK", asyncio.Lock())
+    monkeypatch.setattr(scheduler, "_SCHEDULER_QUIESCING", False)
+    monkeypatch.setattr(app, "_CODEBASE_INDEX_CLOSING", False)
+    monkeypatch.setattr(app, "_CODEBASE_INDEXERS", {})
+    monkeypatch.setattr(app, "_CODEBASE_INDEXER", None)
+    monkeypatch.setattr(app, "_CODEBASE_AUTO_TASKS", set())
+    for name in ("_DB_SINGLETON", "_EXECUTION_PROFILES", "_MCP_REGISTRY", "_SUBAGENT_LLM"):
+        monkeypatch.setattr(app, name, None)
+
+
+@pytest.fixture
 def bind_test_sessions(monkeypatch, tmp_path):
     """Explicit session rows for handler tests with a mocked conversation DB."""
     from types import SimpleNamespace

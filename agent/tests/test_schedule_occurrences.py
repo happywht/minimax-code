@@ -354,7 +354,9 @@ async def async_count(state, job_id, count):
     return len(await state.scheduler._occurrences.list(job_id)) == count
 
 
-async def test_stop_fences_catchup_and_transport_quiesces_before_service(scheduled, monkeypatch):
+async def test_stop_fences_catchup_and_transport_quiesces_before_service(
+    scheduled, monkeypatch, isolated_http_runtime
+):
     import minimax_code.scheduler as module
     from minimax_code.http_server import build_app
 

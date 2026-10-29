@@ -72,7 +72,7 @@ warnings.filterwarnings(
 
 
 @pytest.fixture
-def ipc_server() -> IPCServer:
+def ipc_server(isolated_http_runtime) -> IPCServer:
     """A fresh :class:`IPCServer` wired up with the full app handlers.
 
     Uses in-memory stdin/stdout so nothing leaks into the test
@@ -529,6 +529,12 @@ def test_ws_replays_after_last_disconnect_and_cleans_up_on_shutdown(
     assert manager._send_queues == {}
     assert manager._ping_task is None
     assert all(task.done() for task in tasks)
+    # Shutdown fences remain in force for this lifetime; fixture teardown
+    # restores the other tests' state, not a restart of this runtime.
+    from minimax_code import app, scheduler
+
+    assert scheduler._SCHEDULER_QUIESCING
+    assert app._CODEBASE_INDEX_CLOSING
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,7 @@ from minimax_code.ipc.server import IPCServer
 
 
 @pytest.fixture
-def secured_app():
+def secured_app(isolated_http_runtime):
     server = IPCServer(config=Config.from_env(), stdin=io.StringIO(), stdout=io.StringIO())
     return build_app(server)
 

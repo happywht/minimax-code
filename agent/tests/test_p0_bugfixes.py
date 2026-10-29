@@ -598,7 +598,7 @@ async def test_shutdown_handler_triggers_stop():
 
 
 @pytest.mark.asyncio
-async def test_http_lifespan_cleans_up_resources():
+async def test_http_lifespan_cleans_up_resources(isolated_http_runtime):
     """The FastAPI lifespan must clean up DB, LLM, and active cores
     on shutdown."""
     from minimax_code.http_server import build_app
