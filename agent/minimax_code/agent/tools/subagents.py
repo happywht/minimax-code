@@ -712,17 +712,15 @@ class SpawnSubagentTool(Tool):
     name = "spawn_subagent"
     description = (
         "Delegate a focused piece of work to a named sub-agent and return its final result. "
-        "Real runs use independent working copies by default; use collect_subagent to merge "
-        "their completed edits. sandbox=true selects the legacy file-only overlay instead. "
-        "Restricted targets cannot select that overlay; its environment default applies to host runs only. "
+        "For parallel writers, set sandbox=false to use independent working copies, then "
+        "use collect_subagent to collect their completed edits. These copies are not OS sandboxes. "
+        "sandbox=true selects a legacy file-only overlay that cannot run processes. "
+        "When omitted, the host environment can select that overlay; restricted targets "
+        "always require independent copies. "
         "Use this for specialist review, parallel research, or focused analysis that should "
         "not distract the main conversation. Set wait=false to run in the background and "
         "collect later with check_subagent / wait_subagent. "
-        "If the sub-agent will WRITE files (especially while other sub-agents or you are "
-        "editing the same workspace), set sandbox=true: its writes land in a private "
-        "sandbox instead of racing the workspace, and you merge them afterwards with "
-        "collect_subagent(run_id), which reports three-way conflicts instead of silently "
-        "overwriting. For read-only work leave sandbox=false."
+        "Collection detects conflicts with changes in the parent workspace."
     )
     parameters = {
         "type": "object",
@@ -754,12 +752,11 @@ class SpawnSubagentTool(Tool):
             "sandbox": {
                 "type": "boolean",
                 "description": (
-                    "Opt into per-run write isolation (default false, or the "
-                    "MINIMAX_CODE_SANDBOX_DEFAULT env): the sub-agent's file "
-                    "writes are redirected to a private sandbox directory "
-                    "and merged back afterwards with collect_subagent(run_id). "
-                    "Use true when parallel sub-agents may touch the same "
-                    "files on a host target. Restricted targets require independent copies and reject true."
+                    "False selects an independent working copy, including for parallel writers. "
+                    "True selects the legacy file-only overlay and prevents process execution. "
+                    "If omitted, MINIMAX_CODE_SANDBOX_DEFAULT selects the host default; "
+                    "otherwise it is false. Restricted targets reject true and ignore the environment default. "
+                    "Collect completed edits with collect_subagent(run_id)."
                 ),
                 "default": False,
             },

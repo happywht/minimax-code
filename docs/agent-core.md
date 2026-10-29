@@ -154,7 +154,7 @@ to call.
 | `search_files` | Recursive text search (ripgrep fast path, pure-Python fallback). Set `context_lines` to 1–5 for line-numbered `before` and `after` arrays on each match; context searches allow at most 200 results. Context searches and sandbox searches use the Python engine; sandbox mirrors override workspace files and results retain workspace addresses. Narrow `path` when possible because the walker is slower than rg. | `pattern` | `path`, `regex`, `file_pattern`, `case_sensitive`, `max_results`, `context_lines` |
 | `find_files` | Glob-match files under a directory (`**/*.py` patterns, depth-bounded). Inside a sandbox, sandbox-only matches are unioned into the results (projected to workspace addresses); `.minimax` is hard-excluded even when the caller replaces the default `exclude_dirs` table (v1.6.0). | `pattern` | `path`, `max_depth`, `max_results`, `exclude_dirs` |
 | `list_subagents` | List enabled sub-agents that can receive delegated specialist work. | — | `include_disabled` |
-| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result (persisted as an `agent_runs` row with `mode='subagent'`; exempt from the generic `tool_timeout` ceiling — the sub-agent wall clock `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` governs, and a timeout returns the accumulated partial). The description teaches the write-safety decision: if the sub-agent will write files (especially in parallel with other runs), spawn with `sandbox=true` and merge via `collect_subagent`; read-only work stays `sandbox=false` (v1.5.1). | `agent_name`, `prompt` | `parent_session_id`, `wait` (default true; false = background, collect via check/wait), `sandbox` (default false, or the process-wide `MINIMAX_CODE_SANDBOX_DEFAULT` when the arg is omitted — explicit arg > env > false, v1.5.2; v1.5.0 redirects the run's writes into an isolated sandbox, see §8a) |
+| `spawn_subagent` | Delegate a focused task to a named sub-agent and return its final result (persisted as an `agent_runs` row with `mode='subagent'`; exempt from the generic `tool_timeout` ceiling — the sub-agent wall clock `MINIMAX_CODE_SUBAGENT_TIMEOUT_S` governs, and a timeout returns the accumulated partial). Use `sandbox=false` for independent working copies, including parallel writers, and collect edits via `collect_subagent`. Copies are not OS sandboxes. | `agent_name`, `prompt` | `parent_session_id`, `wait` (default true; false = background), `sandbox` (true selects the legacy file-only overlay and blocks processes; on host targets omission uses `MINIMAX_CODE_SANDBOX_DEFAULT`, then false; restricted targets require a copy) |
 | `check_subagent` | Poll a background run (`wait=false`) without blocking: `running` while in flight, or the final outcome once finished (read from the persisted run row after the task is reaped). Responses may carry `progress` — the run's `PROGRESS.jsonl` ledger projected to `{total, recent[], latest_percent}` — whenever the sub-agent has called `report_progress` (v1.5.2). | `run_id` | — |
 | `wait_subagent` | Await a background run's completion (shielded — a timeout never kills the run; the response says `running` and the call repeats). Timeout responses carry the same `progress` projection as `check_subagent` (v1.5.2). | `run_id` | `timeout_s` (default 120) |
 | `read_artifact` | Read a file from a sub-agent run's artifact directory (`<workspace_root>/.minimax/artifacts/<run_id>/`); containment-checked against that run's directory, traversal rejected. | `run_id` | `rel_path` (default `BRIEF.md`) |
@@ -410,16 +410,17 @@ which the calling tool turns into a `ToolResult.fail(...)`.
 
 ## 8a. Sub-agent write sandbox (v1.5.0)
 
-Path safety (§8) confines *where* a tool may write; the sub-agent
-sandbox confines *whose* writes land in the shared workspace. When a
+Real sub-agent runs use independent working copies when `sandbox=false`;
+collect their edits explicitly as described in [child workspaces](child-workspaces.md).
+Those copies are not OS sandboxes. The legacy file overlay is selected when a
 spawn opts in (`spawn_subagent(..., sandbox=true)` — or omits the arg
 under `MINIMAX_CODE_SANDBOX_DEFAULT`, v1.5.2), every
 `write_file` / `edit_file` / `append_file` the sub-agent makes is
 transparently redirected into
 `<workspace_root>/.minimax/sandboxes/<run_id>/` —
-the shared workspace stays untouched until the main agent merges via
-`collect_subagent`. The opt-in is per-spawn and defaults to false;
-non-sandboxed runs behave exactly as before.
+file-tool changes remain in the overlay until the main agent collects them via
+`collect_subagent`. Process execution is refused in this mode. The explicit
+argument takes precedence over the host environment default.
 
 **Layering with CAS (§ error matrix).** The sandbox prevents
 parallel sub-agents from clobbering each other; CAS
@@ -556,9 +557,9 @@ per spawn, large outputs had no append path, background runs were
 invisible until done):
 
 ```text
-# 1. Spawn writers sandboxed (env MINIMAX_CODE_SANDBOX_DEFAULT=true
-#    flips the default for the whole process; the explicit arg wins).
-spawn_subagent(agent_name="impl", prompt="...", wait=false, sandbox=true)
+# 1. Spawn writers in independent working copies. Explicit false also
+#    overrides a host MINIMAX_CODE_SANDBOX_DEFAULT=true.
+spawn_subagent(agent_name="impl", prompt="...", wait=false, sandbox=false)
 
 # 2. While it runs: poll milestones — the response carries the
 #    PROGRESS.jsonl projection ({total, recent[], latest_percent}).
@@ -566,10 +567,8 @@ check_subagent(run_id)            # or wait_subagent(run_id, timeout_s)
 
 # 3. When finished: merge with the three-way compare. Conflicts
 #    surface all three sha256 fingerprints — never a silent clobber.
-collect_subagent(run_id)          # on_conflict: fail (default) | skip | overwrite
-#    prune: true (default, v1.6.0) deletes the sandbox tree once the
-#    merge is clean and the receipt is safely on disk; kept on
-#    conflicts / errors / skipped files so a retry stays possible.
+collect_subagent(run_id)          # on_conflict: fail (default) | skip
+#    Independent copies and collection receipts are retained for review.
 ```
 
 For writes the main agent (or any non-sandboxed run) makes itself,
