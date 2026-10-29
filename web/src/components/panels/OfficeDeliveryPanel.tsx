@@ -9,6 +9,7 @@ import { csvToOfficeSpec, parseOfficeCsv, type CsvTable } from "./officeCsv";
 import { CsvTableEditor } from "./CsvTableEditor";
 import { OfficeAnalysisControls, type OfficeAnalysisOptions } from "./OfficeAnalysisControls";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { ProjectXlsxImport } from "./ProjectXlsxImport";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
   { name: "名称", kind: "text" }, { name: "数量", kind: "number" },
@@ -22,6 +23,7 @@ function saveJson(value: unknown, name: string): void {
 
 export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; onText: () => void }): JSX.Element {
   const project = useSessionStore((state) => state.currentProjectId), host = ipc.agentBaseUrl;
+  const session = useSessionStore((state) => state.currentSessionId);
   const state = useOfficeDeliveryStore();
   const [filename, setFilename] = useState("清单.xlsx"), [runId, setRunId] = useState("");
   const [source, setSource] = useState(example), [key, setKey] = useState(() => crypto.randomUUID());
@@ -157,6 +159,18 @@ export function OfficeDeliveryPanel({ onClose, onText }: { onClose: () => void; 
     <p>不生成或计算公式、宏、外链。可选静态汇总或图表；不做 PDF/OCR、版式、打印分页或业务核验，文本预览不还原 Excel 排版。</p>
     <p>在当前 Agent 服务登记不可变新文件；关联已有 run 只作来源引用，不改变其状态。切换页面只停止本页等待，已提交结果可刷新找回。</p>
     {ipc.isMock && <p role="status">演示模式不生成 Office 文件；请连接真实后端及 attachments 可选依赖。</p>}
+    <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} onImport={(text, table) => {
+      const scope = generationScope.current, expectedService = state.serviceId;
+      void (async () => {
+        if (csvRef.current || tableDirty) {
+          const accepted = await requestConfirmation({ title: "替换表格草稿？", description: "将替换当前 CSV 和表格编辑草稿；下方已转换的表格输入暂不改变。", confirmLabel: "替换草稿" });
+          if (!accepted) return;
+        }
+        if (!scope.active || ipc.agentBaseUrl !== host || useSessionStore.getState().currentProjectId !== project ||
+            useSessionStore.getState().currentSessionId !== session || useOfficeDeliveryStore.getState().serviceId !== expectedService) return;
+        cancelFileRead(); applyCsv(text, table);
+      })();
+    }} />
     <details className="rounded border border-line p-3">
       <summary>从 CSV 创建表格输入</summary>
       <p>首行为列名，逗号分隔；支持引号内逗号和换行。默认全部为文本，保留前导零和公式样文字；空字符串变空白。转换会替换下方 JSON，源 CSV 不会被修改。</p>

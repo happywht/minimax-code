@@ -84,6 +84,14 @@ class AttachmentListParams(ArtifactListParams):
     """Project association only; caller host/path authority is not accepted."""
 
 
+class AttachmentExtractXlsxParams(AttachmentListParams):
+    session_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
+    attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sheet_name: str = Field(min_length=1, max_length=31)
+
+
 class DocxBlock(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal["paragraph", "table"]
