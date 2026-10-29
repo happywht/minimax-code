@@ -15,6 +15,7 @@ export interface SubAgentState {
   spawn: (args: SpawnSubagentParams) => Promise<void>;
   retry: (runId: string) => Promise<void>;
   refresh: () => Promise<void>;
+  recoverChildren: (sessionId: string) => Promise<void>;
   openRun: (runId: string) => Promise<boolean>;
   cancelRun: (runId: string) => Promise<void>;
   clearCompleted: () => void;
@@ -22,6 +23,15 @@ export interface SubAgentState {
 }
 let unsubProgress: (() => void) | null = null;
 let unsubRuns: Array<() => void> = [];
+let childEpoch = 0;
+let childScope = "";
+let missingChildWake = false;
+type ChildList = { session_id: string; project_id: string | null; service_id: string; limit: number; children: Array<{
+  run_id: string; session_id: string; parent_run_id: string; status: AgentRunStatus; live: boolean;
+  agent_id: string; agent_name: string; prompt: string; text: string; partial: boolean; error: string | null;
+  text_truncated: boolean;
+  created_at: string; completed_at: string | null;
+}> };
 const storageKey = "minimax-code:agent-roots:v1";
 const terminal = new Set<AgentRunStatus>(["completed", "failed", "cancelled", "interrupted", "budget_paused"]);
 const finished = (status: SubAgentStatus) => ["completed", "failed", "cancelled"].includes(status);
@@ -49,10 +59,33 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
     set({ runs: { ...restore(), ...get().runs } });
     await ipc.start();
     if (!unsubProgress) unsubProgress = ipc.on<SubAgentProgress>(StreamEvent.SubAgentProgress, (env) => {
-      if (env.data?.run_id) get().applyProgress({ ...env.data, received_at: env.data.received_at ?? Date.now() });
+      if (env.data?.run_id) {
+        const missing = !get().runs[env.data.run_id];
+        get().applyProgress({ ...env.data, received_at: env.data.received_at ?? Date.now() });
+        const sameScope = childScope && env.data.parent_session_id === useSessionStore.getState().currentSessionId;
+        if (sameScope && (finished(env.data.status) || (env.data.status as string) === "interrupted")) {
+          // Terminal progress is emitted after the durable status update.
+          void get().recoverChildren(env.data.parent_session_id!);
+        } else if (missing && !missingChildWake && sameScope) {
+          missingChildWake = true;
+          void get().recoverChildren(env.data.parent_session_id!).finally(() => { missingChildWake = false; });
+        }
+      }
     });
-    if (!unsubRuns.length) unsubRuns = [StreamEvent.RunUpdated, StreamEvent.RunCompleted].map((event) =>
-      ipc.on(event, () => { void get().refresh(); }));
+    if (!unsubRuns.length) {
+      const recover = () => { const id = useSessionStore.getState().currentSessionId; if (id) void get().recoverChildren(id); };
+      unsubRuns = [StreamEvent.RunUpdated, StreamEvent.RunCompleted].map((event) =>
+        ipc.on(event, () => { void get().refresh(); recover(); }));
+      unsubRuns.push(ipc.onSideCar((event) => {
+        if (event.status === "started") { childScope = ""; recover(); }
+        if (event.status === "stopped" || event.status === "error") {
+          childEpoch++;
+          set((s) => ({ runs: Object.fromEntries(Object.entries(s.runs).map(([id, row]) =>
+            [id, row.recovery_service_id && row.run_status && !terminal.has(row.run_status)
+              ? { ...row, status: "unknown" as const, summary: "连接中断，运行状态待核对" } : row])) }));
+        }
+      }));
+    }
     set({ subscribed: true });
     await get().refresh();
   },
@@ -60,6 +93,13 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
   applyProgress: (progress) => set((s) => {
     const old = s.runs[progress.run_id];
     if (old?.request) return s;
+    if (!old && childScope) return s;
+    // Durable status and ownership take precedence over replayed progress events.
+    if (old?.recovery_service_id) {
+      if (old.status !== "thinking" || progress.parent_session_id !== old.parent_session_id) return s;
+      return { runs: { ...s.runs, [old.run_id]: { ...old, progress: progress.progress ?? old.progress,
+        summary: progress.summary ?? old.summary, text: progress.text ?? old.text, updated_at: progress.received_at } } };
+    }
     const allowed: SubAgentStatus[] = ["started", "thinking", "tool_call", "tool_result", "completed", "failed", "cancelled"];
     const status = allowed.includes(progress.status) ? progress.status : "started";
     const row: SubAgentRun = {
@@ -118,6 +158,46 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
     }
   },
   retry: async (id) => { const row = get().runs[id]; if (row?.request) await get().spawn(row.request); },
+  recoverChildren: async (sessionId) => {
+    const state = useSessionStore.getState();
+    const session = state.sessions.find((row) => row.id === sessionId);
+    if (!session || state.currentSessionId !== sessionId) return;
+    const project = session.project_id ?? null, host = ipc.agentBaseUrl;
+    const scope = JSON.stringify([host, sessionId, project]);
+    if (scope !== childScope) {
+      childScope = scope;
+      set((s) => ({ runs: Object.fromEntries(Object.entries(s.runs).filter(([, row]) => !!row.request)) }));
+    }
+    const ticket = ++childEpoch;
+    const current = () => ticket === childEpoch && childScope === scope && ipc.agentBaseUrl === host
+      && useSessionStore.getState().currentSessionId === sessionId
+      && (useSessionStore.getState().sessions.find((row) => row.id === sessionId)?.project_id ?? null) === project;
+    try {
+      const data = await ipc.request<ChildList>("run.child_list", { session_id: sessionId });
+      if (!current()) return;
+      if (data.session_id !== sessionId || data.project_id !== project || !data.service_id) throw new Error("子任务恢复绑定不一致");
+      set((s) => {
+        const next = Object.fromEntries(Object.entries(s.runs).filter(([, row]) => !!row.request));
+        for (const child of data.children) {
+          if (!child.run_id || !child.parent_run_id || next[child.run_id]?.request) continue;
+          const old = s.runs[child.run_id];
+          const active = !terminal.has(child.status);
+          const status = active && !child.live ? "unknown" : statusView(child.status, child.partial);
+          const started = Date.parse(child.created_at) || Date.now();
+          next[child.run_id] = { run_id: child.run_id, session_id: child.session_id,
+            parent_session_id: sessionId, parent_run_id: child.parent_run_id, recovery_service_id: data.service_id,
+            agent_id: child.agent_id, agent_name: child.agent_name || child.agent_id || "子 Agent", prompt: child.prompt,
+            run_status: child.status, status, partial: child.partial, error: child.error || undefined,
+            progress: active ? old?.progress ?? 0 : 1, summary: active && !child.live ? "持久状态未终结，运行状态待核对" : child.status,
+            text: child.text || undefined, text_truncated: child.text_truncated, started_at: started, updated_at: Date.now(),
+            finished_at: terminal.has(child.status) ? (Date.parse(child.completed_at || "") || Date.now()) : undefined };
+        }
+        return { runs: next };
+      });
+    } catch (err) {
+      if (current()) set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
   refresh: async () => {
     for (const [id, row] of Object.entries(get().runs)) {
       if (!row.request || !row.session_id) continue;
@@ -170,7 +250,7 @@ export const useSubAgentStore = create<SubAgentState>((set, get) => ({
       row.admission_unknown || row.run_status === "interrupted" || row.run_status === "budget_paused"));
     persist(runs); return { runs };
   }),
-  reset: () => set({ runs: {}, subscribed: false, error: null }),
+  reset: () => { childEpoch++; childScope = ""; set({ runs: {}, subscribed: false, error: null }); },
 }));
 export function runsForSession(state: SubAgentState, sessionId: string | null | undefined): SubAgentRun[] {
   return Object.values(state.runs).filter((row) => !sessionId || row.parent_session_id === sessionId);

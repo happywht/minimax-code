@@ -77,6 +77,11 @@ const STATUS_TONE: Record<SubAgentStatus, { label: string; cls: string; icon: "s
     cls: "text-minimax-muted bg-minimax-border/40 border-minimax-border",
     icon: "idle",
   },
+  unknown: {
+    label: "状态待核对",
+    cls: "text-minimax-muted bg-minimax-border/40 border-minimax-border",
+    icon: "idle",
+  },
 };
 
 /** Terminal states — sorted to the bottom and cleared by "Clear done". */
@@ -93,14 +98,19 @@ export function SubAgentPanel({
   const init = useSubAgentStore((s) => s.init);
   const clearCompleted = useSubAgentStore((s) => s.clearCompleted);
   const currentSession = useSessionStore((s) => s.currentSessionId);
+  const currentProject = useSessionStore((s) => s.sessions.find((row) => row.id === (sessionId === undefined ? s.currentSessionId : sessionId))?.project_id);
+  const recoverChildren = useSubAgentStore((s) => s.recoverChildren);
   const visibleSession = sessionId === undefined ? currentSession : sessionId;
 
   useEffect(() => {
     if (autoInit) void init();
   }, [autoInit, init]);
+  useEffect(() => {
+    if (autoInit && visibleSession) void recoverChildren(visibleSession);
+  }, [autoInit, visibleSession, currentProject, recoverChildren]);
 
   const runs = useMemo<SubAgentRun[]>(
-    () => runsForSession({ runs: runsMap, subscribed: true, error: null } as SubAgentState, visibleSession),
+    () => visibleSession ? runsForSession({ runs: runsMap, subscribed: true, error: null } as SubAgentState, visibleSession) : [],
     [runsMap, visibleSession],
   );
   // Sort: in-flight first (oldest first), then finished (newest first).
@@ -196,7 +206,7 @@ function SubAgentRow({
           {run.display_name || run.agent_name}
         </span>
         <StatusPill tone={tone} testId={`${testId}-${run.run_id}-status`} />
-        {!isFinished(run.status) && !run.admission_unknown && (
+        {!isFinished(run.status) && run.status !== "unknown" && !run.recovery_service_id && !run.admission_unknown && (
           <button
             type="button"
             data-testid={`${testId}-${run.run_id}-cancel`}
@@ -256,6 +266,7 @@ function SubAgentRow({
               <span className="font-mono">{run.parent_session_id}</span>
             </div>
           )}
+          {run.parent_run_id && <div>父任务：<span className="font-mono">{run.parent_run_id}</span></div>}
           {run.context_message_id && (
             <div>
               <span className="text-minimax-fg/80">context:</span>{" "}
@@ -300,6 +311,7 @@ function SubAgentRow({
               {run.text}
             </div>
           )}
+          {run.text_truncated && <div>恢复的结果文本已截断。</div>}
         </div>
       )}
     </li>

@@ -710,6 +710,12 @@ function mockHandle(
       throw new Error("演示模式没有已读取的真实网页来源");
     case "run.child_workspace":
       throw new Error("演示模式没有真实子任务工作区");
+    case "run.child_list": {
+      const p = params as { session_id: string };
+      const session = mockSessions.get(p.session_id);
+      if (!session) throw new Error("Unknown parent session");
+      return { session_id: p.session_id, project_id: session.project_id ?? null, service_id: "mock", children: [], limit: 100 };
+    }
     case "run.steer":
       throw new Error("演示模式不支持运行中补充");
     case "run.get": {

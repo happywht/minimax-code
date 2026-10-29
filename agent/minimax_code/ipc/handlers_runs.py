@@ -12,6 +12,7 @@ from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
+    RunChildListParams,
     RunChildWorkspaceParams,
     RunEventsParams,
     RunIdParams,
@@ -54,6 +55,54 @@ def register_run_handlers(server: Any) -> None:
     """Register run timeline read APIs."""
 
     child_review_lock = asyncio.Lock()
+
+    async def handle_child_list(params: Any, ctx: Context) -> None:
+        from ..orchestrator.subagent import get_background_run
+        from ..storage.dao.runs import _hydrate_run
+        from ..storage.dao.text_artifacts import ArtifactDAO
+
+        try:
+            req = RunChildListParams.model_validate(params)
+            dao = await _get_read_control_dao(ctx)
+
+            async def binding():
+                session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
+                if not session:
+                    raise ValueError("Unknown parent session")
+                identity = await ArtifactDAO(dao._db).service_id()
+                return session["project_id"], identity
+
+            project, identity = await binding()
+            rows = await dao._db.fetchall("""SELECT c.* FROM agent_runs c JOIN agent_runs p
+                ON p.id = CASE WHEN json_valid(c.metadata) THEN json_extract(c.metadata,'$.parent_run_id') END
+                WHERE c.mode='subagent' AND p.session_id=?
+                AND CASE WHEN json_valid(c.metadata) THEN json_extract(c.metadata,'$.parent_session_id') END=?
+                AND CASE WHEN json_valid(p.metadata) THEN json_extract(p.metadata,'$.project_id') END IS ?
+                ORDER BY c.created_at DESC,c.id DESC LIMIT 100""", (req.session_id, req.session_id, project))
+            children = []
+            for row in rows:
+                run = _hydrate_run(row)
+                meta = run.get("metadata") or {}
+                if not isinstance(meta, dict):
+                    continue
+                task = get_background_run(run["id"])
+                live = task is not None and not task.done()
+                children.append({"run_id": run["id"], "session_id": run["session_id"],
+                    "parent_run_id": meta["parent_run_id"], "status": run["status"], "live": live,
+                    "agent_id": str(meta.get("agent_id") or ""), "agent_name": str(meta.get("agent_name") or ""),
+                    "prompt": str(meta.get("prompt") or "")[:2000], "text": str(meta.get("result_text") or "")[:4000],
+                    "text_truncated": len(str(meta.get("result_text") or "")) > 4000,
+                    "partial": bool(meta.get("partial")), "error": run.get("error"),
+                    "created_at": run["created_at"], "completed_at": run.get("completed_at")})
+            if await binding() != (project, identity):
+                raise ValueError("Session project or service changed during recovery")
+            await ctx.reply({"session_id": req.session_id, "project_id": project,
+                             "service_id": identity, "children": children, "limit": 100})
+        except (ValidationError, ValueError, HandlerError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("child run recovery failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Could not recover child runs")
 
     async def handle_child_workspace(params: Any, ctx: Context) -> None:
         from ..execution import ExecutionPolicy, execution_scope
@@ -469,6 +518,7 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.research_list", research_handler(RunResearchListParams))
     server.register("run.research_get", research_handler(RunResearchGetParams, detail=True))
     server.register("run.child_workspace", handle_child_workspace)
+    server.register("run.child_list", handle_child_list)
 
 
 async def _start_codex_run(request: RunStartParams, ctx: Context, **options: Any) -> None:

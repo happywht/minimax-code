@@ -1700,7 +1700,8 @@ export type SubAgentStatus =
   | "tool_result"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "unknown";
 
 /** Wire shape of one ``agent.subagent_progress`` event. */
 export interface SubAgentProgress {
@@ -1733,6 +1734,9 @@ export interface SubAgentRun {
   agent_name: string;
   display_name?: string;
   parent_session_id?: string;
+  parent_run_id?: string;
+  recovery_service_id?: string;
+  text_truncated?: boolean;
   context_message_id?: string;
   prompt: string;
   status: SubAgentStatus;

@@ -314,6 +314,11 @@ class RunChildWorkspaceParams(BaseModel):
     expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class RunChildListParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+
+
 class RunResearchListParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1)
