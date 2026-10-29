@@ -54,6 +54,7 @@ class RunJob:
     # a mid-run rebind cannot swap what the run will be validated with.
     validate_command: str = ""
     capture_file_changes: bool = False
+    steer_controller: Any = None
 
 
 class RunService:

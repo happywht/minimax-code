@@ -248,6 +248,7 @@ export interface TypedIPC {
   getBudget(runId?: string, day?: string): Promise<BudgetStateResult>;
   reconcileBudget(params: BudgetReconcileParams): Promise<{ok: boolean}>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
+  steerRun(params: { run_id: string; session_id: string; idempotency_key: string; text: string }): Promise<{ step: import("../types/ipc").AgentRunStep }>;
   getRunEvents(runId: string, opts?: { after_seq?: number; limit?: number }): Promise<RunEventsResult>;
 
   // agent
@@ -757,6 +758,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         reviewed,
         ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
       }),
+    steerRun: (params) => client.request("run.steer", params),
     getRunSteps: (runId) =>
       client.request<RunStepsResult>("run.steps", { run_id: runId }),
     getRunEvents: (runId, opts) =>

@@ -705,6 +705,8 @@ function mockHandle(
       const reply = mockHandle("agent.send_message", p, client, id) as import("../types/ipc").SendMessageResult;
       return { run: structuredClone(mockRuns.get(reply.run_id!)!.run), created };
     }
+    case "run.steer":
+      throw new Error("演示模式不支持运行中补充");
     case "run.get": {
       const runId = (params as { run_id: string }).run_id;
       const entry = mockRuns.get(runId);

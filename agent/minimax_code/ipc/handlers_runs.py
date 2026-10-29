@@ -16,6 +16,7 @@ from .protocol import (
     RunIdParams,
     RunResumeParams,
     RunStartParams,
+    RunSteerParams,
 )
 from .server import Context
 
@@ -314,6 +315,44 @@ def register_run_handlers(server: Any) -> None:
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
 
+    async def handle_run_steer(params: Any, ctx: Context) -> None:
+        from ..run_steer import step_id
+        from ..runs import get_run_service
+        from .host_session_gate import require_chat_session
+
+        try:
+            request = RunSteerParams.model_validate(params)
+            if not request.text.strip() or not request.idempotency_key.strip():
+                raise ValueError("Input and idempotency key must not be blank")
+            await require_chat_session(request.session_id)
+            dao = await _get_dao()
+            run = await dao.get_run(request.run_id)
+            if not run or run["session_id"] != request.session_id:
+                raise ValueError("Run and session do not match")
+            metadata = run.get("metadata") or {}
+            if metadata.get("engine") == "codex" or (metadata.get("model_snapshot") or {}).get("engine") != "native":
+                raise ValueError("Only Native runs support in-flight input")
+            session = await dao._db.fetchone("SELECT engine, project_id FROM sessions WHERE id=?", (request.session_id,))
+            if (not session or session["engine"] != "native" or "project_id" not in metadata
+                    or metadata["project_id"] != session["project_id"]):
+                raise ValueError("Run session or project binding changed")
+            existing = await dao.get_step(step_id(request.run_id, request.idempotency_key))
+            if existing:
+                if (existing.get("payload") or {}).get("text") != request.text:
+                    raise ValueError("Idempotency key belongs to different input")
+                await ctx.reply({"step": existing})
+                return
+            job = get_run_service(ctx.server).get_job(request.run_id)
+            controller = job.steer_controller if job and job.session_id == request.session_id else None
+            if controller is None:
+                raise ValueError("This run is not accepting in-flight input")
+            await ctx.reply({"step": await controller.accept(request.idempotency_key, request.text)})
+        except (ValidationError, ValueError, HandlerError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("run.steer failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Could not record in-flight input")
+
     server.register("run.list", handle_run_list)
     server.register("run.steps", handle_run_steps)
     server.register("run.events", handle_run_events)
@@ -321,6 +360,7 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.get", handle_run_get)
     server.register("run.cancel", handle_run_cancel)
     server.register("run.resume", handle_run_resume)
+    server.register("run.steer", handle_run_steer)
 
 
 async def _start_codex_run(request: RunStartParams, ctx: Context, **options: Any) -> None:

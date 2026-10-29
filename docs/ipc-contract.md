@@ -213,6 +213,7 @@ on the next `readline() == ""`.
 | `run.get` | req/res | Read `{run, result}`; result is a committed reply, an error envelope, or null. |
 | `run.cancel` | req/res | Request cancellation of one run; `requested` is acknowledgement, not completed teardown. |
 | `run.resume` | req/res | Create a linked run from saved input after review, using the original model and workspace; never replay tool steps. |
+| `run.steer` | req/res | Record idempotent Native-only in-flight input against one run. |
 | `patch.preview`            | req/res   | Return structured file/hunk preview for a git diff scope. **`project_id?`** |
 | `patch.apply_hunk`         | req/res   | Stage one working-tree hunk after validating the current diff. **`project_id?`** |
 | `patch.revert_hunk`        | req/res   | Discard one working hunk or unstage one staged hunk. **`project_id?`** |
@@ -460,6 +461,16 @@ proof of authorship; cancellation, restart, changed binding, unsupported paths,
 read failure or limits can leave it unavailable. See the user guide for limits.
 
 ### Durable run journal
+
+`run.steer({run_id, session_id, idempotency_key, text})` records at most 8000
+characters against a live Native run. Repeating a key with identical text
+returns its existing step; different text conflicts. At most ten inputs wait
+per run. Pending means accepted but not used; completed means added to later
+model context, not proof that a model received or obeyed it. Failed or
+cancelled means use was not confirmed. The loop drains at a model boundary,
+never inside a tool. A final answer, cancellation, budget stop or restart may
+leave input unused; it is never automatically replayed. Codex is unsupported.
+Run, session, project and session host policy are checked.
 
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older

@@ -829,6 +829,9 @@ async def handle_agent_send_message(
                 unregister_gater(ctx.server, session_id)
 
     async def finalize(job: RunJob, error: BaseException | None) -> None:
+        if job.steer_controller is not None:
+            await job.steer_controller.close()
+            job.steer_controller = None
         if internal_skill is not None:
             from ..budget_ledger import owned_cleanup
             try:
@@ -1433,6 +1436,10 @@ async def _handle_agent_send_message(
 
     # 3b. Register the core so ``agent.cancel`` can find it.
     _ACTIVE_RUNS[session_id] = {"core": core, "type": "main"}
+    from ..run_steer import SteerController
+    steer = SteerController(job, _emit_run_event)
+    job.steer_controller = steer
+    core.on_safe_interjections = steer.drain
 
     core.on_chunk = _on_chunk
 
@@ -1633,6 +1640,8 @@ async def _handle_agent_send_message(
             await ctx.reply_error(-32603, "agent.send_message failed")
         return
     finally:
+        await steer.close()
+        job.steer_controller = None
         if children is not None and not child_drain_complete:
             descendants = await children.drain(cancel=True)
             if job.result is not None:

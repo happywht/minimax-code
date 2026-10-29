@@ -20,6 +20,7 @@ import { RunBudgetPanel } from "./RunBudgetPanel";
 import { VerificationBadge } from "../chat/VerificationBadge";
 import { VerificationDetails } from "../chat/VerificationDetails";
 import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
+import { NativeSteerInput } from "./NativeSteerInput";
 import type { VerificationEvidence } from "../../types/ipc";
 
 export interface RunTimelinePanelProps {
@@ -206,6 +207,7 @@ export function RunTimelinePanel({
               ))}
             </ol>
             <RunBudgetPanel run={run} />
+            <NativeSteerInput run={run} />
             <RunWorkspaceDiff run={run} />
             <RunRecoveryActions run={run} refresh={() => loadForSession(currentSessionId)} />
           </article>
@@ -231,6 +233,10 @@ function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: stri
   const statusClass = statusTone(step.status);
   const detailText = buildStepDetailText(step);
   const collapsedDetail = detailText ? summarizeStepText(detailText, step.kind) : "";
+  if (step.payload?.source === "native_steer") {
+    return <li className="rounded border border-line p-2 text-xs"><p>运行中补充：{step.status === "pending" ? "已接收，等待下一轮边界" : step.status === "completed" ? "已加入后续上下文，不保证模型已处理" : "未确认生效，请核对"}</p>
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{String(step.payload.text ?? "")}</pre></li>;
+  }
   return (
     <li
       data-testid="run-timeline-step"

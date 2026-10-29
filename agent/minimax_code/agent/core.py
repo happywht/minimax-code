@@ -482,6 +482,7 @@ class AgentCore:
         self.on_status: StatusCallback | None = None
         self.on_usage: UsageCallback | None = None
         self.on_ask_user: AskUserCallback | None = None
+        self.on_safe_interjections = None
         self.on_ask_user_closed: AskUserCallback | None = None
         # M2 — run state observer. When set, the loop reports waiting
         # states ("awaiting_approval" / "waiting_input") and their
@@ -900,6 +901,8 @@ class AgentCore:
                 if self.cancelled:
                     cancelled = True
                     break
+                if self.on_safe_interjections is not None:
+                    await self.on_safe_interjections(messages, self._maybe_persist)
 
                 # v1.1.0 — per-iteration lifecycle hook (notification,
                 # fail-open). Observers can watch long-running turns at

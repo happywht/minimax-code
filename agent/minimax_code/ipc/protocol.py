@@ -294,6 +294,14 @@ class RunIdParams(BaseModel):
     run_id: str = Field(min_length=1)
 
 
+class RunSteerParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    text: str = Field(min_length=1, max_length=8000)
+
+
 class ContinueRunParams(_Base):
     """Pin retries to the same truncated block; omission keeps legacy latest selection."""
 
