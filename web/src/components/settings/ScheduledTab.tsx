@@ -19,6 +19,7 @@ import type { ScheduledJob, ScheduleContext } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { InlineCode, TabHeader } from "./fields";
 import { emptyScheduleContext, validScheduleContext, ScheduleContextFields, ScheduleSnapshot, ScheduleHistory } from "./ScheduleContextFields";
+import { ScheduleCronBuilder } from "./ScheduleCronBuilder";
 import { ipc } from "../../ipc";
 import { StreamEvent } from "../../types/ipc";
 
@@ -129,6 +130,7 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
             {strings.settings.scheduled.create}
           </Button>
         </div>
+        <ScheduleCronBuilder onApply={setDraftCron} timezone={draftContext.timezone} />
         <ScheduleContextFields value={draftContext} onChange={setDraftContext} />
       </Panel>
 
@@ -379,6 +381,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
               </Button>
             </div>
           </div>
+          <ScheduleCronBuilder onApply={setEditCron} timezone={editContext.timezone} />
           <ScheduleContextFields value={editContext} onChange={setEditContext} />
           </fieldset>
         </div>
