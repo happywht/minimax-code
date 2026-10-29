@@ -3,6 +3,7 @@ import { ipc, typedIPC } from "../../ipc";
 import type { HostTransferResult, RemoteHost } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { HostFileBrowser } from "./HostFileBrowser";
 
 type UploadReceipt = { hostSignature: string; remotePath: string; transferId: string };
 const signature = (host: RemoteHost) => JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file]);
@@ -99,6 +100,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     <p className="text-xs text-ink-2">本机路径指运行当前服务的机器，不是浏览器选中的文件；远端路径指此主机的 Linux 绝对路径。仅单文件、显式操作，不自动同步。传输使用独立 SSH/SFTP，服务隧道状态不代表传输可用。</p>
     <label className="block text-xs">本机文件绝对路径<Input aria-label={`${host.name} 本机传输路径`} value={local} disabled={busy} onChange={(e) => setLocal(e.target.value)} placeholder="C:\\资料\\报告.pdf" /></label>
     <label className="block text-xs">远端文件绝对路径<Input aria-label={`${host.name} 远端传输路径`} value={remote} disabled={busy} onChange={(e) => setRemote(e.target.value)} placeholder="/home/user/report.pdf" /></label>
+    <HostFileBrowser host={host} onSelect={(path) => { if (!busy) setRemote(path); }} />
     <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void transfer("upload")}>上传到此主机</Button>
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void transfer("download")}>从此主机下载</Button></div>
     <p className="text-xs text-ink-2">上传备份位于远端传输记录目录；下载不自动备份本机已有文件。两者进行 SHA-256 比对，不能证明业务内容正确。响应中断时先核对，不自动重试。</p>
