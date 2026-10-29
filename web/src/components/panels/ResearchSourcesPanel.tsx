@@ -24,6 +24,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
   const [service, setService] = useState<string | null>(null);
   const [scope, setScope] = useState<{ project: string; session: string; host: string } | null>(null);
   const [selected, setSelected] = useState<ResearchSource | null>(null);
+  const [batchIds, setBatchIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -37,16 +38,16 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
     && response.project_id === project && !!response.service_id;
 
   useEffect(() => ipc.onSideCar(() => {
-    ++version.current; setRows([]); setSelected(null); setService(null); setScope(null); setError(null); setAdding(false); setAdded(false);
+    ++version.current; setRows([]); setSelected(null); setBatchIds([]); setService(null); setScope(null); setError(null); setAdding(false); setAdded(false);
     setHost(ipc.agentBaseUrl);
     setEpoch((value) => value + 1);
   }), []);
-  useEffect(() => { ++version.current; setRows([]); setSelected(null); setService(null); setScope(null); setError(null);
+  useEffect(() => { ++version.current; setRows([]); setSelected(null); setBatchIds([]); setService(null); setScope(null); setError(null);
     setQuery(""); setApplied(""); setOffset(0); setNotice(null); setAdding(false); setAdded(false); }, [project, session, host]);
   useEffect(() => {
     const token = version;
     const revision = ++token.current;
-    setRows([]); setSelected(null); setService(null); setScope(null); setError(null);
+    setRows([]); setSelected(null); setBatchIds([]); setService(null); setScope(null); setError(null);
     if (!project || !session) { setLoading(false); return; }
     setLoading(true);
     void typedIPC.listResearchSources({ session_id: session, project_id: project, query: applied, offset }).then((result) => {
@@ -74,21 +75,27 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
     finally { if (current(revision)) setLoading(false); }
   };
 
-  const addToDraft = async () => {
-    if (!visible || !project || !session || !service || !selected || adding) return;
-    const revision = ++version.current, expected = service, id = selected.page_source_id;
+  const addToDraft = async (ids: string[]) => {
+    if (!visible || !project || !session || !service || !ids.length || adding) return;
+    const revision = ++version.current, expected = service;
     setAdding(true); setNotice(null); setAdded(false);
     try {
-      const result = await typedIPC.getResearchSource({ session_id: session, project_id: project,
-        expected_service_id: expected, page_source_id: id });
-      if (!current(revision)) return;
-      if (!checkScope(result) || result.service_id !== expected || result.source.page_source_id !== id) throw new Error("来源或服务关联已变化，请重新选择");
-      const source = result.source;
-      const excerpt = Array.from(source.excerpt ?? ""), shortened = excerpt.length > 600;
-      const text = ["研究来源（页面内容未核验，请核对后使用）：", `标题：${source.title || "（页面未提供标题）"}${source.title_truncated ? "（已截断）" : ""}`,
-        `网址：${source.url}`, `实际访问时间：${source.accessed_at}`, `来源 ID：${source.page_source_id}`,
-        `所属运行：${source.run_id}`, `摘录${shortened || source.excerpt_truncated || source.truncated ? "（已截断，不代表全文）" : ""}：`,
-        excerpt.slice(0, 600).join("") || "（无提取文本）"].join("\n");
+      const sources: ResearchSource[] = [];
+      for (const id of ids) {
+        const result = await typedIPC.getResearchSource({ session_id: session, project_id: project,
+          expected_service_id: expected, page_source_id: id });
+        if (!current(revision)) return;
+        if (!checkScope(result) || result.service_id !== expected || result.source.page_source_id !== id)
+          throw new Error("来源或服务关联已变化，请重新选择");
+        sources.push(result.source);
+      }
+      const text = sources.map((source) => {
+        const excerpt = Array.from(source.excerpt ?? ""), shortened = excerpt.length > 600;
+        return ["研究来源（页面内容未核验，请核对后使用）：", `标题：${source.title || "（页面未提供标题）"}${source.title_truncated ? "（已截断）" : ""}`,
+          `网址：${source.url}`, `实际访问时间：${source.accessed_at}`, `来源 ID：${source.page_source_id}`,
+          `所属运行：${source.run_id}`, `摘录${shortened || source.excerpt_truncated || source.truncated ? "（已截断，不代表全文）" : ""}：`,
+          excerpt.slice(0, 600).join("") || "（无提取文本）"].join("\n");
+      }).join("\n\n");
       const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project, session, text };
       window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
       setNotice(detail.result ?? "当前聊天输入区未打开；请先切换到聊天，再重新选择来源。");
@@ -103,27 +110,35 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
     <p className="text-sm text-ink-1">仅展示本项目在此服务读取并记录的网页。页面内容和报告事实未自动核验；删除所属任务或会话会删除来源记录。</p>
     <ManualResearch project={project} session={session} service={visible ? service : null} />
     {!project || !session ? <p role="status">请先选择当前项目的会话。</p> : <>
-      <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); setOffset(0); setApplied(query); }}>
+      <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); if (adding) return; setOffset(0); setApplied(query); }}>
         <Input aria-label="搜索研究来源" maxLength={200} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="标题、网址或摘录" />
-        <Button type="submit" disabled={loading}>搜索</Button>
-        <Button type="button" variant="secondary" disabled={loading} onClick={() => setEpoch((value) => value + 1)}>刷新</Button>
+        <Button type="submit" disabled={loading || adding}>搜索</Button>
+        <Button type="button" variant="secondary" disabled={loading || adding} onClick={() => setEpoch((value) => value + 1)}>刷新</Button>
       </form>
       {loading && <p role="status">正在读取来源…</p>}
       {error && <p role="alert">{error}</p>}
       {!loading && !error && visible && !rows.length && <p>当前范围没有匹配的来源。</p>}
-      <ul className="space-y-1">{(visible ? rows : []).map((row) => <li key={row.page_source_id}>
-        <button type="button" className="w-full rounded border border-line p-2 text-left" onClick={() => void select(row.page_source_id)}>
+      <ul className="space-y-1">{(visible ? rows : []).map((row) => <li key={row.page_source_id} className="flex items-center gap-2">
+        <input type="checkbox" aria-label={`选择来源 ${row.title || row.url}`} checked={batchIds.includes(row.page_source_id)}
+          disabled={adding || loading || (batchIds.length >= 10 && !batchIds.includes(row.page_source_id))}
+          onChange={(event) => { const checked = event.target.checked; setBatchIds((ids) => checked ? [...ids, row.page_source_id] : ids.filter((id) => id !== row.page_source_id)); }} />
+        <button type="button" className="w-full rounded border border-line p-2 text-left" disabled={adding} onClick={() => void select(row.page_source_id)}>
           {row.title || "（页面未提供标题）"} · {row.accessed_at}
         </button></li>)}</ul>
-      <div className="flex gap-2"><Button variant="secondary" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</Button>
-        <Button variant="secondary" disabled={loading || !visible || rows.length < 20 || offset >= 10000} onClick={() => setOffset(offset + 20)}>下一页</Button></div>
+      <div className="flex flex-wrap items-center gap-2"><Button type="button" variant="secondary" loading={adding}
+        disabled={loading || adding || !visible || batchIds.length === 0} onClick={() => void addToDraft(batchIds)}>将所选 {batchIds.length} 条加入草稿</Button>
+        <span className="text-xs text-ink-2">每页最多选 10 条；逐条重新核对后一次追加，不发送。翻页或搜索会清空选择。</span></div>
+      {notice && !selected && <p role="status">{notice}</p>}
+      {added && !selected && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}
+      <div className="flex gap-2"><Button variant="secondary" disabled={loading || adding || offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</Button>
+        <Button variant="secondary" disabled={loading || adding || !visible || rows.length < 20 || offset >= 10000} onClick={() => setOffset(offset + 20)}>下一页</Button></div>
       {visible && selected && <div className="space-y-2 rounded border border-line p-3">
         <h3 className="font-medium">{selected.title || "（页面未提供标题）"}</h3>
         {selected.title_truncated && <p>页面标题已截断。</p>}
         <p className="break-all">网址：{safeUrl(selected.url) ? <a href={safeUrl(selected.url)!} target="_blank" rel="noopener noreferrer" className="underline">{selected.url}</a> : selected.url}</p>
         <p>实际访问时间：{selected.accessed_at}</p><p className="break-all">所属任务：{selected.run_id}</p>
         <p className="break-all">来源 ID：{selected.page_source_id}</p>
-        <div className="flex flex-wrap gap-2"><Button type="button" variant="primary" loading={adding} disabled={adding || loading} onClick={() => void addToDraft()}>加入当前会话草稿</Button>
+        <div className="flex flex-wrap gap-2"><Button type="button" variant="primary" loading={adding} disabled={adding || loading} onClick={() => void addToDraft([selected.page_source_id])}>加入当前会话草稿</Button>
         <Button variant="secondary" onClick={() => {
           if (!navigator.clipboard) { setNotice("复制不可用，请手动选择 ID。"); return; }
           void navigator.clipboard.writeText(selected.page_source_id).then(() => setNotice("来源 ID 已复制。"), () => setNotice("复制失败，请手动选择 ID。"));
