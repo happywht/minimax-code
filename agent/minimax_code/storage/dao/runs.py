@@ -655,6 +655,30 @@ class AgentRunsDAO:
                 interrupted = _hydrate_run(await _fetchone(conn, "SELECT * FROM agent_runs WHERE id=?", (run_id,)))
                 md = interrupted.get("metadata") or {}
                 receipt = loads_json((await _fetchone(conn, "SELECT result FROM agent_runs WHERE id=?", (run_id,)))["result"])
+                # Codex streams each delta to its bound assistant message, but
+                # writes the receipt only when the external turn finishes. A
+                # crash between those writes must not hide the saved answer from
+                # run.get. Reconstruct only from the exact message owned by this
+                # run; the external turn and final usage remain unconfirmed.
+                if receipt is None and md.get("engine") == "codex":
+                    message = await _fetchone(conn,
+                        "SELECT id, content, metadata FROM messages "
+                        "WHERE id=? AND session_id=? AND role='assistant'",
+                        (interrupted.get("assistant_message_id"), session_id))
+                    message_md = loads_json(message["metadata"]) if message else None
+                    if (message and isinstance(message_md, dict)
+                            and message_md.get("run_id") == run_id
+                            and message_md.get("engine") == "codex"):
+                        receipt = {
+                            "session_id": session_id, "run_id": run_id,
+                            "message_id": message["id"], "engine": "codex",
+                            "text": message["content"],
+                            "codex_thread_id": md.get("codex_thread_id"),
+                            "external_turn_id": message_md.get("external_turn_id"),
+                            "tokens_in": None, "tokens_out": None, "tokens_total": None,
+                            "usage_certainty": "uncertain", "iterations": None,
+                            "stub": False, "partial": True, "truncated": False,
+                        }
                 evidence = verification_evidence(status="interrupted", base=md.get("verification"))
                 md["verification"] = evidence
                 if "skill_execution" in md:
