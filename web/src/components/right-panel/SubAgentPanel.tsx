@@ -495,6 +495,19 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     {review && <div className="space-y-1">
       <p>父目录：{review.root} · {review.kind} · {review.state}</p>
       <p>对比当前父目录与子任务结果；同期用户修改不归因于 Agent。普通独立目录不是操作系统沙盒。</p>
+      {!!review.collection_attempts?.length && <details open><summary>收集历史（最近 50 次）</summary>
+        {review.collection_attempts.map((attempt) => <div key={attempt.id} className="my-1 rounded border border-line p-2">
+          <p>{attempt.id} · {attempt.status === "complete" ? "完成" : attempt.status === "partial" ? "部分收集" : "中断或进行中，结果未确认"}</p>
+          {validReceipt(attempt.report, runId) ? <>
+            <p>已确认复制 {attempt.report.merged.length} 项；当时已相同 {attempt.report.noop.length} 项；冲突 {attempt.report.conflicts.length} 项。</p>
+            {!!attempt.report.merged.length && <details><summary>已确认复制</summary><ul>{attempt.report.merged.map((item) => <li key={item.path} className="break-all">{item.path}</li>)}</ul></details>}
+            {!!attempt.report.noop.length && <details><summary>当时已相同</summary><ul>{attempt.report.noop.map((path) => <li key={path} className="break-all">{path}</li>)}</ul></details>}
+            {!!attempt.report.conflicts.length && <details><summary>当时的冲突</summary><ul>{attempt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
+          </> : <p>记录格式不可用，请手动核对。</p>}
+          {attempt.pending_path && <p className="break-all">复制结果待核对：{attempt.pending_path}。不能推断是否已写入。</p>}
+        </div>)}
+        <p>历史记录反映当时的结果，不能证明当前文件未变化，也不代表验证或验收。</p>
+      </details>}
       {review.omitted.length > 0 && <p>未纳入：{review.omitted.join("、")}</p>}
       {review.files.length === 0 && <p>没有记录到文件变化。</p>}
       {review.files.map((file) => <details key={file.path}><summary>{file.path}{file.conflict ? ` · 冲突：${file.conflict}` : ""}</summary>

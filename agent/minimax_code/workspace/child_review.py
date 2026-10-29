@@ -5,7 +5,7 @@ import difflib
 import hashlib
 import json
 
-from .child import ChildWorkspace, _digest, _path, _scan
+from .child import ChildWorkspace, _digest, _path, _scan, collection_history
 
 
 def preview(child: ChildWorkspace) -> dict:
@@ -63,4 +63,5 @@ def preview(child: ChildWorkspace) -> dict:
     return {"run_id": child.run_id, "root": str(child.parent), "kind": child.record["kind"],
             "state": child.record["state"], "files": files, "revision": revision,
             "omitted": child.record.get("omitted", []),
+            "collection_attempts": collection_history(child),
             **({"receipt": child.record["receipt"]} if child.record["state"] == "collected" else {})}

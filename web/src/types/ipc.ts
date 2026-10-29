@@ -1472,9 +1472,16 @@ export interface ChildWorkspaceReceipt {
   conflicts: Array<{ path: string; reason?: string }>; complete: boolean; pruned: boolean; already_collected?: boolean;
 }
 
+export interface ChildWorkspaceCollectionAttempt {
+  id: string; run_id: string; version: 1;
+  status: "in_progress" | "interrupted" | "partial" | "complete";
+  pending_path: string | null; report: ChildWorkspaceReceipt;
+}
+
 export interface ChildWorkspaceReview {
   run_id: string; session_id: string; project_id: string | null; service_id: string;
   root: string; revision: string; state: string; kind: string; omitted: string[]; receipt?: ChildWorkspaceReceipt;
+  collection_attempts?: ChildWorkspaceCollectionAttempt[];
   team_collection?: { eligible: boolean; step_id: string | null; reason: string | null } | null;
   files: Array<{ path: string; parent_sha256?: string | null; child_sha256?: string | null; conflict: string | null; diff?: string; diff_truncated?: boolean; diff_unavailable?: boolean }>;
 }

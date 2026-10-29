@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import stat
+import uuid
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -323,6 +325,28 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
         raise
 
 
+def collection_history(child: ChildWorkspace) -> list[dict[str, Any]]:
+    """Read recent durable attempts without modifying or deleting older records."""
+    directory = _path(child.base, "collection-attempts")
+    if not directory.exists():
+        return []
+    if not directory.is_dir():
+        raise ValueError("Child collection history is invalid")
+    entries = sorted(directory.glob("*.json"), reverse=True)[:50]
+    result = []
+    for path in entries:
+        if path.resolve() != path or path.stat().st_size > 1024 * 1024:
+            raise ValueError("Child collection history is invalid")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(record, dict) or record.get("run_id") != child.run_id
+                or record.get("version") != 1 or record.get("status") not in
+                {"in_progress", "interrupted", "partial", "complete"}
+                or not isinstance(record.get("report"), dict)):
+            raise ValueError("Child collection history is invalid")
+        result.append(record)
+    return result
+
+
 def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[str, Any]:
     require_write_access()
     if active_child():
@@ -357,19 +381,48 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
                               "conflicts": conflicts, "complete": False, "pruned": False}
     if conflicts and on_conflict == "fail":
         return report
-    for relative, current in pending:
-        target = _path(child.parent, relative)
-        if current is not None:
-            backup = _path(child.base, "backups/" + relative)
-            backup.parent.mkdir(parents=True, exist_ok=True)
-            if not backup.exists():
-                atomic_copy_file(target, backup, baseline_sha256=None)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        atomic_copy_file(_path(child.root, relative), target, baseline_sha256=current,
-                         expected_source_sha256=final[relative])
-        report["merged"].append({"path": relative, "sha256": final[relative]})
-    report["complete"] = not conflicts
-    if report["complete"]:
-        child.record.update(state="collected", receipt=report)
-        child.save()
+    directory = _path(child.base, "collection-attempts")
+    directory.mkdir(parents=True, exist_ok=True)
+    attempt_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex
+    journal = _path(child.base, "collection-attempts/" + attempt_id + ".json")
+    attempt: dict[str, Any] = {"version": 1, "id": attempt_id, "run_id": child.run_id,
+                               "status": "in_progress", "pending_path": None, "report": report}
+
+    def save_attempt() -> None:
+        atomic_write_text(journal, json.dumps(attempt, ensure_ascii=False, indent=2),
+                          baseline_path=journal,
+                          baseline_sha256=_digest(journal, max_bytes=1024 * 1024))
+
+    save_attempt()  # No parent files are touched until the attempt is durable.
+    try:
+        for relative, current in pending:
+            # A crash anywhere after this save leaves this path explicitly uncertain.
+            attempt["pending_path"] = relative
+            save_attempt()
+            target = _path(child.parent, relative)
+            if current is not None:
+                backup = _path(child.base, "backups/" + relative)
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                if not backup.exists():
+                    atomic_copy_file(target, backup, baseline_sha256=None)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_copy_file(_path(child.root, relative), target, baseline_sha256=current,
+                             expected_source_sha256=final[relative])
+            report["merged"].append({"path": relative, "sha256": final[relative]})
+            attempt["pending_path"] = None
+            save_attempt()
+        report["complete"] = not conflicts
+        if report["complete"]:
+            child.record.update(state="collected", receipt=report)
+            child.save()
+        attempt["status"] = "complete" if report["complete"] else "partial"
+        save_attempt()
+    except BaseException:
+        # Do not assert whether the pending copy happened if a write or save failed.
+        attempt["status"] = "interrupted"
+        try:
+            save_attempt()
+        except Exception:
+            pass  # The last durable record remains conservative.
+        raise
     return report
