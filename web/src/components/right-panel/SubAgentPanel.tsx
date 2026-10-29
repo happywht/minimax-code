@@ -572,6 +572,9 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         {allowCollect && file.conflict === "parent_changed" && file.merge_parent_text !== undefined && <button type="button" disabled={busy} onClick={() => setMerge({ path: file.path, text: file.merge_parent_text! })}>编辑手动合并结果</button>}
         {merge?.path === file.path && <div className="space-y-1">
           <p>初始内容为当前父文件；请参考上方差异自行合并子任务成果。提交将写入完整文件。</p>
+          {file.merge_child_text !== undefined ? <details><summary>查看完整子任务文件（只读）</summary>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.merge_child_text}</pre>
+          </details> : <p>完整子任务文件未包含在本次审阅中，请在子工作区自行查看。</p>}
           <textarea aria-label={`合并内容 ${file.path}`} className="min-h-40 w-full rounded border border-line bg-surface-0 p-2 font-mono" value={merge.text} onChange={(event) => setMerge({ ...merge, text: event.target.value })} />
           <button type="button" disabled={busy} onClick={() => void resolveText()}>审阅并写入合并内容</button>{" "}
           <button type="button" disabled={busy} onClick={() => setMerge(null)}>取消编辑</button>

@@ -22,6 +22,7 @@ def preview(child: ChildWorkspace) -> dict:
         raise ValueError("More than 500 changed files; review and collect manually")
     files = []
     remaining = 65536
+    merge_child_remaining = 65536
     for path in paths:
         parent_path, child_path = _path(child.parent, path), _path(child.root, path)
         current = _digest(parent_path)
@@ -51,6 +52,10 @@ def preview(child: ChildWorkspace) -> dict:
                 after_text = read_verified(child_path, after)
                 if reason == "parent_changed" and current is not None and after is not None:
                     entry["merge_parent_text"] = before
+                    child_bytes = len(after_text.encode("utf-8"))
+                    if child_bytes <= merge_child_remaining:
+                        entry["merge_child_text"] = after_text
+                        merge_child_remaining -= child_bytes
                 diff = "".join(difflib.unified_diff(before.splitlines(True), after_text.splitlines(True),
                                                     fromfile="current parent", tofile="child result"))
                 entry["diff"] = diff[:remaining]
@@ -64,7 +69,7 @@ def preview(child: ChildWorkspace) -> dict:
     identity = child.parent.stat()
     revision = hashlib.sha256(json.dumps({"run_id": child.run_id, "state": child.record["state"],
         "root": str(child.parent), "device": identity.st_dev, "inode": identity.st_ino,
-        "files": [{k: v for k, v in f.items() if k not in {"diff", "diff_truncated", "diff_unavailable", "merge_parent_text"}}
+        "files": [{k: v for k, v in f.items() if k not in {"diff", "diff_truncated", "diff_unavailable", "merge_parent_text", "merge_child_text"}}
                   for f in files]}, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     return {"run_id": child.run_id, "root": str(child.parent), "kind": child.record["kind"],
             "state": child.record["state"], "files": files, "revision": revision,
