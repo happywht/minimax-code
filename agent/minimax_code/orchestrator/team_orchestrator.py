@@ -24,8 +24,8 @@ to hang the whole team run forever.
 After all agents finish, the orchestrator runs a lightweight **conflict
 detection** pass that checks whether multiple agents attempted to write
 to the same file path (via ``write_file`` / ``edit_file`` tool calls).
-Partial failure is surfaced up front in ``merged_text`` (a ``> ⚠`` advisory
-line) rather than silently swallowed by ``success = any(...)``.
+Partial failure is surfaced in ``merged_text`` and makes the team run fail;
+available member output remains available for review.
 
 The final :class:`TeamRunResult` is persisted to the ``agent_runs`` table
 (``mode="team"``) so callers can query it later via ``team.run.get``.
@@ -372,8 +372,8 @@ class TeamOrchestrator:
                 team_name=team_name,
                 orchestration_mode=mode,
                 task_id=task_id,
-                success=True,
-                merged_text="No agents configured in team.",
+                success=False,
+                merged_text="Error: no agents configured in team.",
             )
 
         # Resolve every enabled member before persistence, dependency loading,
@@ -401,6 +401,16 @@ class TeamOrchestrator:
                 task_id=task_id,
                 success=False,
                 merged_text="Error: no valid agents found for team members.",
+            )
+        if len(configs) != len(agent_names):
+            available = {cfg.name for cfg in configs}
+            missing = [name for name in agent_names if name not in available]
+            return TeamRunResult(
+                team_name=team_name,
+                orchestration_mode=mode,
+                task_id=task_id,
+                success=False,
+                merged_text="Error: team members unavailable or disabled: " + ", ".join(missing),
             )
 
         if on_admitted is not None:
@@ -580,6 +590,10 @@ class TeamOrchestrator:
             configs, request, session_id, task_id, team_name,
         )
 
+        if not any(r.success and r.text.strip() for r in writer_results):
+            merged_text, _ = self._merge_texts(writer_results)
+            return writer_results, merged_text, False
+
         # Determine reviewer config.
         review_agent_name: str | None = None
         orchestration_config = team.get("orchestration_config") or {}
@@ -623,7 +637,7 @@ class TeamOrchestrator:
         results = [*writer_results, review_result]
         if review_result.success and review_result.text:
             merged_text = review_result.text
-            success = True
+            success = all(r.success and r.text.strip() for r in writer_results)
             failed = [r for r in writer_results if not r.success]
             if failed:
                 reasons = ", ".join(
@@ -635,7 +649,8 @@ class TeamOrchestrator:
                 )
         else:
             # Reviewer failed: fall back to merged writer output.
-            merged_text, success = self._merge_texts(writer_results)
+            merged_text, _ = self._merge_texts(results)
+            success = False
         return results, merged_text, success
 
     # -- single agent execution --------------------------------------------
@@ -708,7 +723,16 @@ class TeamOrchestrator:
                     envelope = await runtime.invoke(handle, session_id=sid, request=request)
             finally:
                 reset_current_run_id(token)
-            incomplete = any(envelope.get(key) for key in ("cancelled", "truncated", "budget_exhausted", "partial"))
+            stop_reasons = [key for key in ("cancelled", "truncated", "budget_exhausted", "partial")
+                            if envelope.get(key)]
+            verification = envelope.get("verification")
+            if isinstance(verification, dict) and verification.get("requires_review"):
+                stop_reasons.append("requires_review")
+            text = envelope.get("text") or ""
+            if not isinstance(text, str) or not text.strip():
+                stop_reasons.append("empty_result")
+                text = text if isinstance(text, str) else ""
+            incomplete = bool(stop_reasons)
             await self._emit_progress(
                 "agent_failed" if incomplete else "agent_completed", task_id, team_name,
                 agent_name=agent_name,
@@ -719,8 +743,8 @@ class TeamOrchestrator:
             member_result = AgentRunResult(
                 agent_name=agent_name,
                 success=not incomplete,
-                error="Agent stopped before completion (budget, cancellation, or truncation)" if incomplete else "",
-                text=envelope.get("text", ""),
+                error="Agent result requires review: " + ", ".join(stop_reasons) if incomplete else "",
+                text=text,
                 iterations=envelope.get("iterations", 0),
                 tool_calls=envelope.get("tool_calls", []),
                 stub=envelope.get("stub", True),
@@ -759,16 +783,12 @@ class TeamOrchestrator:
 
     @staticmethod
     def _merge_texts(results: list[AgentRunResult]) -> tuple[str, bool]:
-        """Join successful outputs; surface partial failure up front.
-
-        ``success = any(...)`` means one healthy agent marks the run
-        successful even when its peers failed — the advisory line keeps
-        that partial failure visible instead of silently dropped.
-        """
+        """Keep available output while requiring every member to complete."""
         merged = "\n\n---\n\n".join(
-            f"## {r.agent_name}\n{r.text}" for r in results if r.success
+            f"## {r.agent_name}{'' if r.success else ' (partial; review required)'}\n{r.text}"
+            for r in results if r.text
         )
-        failed = [r for r in results if not r.success]
+        failed = [r for r in results if not r.success or not r.text.strip()]
         if failed:
             reasons = ", ".join(
                 f"{r.agent_name} ({r.error or 'failed'})" for r in failed
@@ -777,7 +797,7 @@ class TeamOrchestrator:
                 f"> ⚠ {len(failed)} of {len(results)} agents failed: "
                 f"{reasons}\n\n{merged}"
             )
-        return merged, any(r.success for r in results)
+        return merged, bool(results) and not failed
 
     # -- conflict detection ------------------------------------------------
 

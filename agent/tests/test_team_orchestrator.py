@@ -308,7 +308,7 @@ async def test_no_agents_in_team(
     await team_dao.create(name="empty", agents=[])
     orch = make_orchestrator()
     result = await orch.run("empty", "request")
-    assert result.success is True  # not an error, just empty
+    assert result.success is False
     assert "no agents" in result.merged_text.lower()
 
 
@@ -414,7 +414,8 @@ async def test_team_member_selection_skips_missing_and_disabled_restricted_profi
         ("host", "native-host"),
     ]
     result = await orch.run("selection", "host member remains supported")
-    assert result.success and [member.agent_name for member in result.agents_run] == ["host"]
+    assert not result.success and not result.agents_run
+    assert "disabled-l1" in result.merged_text and "missing" in result.merged_text
 
 
 async def test_inherited_restricted_target_rejects_even_default_host_team_members(
@@ -720,8 +721,8 @@ async def test_partial_failure_surfaced_in_merged_text(
 
     result = await make_orchestrator().run("review", "go")
 
-    # any() semantics preserved: the healthy agent still marks the run done.
-    assert result.success is True
+    # A partial result remains available but is not a completed team run.
+    assert result.success is False
     assert result.merged_text.startswith(
         "> ⚠ 1 of 2 agents failed: reviewer (boom)"
     )
@@ -763,8 +764,36 @@ async def test_review_mode_writer_failure_surfaced(
 
     result = await make_orchestrator().run("review", "go")
 
-    assert result.success is True
+    assert result.success is False
     # Both members run as writers (the reviewer then consolidates), so the
     # advisory denominates over 2 writers.
     assert "> ⚠ 1 of 2 writer agents failed: coder (boom)" in result.merged_text
     assert "ok:reviewer" in result.merged_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("envelope, reason", [
+    ({"text": "", "stub": False}, "empty_result"),
+    ({"text": "partial", "cancelled": True}, "cancelled"),
+    ({"text": "partial", "verification": {"requires_review": True}}, "requires_review"),
+])
+async def test_incomplete_member_does_not_complete_team(
+    make_orchestrator, team_dao, agent_dao, monkeypatch, envelope, reason,
+) -> None:
+    class Runtime:
+        def __init__(self, llm=None):
+            pass
+
+        def build(self, config):
+            return config
+
+        async def invoke(self, handle, session_id=None, request=""):
+            return envelope
+
+    await _seed_fleet(team_dao, agent_dao, count=1)
+    monkeypatch.setattr(subagent_module, "SubAgentRuntime", Runtime)
+    result = await make_orchestrator().run("fleet", "go")
+    assert not result.success
+    assert reason in result.agents_run[0].error
+    if envelope["text"]:
+        assert envelope["text"] in result.merged_text
