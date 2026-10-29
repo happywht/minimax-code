@@ -19,6 +19,7 @@ v0.11.0 — Agent Studio orchestration enhancements.
 
 from __future__ import annotations
 
+import copy
 import logging
 import asyncio
 import uuid
@@ -353,13 +354,18 @@ def register_team_handlers(
             from .handlers_permissions import _ensure_permission_store
 
             permission_store = await _ensure_permission_store(ctx.server)
+            if permission_store is None:
+                raise ValueError("Team permission policy is unavailable")
+            from ..schedule_context import FrozenPermissions
+            permission_rules = copy.deepcopy(permission_store.list_rules())
+            frozen_permissions = FrozenPermissions(permission_rules, permission_store, ask_unmatched=False)
 
             orch = TeamOrchestrator(
                 team_dao=team_dao,
                 agent_dao=agent_dao_instance,
                 llm=get_subagent_llm(),
                 emit_event=ctx.emit,
-                permission_store=permission_store,
+                permission_store=frozen_permissions,
                 permission_server=ctx.server,
             )
             orch._request_key = request_key
@@ -410,6 +416,7 @@ def register_team_handlers(
                     request_key=request_key, title=f"Team run: {team_name}",
                     metadata={"team_result": None, "parent_session_id": parent_session_id,
                               "workspace_snapshot": workspace, "project_id": project_id,
+                              "permission_rules_snapshot": permission_rules,
                               "budget": {"limit_tokens": resolve_run_budget(budget_tokens)},
                               "team_max_parallel": effective_parallel},
                     workspace=workspace, project_id=project_id, operation=operation, finalize=finalize)

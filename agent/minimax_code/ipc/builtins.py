@@ -598,6 +598,7 @@ async def _reply_for_run(ctx, dao, service, run, job, *, created, wait):
 async def handle_agent_send_message(
     params: Any, ctx: Context, *, wait: bool = True, resumed_from_id: str | None = None,
     required_model: dict[str, Any] | None = None, required_workspace: str | None = None,
+    required_permission_rules: list[dict[str, Any]] | None = None,
     continuation: bool = False, internal_schedule: dict[str, Any] | None = None,
     internal_skill: Any = None, skill_model: ModelSnapshot | None = None, skill_runtime: Any = None,
     internal_agent: Any = None,
@@ -674,6 +675,18 @@ async def handle_agent_send_message(
         job = await service.job_for_run(existing["id"])
         await _reply_for_run(ctx, dao, service, existing, job, created=False, wait=wait)
         return
+    admitted_permissions = None
+    if internal_schedule is None and internal_skill is None:
+        try:
+            from .handlers_permissions import _ensure_permission_store
+            permission_store = await _ensure_permission_store(ctx.server)
+            if permission_store is None:
+                raise RuntimeError("Permission policy is unavailable")
+            admitted_permissions = copy.deepcopy(required_permission_rules if required_permission_rules is not None
+                                                 else permission_store.list_rules())
+        except Exception as exc:
+            await ctx.reply_error(-32004, f"Cannot capture task permissions: {exc}")
+            return
     if isinstance(content, str):
         title = content.strip()[:32]
     else:
@@ -844,7 +857,7 @@ async def handle_agent_send_message(
             with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
                                                  model_snapshot=model_snapshot, internal_schedule=internal_schedule,
-                                                 internal_skill=internal_skill)
+                                                 internal_skill=internal_skill, admitted_permissions=admitted_permissions)
         finally:
             try:
                 if children is not None:
@@ -931,6 +944,7 @@ async def handle_agent_send_message(
                       **({profile_key: internal_skill.snapshot()} if internal_skill is not None else {}),
                       "model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
                       "project_id": project_id,
+                      **({"permission_rules_snapshot": admitted_permissions} if admitted_permissions is not None else {}),
                       "validate_command": validate_command,
                       "budget": {"limit_tokens": run_budget, "daily_limit": daily_limit,
                                  "daily_baseline": daily_baseline}},
@@ -959,6 +973,7 @@ async def _handle_agent_send_message(
     params: Any, ctx: Context, *, job: RunJob, model_snapshot: ModelSnapshot,
     internal_schedule: dict[str, Any] | None = None,
     internal_skill: Any = None,
+    admitted_permissions: list[dict[str, Any]] | None = None,
 ) -> None:
     """End-to-end chat handler for ``agent.send_message``.
 
@@ -1186,7 +1201,7 @@ async def _handle_agent_send_message(
 
         perm_store = await _ensure_permission_store(ctx.server)
     except Exception:
-        if internal_schedule is not None or internal_skill is not None:
+        if internal_schedule is not None or internal_skill is not None or admitted_permissions is not None:
             raise RuntimeError("Saved execution permission policy is unavailable") from None
         logger.debug("permission store unavailable; running without gating")
 
@@ -1254,6 +1269,11 @@ async def _handle_agent_send_message(
             raise RuntimeError("Saved execution permission policy is unavailable")
         saved_permissions = internal_skill.data["permission_rules"] if internal_skill is not None else internal_schedule["context"]["permission_rules"]
         perm_store = FrozenPermissions(saved_permissions, perm_store)
+    elif admitted_permissions is not None:
+        from ..schedule_context import FrozenPermissions
+        if perm_store is None:
+            raise RuntimeError("Saved execution permission policy is unavailable")
+        perm_store = FrozenPermissions(admitted_permissions, perm_store, ask_unmatched=False)
     gater = PermissionGater(emit=approval_emit, run_id=job.run_id,
                             explicit_once=internal_schedule is not None or internal_skill is not None)
     if internal_schedule is not None:
@@ -2079,6 +2099,7 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
          "budget_tokens": (metadata.get("budget") or {}).get("limit_tokens"), **skill_intent}, ctx,
         resumed_from_id=run["id"], continuation=True,
         required_model=metadata.get("model_snapshot"), required_workspace=metadata.get("workspace_snapshot"),
+        required_permission_rules=metadata.get("permission_rules_snapshot"),
         internal_skill=skill_spec, internal_agent=agent_spec,
     )
 

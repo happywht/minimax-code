@@ -169,27 +169,33 @@ async def resolve_model(db, context: dict) -> ModelSnapshot:
 
 
 class FrozenPermissions:
-    def __init__(self, rules: list[dict], current: Any):
-        self.rules, self.current = rules, current
+    def __init__(self, rules: list[dict], current: Any, *, ask_unmatched: bool = True):
+        self.rules, self.current, self.ask_unmatched = rules, current, ask_unmatched
 
     def lookup(self, tool: str):
-        # Revocations can tighten a schedule; later global allows cannot widen it.
-        current = self.current.lookup(tool) or {"action": "ask"}
+        # Current restrictions can tighten an accepted policy; later allows
+        # cannot widen it. Unmatched rules follow the caller's original default.
+        fallback = {"tool_pattern": tool, "action": "ask"} if self.ask_unmatched else None
+        current = self.current.lookup(tool) or fallback
         if current and current.get("action") == "deny":
             return current
         saved = next(
             (rule for rule in self.rules if fnmatch.fnmatchcase(tool, rule["tool_pattern"])),
-            {"tool_pattern": tool, "action": "ask"},
+            fallback,
         )
-        if saved["action"] == "deny":
+        if saved and saved.get("action") == "deny":
             return saved
-        return {"tool_pattern": tool, "action": "ask"} if current["action"] == "ask" else saved
+        if (current and current.get("action") == "ask") or (saved and saved.get("action") == "ask"):
+            return {"tool_pattern": tool, "action": "ask"}
+        return saved
 
     def is_allowed(self, tool: str, **kwargs):
-        return self.lookup(tool)["action"] != "deny"
+        rule = self.lookup(tool)
+        return not rule or rule.get("action") != "deny"
 
     def is_denied(self, tool: str, **kwargs):
-        return self.lookup(tool)["action"] == "deny"
+        rule = self.lookup(tool)
+        return bool(rule and rule.get("action") == "deny")
 
 
 class RetainedChildren:

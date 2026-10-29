@@ -676,6 +676,7 @@ def register_run_handlers(server: Any) -> None:
                  "budget_tokens": budget_override},
                 ctx, wait=False, resumed_from_id=run["id"],
                 required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"],
+                required_permission_rules=metadata.get("permission_rules_snapshot"),
                 internal_schedule=saved_schedule, internal_skill=saved_skill, internal_agent=saved_agent)
         except (ValidationError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
