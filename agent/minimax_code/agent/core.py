@@ -1709,56 +1709,16 @@ class AgentCore:
         duration_ms = 0
         # R23 — serialize same-file writes; everything else runs free.
         async with (lock or nullcontext()):
-            # R14 — one tool span per dispatch; nests under ``agent.turn``.
-            # Times only the registry dispatch, so the span duration is
-            # the true tool execution time (audit write is out of span).
-            async with self._tracer.start_span(
-                f"tool.{name}" if name else "tool.dispatch",
-                tool=name or "unknown",
-                tool_call_id=tool_call_id,
-            ):
-                t0 = time.monotonic()
-                # v1.4.0 — per-tool timeout exemption. Tools that embed a
-                # long-running subtask (spawn_subagent runs a whole sub-agent
-                # loop inside its ``run``) declare a ``dispatch_timeout``;
-                # everything else stays under the generic config ceiling.
-                # A declared value <= 0 disables the timeout entirely
-                # (``wait_for(timeout=None)`` never raises TimeoutError).
-                try:
-                    tool_obj = self.registry.get(name)
-                except KeyError:  # pragma: no cover — dispatch() re-checks
-                    tool_obj = None
-                raw_exemption = getattr(tool_obj, "dispatch_timeout", None)
-                if raw_exemption is None:
-                    effective_timeout: float | None = self.config.tool_timeout
-                elif raw_exemption <= 0:
-                    effective_timeout = None
-                else:
-                    effective_timeout = float(raw_exemption)
-                try:
-                    result = await asyncio.wait_for(
-                        self.registry.dispatch(name, args),
-                        timeout=effective_timeout,
-                    )
-                except TimeoutError:
-                    # Only reachable when effective_timeout is a real number.
-                    result = ToolResult.fail(
-                        f"tool '{name}' exceeded {effective_timeout:.0f}s timeout"  # type: ignore[operator]
-                    )
-                    if tool_breaker is not None:
-                        await tool_breaker.record(Outcome.FAILURE)
-                except Exception as exc:  # pragma: no cover — defensive
-                    logger.exception("tool %s crashed", name)
-                    result = ToolResult.fail(f"{type(exc).__name__}: {exc}")
-                    if tool_breaker is not None:
-                        await tool_breaker.record(Outcome.FAILURE)
-                else:
-                    # A normal return — even a business-level
-                    # ToolResult.fail — means the tool is reachable; only
-                    # crashes / timeouts trip the breaker.
-                    if tool_breaker is not None:
-                        await tool_breaker.record(Outcome.SUCCESS)
-                duration_ms = int((time.monotonic() - t0) * 1000)
+            # Cancellation can arrive while a later call awaits approval or
+            # while this call waits for a same-file lock. Never start a
+            # prepared operation after that point; still emit its result
+            # below so the already-open tool step is closed normally.
+            if self.cancelled:
+                result = ToolResult.fail(f"tool '{name}' cancelled")
+            else:
+                result, duration_ms = await self._dispatch_prepared_tool(
+                    name, args, tool_call_id, tool_breaker
+                )
 
         # Keep pathological output out of the context window: spill the
         # full payload to the workspace when possible, fall back to a
@@ -1808,6 +1768,70 @@ class AgentCore:
         )
         return result
 
+    async def _dispatch_prepared_tool(
+        self, name: str, args: dict[str, Any], tool_call_id: str,
+        tool_breaker: CircuitBreaker | None,
+    ) -> tuple[ToolResult, int]:
+        # R14 — one tool span per dispatch; nests under ``agent.turn``.
+        # Times only the registry dispatch, so the span duration is
+        # the true tool execution time (audit write is out of span).
+        async with self._tracer.start_span(
+            f"tool.{name}" if name else "tool.dispatch",
+            tool=name or "unknown",
+            tool_call_id=tool_call_id,
+        ):
+            t0 = time.monotonic()
+            # v1.4.0 — per-tool timeout exemption. Tools that embed a
+            # long-running subtask (spawn_subagent runs a whole sub-agent
+            # loop inside its ``run``) declare a ``dispatch_timeout``;
+            # everything else stays under the generic config ceiling.
+            # A declared value <= 0 disables the timeout entirely
+            # (``wait_for(timeout=None)`` never raises TimeoutError).
+            try:
+                tool_obj = self.registry.get(name)
+            except KeyError:  # pragma: no cover — dispatch() re-checks
+                tool_obj = None
+            raw_exemption = getattr(tool_obj, "dispatch_timeout", None)
+            if raw_exemption is None:
+                effective_timeout: float | None = self.config.tool_timeout
+            elif raw_exemption <= 0:
+                effective_timeout = None
+            else:
+                effective_timeout = float(raw_exemption)
+            async def dispatch_if_active() -> tuple[bool, ToolResult]:
+                # wait_for schedules a task, so check inside it immediately
+                # before dispatch as cancellation may arrive during setup.
+                if self.cancelled:
+                    return False, ToolResult.fail(f"tool '{name}' cancelled")
+                return True, await self.registry.dispatch(name, args)
+
+            try:
+                dispatched, result = await asyncio.wait_for(
+                    dispatch_if_active(),
+                    timeout=effective_timeout,
+                )
+            except TimeoutError:
+                # Only reachable when effective_timeout is a real number.
+                result = ToolResult.fail(
+                    f"tool '{name}' exceeded {effective_timeout:.0f}s timeout"  # type: ignore[operator]
+                )
+                if tool_breaker is not None:
+                    await tool_breaker.record(Outcome.FAILURE)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.exception("tool %s crashed", name)
+                result = ToolResult.fail(f"{type(exc).__name__}: {exc}")
+                if tool_breaker is not None:
+                    await tool_breaker.record(Outcome.FAILURE)
+            else:
+                # A normal return — even a business-level
+                # ToolResult.fail — means the tool is reachable; only
+                # crashes / timeouts trip the breaker.
+                if dispatched and tool_breaker is not None:
+                    await tool_breaker.record(Outcome.SUCCESS)
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+        return result, duration_ms
+
     async def _run_tool_batch(
         self, tool_calls: list[dict[str, Any]],
     ) -> list[ToolResult]:
@@ -1829,8 +1853,9 @@ class AgentCore:
 
         A mid-batch cancellation marks the unprepared tail as cancelled
         (each gets a cancelled :class:`ToolResult` so the OpenAI-style
-        tool-call ↔ tool-result pairing stays complete); in-flight
-        executes are allowed to finish (bounded by ``tool_timeout``).
+        tool-call ↔ tool-result pairing stays complete). Prepared calls
+        check cancellation again before dispatch, including after acquiring
+        a file lock; in-flight executions use the existing cleanup path.
         """
         prepared: list[_PreparedToolCall] = []
         for call in tool_calls:
