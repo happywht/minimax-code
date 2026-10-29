@@ -108,6 +108,10 @@ def test_restart_recovers_request_without_replaying_uncertain_write(tmp_path):
     assert result["count"] == 1 and result["result"] is None
     assert result["legacy_error"][2]["status"] == "interrupted"
     steps = result["snapshot"]["steps"]
-    assert any(s["tool_call_id"] == "write" and s["status"] == "failed" for s in steps)
+    write_step = next(s for s in steps if s["tool_call_id"] == "write")
+    assert write_step["status"] == "failed"
+    assert write_step["payload"]["outcome"] == "unknown"
+    assert write_step["payload"]["requires_review"] is True
+    assert "outcome unknown" in write_step["error"]
     assert any((s.get("payload") or {}).get("requires_review") for s in steps)
     assert (tmp_path / "effect.txt").read_text(encoding="utf-8") == "written once\n"

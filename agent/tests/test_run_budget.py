@@ -390,6 +390,56 @@ async def test_recover_orphans_closes_budget_paused_runs_without_review_flag(nat
     assert payload["previous_status"] == "budget_paused"
 
 
+async def test_recovered_budget_pause_still_requires_explicit_budget(native) -> None:
+    await _send(native, {"session_id": "one", "content": "burn tokens"})
+    paused = (await native.dao.list_runs(session_id="one"))[0]
+    await native.dao.recover_orphans(reason="restarted")
+
+    blocked = Context(native.server)
+    await native.server._handlers["run.resume"](
+        {"run_id": paused["id"], "idempotency_key": "restart-no-budget", "reviewed": True},
+        blocked,
+    )
+    blocked.reply_error.assert_awaited_once()
+    assert "budget" in blocked.reply_error.await_args.args[1].lower()
+
+    resumed = Context(native.server)
+    task = asyncio.create_task(native.server._handlers["run.resume"](
+        {"run_id": paused["id"], "idempotency_key": "restart-with-budget",
+         "budget_tokens": 9999}, resumed))
+    _, message = await asyncio.wait_for(native.started.get(), 3)
+    assert "Budget recovery context" in message
+    native.exhausted = False
+    await _drain_background_runs(native)
+    await asyncio.wait_for(task, 3)
+    resumed.reply_error.assert_not_awaited()
+
+
+async def test_recovered_pause_with_unfinished_tool_requires_review(native) -> None:
+    await _send(native, {"session_id": "one", "content": "burn tokens"})
+    paused = (await native.dao.list_runs(session_id="one"))[0]
+    await native.dao.create_step(run_id=paused["id"], session_id="one", kind="tool_call",
+                                 payload={"args": {"path": "possibly-written"}})
+    await native.dao.recover_orphans(reason="restarted")
+    steps = await native.dao.list_steps(paused["id"])
+    assert steps[-1]["payload"]["requires_review"] is True
+
+    ctx = Context(native.server)
+    await native.server._handlers["run.resume"](
+        {"run_id": paused["id"], "idempotency_key": "unknown-effect", "budget_tokens": 9999},
+        ctx,
+    )
+    ctx.reply_error.assert_awaited_once()
+    assert "review" in ctx.reply_error.await_args.args[1].lower()
+    reviewed = Context(native.server)
+    await native.server._handlers["run.resume"](
+        {"run_id": paused["id"], "idempotency_key": "reviewed-no-budget", "reviewed": True},
+        reviewed,
+    )
+    reviewed.reply_error.assert_awaited_once()
+    assert "budget" in reviewed.reply_error.await_args.args[1].lower()
+
+
 async def test_receipt_carries_verification_evidence(native) -> None:
     """M2 acceptance semantics: failed tool calls must not melt into a
     plain "completed" — the receipt and the run row both carry the

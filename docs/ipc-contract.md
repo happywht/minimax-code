@@ -466,9 +466,14 @@ WS notifications. Event failure rolls back the state change. This journal covers
 existing DAO-backed chat, team and tool-path sub-agent timelines, not streamed
 text deltas, permission prompts or every external side effect. The browser's full
 reconnect integration and RunService admission/state machine remain follow-up work.
-Boot recovery records unfinished steps as failed with their previous arguments
-intact and a `requires_review` recovery marker; it does not retry tools. The legacy
-run status remains `failed` until the later RunService state migration.
+Boot recovery marks unfinished runs `interrupted`. An unfinished tool step is
+closed as `failed` to end its waiting state, while its payload records
+`outcome: "unknown"` and `requires_review: true`; this does not establish whether
+its side effects occurred. Original dictionary fields are retained; non-dictionary
+payloads are retained under `original_payload`. The recovery event and step carry
+the same evidence. Tools are not automatically retried. If the run was budget
+paused before restart, resumption still requires an explicit `budget_tokens` value;
+an unfinished tool additionally requires the caller to review its side effects.
 
 ### Preview HTTP access (M1)
 

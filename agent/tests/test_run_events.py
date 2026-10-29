@@ -149,11 +149,34 @@ async def test_recovery_closes_unknown_steps_once_and_retains_evidence(database)
     recovered_step = next(item for item in snapshot["steps"] if item["id"] == step["id"])
     assert recovered_step["status"] == "failed"
     assert recovered_step["payload"]["args"]["path"] == "report.txt"
+    assert recovered_step["payload"]["outcome"] == "unknown"
+    assert recovered_step["payload"]["requires_review"] is True
+    assert "outcome unknown" in recovered_step["error"]
+    update = next(e for e in (await dao.events(run["id"]))["events"]
+                  if e["type"] == "step_updated")
+    assert update["data"]["step"] == recovered_step
     event = (await dao.events(run["id"]))["events"][-1]
     assert event["type"] == "recovered"
     assert event["data"]["step"]["payload"]["requires_review"] is True
     assert (await dao.recover_orphans())["recovered"] == 0
     assert await dao.snapshot(run["id"]) == snapshot
+
+
+@pytest.mark.parametrize("payload", [[], ["evidence"], "text", 0, False])
+async def test_recovery_preserves_non_mapping_step_payloads(database, payload):
+    dao = AgentRunsDAO(database)
+    run = await dao.create_run(session_id="session")
+    # The DAO serializes arbitrary JSON at runtime despite its type annotation.
+    tool = await dao.create_step(run_id=run["id"], session_id="session", kind="tool_call",
+                                 payload=payload)
+    thought = await dao.create_step(run_id=run["id"], session_id="session", kind="thought",
+                                    payload=payload)
+    await dao.recover_orphans()
+    steps = {step["id"]: step for step in await dao.list_steps(run["id"])}
+    assert steps[tool["id"]]["payload"] == {
+        "original_payload": payload, "outcome": "unknown", "requires_review": True,
+    }
+    assert steps[thought["id"]]["payload"] == payload
 
 
 async def test_event_scope_validation_and_cascade(database):

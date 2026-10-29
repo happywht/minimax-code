@@ -183,6 +183,18 @@ def register_run_handlers(server: Any) -> None:
                 raise HandlerError(INVALID_PARAMS, "Only interrupted, failed, cancelled or budget-paused runs can be resumed")
             previous = await dao.request_payload(request.run_id)
             metadata = run.get("metadata") or {}
+            budget_paused = run["status"] == "budget_paused"
+            recovery_requires_review = False
+            if run["status"] == "interrupted":
+                # Startup closes paused runs as interrupted, but records the
+                # previous status in the recovery step. Preserve its budget
+                # boundary semantics across restarts, including older records.
+                for step in reversed(await dao.list_steps(run["id"])):
+                    payload = step.get("payload") or {}
+                    if isinstance(payload, dict) and "recovered_at" in payload:
+                        budget_paused = payload.get("previous_status") == "budget_paused"
+                        recovery_requires_review = payload.get("requires_review") is not False
+                        break
             if metadata.get("engine") == "codex":
                 from .host_session_gate import require_chat_session
 
@@ -195,7 +207,7 @@ def register_run_handlers(server: Any) -> None:
                 if run.get("started_at") and not request.reviewed:
                     raise HandlerError(INVALID_PARAMS, "Review Codex's prior actions and workspace before recovery, including budget interruption")
                 saved = (metadata.get("budget") or {}).get("limit_tokens")
-                if run["status"] == "budget_paused" and request.budget_tokens is None:
+                if budget_paused and request.budget_tokens is None:
                     raise HandlerError(INVALID_PARAMS, "Pass budget_tokens to authorize a raised recovery cap")
                 prompt = (f"[Recovery of Codex run {run['id']} ending as {run['status']}. "
                           "Inspect the existing workspace and conversation. Determine which side effects already occurred "
@@ -212,14 +224,14 @@ def register_run_handlers(server: Any) -> None:
             # A budget pause is a clean stop at a call boundary — no
             # uncertain writes, so the review gate only applies to the
             # other resumable statuses.
-            if run["status"] != "budget_paused" and run.get("started_at") and not request.reviewed:
+            if (not budget_paused or recovery_requires_review) and run.get("started_at") and not request.reviewed:
                 raise HandlerError(INVALID_PARAMS, "Review the prior steps and workspace before resuming; their effects will not be automatically replayed")
             # M2 — budget: explicit override wins; otherwise inherit the
             # original cap so a plain resume cannot silently exceed what
             # the caller first authorised.
             saved_budget = (metadata.get("budget") or {}).get("limit_tokens")
             budget_override = request.budget_tokens if request.budget_tokens is not None else saved_budget
-            if run["status"] == "budget_paused" and request.budget_tokens is None:
+            if budget_paused and request.budget_tokens is None:
                 raise HandlerError(
                     INVALID_PARAMS,
                     "This run paused on its token budget; pass budget_tokens to raise the cap before resuming",
@@ -229,7 +241,7 @@ def register_run_handlers(server: Any) -> None:
                 "Continue the original task after inspecting the existing workspace and prior conversation. "
                 "Verify which actions already took effect before repeating a write. No tool step has been automatically retried.]"
             )
-            if run["status"] == "budget_paused":
+            if budget_paused and not recovery_requires_review:
                 note = (
                     f"\n\n[Budget recovery context: prior run {run['id']} paused at a model-call "
                     f"boundary with its token budget exhausted. The workspace reflects only confirmed "

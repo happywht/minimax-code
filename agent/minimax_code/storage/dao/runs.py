@@ -591,14 +591,30 @@ class AgentRunsDAO:
                 # An unfinished tool may already have changed files. Keep its
                 # result unknown and visible; closing a spinner is not retrying it.
                 async with conn.execute(
-                    "SELECT id FROM agent_run_steps WHERE run_id = ? "
+                    "SELECT id, kind, payload FROM agent_run_steps WHERE run_id = ? "
                     "AND status IN ('pending', 'running')", (run_id,)
                 ) as cursor:
                     unfinished = await cursor.fetchall()
                 for pending in unfinished:
+                    payload = pending["payload"]
+                    error = reason
+                    if pending["kind"] == "tool_call":
+                        # The call may have performed its side effect before the
+                        # process died. Failure here only closes the UI spinner;
+                        # it is not evidence that the tool failed to execute.
+                        original = _load_step_payload(payload)
+                        if isinstance(original, dict):
+                            details = original.copy()
+                        elif original is None:
+                            details = {}
+                        else:
+                            details = {"original_payload": original}
+                        payload = dumps_json({**details, "outcome": "unknown", "requires_review": True})
+                        error = f"{reason}; tool outcome unknown, review side effects"
                     await conn.execute(
                         "UPDATE agent_run_steps SET status = 'failed', error = ?, "
-                        "completed_at = ? WHERE id = ?", (reason, ts, pending["id"]),
+                        "completed_at = ?, payload = ? WHERE id = ?",
+                        (error, ts, payload, pending["id"]),
                     )
                     step = _hydrate_step(await _fetchone(conn,
                         "SELECT * FROM agent_run_steps WHERE id = ?", (pending["id"],)))
@@ -615,7 +631,8 @@ class AgentRunsDAO:
                                  "schema_version": 1,
                                  # A budget pause stopped at a call boundary — its
                                  # effects are confirmed, so it never needs review.
-                                 "requires_review": row["status"] not in {"queued", "budget_paused"},
+                                 "requires_review": (row["status"] not in {"queued", "budget_paused"}
+                                                     or any(s["kind"] == "tool_call" for s in unfinished)),
                                  "previous_status": row["status"]}), ts, ts, run_id),
                 )
                 step = _hydrate_step(await _fetchone(conn,
@@ -689,8 +706,13 @@ def _hydrate_step(row: Any) -> dict[str, Any] | None:
     d = row_to_dict(row)
     if d is None:
         return None
-    d["payload"] = loads_json(d.get("payload"))
+    d["payload"] = _load_step_payload(d.get("payload"))
     return d
+
+
+def _load_step_payload(value: Any) -> Any:
+    # SQLite's JSON column affinity converts JSON numeric text to a number.
+    return value if isinstance(value, (int, float)) else loads_json(value)
 
 
 def _duration_ms(started_at: str, completed_at: str) -> int | None:
