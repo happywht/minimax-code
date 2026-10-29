@@ -34,7 +34,7 @@ export interface ArtifactRegisterParams {
 }
 
 export interface ArtifactListParams { project_id: string; run_id?: string }
-export interface ArtifactListResult { artifacts: TextArtifact[]; service_id: string }
+export interface ArtifactListResult { artifacts: TextArtifact[]; service_id: string; next_cursor?: string | null }
 export interface ArtifactGetResult { artifact: TextArtifact; preview_text: string }
 
 export type AttachmentKind = "txt" | "csv" | "pdf" | "docx" | "xlsx" | "png" | "jpeg" | "gif" | "webp" | "unknown";
@@ -60,7 +60,7 @@ export interface AttachmentOriginal {
   quality_status: "unverified";
   created_at: string;
 }
-export interface AttachmentListResult { attachments: AttachmentOriginal[]; service_id: string }
+export interface AttachmentListResult { attachments: AttachmentOriginal[]; service_id: string; next_cursor?: string | null }
 export type DocxBlock = { kind: "paragraph"; text: string } | { kind: "table"; rows: string[][] };
 export interface DocxSection { heading: string; blocks: DocxBlock[] }
 export interface ReportSource { title: string; url: string; accessed_at?: string; excerpt?: string | null; excerpt_truncated?: boolean; title_truncated?: boolean }

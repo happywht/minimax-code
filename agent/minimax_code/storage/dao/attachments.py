@@ -68,10 +68,20 @@ class AttachmentDAO:
                            f"VALUES ({','.join('?' for _ in keys)})", tuple(row.values()))
         return row
 
-    async def list(self, project_id):
+    async def list(self, project_id, cursor=None, limit=200):
+        params = [project_id]
+        condition = "project_id=?"
+        if cursor is not None:
+            anchor = await self.db.fetchone(
+                "SELECT rowid AS position FROM attachments WHERE project_id=? AND id=?",
+                (project_id, cursor))
+            if anchor is None:
+                raise ValueError("Attachment cursor does not exist in this project")
+            condition += " AND rowid<?"
+            params.append(anchor["position"])
         return [metadata(row) for row in await self.db.fetchall(
-            f"SELECT {METADATA_COLUMNS} FROM attachments WHERE project_id=? ORDER BY rowid DESC LIMIT 200",
-            (project_id,))]
+            f"SELECT {METADATA_COLUMNS} FROM attachments WHERE {condition} ORDER BY rowid DESC LIMIT ?",
+            (*params, limit))]
 
     async def get(self, project_id, attachment_id):
         row = await self.db.fetchone("SELECT * FROM attachments WHERE project_id=? AND id=?",

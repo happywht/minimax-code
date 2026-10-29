@@ -213,9 +213,10 @@ class ArtifactService:
         }, expected_root=project["root_path"], expected_service_id=expected_service_id,
             expected_session_id=expected_session_id, idempotent=request_id is not None)
 
-    async def list(self, project_id, run_id=None):
+    async def list(self, project_id, run_id=None, cursor=None):
         await self.dao.project(project_id)
-        return {"artifacts": await self.dao.list(project_id, run_id),
+        rows = await self.dao.list(project_id, run_id, cursor, limit=201)
+        return {"artifacts": rows[:200], "next_cursor": rows[199]["id"] if len(rows) > 200 else None,
                 "service_id": await self.dao.service_id()}
 
     async def content(self, project_id, artifact_id):

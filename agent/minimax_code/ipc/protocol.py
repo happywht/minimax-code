@@ -76,6 +76,7 @@ class ArtifactListParams(BaseModel):
 
 class ArtifactScopedListParams(ArtifactListParams):
     run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    cursor: str | None = Field(default=None, pattern=r"^art_[0-9a-f]{32}$")
 
 
 class ArtifactRegisterParams(ArtifactListParams):
@@ -92,9 +93,10 @@ class ArtifactGetParams(ArtifactListParams):
 
 class AttachmentListParams(ArtifactListParams):
     """Project association only; caller host/path authority is not accepted."""
+    cursor: str | None = Field(default=None, pattern=r"^att_[0-9a-f]{32}$")
 
 
-class AttachmentExtractXlsxParams(AttachmentListParams):
+class AttachmentExtractXlsxParams(ArtifactListParams):
     session_id: str = Field(min_length=1, max_length=128)
     expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
@@ -165,7 +167,7 @@ class ReportSource(BaseModel):
         return self
 
 
-class AttachmentGenerateDocxParams(AttachmentListParams):
+class AttachmentGenerateDocxParams(ArtifactListParams):
     expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
     filename: str = Field(min_length=6, max_length=120)
     title: str = Field(min_length=1, max_length=200)
@@ -205,7 +207,7 @@ class AttachmentGenerateReportPairParams(AttachmentGenerateDocxParams):
         return self
 
 
-class AttachmentGetParams(AttachmentListParams):
+class AttachmentGetParams(ArtifactListParams):
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
 
 

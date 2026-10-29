@@ -176,6 +176,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         {row.original_name} · v{row.version} · {row.id} · {row.size_bytes} 字节 · {labels[row.parser_status]} / 未验证
       </button>
     </li>)}</ul>
+    {scoped && state.nextCursor && <Button type="button" variant="secondary" disabled={state.paging} onClick={() => void state.loadMore()}>{state.paging ? "正在加载…" : "加载更早附件"}</Button>}
     {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
       <h3 className="font-medium">已选附件 · {state.selected.original_name}</h3>
       <p className="break-all text-xs text-ink-1">声明类型: {state.selected.declared_type} · 识别候选: {state.selected.recognized_type} · {labels[state.selected.parser_status]} · 未验证</p>

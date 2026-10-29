@@ -84,15 +84,20 @@ class ArtifactDAO:
                 f"VALUES ({','.join('?' for _ in keys)})", tuple(row.values()))
         return row
 
-    async def list(self, project_id, run_id=None):
-        if run_id is None:
-            rows = await self.db.fetchall(
-                "SELECT * FROM text_artifacts WHERE project_id=? ORDER BY rowid DESC "
-                "LIMIT 200", (project_id,))
-        else:
-            rows = await self.db.fetchall(
-                "SELECT * FROM text_artifacts WHERE project_id=? AND run_id=? "
-                "ORDER BY rowid DESC LIMIT 200", (project_id, run_id))
+    async def list(self, project_id, run_id=None, cursor=None, limit=200):
+        scope = "project_id=?" + (" AND run_id=?" if run_id is not None else "")
+        params = [project_id] + ([run_id] if run_id is not None else [])
+        if cursor is not None:
+            anchor = await self.db.fetchone(
+                f"SELECT rowid AS position FROM text_artifacts WHERE {scope} AND id=?",
+                (*params, cursor))
+            if anchor is None:
+                raise ValueError("Artifact cursor does not exist in this scope")
+            scope += " AND rowid<?"
+            params.append(anchor["position"])
+        rows = await self.db.fetchall(
+            f"SELECT * FROM text_artifacts WHERE {scope} ORDER BY rowid DESC LIMIT ?",
+            (*params, limit))
         return [dict(row) for row in rows]
 
     async def get(self, project_id, artifact_id):

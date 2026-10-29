@@ -59,6 +59,7 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
           </button>
         </li>)}
       </ul>
+      {scoped && state.nextCursor && <Button type="button" variant="secondary" disabled={state.paging} onClick={() => void state.loadMore()}>{state.paging ? "正在加载…" : "加载更早成果"}</Button>}
       {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
         <h3 className="font-medium">预览与下载</h3>
         <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>

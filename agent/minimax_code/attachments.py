@@ -412,9 +412,11 @@ class AttachmentService:
         return {"status": "complete" if saved == len(results) else "partial" if saved else "unconfirmed",
                 "results": results}
 
-    async def list(self, project_id):
+    async def list(self, project_id, cursor=None):
         await self.dao.project(project_id)
-        return {"attachments": await self.dao.list(project_id), "service_id": await self.dao.service_id()}
+        rows = await self.dao.list(project_id, cursor, limit=201)
+        return {"attachments": rows[:200], "next_cursor": rows[199]["id"] if len(rows) > 200 else None,
+                "service_id": await self.dao.service_id()}
 
     async def content(self, project_id, attachment_id):
         if not _ID.fullmatch(attachment_id):

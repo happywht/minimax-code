@@ -7,6 +7,7 @@ interface ArtifactState {
   projectId: string | null;
   host: string;
   serviceId: string | null;
+  nextCursor: string | null; paging: boolean;
   artifacts: TextArtifact[];
   selected: TextArtifact | null;
   preview: string;
@@ -14,6 +15,7 @@ interface ArtifactState {
   busy: boolean;
   error: string | null;
   activate: (projectId: string | null) => Promise<void>;
+  loadMore: () => Promise<void>;
   register: (path: string) => Promise<void>;
   select: (id: string) => Promise<void>;
   download: () => Promise<void>;
@@ -37,11 +39,11 @@ export const useArtifactStore = create<ArtifactState>((set, get) => {
     return false;
   };
   return {
-    projectId: null, host: "", serviceId: null, artifacts: [], selected: null, preview: "",
+    projectId: null, host: "", serviceId: null, nextCursor: null, paging: false, artifacts: [], selected: null, preview: "",
     loading: false, busy: false, error: null,
     clear: () => {
       epoch++; selection++; download?.abort();
-      set({ projectId: null, serviceId: null, artifacts: [], selected: null, preview: "", loading: false, busy: false, error: null });
+      set({ projectId: null, serviceId: null, nextCursor: null, paging: false, artifacts: [], selected: null, preview: "", loading: false, busy: false, error: null });
     },
     activate: async (project) => {
       get().clear();
@@ -52,9 +54,27 @@ export const useArtifactStore = create<ArtifactState>((set, get) => {
         const result = await typedIPC.listArtifacts(project);
         if (!current(ticket, project, host)) return;
         result.artifacts.forEach((row) => validate(row, project, result.service_id));
-        set({ artifacts: result.artifacts, serviceId: result.service_id });
+        set({ artifacts: result.artifacts, serviceId: result.service_id, nextCursor: result.next_cursor ?? null });
       } catch (error) { if (current(ticket, project, host)) set({ error: errorText(error) }); }
       finally { if (current(ticket, project, host)) set({ loading: false }); }
+    },
+    loadMore: async () => {
+      const { projectId: project, host, serviceId, nextCursor: cursor } = get();
+      if (get().paging || !cursor || !ready(project, host, serviceId) || !project) return;
+      const ticket = epoch;
+      set({ paging: true, error: null });
+      try {
+        const result = await typedIPC.listArtifacts(project, undefined, cursor);
+        if (!current(ticket, project, host)) return;
+        if (result.service_id !== serviceId || result.artifacts.length > 200 ||
+            (result.next_cursor != null && (!/^art_[a-f0-9]{32}$/.test(result.next_cursor) ||
+              result.next_cursor !== result.artifacts[result.artifacts.length - 1]?.id || result.next_cursor === cursor)))
+          throw new Error("Artifact page is inconsistent; refresh");
+        result.artifacts.forEach((row) => validate(row, project, serviceId));
+        const existing = new Set(get().artifacts.map((row) => row.id));
+        set({ artifacts: [...get().artifacts, ...result.artifacts.filter((row) => !existing.has(row.id))], nextCursor: result.next_cursor ?? null });
+      } catch (error) { if (current(ticket, project, host)) set({ error: errorText(error) }); }
+      finally { if (current(ticket, project, host)) set({ paging: false }); }
     },
     register: async (path) => {
       const { projectId: project, host, serviceId } = get();
