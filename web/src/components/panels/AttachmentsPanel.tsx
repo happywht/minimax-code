@@ -13,6 +13,7 @@ import { ReportSectionsEditor, readEditableSections } from "./ReportSectionsEdit
 import { ReportResearchPicker } from "./ReportResearchPicker";
 import { DraftFileControl } from "./DraftFileControl";
 import { ReportTextExcerpt } from "./ReportTextExcerpt";
+import { ReportTextReuse } from "./ReportTextReuse";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -261,7 +262,12 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
       {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
       <p className="text-xs text-ink-2">默认仅追加附件身份；可选择加入解析摘录。不会发送或上传原件到对话，也不代表模型已读取完整文件。</p>
-      {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>
+      {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>}
+      <ReportTextReuse key={`reuse:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onApply={(text) => {
+        setBody(text); setStructured(false); setVisualSections(false); setExcerptSection(""); setFormError(null);
+        if (/\[[1-9][0-9]*\]/.test(text)) setCitationNeedsReview(true);
+      }} />
+      {state.selected.recognized_type === "docx" && <p className="text-xs text-ink-2">DOCX 可逐段查看并选择摘录追加到报告；当前不能完整导入原有表格、排版及其他内容。原件可下载，生成报告不会修改原件。</p>}
       <AttachmentImagePreview key={`image:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
       <AttachmentImageOcr key={`ocr:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={insertAttachmentExcerpt} />
       <AttachmentDocumentReader key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={insertAttachmentExcerpt} />
