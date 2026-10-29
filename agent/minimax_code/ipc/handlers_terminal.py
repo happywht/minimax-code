@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..execution import spawn_shell, terminate_tree
+from ..execution import _finish_owned, spawn_shell, terminate_tree
 from ..workspace_ctx import WorkspaceUnavailableError, require_directory, resolve_root_for_session
 from .handler_utils import HandlerError, ensure_cwd_within_root, project_root_from_params
 from .host_session_gate import require_host_session
@@ -63,6 +63,7 @@ class TerminalSession:
     error: str | None = None
     process: asyncio.subprocess.Process | None = None
     process_cleanup_attempted: bool = False
+    tracking_error: str | None = None
     task: asyncio.Task[None] | None = None
     chunks: list[TerminalChunk] = field(default_factory=list)
     next_seq: int = 1
@@ -126,7 +127,11 @@ async def drain_terminal_sessions() -> None:
         async def finish() -> None:
             tasks = [s.task for s in sessions if s.task is not None]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            if any(isinstance(result, BaseException) for result in results):
+            if any(isinstance(result, BaseException) and not (
+                isinstance(result, asyncio.CancelledError) and session.status == "cancelled"
+                and (session.process is None or session.process_cleanup_attempted)
+                and session.tracking_error is None
+            ) for session, result in zip((s for s in sessions if s.task is not None), results)):
                 raise TerminalDrainError("terminal task did not confirm cleanup")
             if any(s.process is not None and s.process.returncode is None for s in sessions):
                 raise TerminalDrainError("terminal process is still running")
@@ -365,10 +370,12 @@ async def _create_run_tracking(
         )
         session.run_step_id = step["id"]
         await emit("run.step.started", {"run_id": session.run_id, "step": step})
+    except asyncio.CancelledError:
+        session.tracking_error = "Terminal run creation was interrupted; its stored state is unknown"
+        raise
     except Exception:
         logger.exception("failed to create terminal run tracking")
-        session.run_id = None
-        session.run_step_id = None
+        session.tracking_error = "Terminal run tracking could not be created"
 
 
 async def _complete_run_tracking(
@@ -379,6 +386,7 @@ async def _complete_run_tracking(
         return
     dao = await _get_runs_dao()
     if dao is None:
+        session.tracking_error = "Terminal run tracking is unavailable"
         return
     step_status = "completed"
     run_status = "completed"
@@ -426,10 +434,13 @@ async def _complete_run_tracking(
                 "status": session.status,
             },
         )
+        if run is None:
+            raise RuntimeError("Terminal run no longer exists")
         if run is not None:
             await emit("run.completed", {"run": run})
     except Exception:
         logger.exception("failed to complete terminal run tracking")
+        session.tracking_error = "Terminal run completion could not be recorded"
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
@@ -489,10 +500,12 @@ async def _run_session(
             session.updated_at = session.completed_at
     except asyncio.CancelledError:
         session.status = "cancelled"
-        session.error = "cancelled"
+        session.error = session.error or "cancelled"
         if session.process is not None:
-            await asyncio.shield(_terminate_process(session.process))
+            await _finish_owned(asyncio.create_task(_terminate_process(session.process)))
             session.process_cleanup_attempted = True
+        session.completed_at = time.time()
+        session.updated_at = session.completed_at
         raise
     except Exception as exc:
         session.status = "failed"
@@ -508,14 +521,25 @@ async def _run_session(
 
 
 async def _stop_session(session: TerminalSession) -> None:
-    if session.status in {"completed", "failed", "cancelled"}:
-        return
-    session.status = "cancelled"
-    session.error = "stopped by user"
-    session.updated_at = time.time()
-    if session.process is not None:
-        await _terminate_process(session.process)
-        session.process_cleanup_attempted = True
+    task = session.task
+    if task is asyncio.current_task():
+        raise HandlerError(_TERMINAL_ERROR, "Cannot stop the current terminal task")
+    if session.status not in {"completed", "failed", "cancelled"}:
+        session.status = "cancelled"
+        session.error = "stopped by user"
+        session.updated_at = time.time()
+        if task is not None and not task.done():
+            task.cancel()
+    if task is not None:
+        try:
+            await _finish_owned(task)
+        except asyncio.CancelledError:
+            pass
+    if session.status == "cancelled" and session.completed_at is None:
+        session.completed_at = time.time()
+        session.updated_at = session.completed_at
+    if session.tracking_error:
+        raise HandlerError(_TERMINAL_ERROR, session.tracking_error)
 
 
 async def start_terminal_command(
