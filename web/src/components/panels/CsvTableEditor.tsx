@@ -16,6 +16,9 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
   const [sortKind, setSortKind] = useState<"text" | "number">("text");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [sortError, setSortError] = useState<string | null>(null);
+  const [filterColumn, setFilterColumn] = useState(0);
+  const [filterOperation, setFilterOperation] = useState<"equals" | "contains" | "empty" | "not_empty">("equals");
+  const [filterValue, setFilterValue] = useState("");
   const [calculationName, setCalculationName] = useState("计算结果");
   const [calculationLeft, setCalculationLeft] = useState(0);
   const [calculationRight, setCalculationRight] = useState(0);
@@ -47,7 +50,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
   useEffect(() => { setPage((current) => Math.min(current, lastPage)); }, [lastPage]);
   useEffect(() => { setPage(0); setPast([]); setFuture([]); }, [original]);
   // Column edits can change indices, so require the user to select keys again.
-  useEffect(() => { setDedupeColumns([]); setSortColumn(0); setSortError(null); setCalculationLeft(0); setCalculationRight(0); setCalculationError(null); }, [table.headers]);
+  useEffect(() => { setDedupeColumns([]); setSortColumn(0); setSortError(null); setFilterColumn(0); setCalculationLeft(0); setCalculationRight(0); setCalculationError(null); }, [table.headers]);
   const sortRows = () => {
     try {
       const values = sortKind === "number"
@@ -108,6 +111,14 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
     return true;
   });
   const duplicateCount = dedupeColumns.length ? table.rows.length - uniqueRows.length : 0;
+  const filterReady = filterOperation !== "contains" || filterValue !== "";
+  const filteredRows = table.rows.filter((cells) => {
+    const value = cells[filterColumn] ?? "";
+    if (filterOperation === "empty") return value === "";
+    if (filterOperation === "not_empty") return value !== "";
+    if (filterOperation === "contains") return value.includes(filterValue);
+    return value === filterValue;
+  });
   return <div className="space-y-2" data-testid="csv-table-editor">
     <p>编辑的数据仅在本页面；行号以当前表格为准（含表头），源 CSV 不变。恢复会还原本次读取的表格并将列类型重置为文本。</p>
     <p>可撤销最近 20 次表格编辑，包括列类型快照；重新读取表格或离开编辑器后历史会清空。</p>
@@ -146,6 +157,21 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
         <Button type="button" variant="secondary" disabled={table.rows.length < 2} onClick={sortRows}>排序草稿</Button>
       </div>
       {sortError && <p role="alert" className="text-status-error">{sortError}；表格未更改。</p>}
+    </fieldset>
+    <fieldset className="space-y-2 rounded border border-line p-2">
+      <legend>按条件筛选行</legend>
+      <p>比较原始文本，区分大小写，不自动去除空白；空值仅指空字符串。应用后只保留匹配行，原附件和 CSV 不变，可撤销。</p>
+      <div className="flex flex-wrap gap-2">
+        <label>筛选列 <select aria-label="筛选列" value={filterColumn} onChange={(event) => setFilterColumn(Number(event.target.value))}>
+          {table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"}）</option>)}
+        </select></label>
+        <label>条件 <select aria-label="筛选条件" value={filterOperation} onChange={(event) => setFilterOperation(event.target.value as typeof filterOperation)}>
+          <option value="equals">完全等于</option><option value="contains">包含</option><option value="empty">为空</option><option value="not_empty">不为空</option>
+        </select></label>
+        {(filterOperation === "equals" || filterOperation === "contains") && <label>筛选文本 <input aria-label="筛选文本" value={filterValue} onChange={(event) => setFilterValue(event.target.value)} /></label>}
+      </div>
+      <p role="status">{filterReady ? `预览：保留 ${filteredRows.length} 行，移除 ${table.rows.length - filteredRows.length} 行。` : "包含条件请输入非空文本。"}</p>
+      <Button type="button" variant="secondary" disabled={!filterReady || filteredRows.length === table.rows.length} onClick={() => { onChange({ ...table, rows: filteredRows }); setPage(0); }}>应用筛选到草稿</Button>
     </fieldset>
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>按列去重</legend>
