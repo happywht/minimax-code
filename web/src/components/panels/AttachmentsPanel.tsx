@@ -3,6 +3,7 @@ import { ipc } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
 import type { AttachmentParserStatus, DocxSection, ReportSource } from "../../types/ipc";
+import { PdfOriginalPreview } from "./PdfOriginalPreview";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -123,6 +124,7 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       {state.selected.preview_truncated && <p role="status">{state.selected.recognized_type === "xlsx" ? "预览已达到单元格窗口、数量或 64 KiB / 2000 行展示上限，部分存储内容未显示；可下载完整原件。" : "预览已达到 64 KiB / 2000 行展示上限，后续内容未显示；可下载完整原件。"}</p>}
       <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
       <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
+      <PdfOriginalPreview attachment={state.selected} />
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
         ? <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" aria-label="附件纯文本预览">{state.preview}</pre>
         : <p role="status">当前状态不提供文本预览；可下载保存的原件。</p>}
