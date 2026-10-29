@@ -108,7 +108,7 @@ async def test_cli_round_trip_original_bytes_all_versions_readonly(source, tmp_p
     assert result.returncode == 0, report
     assert report["artifact_count"] == 2
     assert report["scope"] == "data-only"
-    assert "checkpoint untracked-file snapshots and Git stash objects" in report["exclusions"]
+    assert "Git stash objects (checkpoint tracked changes)" in report["exclusions"]
     assert report["excluded_vault_entries"] == {"orphan": 1, "pending": 1}
     assert "DATA-ONLY" in report["notice"] and "safe rebinding" in report["notice"]
     assert "original-install" not in result.stdout
@@ -124,12 +124,12 @@ async def test_cli_round_trip_original_bytes_all_versions_readonly(source, tmp_p
     }
     result, report = cli("verify", "--bundle", archive)
     assert result.returncode == 0 and report["operation"] == "verify"
-    assert "checkpoint untracked-file snapshots and Git stash objects" in report["exclusions"]
+    assert "Git stash objects (checkpoint tracked changes)" in report["exclusions"]
     target = tmp_path / "new-data"
     result, report = cli("restore", "--bundle", archive, "--new-data-dir", target)
     assert result.returncode == 0, report
     assert report["operation"] == "restore"
-    assert "checkpoint untracked-file snapshots and Git stash objects" in report["exclusions"]
+    assert "Git stash objects (checkpoint tracked changes)" in report["exclusions"]
     assert set(target.iterdir()) == {target / "data.db", target / bundle.VAULT,
                                     target / bundle.ATTACHMENT_VAULT}
 

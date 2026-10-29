@@ -673,7 +673,7 @@ writer/validator版本与报告一致。报告严格字段为：`version=1`、
 `declared_type=recognized_type=xlsx`附件一致。报告合同验证不等于重新校验XLSX字节、渲染或业务验收。
 
 历史writer创建 v6/Schema046。精确读取映射为v1/041、v2/042、v3/043、v4/044、
-v5/045、v6/046、v7/047、v8/048、v9/049；旧包保持原schema和全部DB/vault字节，restore不执行迁移、生成或Office解析。
+v5/045、v6/046、v7/047、v8/048、v9/049、v10/049；旧包保持原schema和全部DB/vault字节，restore不执行迁移、生成或Office解析。
 v6至v8清单包含`office_deliveries`，即使没有记录也必须为[]；v1–5不接受该清单字段。
 成果引用的附件仍只计一次文件数和字节数。未知格式、未来schema或版本错配均拒绝。
 046失败使新表、索引及版本记录一起回滚；无逆向迁移。回退须使用匹配旧程序与升级前
@@ -699,4 +699,4 @@ ID 是未签名的关联提示。`state` 非空且仅允许 `pending`、`complet
 
 ### Schema049：检查点来源
 
-`session_checkpoints.source_root` 是可空路径。新检查点记录仓库根；旧记录保持 NULL，不推断原工作目录。bundle v9 保存该数据库字段，但不保存检查点未跟踪文件副本或 Git stash 对象。路径一致不能证明仓库身份。
+`session_checkpoints.source_root` 是可空路径。新检查点记录仓库根；旧记录保持 NULL，不推断原工作目录。bundle v10 保存数据库字段和检查点已登记的未跟踪文件副本，不保存 Git stash 对象；v9 不保存检查点文件副本。路径一致不能证明仓库身份。

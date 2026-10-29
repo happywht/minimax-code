@@ -31,7 +31,7 @@ def test_old_bundle_restore_migrate_and_new_bundle_roundtrip(tmp_path, monkeypat
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("UPDATE hosts SET remote_port=0 WHERE id='h'")
     new = tmp_path / "new.zip"
-    assert bundle.create_bundle(restored, new)["format_version"] == 9
+    assert bundle.create_bundle(restored, new)["format_version"] == 10
     assert bundle.verify_bundle(new)["schema_version"] == 49
     target = tmp_path / "new-restored"
     bundle.restore_bundle(new, target)

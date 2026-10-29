@@ -23,7 +23,7 @@ import time
 import zipfile
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from . import __version__
 from .attachment_metadata import REASONS
@@ -42,6 +42,7 @@ from .attachments import (
 from .attachments import (
     VAULT as ATTACHMENT_VAULT,
 )
+from .managed_paths import managed_child
 from .office_metadata import RECORD_KEYS as OFFICE_RECORD_KEYS
 from .office_metadata import validate_record as validate_office_record
 from .runtime.service_lease import ServiceLeaseError, acquire_service_lease
@@ -56,9 +57,9 @@ from .text_artifacts import (
 )
 
 FORMAT = "minimax-code-data-vault"
-FORMAT_VERSION = 9
+FORMAT_VERSION = 10
 SCHEMA_VERSION = 49
-SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46, 7: 47, 8: 48, 9: 49}
+SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46, 7: 47, 8: 48, 9: 49, 10: 49}
 MAX_FILES = 10_000
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 MAX_WAL_BYTES = MAX_DATABASE_BYTES
@@ -80,7 +81,8 @@ EXCLUSIONS = [
     "containers and images",
     "service locks, runtime markers and installation ownership files",
     "unregistered vault files and pending files",
-    "checkpoint untracked-file snapshots and Git stash objects",
+    "unregistered checkpoint snapshot files and directories",
+    "Git stash objects (checkpoint tracked changes)",
 ]
 NOTICE = (
     "DATA-ONLY clone. Original host paths, credentials stored in SQLite, scheduling/run "
@@ -168,6 +170,15 @@ class _Stage:
         path.mkdir(mode=0o700)
         self.directories.append((path, _directory(path)))
         return path
+
+    def parents(self, name):
+        path = Path(name)
+        for parent in reversed(path.parents):
+            if str(parent) == ".":
+                continue
+            target = self.path / parent
+            if not target.exists():
+                self.directory(str(parent))
 
     @contextmanager
     def file(self, name):
@@ -590,6 +601,70 @@ def _json(data):
     return json.dumps(data, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _checkpoint_path(value):
+    _require(type(value) is str and 0 < len(value.encode("utf-8")) <= 1024,
+             "Invalid checkpoint file path")
+    parts = value.split("/")
+    windows = PureWindowsPath(value)
+    _require(not windows.is_absolute() and not windows.drive and "\\" not in value
+             and all(part not in {"", ".", ".."} and not part.endswith((".", " "))
+                     and not any(c in '<>:"|?*' or ord(c) < 32 for c in part)
+                     and not PureWindowsPath(part).is_reserved() for part in parts)
+             and str(PurePosixPath(value)) == value, "Unsafe checkpoint file path")
+    return value
+
+
+def _checkpoint_references(database):
+    with _database(database) as conn:
+        rows = conn.execute("SELECT id,untracked_files,has_untracked_snapshot FROM session_checkpoints ORDER BY id LIMIT ?", (MAX_FILES + 1,)).fetchall()
+    _require(len(rows) <= MAX_FILES, "Too many checkpoints")
+    refs, folded, identifiers = [], set(), set()
+    for identifier, raw, has_snapshot in rows:
+        _require(type(raw) is str and len(raw.encode("utf-8")) <= MAX_MANIFEST_BYTES,
+                 "Invalid checkpoint file list")
+        try:
+            managed_child(Path.cwd().absolute(), identifier)
+            files = json.loads(raw)
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise BundleError("Invalid checkpoint references") from exc
+        _require(type(files) is list and type(has_snapshot) is int and has_snapshot in (0, 1),
+                 "Invalid checkpoint metadata")
+        _require(identifier.casefold() not in identifiers, "Duplicate checkpoint identity")
+        identifiers.add(identifier.casefold())
+        _require(bool(files) == bool(has_snapshot), "Checkpoint snapshot is incomplete")
+        for filename in files:
+            filename = _checkpoint_path(filename)
+            key = (identifier.casefold(), filename.casefold())
+            _require(key not in folded, "Duplicate checkpoint file path")
+            folded.add(key)
+            refs.append((identifier, filename))
+            _require(len(refs) <= MAX_FILES, "Too many checkpoint files")
+    for identifier, filename in refs:
+        parts = filename.split("/")
+        _require(not any((identifier.casefold(), "/".join(parts[:i]).casefold()) in folded
+                         for i in range(1, len(parts))), "Conflicting checkpoint paths")
+    return sorted(refs)
+
+
+def _checkpoint_member(identifier, filename):
+    digest = hashlib.sha256(_json([identifier, filename])).hexdigest()
+    return f"checkpoint-files/{digest}"
+
+
+def _collect_checkpoints(root, stage, refs, remaining):
+    stage.directory("checkpoint-files")
+    rows = []
+    for identifier, filename in refs:
+        source = root / "checkpoints" / identifier / Path(*filename.split("/"))
+        metadata = _file_meta(source, MAX_TOTAL_BYTES)
+        remaining -= metadata["size_bytes"]
+        _require(remaining >= 0, "Bundle exceeds shared total size limit")
+        name = _checkpoint_member(identifier, filename)
+        _copy_file(source, stage, name, metadata, MAX_TOTAL_BYTES)
+        rows.append({"checkpoint_id": identifier, "path": filename, **metadata})
+    return rows
+
+
 def _report(manifest, operation):
     return {
         "operation": operation,
@@ -599,13 +674,16 @@ def _report(manifest, operation):
         "schema_version": manifest["schema_version"],
         "artifact_count": len(manifest["artifacts"]),
         "attachment_count": len(manifest.get("attachments", [])),
+        **({"checkpoint_file_count": len(manifest["checkpoint_files"])}
+           if manifest["format_version"] >= 10 else {}),
         **({"office_delivery_count": len(manifest["office_deliveries"])}
            if manifest["format_version"] >= 6 else {}),
         "excluded_vault_entries": manifest["excluded_vault_entries"],
         **({"excluded_attachment_entries": manifest["excluded_attachment_entries"]}
            if manifest["format_version"] >= 2 else {}),
         "notice": NOTICE,
-        "exclusions": EXCLUSIONS,
+        "exclusions": EXCLUSIONS + (["checkpoint untracked-file snapshots"]
+                                    if manifest["format_version"] < 10 else []),
         "publication_durability": (
             "File payloads flushed and atomic no-overwrite publication; directory-entry "
             "power-loss durability is unverified on Windows"
@@ -651,14 +729,21 @@ def create_bundle(data_dir, output):
             _snapshot(root, stage, lease)
             inventory = _inventory(stage.path / "data.db")
             _require(inventory["schema_version"] == SCHEMA_VERSION,
-                     "Create requires known Schema049; old v1/041 through v8/048 are verify/restore only")
+                     "Create requires known Schema049; bundle v1 through v9 are verify/restore only")
             database = _file_meta(stage.path / "data.db", MAX_DATABASE_BYTES)
             excluded = _collect_vault(root, stage, VAULT, inventory["artifacts"], MAX_BYTES)
             excluded_attachments = _collect_vault(root, stage, ATTACHMENT_VAULT,
                                                   inventory["attachments"], MAX_ATTACHMENT_BYTES)
+            references = _checkpoint_references(stage.path / "data.db")
+            remaining = MAX_TOTAL_BYTES - database["size_bytes"] - sum(
+                row["size_bytes"] for row in inventory["artifacts"] + inventory["attachments"]
+            )
+            checkpoint_files = _collect_checkpoints(root, stage, references, remaining)
+            _require(len(checkpoint_files) + len(inventory["artifacts"]) + len(inventory["attachments"]) <= MAX_FILES,
+                     "Too many files in bundle")
             _require(
                 database["size_bytes"] + sum(row["size_bytes"] for row in
-                                             inventory["artifacts"] + inventory["attachments"])
+                                             inventory["artifacts"] + inventory["attachments"] + checkpoint_files)
                 <= MAX_TOTAL_BYTES,
                 "Bundle exceeds total size limit",
             )
@@ -671,6 +756,7 @@ def create_bundle(data_dir, output):
                 "database": database,
                 "excluded_vault_entries": excluded,
                 "excluded_attachment_entries": excluded_attachments,
+                "checkpoint_files": checkpoint_files,
             }
             payload = _json(manifest)
             _require(len(payload) <= MAX_MANIFEST_BYTES, "Manifest exceeds limit")
@@ -690,10 +776,15 @@ def create_bundle(data_dir, output):
                     "data.db",
                     *[f"{VAULT}/{row['snapshot_id']}" for row in inventory["artifacts"]],
                     *[f"{ATTACHMENT_VAULT}/{row['snapshot_id']}" for row in inventory["attachments"]],
+                    *[_checkpoint_member(row["checkpoint_id"], row["path"]) for row in checkpoint_files],
                 ]:
                     archive.write(stage.path / name, name)
             # Verify the complete archive with the same path used by restore.
             verify_bundle(stage.path / "bundle.zip")
+            for row in checkpoint_files:
+                source = root / "checkpoints" / row["checkpoint_id"] / Path(*row["path"].split("/"))
+                _file_meta(source, MAX_TOTAL_BYTES,
+                           expected={key: row[key] for key in ("size_bytes", "sha256")})
             lease.assert_owned(root)
             _check_directory(root, root_identity)
             _check_directory(output.parent, stage.parent_identity)
@@ -746,6 +837,8 @@ def _manifest(payload):
         keys |= {"attachments", "excluded_attachment_entries"}
     if version >= 6:
         keys.add("office_deliveries")
+    if version >= 10:
+        keys.add("checkpoint_files")
     _require(set(value) == keys, "Invalid manifest fields")
     _require(
         value["format"] == FORMAT
@@ -822,6 +915,26 @@ def _manifest(payload):
             total += row["size_bytes"]
     if version >= 6:
         _office_manifest(value["office_deliveries"], value["service_id"], value["attachments"])
+    if version >= 10:
+        rows = value["checkpoint_files"]
+        _require(type(rows) is list and len(rows) + len(value["artifacts"]) + len(value["attachments"]) <= MAX_FILES,
+                 "Invalid checkpoint file count")
+        paths, members = set(), set()
+        for row in rows:
+            _require(type(row) is dict and set(row) == {"checkpoint_id", "path", "size_bytes", "sha256"},
+                     "Invalid checkpoint file metadata")
+            try:
+                managed_child(Path.cwd().absolute(), row["checkpoint_id"])
+            except (TypeError, ValueError) as exc:
+                raise BundleError("Invalid checkpoint identity") from exc
+            filename = _checkpoint_path(row["path"])
+            key = (row["checkpoint_id"].casefold(), filename.casefold())
+            member = _checkpoint_member(row["checkpoint_id"], filename)
+            _require(key not in paths and member not in members, "Duplicate checkpoint file")
+            paths.add(key)
+            members.add(member)
+            _metadata({key: row[key] for key in ("size_bytes", "sha256")}, MAX_TOTAL_BYTES)
+            total += row["size_bytes"]
     _require(total <= MAX_TOTAL_BYTES, "Bundle exceeds shared total size limit")
     for key in ["excluded_vault_entries", *(["excluded_attachment_entries"] if version >= 2 else [])]:
         counts = value[key]
@@ -976,6 +1089,11 @@ def _unpack_archive(bundle, stage, archive, stream, fd, before, central_offset, 
             for row in manifest["artifacts"]
         },
         **{
+            _checkpoint_member(row["checkpoint_id"], row["path"]):
+            {key: row[key] for key in ("size_bytes", "sha256")}
+            for row in manifest.get("checkpoint_files", [])
+        },
+        **{
             f"{ATTACHMENT_VAULT}/{row['snapshot_id']}": {key: row[key] for key in ("size_bytes", "sha256")}
             for row in manifest.get("attachments", [])
         },
@@ -984,16 +1102,27 @@ def _unpack_archive(bundle, stage, archive, stream, fd, before, central_offset, 
     stage.directory(VAULT)
     if manifest["format_version"] >= 2:
         stage.directory(ATTACHMENT_VAULT)
+    checkpoint_destinations = {
+        _checkpoint_member(row["checkpoint_id"], row["path"]):
+        "checkpoints/" + row["checkpoint_id"] + "/" + row["path"]
+        for row in manifest.get("checkpoint_files", [])
+    }
     for name, metadata in expected.items():
         member = archive.getinfo(name)
         _require(member.file_size == metadata["size_bytes"], "Archive size mismatch")
-        with stage.file(name) as target:
+        destination = checkpoint_destinations.get(name, name)
+        stage.parents(destination)
+        with stage.file(destination) as target:
             _read_member(archive, member, target, metadata)
     actual = _inventory(stage.path / "data.db")
     _require(
         all(manifest[key] == value for key, value in actual.items()),
         "SQLite metadata and manifest references differ",
     )
+    if manifest["format_version"] >= 10:
+        _require(_checkpoint_references(stage.path / "data.db") == sorted(
+            (row["checkpoint_id"], row["path"]) for row in manifest["checkpoint_files"]),
+            "SQLite and checkpoint manifest references differ")
     with _database(stage.path / "data.db") as conn:
         for snapshot, source in conn.execute("SELECT snapshot_id,source_path FROM text_artifacts"):
             _parse((stage.path / VAULT / snapshot).read_bytes(), source)
@@ -1060,6 +1189,8 @@ def restore_bundle(bundle, new_data_dir):
         _fsync_directory(stage.path / VAULT)
         if manifest["format_version"] >= 2:
             _fsync_directory(stage.path / ATTACHMENT_VAULT)
+        for directory, _ in reversed(stage.directories[1:]):
+            _fsync_directory(directory)
         _fsync_directory(stage.path)
         _publish_directory(stage.path, target)
         stage.relocate(target)
