@@ -287,6 +287,31 @@ class RunService:
         job = self.get_job(run_id)
         return self._cancel(job) if job is not None else False
 
+    async def cancel_run_durable(self, run_id: str) -> bool:
+        """Cancel a run and persist the fence when it has not begun execution."""
+        job = self.get_job(run_id)
+        if job is None:
+            return False
+        queued = not job.operation_started
+        # Fence the queued job before yielding to persistence.
+        requested = self._cancel(job)
+
+        async def cancel_admitted() -> bool:
+            if queued and job.cancel_requested and job.dao is not None:
+                run = await job.dao.request_queued_cancel(run_id)
+                if run is None:
+                    run = await job.dao.get_run(run_id)
+                    if run is None or run.get("status") != "cancelled":
+                        raise RuntimeError(f"Could not confirm queued cancellation for {run_id}")
+            elif queued and job.cancel_requested:
+                raise RuntimeError(f"Cannot persist queued cancellation for {run_id}")
+            return requested
+
+        # Persist even if the caller disconnects while SQLite is committing.
+        task = asyncio.create_task(cancel_admitted(), name=f"cancel-run:{run_id}")
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return await asyncio.shield(task)
+
     def _cancel(self, job: RunJob) -> bool:
         # Once execution has ended, interrupting terminal persistence can leave
         # the durable run active after its service-owned task has disappeared.

@@ -52,6 +52,10 @@ class SchedulerError(Exception):
     """Public sentinel — raised for any user-facing scheduler failure."""
 
 
+class SchedulerCancellationError(SchedulerError):
+    """An admitted run's cancellation could not be durably confirmed."""
+
+
 class InvalidCronError(SchedulerError):
     """Raised when a cron expression cannot be parsed by APScheduler."""
 
@@ -490,7 +494,13 @@ class JobScheduler:
                 except Exception as exc:
                     # Admission owns real work. Failed bookkeeping must never
                     # abandon a writer behind an unlinked task row.
-                    service.cancel_run(accepted["id"])
+                    try:
+                        await service.cancel_run_durable(accepted["id"])
+                    except Exception as cancel_exc:
+                        raise SchedulerCancellationError(
+                            f"Task linkage failed and cancellation could not be confirmed "
+                            f"for run {accepted['id']}: {cancel_exc}"
+                        ) from cancel_exc
                     if job is not None:
                         await asyncio.gather(service.wait(job), return_exceptions=True)
                     return {"ok": False, "run_id": accepted["id"], "run_status": "failed",
@@ -588,6 +598,10 @@ class JobScheduler:
             # Admission/config failure before any model call remains repairable.
             status = task_outcome(result) if result.get("run_id") else "blocked"
             await self._settle_occurrence(occurrence["id"],status,expected_run_id=result.get("run_id"),reason=str(result.get("error") or result.get("review_reason")) if result.get("error") or result.get("review_reason") else None,result=result.get("text") or result.get("output"))
+        except SchedulerCancellationError:
+            # Keep the occurrence attached to its run for explicit review.
+            # The task callback reports the unconfirmed cleanup failure.
+            raise
         except Exception as exc:
             current = await self._occurrences.get(occurrence["id"])
             if current and (current["status"] in {"superseded","cancelled"} or current["run_id"] != occurrence.get("run_id")):
