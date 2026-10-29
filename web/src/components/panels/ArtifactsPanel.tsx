@@ -6,6 +6,7 @@ import { OfficeDeliveryPanel } from "./OfficeDeliveryPanel";
 import { ResearchSourcesPanel } from "./ResearchSourcesPanel";
 import { SearchableTextPreview } from "./SearchableTextPreview";
 import { ArtifactFollowupDraft } from "./ArtifactFollowupDraft";
+import { ArtifactEditCopy } from "./ArtifactEditCopy";
 
 export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
@@ -69,6 +70,7 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
         <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载原始字节</Button>
         <Button variant="secondary" disabled={state.busy || state.loading || !state.serviceId} onClick={() => void state.register(state.selected!.source_path)}>从源文件登记新版本</Button></div>
         <ArtifactFollowupDraft key={`${state.selected.id}:${state.selected.sha256}`} artifact={state.selected} />
+        <ArtifactEditCopy key={`${state.selected.id}:${state.selected.sha256}`} artifact={state.selected} />
         <SearchableTextPreview key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} label="成果纯文本预览" className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" />
       </div>}
     </section>
