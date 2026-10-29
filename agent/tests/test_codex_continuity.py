@@ -415,6 +415,136 @@ async def test_concurrent_external_approval_ids_are_scoped_to_each_run(codex):
     assert json.loads((codex.root / "decision.json").read_text())["result"]["decision"] == "decline"
 
 
+async def _set_codex_validation(codex, command):
+    from minimax_code.storage.dao.projects import ProjectsDAO
+    await ProjectsDAO(codex.db).create(id="validate-project", name="Validation", root_path=str(codex.root), validate_command=command)
+    await SessionsDAO(codex.db).update("one", project_id="validate-project")
+
+
+async def _wait_validation_approval(codex):
+    from minimax_code.perm_consent import PermissionGater
+    for _ in range(500):
+        gate = getattr(codex.server, "_permission_gaters", {}).get("one")
+        if isinstance(gate, PermissionGater) and gate.pending_ids():
+            return gate, gate.pending_ids()[0]
+        await asyncio.sleep(.01)
+    pytest.fail("validation approval never became pending")
+
+
+@pytest.mark.parametrize("decision,exit_code", [(True, 0), (True, 7), (False, 0)])
+async def test_codex_validation_requires_consent_and_records_truth(codex, decision, exit_code):
+    command = f'"{sys.executable}" -c "print(123); raise SystemExit({exit_code})"'
+    await _set_codex_validation(codex, command)
+    started = await start(codex)
+    gate, request_id = await _wait_validation_approval(codex)
+    run_id = started.reply.call_args.args[0]["run"]["id"]
+    pending = await codex.dao.get_run(run_id)
+    assert pending["status"] == "awaiting_approval"
+    assert pending["metadata"]["validate_command"] == command
+    prompt = gate.live_requests("one", run_id)[0]
+    assert prompt["approval_policy"] == "explicit_once"
+    assert prompt["args"]["command"] == command and prompt["args"]["cwd"] == str(codex.root)
+    assert gate.resolve(request_id, decision)
+    run = await settle(codex, started)
+    receipt = await codex.dao.result_payload(run_id)
+    evidence = receipt["verification"]
+    assert run["status"] == "completed"
+    if not decision:
+        assert evidence["reason"] == "validation_denied" and evidence["requires_review"]
+        assert "validation" not in evidence
+    else:
+        assert evidence["validation"]["exit_code"] == exit_code
+        assert "123" in evidence["validation"]["stdout"]
+        assert evidence["verdict"] == ("passed" if exit_code == 0 else "failed")
+        assert evidence["requires_review"] is (exit_code != 0)
+    assert run["metadata"]["verification"] == evidence
+    assert (await MessagesDAO(codex.db).list_for_session("one"))[-1]["metadata"]["verification"] == evidence
+
+
+async def test_codex_plan_never_asks_or_runs_validation(codex):
+    marker = codex.root / "must-not-exist"
+    await _set_codex_validation(codex, f'"{sys.executable}" -c "open(\'must-not-exist\',\'w\').write(\'x\')"')
+    started = await start(codex, mode="plan")
+    run = await settle(codex, started)
+    receipt = await codex.dao.result_payload(run["id"])
+    assert receipt["verification"]["reason"] == "plan_mode"
+    assert not marker.exists()
+    assert not any(call.args[0] == "permission.request" for call in started.emit.await_args_list)
+
+
+async def test_codex_failed_turn_does_not_run_validation(codex):
+    marker = codex.root / "failed-validator"
+    await _set_codex_validation(codex, f'"{sys.executable}" -c "open(\'failed-validator\',\'w\').write(\'x\')"')
+    started = await start(codex, "failed")
+    run = await settle(codex, started)
+    assert run["status"] == "failed" and not marker.exists()
+    assert not any(call.args[0] == "permission.request" for call in started.emit.await_args_list)
+
+
+async def test_codex_validation_uses_admitted_command_when_project_changes(codex):
+    from minimax_code.storage.dao.projects import ProjectsDAO
+    command = f'"{sys.executable}" -c "print(\'original\')"'
+    await _set_codex_validation(codex, command)
+    started = await start(codex)
+    gate, request_id = await _wait_validation_approval(codex)
+    await ProjectsDAO(codex.db).update("validate-project", validate_command="different")
+    assert gate.resolve(request_id, True)
+    run = await settle(codex, started)
+    evidence = (await codex.dao.result_payload(run["id"]))["verification"]
+    assert evidence["validation"]["command"] == command
+    assert evidence["validation"]["stdout"].strip() == "original"
+
+
+async def test_cancel_codex_before_validation_consent_never_executes(codex):
+    marker = codex.root / "cancelled-validator"
+    await _set_codex_validation(codex, f'"{sys.executable}" -c "open(\'cancelled-validator\',\'w\').write(\'x\')"')
+    started = await start(codex)
+    gate, request_id = await _wait_validation_approval(codex)
+    run_id = started.reply.call_args.args[0]["run"]["id"]
+    assert get_run_service(codex.server).cancel_run(run_id)
+    assert not gate.resolve(request_id, True)
+    run = await settle(codex, started)
+    receipt = await codex.dao.result_payload(run_id)
+    assert run["status"] == "cancelled" and receipt["verification"]["verdict"] != "passed"
+    assert not marker.exists()
+
+
+async def test_codex_validation_rejects_changed_session_binding(codex):
+    marker = codex.root / "changed-binding"
+    await _set_codex_validation(codex, f'"{sys.executable}" -c "open(\'changed-binding\',\'w\').write(\'x\')"')
+    started = await start(codex)
+    gate, request_id = await _wait_validation_approval(codex)
+    await SessionsDAO(codex.db).update("one", project_id="inbox")
+    assert gate.resolve(request_id, True)
+    run = await settle(codex, started)
+    receipt = await codex.dao.result_payload(run["id"])
+    assert receipt["verification"]["reason"] == "validation_workspace_changed"
+    assert receipt["verification"]["requires_review"] and not marker.exists()
+
+
+async def test_codex_validation_cancel_reaps_running_command(codex):
+    marker = codex.root / "heartbeat"
+    script = codex.root / "validator.py"
+    script.write_text("import pathlib,time\np=pathlib.Path('heartbeat')\nwhile True:\n p.write_text(str(time.time_ns()))\n time.sleep(.05)\n")
+    await _set_codex_validation(codex, f'"{sys.executable}" "{script}"')
+    started = await start(codex)
+    gate, request_id = await _wait_validation_approval(codex)
+    assert gate.resolve(request_id, True)
+    for _ in range(500):
+        if marker.exists():
+            break
+        await asyncio.sleep(.01)
+    assert marker.exists(), "validator did not start"
+    run_id = started.reply.call_args.args[0]["run"]["id"]
+    assert get_run_service(codex.server).cancel_run(run_id)
+    run = await settle(codex, started)
+    receipt = await codex.dao.result_payload(run_id)
+    assert run["status"] == "cancelled" and receipt["verification"]["verdict"] != "passed"
+    timestamp = marker.read_text()
+    await asyncio.sleep(.2)
+    assert marker.read_text() == timestamp
+
+
 async def test_codex_approval_cancel_invalidates_snapshot_and_decision(codex):
     from minimax_code.perm_consent import resolve_any_gater
     started = await start(codex, "approval")

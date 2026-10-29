@@ -858,7 +858,7 @@ export function Sidebar({
             placeholder="例如 D:\projects\my-app（留空则不绑定）"
           />
           <p className="mt-3 mb-1 text-[11px] text-ink-2">
-            验证命令（可选）：Native 可写任务正常完成后自动执行；真实结果计入该任务的验收证据。
+            验证命令（可选）：Native 可写任务正常完成后自动执行；Codex 完成后须单独授权主机执行。结果计入任务验收证据。
           </p>
           <Input
             data-testid="sidebar-create-project-validate"
@@ -877,7 +877,7 @@ export function Sidebar({
           <Input aria-label="项目根目录" value={settingsRoot} disabled={settingsSaving} onChange={(event) => setSettingsRoot(event.target.value)} placeholder="已有的绝对目录，留空为默认目录" /></label>
         <label className="mt-3 block text-xs text-ink-1">任务验证命令
           <Input aria-label="任务验证命令" value={settingsValidate} maxLength={500} disabled={settingsSaving} onChange={(event) => setSettingsValidate(event.target.value)} placeholder="例如 pytest -q；留空关闭自动验证" /></label>
-        <p className="mt-3 text-xs text-ink-2">Native 可写任务正常完成后在任务工作区执行该 shell 命令，结果显示在时间线。规划模式和 Codex 不执行此自动验证。设置只作用于之后接收的任务；已有会话若绑定独立工作区，仍使用其工作区。命令可读写宿主文件并访问网络，请只填写信任的命令。</p>
+        <p className="mt-3 text-xs text-ink-2">Native 可写任务正常完成后自动执行；Codex 正常完成后会先请求一次主机执行授权。结果显示在时间线，规划模式不执行。设置只作用于之后接收的任务；已有会话若绑定独立工作区，仍使用其工作区。命令可读写宿主文件并访问网络，请只填写信任的命令。</p>
       </Modal>}
 
       {/* Rename project modal */}

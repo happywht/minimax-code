@@ -1891,7 +1891,7 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 无历史证据为 unknown/legacy_unverified。Native chat/execute 正常完成时，运行接单快照中的项目校验命令执行一次，
 不依赖文件事件；exit0 为 passed，非零为 failed，启动失败/超时为 unknown 并要求核对。失败工具调用和已有核对要求不被通过的命令清除。
 未配置命令为 unknown/not_configured，本身不强制核对；plan 为 not_applicable/plan_mode；
-截断和非正常终态跳过校验，使用显式原因。Codex 为 unknown/engine_validation_not_supported，不执行本地校验命令。
+截断和非正常终态跳过校验，使用显式原因。Codex chat/execute 接单时固定项目命令和工作区；正常结束后先以 `permission.request`（`tool=project_validation`、`approval_policy=explicit_once`）要求一次宿主 shell 执行授权，携带命令、目录和宿主访问范围。拒绝或授权到期为 unknown/validation_denied 并要求核对，绑定变化为 unknown/validation_workspace_changed 并要求核对；获准后执行并记录相同的真实退出码和输出。服务端复核工作区；验证命令不受 Codex 沙箱约束。旧版 Codex 记录仍可能为 unknown/engine_validation_not_supported。
 passed 只证明配置的命令通过，不证明全部交付要求通过。
 
 `task.cancel` 仅对本进程可取消的关联运行发出真实 RunService 取消，返回 `{ok:true,requested:true,task}`。

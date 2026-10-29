@@ -101,7 +101,7 @@ class CodexApprovalGate:
 async def drive_codex_run(
     job: Any, *, emit: Any, prompt: str, resume_thread_id: str | None = None,
     codex_cmd: list[str] | None = None, approval_gate: CodexApprovalGate | None = None,
-    mode: str = "chat", conversation: Any = None,
+    mode: str = "chat", conversation: Any = None, post_turn: Any = None,
 ) -> dict[str, Any]:
     """One ordered turn. Persist each event before display and drain on every exit."""
     import os
@@ -371,6 +371,7 @@ async def drive_codex_run(
         closing = True
         close_approvals()
         cleanup_error: BaseException | None = None
+        validation_cancel: asyncio.CancelledError | None = None
         try:
             # Producer stays alive while interrupt settles. Its final notifications
             # are still consumed and persisted, including replies to turn/interrupt.
@@ -417,6 +418,21 @@ async def drive_codex_run(
                 if reason or status in {"failed", "interrupted"}:
                     final["error"] = {"message": str(reason) if reason else f"Codex turn {status}"}
                 if conversation and conversation.bound:
+                    if post_turn is not None and reason is None:
+                        try:
+                            final = await post_turn(job, conversation, final)
+                        except asyncio.CancelledError as exc:
+                            validation_cancel = exc
+                            status = "cancelled"
+                            final.update(run_status=status, cancelled=True, budget_paused=False)
+                            from ..verification import verification_evidence
+                            final["verification"] = verification_evidence(status=status, engine="codex")
+                        except Exception as exc:
+                            status = "failed"
+                            reason = exc
+                            final.update(run_status=status, error={"message": str(exc)})
+                            from ..verification import verification_evidence
+                            final["verification"] = verification_evidence(status=status, engine="codex")
                     final = await conversation.finish(status, receipt=final,
                         error=(str(reason) or type(reason).__name__) if reason else
                               f"Codex turn {status}" if status in {"failed", "interrupted"} else None)
@@ -436,6 +452,8 @@ async def drive_codex_run(
                     turn_done.exception()
                 elif not turn_done.done():
                     turn_done.cancel()
+        if validation_cancel is not None:
+            raise validation_cancel
 
 
 def _extract(payload: Any, wrapper: str | None, *keys: str) -> Any:

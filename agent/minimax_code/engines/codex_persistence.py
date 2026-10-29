@@ -153,7 +153,8 @@ class CodexConversation:
         if self.budget_handle is not None:
             result["budget"] = await self.budget_handle.snapshot()
         from ..verification import verification_evidence
-        result["verification"] = verification_evidence(status=status, engine="codex")
+        if not isinstance(result.get("verification"), dict):
+            result["verification"] = verification_evidence(status=status, engine="codex")
         if error:
             result["error"] = {"message": error}
         await self._save(status, message=bool(self.turn_id or self.text or self.usage), result=result, error=error)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from ..ipc.handler_utils import HandlerError
@@ -44,6 +45,16 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
     if not info.available:
         raise HandlerError(-32602, f"Codex engine unavailable: {info.unavailable_reason}", {"engine": info.to_dict()})
     workspace = str(await resolve_root_for_session(request.session_id))
+    project_id = session.get("project_id")
+    validate_command = ""
+    if project_id:
+        from ..storage.dao.projects import ProjectsDAO
+        from ..verification import normalize_validate_command
+
+        project = await ProjectsDAO(db).get(str(project_id))
+        if project is None:
+            raise HandlerError(-32602, "Project is unavailable; rebind the session before running")
+        validate_command = normalize_validate_command(project.get("validate_command"))
     state = session.get("engine_state") or {}
     if state.get("handoff_required"):
         raise HandlerError(-32602, "Ambiguous legacy Codex session; create a new session with a handoff")
@@ -58,6 +69,69 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
 
     async def emit(event: str, data: dict[str, Any]) -> None:
         await _notify_run(ctx, event, data)
+
+    async def validate(job: Any, conversation: CodexConversation, receipt: dict[str, Any]) -> dict[str, Any]:
+        from ..execution import ExecutionPolicy, execution_scope
+        from ..perm_consent import PermissionGater, register_gater
+        from ..verification import (
+            resolve_validate_timeout,
+            run_validate_command,
+            verification_evidence,
+        )
+
+        status = receipt["run_status"]
+        evidence = verification_evidence(status=status, engine="codex", mode=request.mode,
+            configured=bool(job.validate_command), codex_validation_enabled=True)
+        receipt["verification"] = evidence
+        if status != "completed" or request.mode == "plan" or not job.validate_command:
+            return receipt
+
+        async def still_bound() -> bool:
+            from ..storage.dao.projects import ProjectsDAO
+            current = await sessions.get(job.session_id)
+            return (current is not None and current.get("project_id") == job.project_id
+                    and (not job.project_id or await ProjectsDAO(db).get(str(job.project_id)) is not None)
+                    and str(await resolve_root_for_session(job.session_id)) == job.workspace)
+
+        def unverified(reason: str) -> dict[str, Any]:
+            receipt["verification"] = {**evidence, "verdict": "unknown", "reason": reason, "requires_review": True}
+            return receipt
+
+        try:
+            if not await still_bound():
+                return unverified("validation_workspace_changed")
+        except (OSError, ValueError, RuntimeError):
+            return unverified("validation_workspace_changed")
+        gater = PermissionGater(emit=emit, run_id=job.run_id, explicit_once=True)
+        register_gater(ctx.server, job.session_id, gater)
+        job.result = {**receipt, "run_status": "awaiting_approval"}
+        await conversation._save("awaiting_approval", message=True, result={**receipt, "run_status": "awaiting_approval"})
+        await emit("run.updated", {"run": await dao.get_run(job.run_id)})
+        job.cancel_callback = gater.cancel_all
+        try:
+            allowed = await gater.request_consent(tool="project_validation", args={
+                "command": job.validate_command, "cwd": job.workspace,
+                "scope": "host shell; unrestricted filesystem and network"}, session_id=job.session_id)
+        finally:
+            job.cancel_callback = None
+        if not allowed:
+            return unverified("validation_denied")
+        try:
+            if job.cancel_requested:
+                raise asyncio.CancelledError
+            if not await still_bound():
+                return unverified("validation_workspace_changed")
+        except (OSError, ValueError, RuntimeError):
+            return unverified("validation_workspace_changed")
+        await conversation._save("running", message=True, result={**receipt, "run_status": "running"})
+        await emit("run.updated", {"run": await dao.get_run(job.run_id)})
+        with execution_scope(ExecutionPolicy(workspace=Path(job.workspace))):
+            result = await run_validate_command(job.validate_command, cwd=job.workspace, timeout_s=resolve_validate_timeout())
+        if job.cancel_requested:
+            raise asyncio.CancelledError
+        receipt["verification"] = verification_evidence(status=status, engine="codex", mode=request.mode,
+            configured=True, validation=result, codex_validation_enabled=True)
+        return receipt
 
     async def operation(job: Any) -> None:
         from ..budget_ledger import BudgetHandle
@@ -89,7 +163,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         try:
             result = await drive_codex_run(job, emit=emit, prompt=request.content,
                 resume_thread_id=conversation.thread_id, conversation=conversation,
-                approval_gate=gate, mode=request.mode)
+                approval_gate=gate, mode=request.mode, post_turn=validate)
             job.result = result
         finally:
             unregister_gater(ctx.server, job.session_id)
@@ -99,7 +173,10 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         if run["status"] not in {"completed", "failed", "cancelled", "interrupted", "budget_paused"}:
             status = "cancelled" if isinstance(error, asyncio.CancelledError) or job.cancel_requested else "failed"
             result = {"session_id": job.session_id, "run_id": job.run_id, "message_id": job.message_id,
-                      "text": "", "engine": "codex", "cancelled": status == "cancelled"}
+                      "text": "", "engine": "codex", **(job.result or {}),
+                      "run_status": status, "cancelled": status == "cancelled"}
+            from ..verification import verification_evidence
+            result["verification"] = verification_evidence(status=status, engine="codex")
             run = await dao.terminate_run(job.run_id, status=status,
                 error=str(error or "Codex run ended without confirmed result"), result=result)
         await _notify_run(ctx, "run.completed", {"run": run})
@@ -108,9 +185,11 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         request_key=request.idempotency_key, title=request.content.strip()[:32],
         metadata={"engine": "codex", "engine_card": info.to_dict(), "reviewed": reviewed,
                   "workspace_snapshot": workspace,
+                  "validate_command": validate_command,
                   "budget": {"limit_tokens": budget, "daily_limit": daily, "daily_baseline": baseline}},
-        workspace=workspace, project_id=session.get("project_id"), operation=operation, finalize=finalize,
-        resumed_from_id=resumed_from_id, budget_tokens=budget, daily_baseline=baseline, daily_budget_limit=daily)
+        workspace=workspace, project_id=project_id, operation=operation, finalize=finalize,
+        resumed_from_id=resumed_from_id, budget_tokens=budget, daily_baseline=baseline, daily_budget_limit=daily,
+        validate_command=validate_command)
     if created:
         await _notify_run(ctx, "run.created", {"run": run})
     await ctx.reply({"run": run, "created": created})

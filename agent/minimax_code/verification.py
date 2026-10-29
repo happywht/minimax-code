@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 def verification_evidence(*, status: str = "completed", engine: str = "native",
                           mode: str = "chat", configured: bool = False,
                           truncated: bool = False, base: dict[str, Any] | None = None,
-                          validation: dict[str, Any] | None = None) -> dict[str, Any]:
+                          validation: dict[str, Any] | None = None,
+                          codex_validation_enabled: bool = False) -> dict[str, Any]:
     """Acceptance truth is separate from execution status; absent proof never passes."""
     evidence = {"tool_calls": 0, "failed_tool_calls": 0, "failures": [], **(base or {})}
     evidence.pop("validation", None)
@@ -43,7 +44,7 @@ def verification_evidence(*, status: str = "completed", engine: str = "native",
         verdict, reason = "unknown", "execution_truncated"
     elif mode == "plan":
         verdict, reason = "not_applicable", "plan_mode"
-    elif engine == "codex":
+    elif engine == "codex" and not codex_validation_enabled:
         verdict, reason = "unknown", "engine_validation_not_supported"
     elif not configured:
         verdict, reason = "unknown", "not_configured"
