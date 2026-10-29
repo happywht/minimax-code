@@ -26,6 +26,7 @@ class CodexConversation:
         self.bound = False
         self.budget_handle = None
         self.attempt_id = None
+        self.plan: dict[str, Any] | None = None
 
     async def begin_attempt(self):
         if self.budget_handle is None:
@@ -115,6 +116,10 @@ class CodexConversation:
         self.text += text
         await self._save(self.runtime_status, message=True)
 
+    async def update_plan(self, plan: dict[str, Any]) -> None:
+        self.plan = plan
+        await self._save(self.runtime_status)
+
     async def record_usage(self, total: dict[str, Any]) -> bool:
         """Return false for a reset/uncertain watermark. Never reset accounting to zero."""
         keys = ("inputTokens", "outputTokens", "totalTokens")
@@ -201,6 +206,8 @@ class CodexConversation:
                   "workspace_snapshot": self.job.workspace, "codex_settings": {
                       k: self.state[k] for k in ("model", "modelProvider", "reasoningEffort") if k in self.state},
                   "usage_certainty": self.certainty}
+            if self.plan is not None:
+                md["codex_plan"] = self.plan
             if result is not None:
                 md["verification"] = result["verification"]
             if message:

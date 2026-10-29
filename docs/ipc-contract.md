@@ -1590,7 +1590,7 @@ so the frontend can route them by name without a regex.
 | `permission.request`    | `{request_id, tool, args, session_id?}` — modal triggers; `session_id` (v1.2.0) tags which conversation the gated call belongs to |
 | `permission.resolved`   | `{request_id, decision}`                            |
 | `run.created`           | `{run}`                                              |
-| `run.updated` | `{run}`; queued request claimed for execution. |
+| `run.updated` | `{run}`; queued request claimed for execution or durable run state changed. Codex runs may include `metadata.codex_plan` with the latest engine-reported plan: `{explanation: string \| null, steps: [{step, status: "pending" \| "inProgress" \| "completed"}], truncated: boolean}`. The snapshot is bounded and is not independent evidence that a step succeeded. |
 | `run.output_cleared` | `{run_id,session_id,output_ref,service_id,cleared_at}`; captured output was cleared, not a task deletion. |
 | `run.step.started`      | `{run_id, step}`                                    |
 | `run.step.completed`    | `{run_id, step}`                                    |

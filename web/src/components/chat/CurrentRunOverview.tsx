@@ -80,6 +80,16 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       <p className="break-all">服务地址：{host} · 执行主机/容器：未记录</p>
       <p className="break-all">执行目录（服务侧记录）：{workspace}</p>
       <p>引擎：{engine} · 模型：{model}</p>
+      {codex && md?.codex_plan && <div className="space-y-1" data-testid="codex-plan">
+        <p className="font-medium">Codex 计划（引擎报告）</p>
+        {md.codex_plan.explanation && <p className="whitespace-pre-wrap break-words">{md.codex_plan.explanation}</p>}
+        {md.codex_plan.steps.length > 0 ? <ol className="list-inside list-decimal space-y-1">
+          {md.codex_plan.steps.map((step, index) => <li key={index} className="whitespace-pre-wrap break-words">
+            {step.step} · {step.status === "completed" ? "已完成" : step.status === "inProgress" ? "进行中" : "待处理"}
+          </li>)}
+        </ol> : <p>当前没有计划步骤。</p>}
+        {md.codex_plan.truncated && <p>计划内容过长，显示已截断。</p>}
+      </div>}
       <p>预算快照：{stale ? "状态待刷新" : data ? `累计已知${data.usage_complete === true ? "" : "至少 "}${data.known_tokens} · 预留/责任 ${data.reserved_tokens} · 上限 ${data.limit_tokens ?? "未设置"} · 剩余估算 ${data.remaining_estimate ?? "未知"}` : budget?.scope === scope && budget.error ? "读取失败" : record ? "该运行没有预算记录" : "读取中或未知"}</p>
       {data && data.unknown_attempts > 0 && <p>存在 {data.unknown_attempts} 个结果不明的请求，需在预算账本核对。</p>}
       <div className="flex flex-wrap gap-2 pt-1"><Button type="button" size="sm" variant="secondary" onClick={onOpenTimeline}>查看时间线与可用操作</Button>

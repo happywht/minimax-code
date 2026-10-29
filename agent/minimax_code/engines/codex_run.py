@@ -194,7 +194,7 @@ async def drive_codex_run(
             raise ValueError("Invalid Codex notification params")
         tid = params.get("threadId") or params.get("thread_id")
         external_turn = params.get("turnId") or (params.get("turn") or {}).get("id")
-        relevant = method in {"item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed", "error"}
+        relevant = method in {"item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed", "turn/plan/updated", "error"}
         if relevant and ((tid and tid != thread_id) or (external_turn and external_turn != turn_id)):
             return
         if conversation and relevant and method != "error" and (not tid or not external_turn):
@@ -237,6 +237,22 @@ async def drive_codex_run(
                     and (ledger_exceeded or (bounded and (uncertain or budget.would_exceed(1))))):
                 budget_interrupt_requested = True
                 spawn_notify(interrupt_budget_turn())
+        elif method == "turn/plan/updated":
+            steps, explanation = params.get("plan"), params.get("explanation")
+            if (not isinstance(steps, list) or (explanation is not None and not isinstance(explanation, str))
+                    or any(not isinstance(step, dict) or not isinstance(step.get("step"), str)
+                           or step.get("status") not in {"pending", "inProgress", "completed"} for step in steps)):
+                raise ValueError("Invalid Codex plan notification")
+            truncated = len(steps) > 100 or (explanation is not None and len(explanation) > 4000)
+            bounded_steps = []
+            for step in steps[:100]:
+                truncated |= len(step["step"]) > 2000
+                bounded_steps.append({"step": step["step"][:2000], "status": step["status"]})
+            plan = {"explanation": explanation[:4000] if explanation is not None else None,
+                    "steps": bounded_steps, "truncated": truncated}
+            if conversation:
+                await conversation.update_plan(plan)
+                await emit("run.updated", {"run": await job.dao.get_run(job.run_id)})
         elif method == "turn/completed":
             close_approvals()
             if not turn_done.done():

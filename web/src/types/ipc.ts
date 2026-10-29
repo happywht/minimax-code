@@ -942,6 +942,12 @@ export interface NativeModelSnapshot {
   context_window: number;
 }
 
+export interface CodexPlan {
+  explanation: string | null;
+  steps: Array<{ step: string; status: "pending" | "inProgress" | "completed" }>;
+  truncated: boolean;
+}
+
 export interface AgentRun {
   id: string;
   session_id: string;
@@ -956,7 +962,7 @@ export interface AgentRun {
   started_at?: string | null;
   completed_at?: string | null;
   error?: string | null;
-  metadata?: (Record<string, unknown> & { model_snapshot?: NativeModelSnapshot | null }) | null;
+  metadata?: (Record<string, unknown> & { model_snapshot?: NativeModelSnapshot | null; codex_plan?: CodexPlan }) | null;
 }
 
 export interface AgentRunStep {
