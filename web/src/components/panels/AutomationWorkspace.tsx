@@ -88,7 +88,11 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
     </header>
     {binding && <div key={JSON.stringify([binding.host, binding.service])} className="relative min-h-0 flex-1">
       {!ready && <div className="absolute inset-0 z-10 bg-surface-overlay/90" aria-hidden="true" />}
-      <div ref={surfaceRef} className="h-full overflow-auto p-4" aria-hidden={!ready || undefined} onChangeCapture={() => { if (tab === "scheduled") onScheduledEdit?.(); else onEdit(); }}>
+      <div ref={surfaceRef} className="h-full overflow-auto p-4" aria-hidden={!ready || undefined} onChangeCapture={(event) => {
+        if (tab === "scheduled") {
+          if (!(event.target instanceof Element) || !event.target.closest("[data-schedule-filter]")) onScheduledEdit?.();
+        } else onEdit();
+      }}>
         {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab target={scheduleTarget?.host === binding.host ? scheduleTarget : null} key={JSON.stringify([binding.host, binding.service, project])} active={ready} serviceId={binding.service} draftScope={JSON.stringify([binding.host, binding.service, project])} onOpenSession={onOpenSession} /></div>}
         {visited.has("workflows") && <div hidden={tab !== "workflows"}><WorkflowsTab /></div>}
         {visited.has("webhooks") && <div hidden={tab !== "webhooks"}><WebhooksTab /></div>}

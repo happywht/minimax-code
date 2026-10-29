@@ -14,6 +14,7 @@ import {
 import { Button, IconButton, Input, Panel } from "../../ui";
 import { strings } from "../../ui/strings";
 import { useScheduleStore } from "../../stores";
+import { useSessionStore } from "../../stores/sessionStore";
 import { toast } from "../layout/ErrorBoundary";
 import type { ScheduledJob, ScheduleContext } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
@@ -40,6 +41,25 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
   const setEnabled = useScheduleStore((s) => s.setEnabled);
   const runNow = useScheduleStore((s) => s.runNow);
   const loading = useScheduleStore((s) => s.loading);
+  const projects = useSessionStore((s) => s.projects);
+  const currentProject = useSessionStore((s) => s.currentProjectId);
+  const [query, setQuery] = useState("");
+  const [projectFilter, setProjectFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const projectIds = [...new Set(jobs.flatMap((job) => job.context?.project_id ? [job.context.project_id] : []))];
+  const matchingJobs = jobs.filter((job) => {
+    const text = query.trim().toLocaleLowerCase();
+    const matchesText = !text || [job.name, job.prompt, job.cron].some((value) => value.toLocaleLowerCase().includes(text));
+    const matchesProject = projectFilter === "all" || (projectFilter === "unbound" ? !job.context?.project_id : `project:${job.context?.project_id}` === projectFilter);
+    const matchesStatus = statusFilter === "all" || (statusFilter === "attention"
+      ? job.binding_state !== "ready"
+      : statusFilter === "enabled" ? job.enabled : !job.enabled);
+    return matchesText && matchesProject && matchesStatus;
+  });
+  // Notification links must remain reachable even when the current filters exclude the job.
+  const visibleIds = new Set(matchingJobs.map((job) => job.id));
+  const targetOutsideFilter = !!target && jobs.some((job) => job.id === target.jobId) && !visibleIds.has(target.jobId);
+  if (targetOutsideFilter && target) visibleIds.add(target.jobId);
 
   const [, setDraftListVersion] = useState(0);
   const [draftName, setDraftName] = useState(() => draftScope ? createDrafts.get(draftScope)?.name ?? "" : "");
@@ -147,16 +167,31 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
         }}>放弃草稿</Button>
       </div>)}
       {target && !loading && !jobs.some((job) => job.id === target.jobId) && <p role="status">通知关联的计划当前不可用，可能已删除。</p>}
+      <div className="flex flex-wrap items-end gap-2 text-xs" aria-label="筛选定时计划" data-schedule-filter>
+        <label>搜索计划<Input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="名称、提示词或 Cron" /></label>
+        <label>项目<select className="block rounded border border-line bg-surface-2 p-1" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
+          <option value="all">全部项目</option>
+          {projectIds.map((id) => <option key={id} value={`project:${id}`}>{projects.find((project) => project.id === id)?.name ?? id}{id === currentProject ? "（当前项目）" : ""}</option>)}
+          {jobs.some((job) => !job.context?.project_id) && <option value="unbound">未绑定项目</option>}
+        </select></label>
+        <label>状态<select className="block rounded border border-line bg-surface-2 p-1" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="attention">需要处理或绑定</option>
+        </select></label>
+        <Button type="button" size="sm" variant="ghost" onClick={() => { setQuery(""); setProjectFilter("all"); setStatusFilter("all"); }}>清除筛选</Button>
+        <span role="status">匹配 {matchingJobs.length} / {jobs.length} 个计划{targetOutsideFilter ? "；另显示通知关联计划" : ""}</span>
+      </div>
       <ul className="space-y-1.5" data-testid="settings-jobs-list">
         {jobs.length === 0 && !loading && (
           <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">
             {strings.settings.scheduled.empty}
           </li>
         )}
+        {jobs.length > 0 && matchingJobs.length === 0 && !targetOutsideFilter && <li className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-2">没有匹配的计划，请调整筛选条件。</li>}
         {jobs.map((j) => (
           <ScheduledJobRow
             key={j.id}
             job={j}
+            hidden={!visibleIds.has(j.id)}
             targetOccurrenceId={target?.jobId === j.id ? target.occurrenceId : undefined}
             targetJob={target?.jobId === j.id}
             serviceId={serviceId}
@@ -184,7 +219,8 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId, hidden }: {
+  hidden?: boolean;
   targetJob?: boolean; targetOccurrenceId?: string;
   onOpenSession?: () => boolean | void;
   job: ScheduledJob; serviceId?: string; draftKey?: string; onToggle: (enabled: boolean) => void;
@@ -254,6 +290,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
 
   return (
     <li
+      hidden={hidden}
       data-testid={`settings-job-row-${job.id}`}
       className="rounded-lg border border-line bg-surface-2 transition-colors duration-150 hover:border-line-strong"
     >
