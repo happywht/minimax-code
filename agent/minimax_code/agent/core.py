@@ -2277,7 +2277,7 @@ async def _spool_large_output(
         "_spilled": True,
         **reference,
         "preview": preview + ("\n…[preview truncated]" if len(preview) < len(encoded) else ""),
-        "summary": "Captured payload saved; use read_tool_output to read bounded pages. Upstream capture may already be truncated.",
+        "summary": "Captured payload saved; use read_tool_output to read bounded pages or search for a case-sensitive literal. Upstream capture may already be truncated.",
     }
     return ToolResult(
         success=result.success,

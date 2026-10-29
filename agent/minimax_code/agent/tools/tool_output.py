@@ -7,19 +7,20 @@ from .base import Tool, ToolResult, register_tool
 @register_tool
 class ReadToolOutput(Tool):
     name = "read_tool_output"
-    description = "Read a bounded page of captured tool output belonging to the current run. Captured command output may already be truncated."
+    description = "Read a bounded page or find a literal query in captured tool output belonging to the current run. Captured command output may already be truncated."
     parameters = {"type": "object", "properties": {
-        "output_ref": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
+        "output_ref": {"type": "string"}, "query": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Optional case-sensitive literal search; offset starts the search."}, "offset": {"type": "integer", "minimum": 0},
         "limit": {"type": "integer", "minimum": 1, "maximum": 8000}},
         "required": ["output_ref"], "additionalProperties": False}
 
-    async def run(self, output_ref: str, offset: int = 0, limit: int = 4000) -> ToolResult:
+    async def run(self, output_ref: str, offset: int = 0, limit: int = 4000,
+                  query: str | None = None) -> ToolResult:
         from ...app import get_db
         from ...budget_ledger import current_handle
         from ...ipc.host_session_gate import require_host_session
         from ...storage.dao.runs import AgentRunsDAO
         from ...storage.dao.text_artifacts import ArtifactDAO
-        from ...tool_outputs import read
+        from ...tool_outputs import read, search
 
         try:
             db, handle = get_db(), current_handle()
@@ -30,7 +31,10 @@ class ReadToolOutput(Tool):
                 raise ValueError("Durable run is unavailable")
             await require_host_session(run["session_id"])
             service = await ArtifactDAO(db).service_id()
-            return ToolResult.ok(await read(db, run_id=handle.run_id, session_id=run["session_id"],
-                                            ref=output_ref, service_id=service, offset=offset, limit=limit))
+            args = {"run_id": handle.run_id, "session_id": run["session_id"],
+                    "ref": output_ref, "service_id": service, "offset": offset, "limit": limit}
+            if query is not None:
+                return ToolResult.ok(await search(db, query=query, **args))
+            return ToolResult.ok(await read(db, **args))
         except Exception as exc:
             return ToolResult.fail(f"Captured output unavailable: {exc}")

@@ -96,6 +96,44 @@ async def read(db, *, run_id, session_id, ref, service_id, offset=0, limit=MAX_P
             "next_offset": min(row["stored_chars"], offset + len(row["page"]))}
 
 
+async def search(db, *, run_id, session_id, ref, service_id, query, offset=0, limit=MAX_PAGE_CHARS):
+    """Find one literal match in a captured output and return a bounded excerpt.
+
+    Offsets refer to characters in the serialized output, as in ``read``.
+    The caller can resume at ``next_search_offset`` to find later matches.
+    """
+    if (not isinstance(query, str) or not 1 <= len(query) <= 256 or
+            not isinstance(offset, int) or isinstance(offset, bool) or offset < 0 or
+            not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_PAGE_CHARS):
+        raise ValueError("Invalid output search")
+    project, identity = await _binding(db, run_id, session_id)
+    if service_id != identity:
+        raise ValueError("Service identity changed")
+    row = await db.fetchone("""SELECT id,summary,length(payload) AS stored_chars,
+        instr(substr(payload,?),?) AS relative_match FROM agent_run_steps
+        WHERE id=? AND run_id=? AND session_id=? AND tool_name=?""",
+        (offset + 1, query, ref, run_id, session_id, STORAGE_TOOL))
+    metadata = json.loads(row["summary"]) if row else None
+    if (row and isinstance(metadata, dict) and metadata.get("project_id") == project
+            and metadata.get("service_id") == identity and metadata.get("cleared_at")):
+        raise ValueError("Captured output was explicitly cleared and cannot be read")
+    if (not row or not isinstance(metadata, dict) or metadata.get("project_id") != project
+            or metadata.get("service_id") != identity or metadata.get("chars") != row["stored_chars"]
+            or offset > row["stored_chars"]):
+        raise ValueError("Output reference unavailable for this run")
+    if not row["relative_match"]:
+        if await _binding(db, run_id, session_id) != (project, identity):
+            raise ValueError("Run or service changed during output search")
+        return {"id": ref, "found": False, "offset": offset}
+    match_offset = offset + row["relative_match"] - 1
+    excerpt_offset = max(0, match_offset - min(200, limit // 4))
+    page = await read(db, run_id=run_id, session_id=session_id, ref=ref,
+                      service_id=service_id, offset=excerpt_offset, limit=limit)
+    return {"id": ref, "found": True, "match_offset": match_offset,
+            "page": page["page"], "offset": excerpt_offset,
+            "next_search_offset": match_offset + 1}
+
+
 async def inventory(db, session_id, offset=0, limit=50):
     from .storage.dao.runs import _fetchone
     from .storage.dao.text_artifacts import ArtifactDAO
