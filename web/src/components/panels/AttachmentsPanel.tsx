@@ -93,7 +93,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const insertAttachmentExcerpt = (text: string, location: string) => {
     const selected = state.selected;
     const current = useAttachmentStore.getState();
-    if (structured || !scoped || !projectId || !state.serviceId || !selected || ipc.agentBaseUrl !== host ||
+    if (structured || !scoped || !projectId || !sessionId || !state.serviceId || !selected || ipc.agentBaseUrl !== host ||
         useSessionStore.getState().currentProjectId !== projectId || useSessionStore.getState().currentSessionId !== sessionId ||
         current.projectId !== projectId || current.host !== host || current.serviceId !== state.serviceId ||
         current.selected?.id !== selected.id || current.selected.sha256 !== selected.sha256) {
@@ -221,11 +221,11 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
       <p className="text-xs text-ink-2">默认仅追加附件身份；可选择加入解析摘录。不会发送或上传原件到对话，也不代表模型已读取完整文件。</p>
       {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>
-      <AttachmentImageOcr key={`ocr:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
+      <AttachmentImageOcr key={`ocr:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={!structured ? insertAttachmentExcerpt : undefined} />
       <AttachmentDocumentReader key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={!structured ? insertAttachmentExcerpt : undefined} />
       {!structured && ["txt", "csv"].includes(state.selected.declared_type) && state.selected.recognized_type === "utf8_text" && ["parsed", "truncated"].includes(state.selected.parser_status) &&
         <ReportTextExcerpt key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} truncated={state.selected.preview_truncated || state.selected.parser_status === "truncated"} onInsert={insertAttachmentExcerpt} />}
-      {structured && <p className="text-xs text-ink-2">切换报告内容形式为普通段落后，可将文档片段或文本选区追加到报告正文。</p>}
+      {structured && <p className="text-xs text-ink-2">切换报告内容形式为普通段落后，可将文档片段、文本选区或 OCR 识别文字追加到报告正文。</p>}
       {excerptNotice && <p role="status">{excerptNotice}</p>}
       <PdfOriginalPreview attachment={state.selected} />
       <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />

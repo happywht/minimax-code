@@ -4,12 +4,14 @@ import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button } from "../../ui";
 import type { AttachmentOriginal, AttachmentOcrParams, AttachmentOcrResult } from "../../types/ipc";
 
-export function AttachmentImageOcr({ attachment, project, session, service, host }: {
+export function AttachmentImageOcr({ attachment, project, session, service, host, onInsertReport }: {
   attachment: AttachmentOriginal; project: string | null; session: string | null; service: string | null; host: string;
+  onInsertReport?: (text: string, location: string) => void;
 }): JSX.Element | null {
   const [page, setPage] = useState("1");
   const [language, setLanguage] = useState<AttachmentOcrParams["language"]>("eng+chi_sim");
   const [result, setResult] = useState<AttachmentOcrResult | null>(null);
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const epoch = useRef(0);
   useEffect(() => { ++epoch.current; setResult(null); setError(""); setBusy(false); return () => { ++epoch.current; }; },
@@ -29,7 +31,7 @@ export function AttachmentImageOcr({ attachment, project, session, service, host
         sessions.currentSessionId === session && attachments.projectId === project && attachments.host === host &&
         attachments.serviceId === service && attachments.selected?.id === id && attachments.selected.sha256 === sha;
     };
-    setBusy(true); setError(""); setResult(null);
+    setBusy(true); setError(""); setResult(null); setSelection({ start: 0, end: 0 });
     try {
       const params = { project_id: project, session_id: session, expected_service_id: service,
         attachment_id: id, expected_sha256: sha, language: selectedLanguage };
@@ -56,7 +58,16 @@ export function AttachmentImageOcr({ attachment, project, session, service, host
     {ipc.isMock && <p role="status">演示模式不支持 OCR。</p>}
     {busy && <p role="status">正在本地识别，最多等待 15 秒（排队另计）…</p>}
     {error && <p role="alert">OCR 失败：{error}</p>}
-    {result && <div><p>识别结果{isPdf && "page" in result ? ` · 物理页 ${result.page}` : ""} · {result.language} · 未核验{result.truncated ? " · 已截断" : ""}</p>
-      <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3">{result.text || "（未识别到文字，不代表此页或图片没有文字）"}</pre></div>}
+    {result && <div className="space-y-2"><p>识别结果{isPdf && "page" in result ? ` · 物理页 ${result.page}` : ""} · {result.language} · 未核验{result.truncated ? " · 已截断" : ""}</p>
+      {result.text ? <textarea aria-label="选择 OCR 识别文字" readOnly rows={6} value={result.text}
+        className="w-full rounded border border-line bg-surface-1 p-2"
+        onSelect={(event) => setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })} />
+        : <p>（未识别到文字，不代表此页或图片没有文字）</p>}
+      {onInsertReport && result.text && <><p className="text-xs text-ink-1">选择识别文字后可追加到普通报告正文；请核对原件，选区中的空白会合并。</p>
+        <Button type="button" variant="secondary" disabled={!result.text.slice(selection.start, selection.end).trim() || selection.end - selection.start > 4000}
+          onClick={() => onInsertReport(result.text.slice(selection.start, selection.end),
+            `本地 OCR${isPdf && "page" in result ? `，PDF 物理页 ${result.page}` : "，图片"}，语言 ${result.language}，选区 ${selection.start}–${selection.end}，识别结果未经核验${result.truncated ? "，识别结果已截断" : ""}`)}>将所选 OCR 文字追加到报告正文</Button>
+        {selection.end - selection.start > 4000 && <p role="status">每次最多选择 4000 个字符，请缩小选区。</p>}</>}
+    </div>}
   </div>;
 }
