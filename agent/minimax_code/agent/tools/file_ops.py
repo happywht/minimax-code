@@ -23,7 +23,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ...execution import require_write_access
+from ...execution import ExecutionDeniedError, policy_workspace, require_write_access
 from ...workspace_ctx import (
     WorkspaceUnavailableError,
     current_root,
@@ -62,13 +62,13 @@ _SENSITIVE_DIR_NAMES = {
 def _default_workspace() -> Path:
     """Resolve the workspace root the tools are allowed to touch.
 
-    Session-scoped root first (per-project workspace, published on the
-    ContextVar by ``agent.send_message``); otherwise falls back to
+    The execution policy root takes precedence, followed by the session
+    root published by ``agent.send_message``; otherwise falls back to
     ``MINIMAX_CODE_WORKSPACE`` or the current working directory. The
     path is resolved to an absolute, symlink-free form before being
     used in comparisons.
     """
-    root = current_root()
+    root = policy_workspace() or current_root()
     if root is not None:
         return root
     return env_or_cwd_root()
@@ -107,7 +107,7 @@ def safe_resolve(path: str | os.PathLike[str], workspace: Path | None = None) ->
     """
     try:
         ws = require_directory(workspace or _default_workspace())
-    except WorkspaceUnavailableError as exc:
+    except (WorkspaceUnavailableError, ExecutionDeniedError) as exc:
         raise PathSecurityError(str(exc)) from exc
     raw = Path(path).expanduser()
 

@@ -15,6 +15,7 @@ import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from minimax_code import __version__
@@ -842,7 +843,9 @@ async def handle_agent_send_message(
             await check_dispatch()
             runtime = SubAgentRuntime(llm=model_snapshot.client,
                                       reasoning_effort=model_snapshot.reasoning_effort)
-            with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle), run_children_scope(children):
+            if not job.workspace:
+                raise RuntimeError("Accepted workspace is missing; rebind before starting a new task")
+            with execution_scope(ExecutionPolicy(workspace=Path(job.workspace), read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle), run_children_scope(children):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
                                                  model_snapshot=model_snapshot, internal_schedule=internal_schedule,
                                                  internal_skill=internal_skill, admitted_permissions=admitted_permissions)

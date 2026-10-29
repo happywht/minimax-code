@@ -48,11 +48,13 @@ def execution_scope(policy: ExecutionPolicy) -> Iterator[None]:
     if parent is not None:
         # Resolve at nesting time: the outer agent scope may be entered before
         # its session root is installed. A missing inner root inherits this root.
-        root = require_directory(parent.workspace or current_root() or env_or_cwd_root())
+        root = policy_workspace() or require_directory(current_root() or env_or_cwd_root())
         target = require_directory(policy.workspace) if policy.workspace is not None else root
         if not target.is_relative_to(root):
             raise ExecutionDeniedError("Nested execution workspace is outside the parent workspace.")
         policy = ExecutionPolicy(workspace=target, read_only=parent.read_only or policy.read_only)
+    elif policy.workspace is not None:
+        policy = ExecutionPolicy(workspace=require_directory(policy.workspace), read_only=policy.read_only)
     token = _policy.set(policy)
     try:
         yield
@@ -64,6 +66,17 @@ def require_write_access() -> None:
     policy = _policy.get()
     if policy is not None and policy.read_only:
         raise ExecutionDeniedError("Planning mode is read-only; switch to execute before modifying files or running commands.")
+
+
+def policy_workspace() -> Path | None:
+    """Return the fixed policy root, refusing a root replaced by a symlink."""
+    policy = _policy.get()
+    if policy is None or policy.workspace is None:
+        return None
+    root = require_directory(policy.workspace)
+    if root != policy.workspace:
+        raise ExecutionDeniedError("Execution workspace has changed; rebind before continuing.")
+    return root
 
 
 def require_tool_access(name: str) -> None:
@@ -90,8 +103,7 @@ def _validated_process_cwd(cwd: str | Path | None) -> str:
             "Processes cannot run in a file overlay: it does not isolate shell writes. "
             "Use file tools, or run the command in an independent workspace."
         )
-    policy = _policy.get()
-    root = require_directory(policy.workspace) if policy and policy.workspace else current_root()
+    root = policy_workspace() or current_root()
     if root is not None:
         root = require_directory(root)
     target = Path(cwd).expanduser() if cwd else (root or env_or_cwd_root())
