@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { typedIPC } from "../../ipc";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ipc, typedIPC } from "../../ipc";
 import type { HostConnection, RemoteHost } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileTransfer } from "./HostFileTransfer";
 
 const STATUS_LABELS: Record<HostConnection["state"], string> = {
-  connected: "已连接", disconnected: "已断开", connecting: "连接中",
+  connected: "已连接", degraded: "SSH 隧道存在，远端服务不可用", disconnected: "已断开", connecting: "连接中",
   reconnecting: "正在重连", failed: "连接失败",
 };
 
@@ -24,6 +24,8 @@ export function HostsTab(): JSX.Element {
   const [hosts, setHosts] = useState<RemoteHost[]>([]);
   const [connections, setConnections] = useState<Record<string, HostConnection>>({});
   const [error, setError] = useState<string | null>(null);
+  const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const scopeVersion = useRef(0);
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
   const [hostname, setHostname] = useState("");
@@ -36,43 +38,46 @@ export function HostsTab(): JSX.Element {
   const [edit, setEdit] = useState({ name: "", hostname: "", username: "", port: "22", identity_file: "", remote_port: "8765" });
 
   const refresh = useCallback(async () => {
+    const version = scopeVersion.current;
     setBusy(true); setError(null);
     try {
       const result = await typedIPC.listHosts();
+      if (version !== scopeVersion.current) return;
       setHosts(result.hosts);
-      setHostPorts(Object.fromEntries(result.hosts.map((host) => [host.id, String(host.remote_port)])));
+      setHostPorts((current) => Object.fromEntries(result.hosts.map((host) => [host.id, current[host.id] ?? String(host.remote_port)])));
       const statuses = await Promise.all(result.hosts.map(async (host) => {
         try { return [host.id, (await typedIPC.getHostConnection(host.id)).connection] as const; }
-        catch (err) { return [host.id, { host_id: host.id, state: "failed", local_url: null, remote_port: null, error: String(err) } as HostConnection] as const; }
+        catch { return null; }
       }));
-      setConnections(Object.fromEntries(statuses));
-    } catch (err) { setError(String(err)); }
+      if (version === scopeVersion.current) setConnections(Object.fromEntries(statuses.filter((item) => item !== null)));
+    } catch (err) { if (version === scopeVersion.current) { setConnections({}); setError(String(err)); } }
     finally { setBusy(false); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
-  // Refresh process state while this panel is visible. Stop polling while a
-  // user operation is in flight so an older response cannot undo its result.
+  useEffect(() => ipc.onSideCar((event) => {
+    scopeVersion.current++;
+    setConnections({});
+    if (event.status === "started") { setConnectionEpoch((value) => value + 1); void refresh(); }
+  }), [refresh]);
+  // Failed status reads remove the previous link; absence means unknown, not disconnected.
   useEffect(() => {
     if (busy || hosts.length === 0) return;
-    let active = true;
-    let pending = false;
-    const timer = window.setInterval(() => {
+    let active = true, pending = false;
+    const update = () => {
       if (pending) return;
       pending = true;
+      const version = scopeVersion.current;
       void Promise.all(hosts.map(async (host) => {
         try { return [host.id, (await typedIPC.getHostConnection(host.id)).connection] as const; }
         catch { return null; }
       })).then((statuses) => {
-        if (!active) return;
-        setConnections((current) => {
-          const next = { ...current };
-          for (const status of statuses) if (status) next[status[0]] = status[1];
-          return next;
-        });
+        if (active && version === scopeVersion.current) setConnections(Object.fromEntries(statuses.filter((item) => item !== null)));
       }).finally(() => { pending = false; });
-    }, 5000);
+    };
+    update();
+    const timer = window.setInterval(update, 5000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [busy, hosts]);
+  }, [busy, hosts, connectionEpoch]);
 
   const register = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(null);
@@ -83,20 +88,21 @@ export function HostsTab(): JSX.Element {
     } catch (err) { setError(String(err)); setBusy(false); }
   };
   const changeConnection = async (host: RemoteHost, connect: boolean) => {
+    const version = scopeVersion.current;
     setBusy(true); setError(null);
     try {
       const result = connect
         ? await typedIPC.connectHost({ host_id: host.id })
         : await typedIPC.disconnectHost(host.id);
-      setConnections((current) => ({ ...current, [host.id]: result.connection }));
-    } catch (err) { setError(String(err)); }
+      if (version === scopeVersion.current) setConnections((current) => ({ ...current, [host.id]: result.connection }));
+    } catch (err) { if (version === scopeVersion.current) setError(String(err)); }
     finally { setBusy(false); }
   };
 
   const savePort = async (host: RemoteHost) => {
     setBusy(true); setError(null);
     try {
-      if (["connected", "connecting", "reconnecting"].includes(connections[host.id]?.state ?? "")) {
+      if (["connected", "degraded", "connecting", "reconnecting"].includes(connections[host.id]?.state ?? "")) {
         const accepted = await requestConfirmation({ title: "保存并断开现有隧道？", description: "更改远端服务端口会断开旧隧道；保存后请重新连接。", confirmLabel: "保存并断开" });
         if (!accepted) { setBusy(false); return; }
       }
@@ -128,7 +134,7 @@ export function HostsTab(): JSX.Element {
     setBusy(true);
     try {
       const changesConnection = Object.keys(changes).some((key) => key !== "name");
-      if (changesConnection && ["connected", "connecting", "reconnecting"].includes(connections[host.id]?.state ?? "")) {
+      if (changesConnection && ["connected", "degraded", "connecting", "reconnecting"].includes(connections[host.id]?.state ?? "")) {
         const accepted = await requestConfirmation({ title: "保存并断开现有隧道？", description: "更改 SSH 连接信息会断开此主机的旧隧道，远端标签页将失去连接。保存后请重新连接。", confirmLabel: "保存并断开" });
         if (!accepted) return;
       }
@@ -188,14 +194,16 @@ export function HostsTab(): JSX.Element {
           <label className="text-xs">远端服务端口<Input aria-label={`${host.name} 远端服务端口`} type="number" min="1" max="65535" value={hostPorts[host.id] ?? ""} onChange={(e) => setHostPorts((current) => ({ ...current, [host.id]: e.target.value }))} /></label>
           <Button size="sm" disabled={busy || !Number.isInteger(Number(hostPorts[host.id])) || Number(hostPorts[host.id]) < 1 || Number(hostPorts[host.id]) > 65535 || Number(hostPorts[host.id]) === host.remote_port} onClick={() => void savePort(host)}>保存端口</Button>
         </div>
-        <p className="text-xs text-ink-2">{!host.enabled ? "已禁用 · " : ""}状态：{connection ? STATUS_LABELS[connection.state] : "未知"}</p>
+        <p className="text-xs text-ink-2">{!host.enabled ? "已禁用 · " : ""}状态：{connection ? STATUS_LABELS[connection.state] : "状态待核对"}</p>
+        {connection?.state === "degraded" && <p className="text-xs text-ink-2">SSH 进程仍在，但远端服务健康检查未通过；会继续检查。请检查远端服务，必要时断开后重新连接。此状态不判断远端任务是否运行。</p>}
+        {!connection && <p className="text-xs text-ink-2">无法确认当前隧道状态；请恢复本地服务连接或刷新状态。</p>}
         <HostFileTransfer host={host} />
         {connection?.error && <p role="alert" className="text-xs text-status-error">{connection.error}</p>}
         {connection?.state === "connected" && !url && <p role="alert" className="text-xs text-status-error">隧道地址无效，无法打开。</p>}
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="secondary" disabled={busy || editId !== null} onClick={() => beginEdit(host)}>编辑连接配置</Button>
-          <Button size="sm" disabled={busy || !host.enabled || connection?.state === "connected" || connection?.state === "reconnecting"} onClick={() => void changeConnection(host, true)}>连接</Button>
-          <Button size="sm" disabled={busy || (connection?.state !== "connected" && connection?.state !== "reconnecting")} onClick={() => void changeConnection(host, false)}>断开</Button>
+          <Button size="sm" disabled={busy || !host.enabled || !connection || ["connected", "degraded", "connecting", "reconnecting"].includes(connection.state)} onClick={() => void changeConnection(host, true)}>连接</Button>
+          <Button size="sm" disabled={busy || !connection || !["connected", "degraded", "connecting", "reconnecting"].includes(connection.state)} onClick={() => void changeConnection(host, false)}>断开</Button>
           <Button size="sm" disabled={busy} onClick={() => void toggleHost(host)}>{host.enabled ? "禁用" : "启用"}</Button>
           {url && <a className="text-xs text-accent underline" href={url} target="_blank" rel="noopener noreferrer">在新标签页打开远端</a>}
         </div>

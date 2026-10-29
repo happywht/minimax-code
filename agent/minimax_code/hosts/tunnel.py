@@ -63,6 +63,7 @@ class _Tunnel:
     stderr: str = ""
     reader: asyncio.Task | None = None
     watcher: asyncio.Task | None = None
+    health_monitor: asyncio.Task | None = None
     state: str = "connecting"
     error: str | None = None
     identity: tuple = field(default_factory=tuple)
@@ -141,6 +142,34 @@ class HostTunnelManager:
         if tunnel.reader:
             await tunnel.reader
 
+    async def _monitor_health(self, tunnel: _Tunnel) -> None:
+        # SSH can remain alive after the remote HTTP agent disappears. Probe
+        # only the existing loopback forward; never start the remote service.
+        failures = 0
+        while True:
+            await asyncio.sleep(5)
+            if tunnel.state not in {"connected", "degraded"} or tunnel.process.returncode is not None:
+                failures = 0
+                continue
+            process = tunnel.process
+            try:
+                healthy = await self._health(f"http://127.0.0.1:{tunnel.local_port}")
+            except (httpx.HTTPError, ValueError, OSError, TimeoutError):
+                healthy = False
+            if process is not tunnel.process or tunnel.state not in {"connected", "degraded"} or process.returncode is not None:
+                failures = 0
+                continue
+            if healthy:
+                failures = 0
+                if tunnel.state == "degraded":
+                    tunnel.state = "connected"
+                    tunnel.error = None
+            else:
+                failures += 1
+                if failures >= 2:
+                    tunnel.state = "degraded"
+                    tunnel.error = "SSH tunnel is running, but remote agent health is unavailable"
+
     async def _watch(self, tunnel: _Tunnel) -> None:
         # The attempt budget applies to the whole tunnel lifetime, including flapping.
         delays = iter(self._reconnect_delays)
@@ -148,7 +177,7 @@ class HostTunnelManager:
             await tunnel.process.wait()
             if tunnel.reader:
                 await tunnel.reader
-            if tunnel.state not in {"connected", "reconnecting"}:
+            if tunnel.state not in {"connected", "degraded", "reconnecting"}:
                 return
             tunnel.state = "reconnecting"
             tunnel.error = tunnel.stderr.strip() or "SSH tunnel exited"
@@ -175,6 +204,10 @@ class HostTunnelManager:
 
     async def _stop(self, tunnel: _Tunnel) -> None:
         async def reap() -> None:
+            if tunnel.health_monitor:
+                tunnel.health_monitor.cancel()
+                with suppress(asyncio.CancelledError):
+                    await tunnel.health_monitor
             if tunnel.watcher:
                 tunnel.watcher.cancel()
                 with suppress(asyncio.CancelledError):
@@ -206,7 +239,7 @@ class HostTunnelManager:
             if self._closed:
                 raise ValueError("tunnel manager is closed")
             old = self._tunnels.get(host_id)
-            if (old and old.state in {"connected", "reconnecting"}
+            if (old and old.state in {"connected", "degraded", "reconnecting"}
                     and old.identity == identity and old.remote_port == remote_port
                     and local_port in {0, old.local_port}):
                 return self.connection(host_id)
@@ -246,6 +279,7 @@ class HostTunnelManager:
             try:
                 await self._ready(tunnel)
                 tunnel.state = "connected"
+                tunnel.health_monitor = asyncio.create_task(self._monitor_health(tunnel))
                 return tunnel.snapshot()
             except asyncio.CancelledError:
                 tunnel.state = "disconnected"

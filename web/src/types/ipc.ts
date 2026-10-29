@@ -141,7 +141,7 @@ export interface HostConfig {
 
 export interface HostConnection {
   host_id: string;
-  state: "connected" | "disconnected" | "failed" | "connecting" | "reconnecting";
+  state: "connected" | "degraded" | "disconnected" | "failed" | "connecting" | "reconnecting";
   local_url: string | null;
   remote_port: number | null;
   error: string | null;
