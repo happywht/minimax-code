@@ -804,7 +804,7 @@ async def handle_agent_send_message(
 
         await check_dispatch()
         job.budget_handle = await BudgetHandle.for_run(db, job.run_id, daily_limit=daily_limit)
-        children = RetainedChildren() if internal_schedule is not None or internal_skill is not None else None
+        children = RetainedChildren()
         schedule_token = scheduled_runtime.set({"context":internal_schedule["context"],"children":children}) if internal_schedule is not None else None
         if internal_skill is not None:
             from ..skill_bindings import SkillBindings
@@ -849,12 +849,12 @@ async def handle_agent_send_message(
                 from ..run_ownership import capture_provider_identities
                 owned_runtime.set({**owned_runtime.get(), "provider_identities":
                     capture_provider_identities(skill_runtime, owned_runtime.get()["tool_bindings"])})
-            from ..orchestrator.subagent import SubAgentRuntime, subagent_runtime_scope
+            from ..orchestrator.subagent import SubAgentRuntime, run_children_scope, subagent_runtime_scope
 
             await check_dispatch()
             runtime = SubAgentRuntime(llm=model_snapshot.client,
                                       reasoning_effort=model_snapshot.reasoning_effort)
-            with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle):
+            with execution_scope(ExecutionPolicy(read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle), run_children_scope(children):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
                                                  model_snapshot=model_snapshot, internal_schedule=internal_schedule,
                                                  internal_skill=internal_skill, admitted_permissions=admitted_permissions)
@@ -1700,13 +1700,8 @@ async def _handle_agent_send_message(
         except Exception:
             logger.debug("telemetry session_start emit failed", exc_info=True)
     descendants = []
-    children = None
-    if internal_skill is not None:
-        from ..run_ownership import owned_runtime
-        children = (owned_runtime.get() or {}).get("children")
-    if internal_schedule is not None:
-        from ..schedule_context import scheduled_runtime
-        children = (scheduled_runtime.get() or {}).get("children")
+    from ..orchestrator.subagent import current_run_children
+    children = current_run_children()
     child_drain_complete = False
     try:
         # v1.1.0: auto-continue loop — block 1 plus up to
@@ -1719,7 +1714,10 @@ async def _handle_agent_send_message(
         )
         if children is not None and children.tasks:
             from ..verification import verification_evidence
-            pending_proof = verification_evidence(status="running",base={"requires_review":True})
+            pending_proof = verification_evidence(status="running", base={
+                "requires_review": True,
+                "children_pending": [run_id for task, run_id in children.tasks.items() if not task.done()],
+            })
             job.result = {"session_id":session_id,"message_id":current_assistant_message_id,
                 "run_id":job.run_id,"text":result.final_text,"run_status":"running",
                 "tokens_in":result.usage.get("prompt_tokens",0),"tokens_out":result.usage.get("completion_tokens",0),
@@ -1733,7 +1731,16 @@ async def _handle_agent_send_message(
                 from ..run_errors import RunPersistenceError
                 raise RunPersistenceError("Owned preliminary receipt could not be confirmed")
         if children is not None:
-            descendants = await children.drain(cancel=bool(result.cancelled or result.truncated or getattr(result,"budget_exhausted",False)))
+            stop_children = bool(result.cancelled or result.truncated or getattr(result, "budget_exhausted", False))
+            if stop_children:
+                descendants = await children.drain(cancel=True)
+            else:
+                # Bound the wait even when a child is queued or its own timeout
+                # is disabled. Cancellation still waits for owned cleanup.
+                try:
+                    descendants = await asyncio.wait_for(children.drain(), timeout=600)
+                except TimeoutError:
+                    descendants = await children.drain(cancel=True)
         child_drain_complete = True
     except Exception as exc:
         logger.exception("agent.send_message: AgentCore.run failed")

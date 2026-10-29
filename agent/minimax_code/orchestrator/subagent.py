@@ -312,6 +312,21 @@ def _on_background_run_done(run_id: str, task: asyncio.Task) -> None:
 
 _team_children: ContextVar[Any | None] = ContextVar("team_background_children", default=None)
 _team_permissions: ContextVar[Any | None] = ContextVar("team_permissions", default=None)
+_run_children: ContextVar[Any | None] = ContextVar("run_background_children", default=None)
+
+
+@contextmanager
+def run_children_scope(children):
+    """Bind background descendants to this run without changing its permissions."""
+    token = _run_children.set(children)
+    try:
+        yield
+    finally:
+        _run_children.reset(token)
+
+
+def current_run_children():
+    return _run_children.get()
 
 
 def register_background_run(run_id: str, task: asyncio.Task) -> None:
@@ -325,6 +340,8 @@ def register_background_run(run_id: str, task: asyncio.Task) -> None:
         schedule["children"].register(run_id,task)
     elif _team_children.get() is not None:
         _team_children.get().register(run_id, task)
+    elif _run_children.get() is not None:
+        _run_children.get().register(run_id, task)
     task.add_done_callback(lambda _t, rid=run_id: _on_background_run_done(rid, _t))
 
 
