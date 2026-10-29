@@ -419,6 +419,10 @@ async def drive_codex_run(
         if conversation:
             await conversation.start_turn(turn_id)
         turn_ready.set()
+        from ..run_steer import CodexSteerController
+        job.steer_controller = CodexSteerController(
+            job, emit, conn, thread_id, turn_id,
+            lambda: not closing and not cancelled and not turn_done.done() and not budget_interrupt_requested)
         if cancelled:
             spawn_notify(interrupt_cancelled_turn())
         completed = await turn_done
@@ -452,6 +456,9 @@ async def drive_codex_run(
     finally:
         job.cancel_callback = None
         closing = True
+        if job.steer_controller is not None:
+            job.steer_controller.close()
+            job.steer_controller = None
         close_approvals()
         cleanup_error: BaseException | None = None
         validation_cancel: asyncio.CancelledError | None = None

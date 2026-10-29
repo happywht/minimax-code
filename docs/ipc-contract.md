@@ -213,7 +213,7 @@ on the next `readline() == ""`.
 | `run.get` | req/res | Read `{run, result}`; result is a committed reply, an error envelope, or null. |
 | `run.cancel` | req/res | Request cancellation of one run; `requested` is acknowledgement, not completed teardown. |
 | `run.resume` | req/res | Create a linked run from saved input after review, using the original model and workspace; never replay tool steps. |
-| `run.steer` | req/res | Record idempotent Native-only in-flight input against one run. |
+| `run.steer` | req/res | Record idempotent in-flight input against a Native or Codex run. |
 | `run.child_workspace` | req/res | Review or explicitly collect a directly owned child workspace with binding and conflict checks. |
 | `run.child_list` | req/res | Recover recent direct child runs scoped to the parent session, parent runs, project and service. |
 | `run.output_page` | req/res | Read a bounded page of captured tool output bound to a run, session, project and service. |
@@ -504,8 +504,15 @@ per run. Pending means accepted but not used; completed means added to later
 model context, not proof that a model received or obeyed it. Failed or
 cancelled means use was not confirmed. The loop drains at a model boundary,
 never inside a tool. A final answer, cancellation, budget stop or restart may
-leave input unused; it is never automatically replayed. Codex is unsupported.
-Run, session, project and session host policy are checked.
+leave input unused; it is never automatically replayed.
+
+For Codex, the server sends `turn/steer` with the bound thread and expected
+active turn ID using the pinned 0.163.0 App Server schema. A completed step
+means the server acknowledged that turn, not that the model processed it. A
+pending or failed step means delivery is uncertain, including after a restart;
+the same idempotency key returns that record and never resends it. Check the
+task before submitting again with a new key. Run, session, project and session
+host policy are checked.
 
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older

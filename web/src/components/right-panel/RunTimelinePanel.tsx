@@ -258,6 +258,10 @@ function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: stri
   const statusClass = statusTone(step.status);
   const detailText = buildStepDetailText(step);
   const collapsedDetail = detailText ? summarizeStepText(detailText, step.kind) : "";
+  if (step.payload?.source === "codex_steer") {
+    return <li className="rounded border border-line p-2 text-xs"><p>运行中补充：{step.status === "completed" ? "Codex 已接受，不保证模型已处理" : "发送结果未确认；请核对任务，不会自动重发"}</p>
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{String(step.payload.text ?? "")}</pre></li>;
+  }
   if (step.payload?.source === "native_steer") {
     return <li className="rounded border border-line p-2 text-xs"><p>运行中补充：{step.status === "pending" ? "已接收，等待下一轮边界" : step.status === "completed" ? "已加入后续上下文，不保证模型已处理" : "未确认生效，请核对"}</p>
       <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{String(step.payload.text ?? "")}</pre></li>;

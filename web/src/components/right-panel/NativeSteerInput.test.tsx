@@ -30,7 +30,7 @@ it("retries the same supplemental input after an uncertain response", async () =
   expect(call.mock.calls[1][0]).toEqual(call.mock.calls[0][0]);
 });
 
-it("does not offer the Native control for Codex", () => {
+it("offers a Codex-specific control", () => {
   render(<NativeSteerInput run={{ ...run, metadata: { engine: "codex" } }} />);
-  expect(screen.queryByText("向此 Native 任务补充")).toBeNull();
+  expect(screen.getByText("向此 Codex 任务补充")).toBeTruthy();
 });

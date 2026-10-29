@@ -606,7 +606,7 @@ function mockHandle(
             available: codexAvailable,
             unavailable_reason: codexAvailable ? null : "codex CLI not found on PATH (mock)",
             capabilities: { streaming: true, resume: true, cancel: true,
-                            approvals: true, usage: true, steer: false },
+                            approvals: true, usage: true, steer: true },
             version: codexAvailable ? "mock" : null,
           },
         ],

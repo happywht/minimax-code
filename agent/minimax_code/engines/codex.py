@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Bump only together with the protocol replay fixtures.
 SUPPORTED_PROTOCOL_PIN = "codex-cli-0.163.0"
 _CAPABILITIES = {"streaming": True, "resume": True, "cancel": True,
-                 "approvals": True, "usage": True, "steer": False}
+                 "approvals": True, "usage": True, "steer": True}
 
 
 def _codex_environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:

@@ -791,10 +791,11 @@ def register_run_handlers(server: Any) -> None:
             if not run or run["session_id"] != request.session_id:
                 raise ValueError("Run and session do not match")
             metadata = run.get("metadata") or {}
-            if metadata.get("engine") == "codex" or (metadata.get("model_snapshot") or {}).get("engine") != "native":
-                raise ValueError("Only Native runs support in-flight input")
+            engine = "codex" if metadata.get("engine") == "codex" else (metadata.get("model_snapshot") or {}).get("engine")
+            if engine not in {"native", "codex"}:
+                raise ValueError("This run does not support in-flight input")
             session = await dao._db.fetchone("SELECT engine, project_id FROM sessions WHERE id=?", (request.session_id,))
-            if (not session or session["engine"] != "native" or "project_id" not in metadata
+            if (not session or session["engine"] != engine or "project_id" not in metadata
                     or metadata["project_id"] != session["project_id"]):
                 raise ValueError("Run session or project binding changed")
             existing = await dao.get_step(step_id(request.run_id, request.idempotency_key))
