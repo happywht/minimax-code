@@ -331,6 +331,7 @@ function ToolsList({ server, tools, onToggle }: ToolsListProps): JSX.Element {
                   variant={isTesting ? "subtle" : "ghost"}
                   aria-label={strings.settings.mcp.testAria(tool.name)}
                   icon={<FlaskConical size={12} />}
+                  disabled={!isTesting && (!enabled || !server.enabled || server.connected === false)}
                   onClick={() => setTestingTool(isTesting ? null : tool.name)}
                   data-testid={`settings-mcp-test-${server.id}-${tool.name}`}
                 >
@@ -368,6 +369,7 @@ function ToolTester({ server, tool }: ToolTesterProps): JSX.Element {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<InvokeMcpToolResult | null>(null);
+  const callable = server.enabled && server.connected !== false && server.tool_states?.[tool.name] !== false;
 
   const schemaKeys = useMemo(() => {
     const props = tool.inputSchema?.properties;
@@ -378,6 +380,7 @@ function ToolTester({ server, tool }: ToolTesterProps): JSX.Element {
   }, [tool.inputSchema]);
 
   const run = async () => {
+    if (!callable || running) return;
     setError(null);
     setResult(null);
     let args: Record<string, unknown> = {};
@@ -431,10 +434,11 @@ function ToolTester({ server, tool }: ToolTesterProps): JSX.Element {
           {strings.settings.mcp.testSchemaHint(schemaKeys)}
         </p>
       )}
+      {!callable && <p className="text-[11px] text-ink-2">工具或服务器已禁用，或服务器未连接；重新启用并连接后才能调用。</p>}
       <Button
         size="sm"
         variant="primary"
-        disabled={running}
+        disabled={running || !callable}
         onClick={() => void run()}
         data-testid={`settings-mcp-tester-run-${testerId}`}
       >

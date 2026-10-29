@@ -1744,6 +1744,10 @@ function mockHandle(
 
     case "mcp.invoke_tool": {
       const p = params as { server_name: string; tool_name: string; arguments?: Record<string, unknown> };
+      const server = Array.from(mockMcpServers.values()).find((entry) => entry.name === p.server_name);
+      if (!server || !server.enabled || !server.connected) throw new Error("MCP server is not connected or enabled");
+      if (server.tool_states?.[p.tool_name] === false) throw new Error("MCP tool is disabled");
+      if (!["read_file", "list_directory"].includes(p.tool_name)) throw new Error("MCP tool is not registered for this connection");
       return {
         ok: true,
         server_name: p.server_name,

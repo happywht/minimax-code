@@ -142,9 +142,15 @@ class _BridgedTool(Tool):
         self._registry = registry
 
     async def run(self, **kwargs: Any) -> ToolResult:
-        if not self._registry.is_connected(self._server):
+        from ..execution import require_tool_access
+        from ..process_boundary import assert_restricted_dispatch
+        try:
+            require_tool_access(self.name)
+            self._registry._authorized_tool(self._server, self._tool_name, expected=self)
+            assert_restricted_dispatch(self)
+        except (MCPClientError, PermissionError, ValueError) as exc:
             return ToolResult.fail(
-                f"MCP server {self._server!r} is not connected",
+                str(exc),
                 metadata={"server": self._server, "tool": self._tool_name},
             )
         try:
@@ -195,6 +201,26 @@ class MCPRegistry:
     def _get_conn(self, server: str) -> _ServerConn | None:
         return self._servers.get(_sanitize(server))
 
+    def _authorized_tool(self, server: str, tool: str, *, expected: _BridgedTool | None = None) -> _BridgedTool:
+        """Resolve the actual live capability, never just a matching name."""
+        conn = self._get_conn(server)
+        if conn is None or not conn.config.enabled or not conn.client.is_initialized:
+            raise MCPClientError(f"MCP server {server!r} is not connected or enabled")
+        if (conn.config.tool_states or {}).get(tool) is False:
+            raise MCPClientError(f"MCP tool {tool!r} is disabled")
+        name = bridged_name(server, tool)
+        if name not in conn.tool_names:
+            raise MCPClientError(f"MCP tool {tool!r} is not registered for this connection")
+        try:
+            bridged = self._tool_registry.get(name)
+        except KeyError as exc:
+            raise MCPClientError(f"MCP tool {tool!r} is no longer registered") from exc
+        if (not isinstance(bridged, _BridgedTool) or bridged._registry is not self
+                or bridged._client is not conn.client or bridged._tool_name != tool
+                or (expected is not None and bridged is not expected)):
+            raise MCPClientError(f"MCP tool {tool!r} has changed; refresh its connection")
+        return bridged
+
     async def list_server_tools(self, server: str) -> list[dict[str, Any]]:
         """Return the tools exposed by an attached server.
 
@@ -211,10 +237,13 @@ class MCPRegistry:
 
     async def call_tool(self, server: str, tool: str, arguments: dict[str, Any]) -> CallToolResult:
         """Call ``tool`` on ``server`` with ``arguments``."""
-        conn = self._get_conn(server)
-        if conn is None or not conn.client.is_initialized:
-            raise MCPClientError(f"MCP server {server!r} is not connected")
-        return await conn.client.call_tool(tool, arguments)
+        from ..execution import require_tool_access
+        from ..process_boundary import assert_restricted_dispatch
+
+        bridged = self._authorized_tool(server, tool)
+        require_tool_access(bridged.name)
+        assert_restricted_dispatch(bridged)
+        return await bridged._client.call_tool(tool, arguments)
 
     def list_servers(self) -> list[dict[str, Any]]:
         """Snapshot of attached servers (for IPC / UI)."""
