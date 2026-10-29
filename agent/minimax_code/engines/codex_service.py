@@ -84,7 +84,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
             raise RuntimeError("Codex run could not be claimed")
         if conversation.thread_id:
             await conversation._save("running")  # Capture known identity even if thread/resume fails.
-        gate = CodexApprovalGate()
+        gate = CodexApprovalGate(session_id=job.session_id, run_id=job.run_id)
         register_gater(ctx.server, job.session_id, gate)
         try:
             result = await drive_codex_run(job, emit=emit, prompt=request.content,

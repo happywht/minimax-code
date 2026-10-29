@@ -90,6 +90,8 @@ def register_run_handlers(server: Any) -> None:
                 return
             snapshot["pending_ask_user"] = None
             snapshot["pending_native_permissions"] = []
+            snapshot["pending_codex_permissions"] = []
+            from ..engines.codex_run import CodexApprovalGate
             from ..perm_consent import PermissionGater
 
             session_id = snapshot["run"]["session_id"]
@@ -97,6 +99,8 @@ def register_run_handlers(server: Any) -> None:
             gater = registry.get(session_id) if isinstance(registry, dict) else None
             if isinstance(gater, PermissionGater):
                 snapshot["pending_native_permissions"] = gater.live_requests(session_id, run_id)
+            elif isinstance(gater, CodexApprovalGate):
+                snapshot["pending_codex_permissions"] = gater.live_requests(session_id, run_id)
             live = getattr(ctx.server, "_live_ask_users", {}).get(run_id)
             if live:
                 event, future, deadline = live

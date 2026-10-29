@@ -16,7 +16,7 @@ from minimax_code.storage.dao.messages import MessagesDAO
 from minimax_code.storage.dao.sessions import SessionsDAO
 
 FAKE = r'''
-import json, sys, pathlib
+import json, sys, pathlib, time
 root = pathlib.Path.cwd()
 statepath = root / 'external.json'
 state = json.loads(statepath.read_text()) if statepath.exists() else {'n':0,'total':0}
@@ -52,8 +52,11 @@ for raw in sys.stdin:
         if text=='unknown': state['total']+=100
         statepath.write_text(json.dumps(state))
         send({'id':rid,'result':{'turn':{'id':tid}}})
-        if text=='approval':
+        if text in ('approval', 'approval-eof'):
             send({'id':1,'method':'item/commandExecution/requestApproval','params':{**base,'command':'test'}})
+            if text=='approval-eof':
+                while not (root/'exit.flag').exists(): time.sleep(.01)
+                sys.exit(0)
             decision=json.loads(sys.stdin.readline())
             (root/'decision.json').write_text(json.dumps(decision))
         if text=='eof': sys.exit(0)
@@ -396,6 +399,12 @@ async def test_concurrent_external_approval_ids_are_scoped_to_each_run(codex):
         await asyncio.sleep(.01)
     a_id, b_id = gates["one"].pending_ids()[0], gates["two"].pending_ids()[0]
     assert a_id != b_id and a_id.endswith(":1") and b_id.endswith(":1")
+    a_run = a.reply.call_args.args[0]["run"]["id"]
+    b_run = b.reply.call_args.args[0]["run"]["id"]
+    a_snapshot = await rpc(codex, "run.steps", {"run_id": a_run})
+    b_snapshot = await rpc(codex, "run.steps", {"run_id": b_run})
+    assert [p["request_id"] for p in a_snapshot.reply.call_args.args[0]["pending_codex_permissions"]] == [a_id]
+    assert [p["request_id"] for p in b_snapshot.reply.call_args.args[0]["pending_codex_permissions"]] == [b_id]
     assert resolve_any_gater(codex.server, b_id, True)
     assert (await settle(codex, b))["status"] == "completed"
     assert gates["one"].has_pending(a_id) and not (codex.root / "decision.json").exists()
@@ -403,6 +412,68 @@ async def test_concurrent_external_approval_ids_are_scoped_to_each_run(codex):
     assert resolve_any_gater(codex.server, a_id, False)
     await settle(codex, a)
     assert json.loads((codex.root / "decision.json").read_text())["result"]["decision"] == "decline"
+
+
+async def test_codex_approval_cancel_invalidates_snapshot_and_decision(codex):
+    from minimax_code.perm_consent import resolve_any_gater
+    started = await start(codex, "approval")
+    run_id = started.reply.call_args.args[0]["run"]["id"]
+    for _ in range(300):
+        gate = getattr(codex.server, "_permission_gaters", {}).get("one")
+        if gate and gate.pending_ids():
+            break
+        await asyncio.sleep(.01)
+    request_id = gate.pending_ids()[0]
+    assert get_run_service(codex.server).cancel_run(run_id)
+    assert not resolve_any_gater(codex.server, request_id, True)
+    current = await rpc(codex, "run.steps", {"run_id": run_id})
+    assert current.reply.call_args.args[0]["pending_codex_permissions"] == []
+    assert (await settle(codex, started))["status"] == "cancelled"
+
+
+async def test_codex_disconnect_closes_pending_approval(codex):
+    from minimax_code.perm_consent import resolve_any_gater
+    started = await start(codex, "approval-eof")
+    run_id = started.reply.call_args.args[0]["run"]["id"]
+    for _ in range(300):
+        gate = getattr(codex.server, "_permission_gaters", {}).get("one")
+        if gate and gate.pending_ids():
+            break
+        await asyncio.sleep(.01)
+    request_id = gate.pending_ids()[0]
+    (codex.root / "exit.flag").touch()
+    assert (await settle(codex, started))["status"] == "failed"
+    assert not resolve_any_gater(codex.server, request_id, True)
+    current = await rpc(codex, "run.steps", {"run_id": run_id})
+    assert current.reply.call_args.args[0]["pending_codex_permissions"] == []
+    assert any(call.args[0] == "permission.closed" and call.args[1]["request_id"] == request_id
+               for call in started.emit.await_args_list)
+
+
+async def test_codex_approval_timeout_declines_and_closes(codex, monkeypatch):
+    from minimax_code.engines import codex_run
+    monkeypatch.setattr(codex_run, "_APPROVAL_TIMEOUT_S", 0.05)
+    started = await start(codex, "approval")
+    assert (await settle(codex, started))["status"] == "completed"
+    assert json.loads((codex.root / "decision.json").read_text())["result"]["decision"] == "decline"
+    assert any(call.args[0] == "permission.closed" for call in started.emit.await_args_list)
+
+
+async def test_codex_cancellation_wins_before_pending_approval_reply(codex):
+    from minimax_code.perm_consent import resolve_any_gater
+    started = await start(codex, "approval")
+    run_id = started.reply.call_args.args[0]["run"]["id"]
+    for _ in range(300):
+        gate = getattr(codex.server, "_permission_gaters", {}).get("one")
+        if gate and gate.pending_ids():
+            break
+        await asyncio.sleep(.01)
+    assert resolve_any_gater(codex.server, gate.pending_ids()[0], True)
+    assert get_run_service(codex.server).cancel_run(run_id)
+    assert (await settle(codex, started))["status"] == "cancelled"
+    decision = codex.root / "decision.json"
+    if decision.exists():
+        assert json.loads(decision.read_text())["result"]["decision"] == "decline"
 
 
 @pytest.mark.parametrize("history,safe", [("unique", True), ("mixed", False), ("multiple", False), ("missing", False)])

@@ -668,6 +668,7 @@ function mockHandle(
         cursor: mockRunEvents.get(runId)?.length ?? 0,
         pending_ask_user: null,
         pending_native_permissions: [],
+        pending_codex_permissions: [],
       };
     }
 

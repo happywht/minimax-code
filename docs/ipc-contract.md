@@ -452,8 +452,12 @@ the answer endpoint remains authoritative on expiration and resolution.
 `pending_native_permissions` similarly contains only pending Native consent
 requests owned by this run and session, or an empty list. It is a live memory
 projection, not persisted approval; `remaining_ms` is an estimate and
-`permission.resolve` rejects expired or already resolved requests. Codex
-approval recovery is not included. Recovering a request never auto-approves it.
+`permission.resolve` rejects expired or already resolved requests. The separate
+`pending_codex_permissions` projects only Codex requests attached to this run,
+session and still-live connection. A new internal request ID is bound to each
+external request; the original JSON-RPC response retains its original ID.
+Closing, cancellation, timeout and process loss invalidate the wait. Recovering
+a request never auto-approves it; neither projection survives a process restart.
 
 `run.events({run_id, after_seq?: 0, limit?: 100})` returns
 `{events, next_seq, has_more}`. `after_seq` is a non-negative integer (at most
@@ -1457,7 +1461,7 @@ so the frontend can route them by name without a regex.
 | `agent.tool_result`     | `{session_id, tool_call_id, name?, result, error?, message_id}` |
 | `agent.ask_user`        | `{request_id, session_id, questions[], timeout_s}` — the model paused with structured clarification questions (v1.1.1); the UI renders an inline question card and answers via `agent.answer_user` |
 | `agent.ask_user_closed` | `{request_id, session_id, run_id}` — a Native question wait ended, timed out or was cancelled; late snapshots must not revive it. |
-| `permission.closed` | `{request_id, session_id, run_id}` — a Native consent wait ended, timed out or was cancelled; late snapshots must not revive it. |
+| `permission.closed` | `{request_id, session_id, run_id}` — a Native or Codex consent wait ended, timed out or was cancelled; late snapshots must not revive it. |
 | `agent.status`          | `{session_id, status, detail?}`                     |
 | `task.progress`         | `{task_id, progress, message?}`                     |
 | `permission.request`    | `{request_id, tool, args, session_id?}` — modal triggers; `session_id` (v1.2.0) tags which conversation the gated call belongs to |

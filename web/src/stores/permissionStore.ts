@@ -68,7 +68,8 @@ export interface PermissionState {
   /** Internal — called by the IPC `permission.resolved` listener. */
   _markResolved: (data: PermissionResolvedData) => void;
   recoveryVersion: (sessionId: string) => number;
-  reconcileNative: (sessionId: string, runIds: string[], requests: PermissionRequestData[], version: number) => void;
+  reconcilePermissions: (sessionId: string, runIds: string[], native: PermissionRequestData[] | null,
+    codex: PermissionRequestData[] | null, version: number) => void;
   /** User-driven resolve: POSTs to the sidecar and clears local state. */
   resolve: (request_id: string, decision: Decision) => Promise<void>;
 }
@@ -152,14 +153,16 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
   pending: {},
   resolving: {},
   recoveryVersion: (sessionId) => versions.get(sessionId) ?? 0,
-  reconcileNative: (sessionId, runIds, requests, version) => {
+  reconcilePermissions: (sessionId, runIds, native, codex, version) => {
     if (version !== (versions.get(sessionId) ?? 0)) return;
+    const requests = [...(native ?? []), ...(codex ?? [])];
     const active = new Set(requests.map((request) => request.request_id));
     for (const item of Object.values(get().pending)) {
+      const supported = item.tool.startsWith("codex:") ? codex !== null : native !== null;
       if (item.session_id === sessionId && item.run_id && runIds.includes(item.run_id)
-          && !item.tool.startsWith("codex:") && !active.has(item.request_id)) retire(item.request_id);
+          && supported && !active.has(item.request_id)) retire(item.request_id);
     }
-    requests.filter((item) => item.session_id === sessionId && item.run_id && !item.tool.startsWith("codex:"))
+    requests.filter((item) => item.session_id === sessionId && item.run_id)
       .forEach(enqueue);
   },
 

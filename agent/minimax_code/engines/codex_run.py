@@ -23,6 +23,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,14 +39,25 @@ _APPROVAL_METHODS = frozenset({
     "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
     "item/permissions/requestApproval",
 })
+_APPROVAL_TIMEOUT_S = 300.0
+
+
+@dataclass
+class _CodexApproval:
+    future: asyncio.Future[bool]
+    payload: dict[str, Any]
+    deadline: float
 
 
 class CodexApprovalGate:
     """Duck-typed gater: pending approval requests resolvable via the
     same ``permission.resolve`` RPC the native PermissionGater uses."""
 
-    def __init__(self) -> None:
-        self._pending: dict[str, asyncio.Future[bool]] = {}
+    def __init__(self, *, session_id: str | None = None, run_id: str | None = None) -> None:
+        self.session_id = session_id
+        self.run_id = run_id
+        self.closed = False
+        self._pending: dict[str, _CodexApproval] = {}
 
     def pending_ids(self) -> list[str]:
         return list(self._pending)
@@ -53,17 +66,36 @@ class CodexApprovalGate:
         return request_id in self._pending
 
     def resolve(self, request_id: str, decision: bool) -> bool:
-        fut = self._pending.get(request_id)
-        if fut is None or fut.done():
+        item = self._pending.get(request_id)
+        if (self.closed or item is None or item.future.done()
+                or asyncio.get_running_loop().time() >= item.deadline):
             return False
-        fut.set_result(bool(decision))
+        item.future.set_result(bool(decision))
         return True
 
     async def wait(self, request_id: str) -> bool:
-        fut = self._pending.get(request_id)
-        if fut is None:
+        item = self._pending.get(request_id)
+        if item is None:
             return False
-        return await fut
+        return await item.future
+
+    def live_requests(self, session_id: str, run_id: str) -> list[dict[str, Any]]:
+        if self.closed or self.session_id != session_id or self.run_id != run_id:
+            return []
+        now = asyncio.get_running_loop().time()
+        return [{**item.payload, "remaining_ms": max(0, int((item.deadline - now) * 1000))}
+                for item in self._pending.values() if not item.future.done() and item.deadline > now]
+
+    def close_all(self) -> list[str]:
+        if self.closed:
+            return []
+        self.closed = True
+        ids = []
+        for request_id, item in self._pending.items():
+            ids.append(request_id)
+            if not item.future.done():
+                item.future.set_result(False)
+        return ids
 
 
 async def drive_codex_run(
@@ -90,6 +122,10 @@ async def drive_codex_run(
     elif codex_cmd is None or codex_cmd[0] == "codex":
         codex_cmd = [shutil.which("codex") or "codex", "app-server"]
     gate = approval_gate or CodexApprovalGate()
+    if gate.session_id is None and gate.run_id is None:
+        gate.session_id, gate.run_id = job.session_id, job.run_id
+    if gate.session_id != job.session_id or gate.run_id != job.run_id:
+        raise ValueError("Codex approval gate belongs to a different run")
     background_tasks: set[asyncio.Task[Any]] = set()
 
     def spawn_notify(coro: Any) -> None:
@@ -117,6 +153,11 @@ async def drive_codex_run(
     async def interrupt() -> None:
         if turn_id and thread_id:
             await conn.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id}, timeout=10)
+
+    def close_approvals() -> None:
+        for request_id in gate.close_all():
+            spawn_notify(emit("permission.closed", {"request_id": request_id,
+                         "session_id": job.session_id, "run_id": job.run_id}))
 
     async def process(n: dict[str, Any]) -> None:
         nonlocal uncertain, watermark, ledger_exceeded
@@ -166,6 +207,7 @@ async def drive_codex_run(
             if not closing and (ledger_exceeded or (bounded and (uncertain or budget.would_exceed(1)))):
                 spawn_notify(interrupt())
         elif method == "turn/completed":
+            close_approvals()
             if not turn_done.done():
                 turn_done.set_result(params)
         elif method == "runtime/status":
@@ -187,6 +229,7 @@ async def drive_codex_run(
                 await process(n)
             except Exception as exc:
                 event_errors.append(exc)
+                close_approvals()
                 if not turn_done.done():
                     turn_done.set_exception(RuntimeError(f"Invalid Codex notification: {exc}"))
             finally:
@@ -201,7 +244,6 @@ async def drive_codex_run(
         method = req.get("method", "")
         if method not in _APPROVAL_METHODS:
             return {}  # unhandled server requests default-allow nothing
-        request_id = f"codex:{job.run_id}:{req['id']}"
         params = req.get("params") or {}
         if method == "item/permissions/requestApproval":
             # Do not translate a boolean consent into an additional permission
@@ -210,31 +252,38 @@ async def drive_codex_run(
         if mode == "plan":
             # A plan cannot grant an escape from its read-only policy.
             return {"decision": "decline"} if method.startswith("item/") else {"decision": "denied"}
-        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-        gate._pending[request_id] = fut
-        try:
-            spawn_notify(emit("permission.request", {
-                "request_id": request_id,
-                "session_id": job.session_id,
-                "run_id": job.run_id,
-                "tool": f"codex:{method}",
-                "args": {k: params.get(k) for k in ("command", "cwd", "reason")
-                         if params.get(k) is not None},
-                "timeout_s": 300,
-            }))
-        except Exception:  # noqa: BLE001
-            logger.debug("approval emit failed", exc_info=True)
-
         async def _await_decision() -> dict[str, Any]:
+            await turn_ready.wait()
+            rejected = {"decision": "decline"} if method.startswith("item/") else {"decision": "denied"}
+            if (closing or cancelled or gate.closed or turn_done.done() or not isinstance(params, dict)
+                    or ((params.get("threadId") or params.get("thread_id"))
+                        and (params.get("threadId") or params.get("thread_id")) != thread_id)
+                    or ((params.get("turnId") or params.get("turn_id"))
+                        and (params.get("turnId") or params.get("turn_id")) != turn_id)):
+                return rejected
+            loop = asyncio.get_running_loop()
+            request_id = f"codex:{job.run_id}:{uuid.uuid4().hex[:12]}:{req['id']}"
+            fut: asyncio.Future[bool] = loop.create_future()
+            deadline = loop.time() + _APPROVAL_TIMEOUT_S
+            payload = {"request_id": request_id, "session_id": job.session_id, "run_id": job.run_id,
+                       "tool": f"codex:{method}", "args": {k: params.get(k) for k in
+                       ("command", "cwd", "reason") if params.get(k) is not None},
+                       "remaining_ms": max(0, int((deadline - loop.time()) * 1000))}
+            gate._pending[request_id] = _CodexApproval(fut, payload, deadline)
+            spawn_notify(emit("permission.request", payload))
             queue.put_nowait({"method": "runtime/status", "params": {"status": "awaiting_approval"}})
             try:
-                allowed = await asyncio.wait_for(fut, timeout=300)
+                allowed = await asyncio.wait_for(fut, timeout=max(0, deadline - loop.time()))
             except TimeoutError:
                 allowed = False
             finally:
                 gate._pending.pop(request_id, None)
-                if not turn_done.done():
+                await emit("permission.closed", {"request_id": request_id,
+                           "session_id": job.session_id, "run_id": job.run_id})
+                if not turn_done.done() and not gate.closed and not gate._pending:
                     queue.put_nowait({"method": "runtime/status", "params": {"status": "running"}})
+            if closing or cancelled or gate.closed or turn_done.done():
+                allowed = False
             if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
                 return {"decision": "accept" if allowed else "decline"}
             return {"decision": "approved" if allowed else "denied"}
@@ -243,10 +292,14 @@ async def drive_codex_run(
 
     conn.on_notification = receive_notification
     conn.on_server_request = on_server_request
-    conn.on_exited = lambda: queue.put_nowait({"exit_error": "codex app-server exited mid-turn"})
+    def on_exited() -> None:
+        close_approvals()
+        queue.put_nowait({"exit_error": "codex app-server exited mid-turn"})
+    conn.on_exited = on_exited
     def on_cancel() -> None:
         nonlocal cancelled
         cancelled = True
+        close_approvals()
         spawn_notify(interrupt())
     job.cancel_callback = on_cancel
     worker = asyncio.create_task(consume(), name=f"codex-events:{job.run_id}")
@@ -313,6 +366,7 @@ async def drive_codex_run(
     finally:
         job.cancel_callback = None
         closing = True
+        close_approvals()
         cleanup_error: BaseException | None = None
         try:
             # Producer stays alive while interrupt settles. Its final notifications

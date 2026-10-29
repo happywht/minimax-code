@@ -435,6 +435,7 @@ class RunSnapshotResult(_Base):
     cursor: int = Field(ge=0)
     pending_ask_user: dict[str, Any] | None = None
     pending_native_permissions: list[dict[str, Any]] = Field(default_factory=list)
+    pending_codex_permissions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---- Error object ---------------------------------------------------------

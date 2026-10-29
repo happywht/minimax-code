@@ -982,6 +982,7 @@ export interface RunStepsResult {
   cursor: number;
   pending_ask_user?: AskUserData | null;
   pending_native_permissions?: PermissionRequestData[];
+  pending_codex_permissions?: PermissionRequestData[];
 }
 
 export interface RunEvent {

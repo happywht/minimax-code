@@ -40,7 +40,8 @@ function validateSnapshot(snapshot: RunStepsResult, runId: string, sessionId: st
       !Number.isSafeInteger(snapshot.cursor) || snapshot.cursor < 0 ||
       snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId) ||
       (snapshot.pending_ask_user != null && (snapshot.pending_ask_user.run_id !== runId || snapshot.pending_ask_user.session_id !== sessionId)) ||
-      snapshot.pending_native_permissions?.some((item) => item.run_id !== runId || item.session_id !== sessionId || item.tool.startsWith("codex:"))) {
+      snapshot.pending_native_permissions?.some((item) => item.run_id !== runId || item.session_id !== sessionId || item.tool.startsWith("codex:")) ||
+      snapshot.pending_codex_permissions?.some((item) => item.run_id !== runId || item.session_id !== sessionId || !item.tool.startsWith("codex:"))) {
     throw new Error("Invalid run snapshot; refresh the timeline.");
   }
   return snapshot;
@@ -104,9 +105,13 @@ async function drain(): Promise<void> {
         const question = entries.map((entry) => entry.pending_ask_user).find((value) => value != null) ?? null;
         useChat.getState().reconcileAskUser(question, askVersion, current);
       }
-      if (refresh && entries.every((entry) => "pending_native_permissions" in entry)) {
-        usePermissionStore.getState().reconcileNative(current, entries.map((entry) => entry.run.id),
-          entries.flatMap((entry) => entry.pending_native_permissions ?? []), permissionVersion);
+      if (refresh) {
+        const native = entries.every((entry) => "pending_native_permissions" in entry)
+          ? entries.flatMap((entry) => entry.pending_native_permissions ?? []) : null;
+        const codex = entries.every((entry) => "pending_codex_permissions" in entry)
+          ? entries.flatMap((entry) => entry.pending_codex_permissions ?? []) : null;
+        if (native || codex) usePermissionStore.getState().reconcilePermissions(current,
+          entries.map((entry) => entry.run.id), native, codex, permissionVersion);
       }
       const stamp = entries.map((entry) => `${entry.run.id}:${entry.cursor}`).join("|");
       if (refresh || stamp !== conversationStamp) {

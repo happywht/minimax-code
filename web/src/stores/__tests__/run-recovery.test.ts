@@ -132,6 +132,38 @@ describe("durable run recovery", () => {
     expect(usePermissionStore.getState().pending["new-live"]).toBeDefined();
   });
 
+  it("restores Codex approval explicitly and removes it when its run no longer waits", async () => {
+    const request = { request_id: "codex:r1:token:1", session_id: "s1", run_id: "r1", tool: "codex:exec", args: { command: "echo x" }, remaining_ms: 60000 };
+    usePermissionStore.getState().setAlwaysAllow(true);
+    api.getRunSteps.mockResolvedValue({ ...snapshot(run), pending_native_permissions: [], pending_codex_permissions: [request] });
+    await store.getState().loadForSession("s1");
+    expect(usePermissionStore.getState().pending[request.request_id]).toMatchObject(request);
+    api.getRunSteps.mockResolvedValue({ ...snapshot(run), pending_native_permissions: [], pending_codex_permissions: [] });
+    api.sidecar?.({ status: "started" });
+    await idle();
+    expect(usePermissionStore.getState().pending[request.request_id]).toBeUndefined();
+    usePermissionStore.getState().setAlwaysAllow(false);
+  });
+
+  it("rejects a Codex snapshot bound to another session", async () => {
+    api.getRunSteps.mockResolvedValue({ ...snapshot(run), pending_codex_permissions: [{ request_id: "codex:foreign", session_id: "s2", run_id: "r1", tool: "codex:exec", args: {} }] });
+    await store.getState().loadForSession("s1");
+    expect(store.getState().error).toContain("Invalid run snapshot");
+    expect(usePermissionStore.getState().pending["codex:foreign"]).toBeUndefined();
+  });
+
+  it("does not revive a Codex approval closed during the snapshot read", async () => {
+    const pending = deferred<RunStepsResult>();
+    api.getRunSteps.mockReturnValueOnce(pending.promise);
+    const loading = store.getState().loadForSession("s1");
+    await waitFor(() => expect(api.getRunSteps).toHaveBeenCalled());
+    usePermissionStore.getState()._markResolved({ request_id: "codex:r1:closed", decision: "deny" });
+    pending.resolve({ ...snapshot(run), pending_codex_permissions: [{ request_id: "codex:r1:closed", session_id: "s1",
+      run_id: "r1", tool: "codex:exec", args: {}, remaining_ms: 60000 }] });
+    await loading;
+    expect(usePermissionStore.getState().pending["codex:r1:closed"]).toBeUndefined();
+  });
+
   it("pages ordered events and applies the final state rather than a stale notification", async () => {
     await store.getState().loadForSession("s1");
     const step = { id: "st", run_id: "r1", session_id: "s1", kind: "tool_call",
