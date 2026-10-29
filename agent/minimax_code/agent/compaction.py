@@ -151,6 +151,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     later_user_messages: list[str] = []
     later_messages_omitted = False
     constraint_sentences: list[str] = []
+    decision_sentences: list[str] = []
     changed_paths: list[str] = []
     verification_lines: list[str] = []
     captured_output_refs: list[str] = []
@@ -163,6 +164,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                 later_user_messages.extend(state.get("later_user_messages", []))
                 later_messages_omitted |= state.get("later_messages_omitted", False)
                 constraint_sentences.extend(state.get("constraints", []))
+                decision_sentences.extend(state.get("decisions", []))
                 verification_lines.extend(state.get("commands", []))
                 changed_paths.extend(state.get("paths", []))
                 captured_output_refs.extend(state.get("captured_output_refs", []))
@@ -179,6 +181,9 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                     if _is_constraint(sentence):
                         constraint_sentences.append(sentence)
             elif role == "assistant":
+                for sentence in _split_sentences(content):
+                    if _is_decision(sentence):
+                        decision_sentences.append(_clip(sentence, 200))
                 for call in _message_tool_calls(msg):
                     path = _mutating_path(call)
                     if path and path not in changed_paths:
@@ -198,11 +203,13 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     if len(constraints) > 6:
         constraints = constraints[:3] + ["[other constraints omitted]"] + constraints[-3:]
     commands = verification_lines[-4:]
+    decisions = _dedupe(decision_sentences)[-4:]
     changed_paths = _dedupe(changed_paths)[-12:]
     captured_output_refs = _dedupe(captured_output_refs)[-4:]
     later_messages_omitted |= len(later_user_messages) > 4
     later_user_messages = later_user_messages[-4:]
-    state = {"objective": _clip(objective, 500), "constraints": constraints, "commands": commands,
+    state = {"objective": _clip(objective, 500), "constraints": constraints, "decisions": decisions,
+             "commands": commands,
              "paths": changed_paths, "later_user_messages": later_user_messages,
              "captured_output_refs": captured_output_refs,
              "later_messages_omitted": later_messages_omitted}
@@ -214,11 +221,12 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     budget = min(2400, max(0, int(available * .6) - 20))
     parts = []
     for title, value, fraction in (
-        ("Task objective", objective, .16),
-        ("User constraints", "; ".join(constraints), .18),
-        ("Later user messages (newest first; excerpts)", later_excerpt, .18),
-        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .16),
-        ("File write requests (outcomes not established)", ", ".join(changed_paths), .12),
+        ("Task objective", objective, .14),
+        ("User constraints", "; ".join(constraints), .16),
+        ("Later user messages (newest first; excerpts)", later_excerpt, .16),
+        ("Assistant decisions (unverified)", "\n".join(reversed(decisions)), .18),
+        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .12),
+        ("File write requests (outcomes not established)", ", ".join(changed_paths), .10),
     ):
         if value:
             cap = int(budget * fraction) - len(title) - 6
@@ -226,7 +234,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                 parts.append(f"## {title}\n{_clip(value, cap)}")
     # Never truncate an opaque reference: a partial identifier cannot be read.
     title = "Output refs (read_tool_output; current run, unverified)"
-    cap = int(budget * .20) - len(title) - 6
+    cap = int(budget * .14) - len(title) - 6
     refs = []
     for ref in reversed(captured_output_refs):
         if len(", ".join(refs + [ref])) > cap:
@@ -290,6 +298,18 @@ def _split_sentences(text: str) -> list[str]:
 def _is_constraint(sentence: str) -> bool:
     lowered = sentence.lower()
     return len(sentence) <= 200 and any(m in lowered for m in _CONSTRAINT_MARKERS)
+
+
+_DECISION_MARKERS = (
+    "我决定", "我们决定", "决定采用", "决定使用", "选择采用", "选择使用",
+    "i decided", "we decided", "i chose", "we chose", "decision:",
+)
+
+
+def _is_decision(sentence: str) -> bool:
+    """Keep explicit assistant decisions as attributed excerpts, not facts."""
+    lowered = sentence.lower()
+    return any(marker in lowered for marker in _DECISION_MARKERS)
 
 
 def _dedupe(items: list[str]) -> list[str]:
