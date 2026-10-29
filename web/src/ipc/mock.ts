@@ -678,6 +678,9 @@ function mockHandle(
       };
     }
 
+    case "budget.settings_get":
+    case "budget.settings_set":
+      throw new Error("演示模式不提供真实预算设置或账本");
     case "budget.get":
       throw new Error("模拟模式没有实际预算账本；未知用量不能按零处理。");
     case "budget.reconcile":

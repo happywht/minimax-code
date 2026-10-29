@@ -7,7 +7,8 @@ from ..budget import daily_budget_limit
 from ..budget_ledger import BudgetHandle
 from ..storage.dao._base import loads_json
 from ..storage.dao.budgets import BudgetsDAO
-from .protocol import INVALID_PARAMS, BudgetGetParams, BudgetReconcileParams
+from .protocol import (INVALID_PARAMS, BudgetGetParams, BudgetReconcileParams,
+                       BudgetSettingsGetParams, BudgetSettingsSetParams)
 
 
 def register_budget_handlers(server):
@@ -57,5 +58,37 @@ def register_budget_handlers(server):
         except (ValidationError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
 
+    async def settings_get(params, ctx):
+        from ..budget_settings import get_config, policy_lock
+        from ..storage.dao.text_artifacts import ArtifactDAO
+        try:
+            BudgetSettingsGetParams.model_validate(params or {})
+            db = await database()
+            async with policy_lock:
+                service = await ArtifactDAO(db).service_id()
+                config = get_config(db.path.parent)
+                day = (await BudgetsDAO(db).snapshot())["day"]
+            await ctx.reply({"service_id": service, **config, "day": day, "timezone": "Asia/Shanghai"})
+        except (ValidationError, ValueError, OSError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+
+    async def settings_set(params, ctx):
+        from ..budget_settings import policy_lock, set_config
+        from ..storage.dao.text_artifacts import ArtifactDAO
+        try:
+            request = BudgetSettingsSetParams.model_validate(params)
+            db = await database()
+            async with policy_lock:
+                service = await ArtifactDAO(db).service_id()
+                if service != request.expected_service_id:
+                    raise ValueError("Service identity changed; reload budget settings")
+                config = set_config(db.path.parent, request.limit_tokens)
+                day = (await BudgetsDAO(db).snapshot())["day"]
+            await ctx.reply({"service_id": service, **config, "day": day, "timezone": "Asia/Shanghai"})
+        except (ValidationError, ValueError, OSError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+
+    server.register("budget.settings_get", settings_get)
+    server.register("budget.settings_set", settings_set)
     server.register("budget.get", get)
     server.register("budget.reconcile", reconcile)

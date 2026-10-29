@@ -437,6 +437,16 @@ class BudgetGetParams(BaseModel):
     day: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
+class BudgetSettingsGetParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class BudgetSettingsSetParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    limit_tokens: int | None = Field(gt=0, le=2**53 - 1)
+
+
 class BudgetReconcileParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     target: Literal["day", "family", "attempt"]

@@ -13,6 +13,7 @@ import { useModelRegistry } from "./models/useModelRegistry";
 import { ModelRow } from "./models/ModelRow";
 import { ProviderRegistryCard } from "./models/ProviderRegistryCard";
 import { EngineCards } from "./models/EngineCards";
+import { DailyBudgetSettings } from "./DailyBudgetSettings";
 
 export { ModelsTab };
 
@@ -49,6 +50,8 @@ function ModelsTab(): JSX.Element {
           </Button>
         }
       />
+
+      <DailyBudgetSettings />
 
       <ul className="space-y-1.5" data-testid="settings-models-list">
         {models.length === 0 && !loading && (

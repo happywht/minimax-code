@@ -90,15 +90,17 @@ class BudgetHandle:
 
     def format_snapshot(self, state):
         family, day = state["family"], state["day"]
+        from .budget_settings import get_config
+        daily_limit = get_config(self.dao.db.path.parent, fallback=self.daily_limit)["effective_limit"]
         reason = family["pause_reason"]
         if getattr(self.dao.db, "_budget_governance_error", None):
             reason = "budget_storage_unavailable"
-        if self.daily_limit is not None:
+        if daily_limit is not None:
             if day["baseline_incomplete"] or day["unknown_attempts"]:
                 reason = reason or "daily_accounting_incomplete"
-            elif day["known_tokens"] + day["reserved_tokens"] >= self.daily_limit:
+            elif day["known_tokens"] + day["reserved_tokens"] >= daily_limit:
                 reason = reason or "daily_ceiling"
-        return {**family, "family_id": self.family_id, "day": day, "daily_limit": self.daily_limit,
+        return {**family, "family_id": self.family_id, "day": day, "daily_limit": daily_limit,
                 "enforcement": self.enforcement, "pause_reason": reason,
                 "assumptions": "External cumulative usage notifications; internal calls cannot be reserved" if self.enforcement == "reactive" else "UTF-8 serialized request bytes + 256 framing tokens + enforced max_tokens; provider usage can exceed estimate",
                 "price": None, "currency": None}

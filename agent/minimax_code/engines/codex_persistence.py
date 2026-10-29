@@ -55,9 +55,9 @@ class CodexConversation:
         daily = state["day"]
         return (family["baseline_incomplete"] or family["unknown_attempts"] > 0
             or (family["limit_tokens"] is not None and family["known_tokens"] + family["reserved_tokens"] >= family["limit_tokens"])
-            or (self.budget_handle.daily_limit is not None and (daily["baseline_incomplete"]
+            or (state["daily_limit"] is not None and (daily["baseline_incomplete"]
                 or daily["unknown_attempts"] > 0
-                or daily["known_tokens"] + daily["reserved_tokens"] >= self.budget_handle.daily_limit)))
+                or daily["known_tokens"] + daily["reserved_tokens"] >= state["daily_limit"])))
 
     async def load(self) -> None:
         row = await self.db.fetchone("SELECT * FROM sessions WHERE id=?", (self.job.session_id,))

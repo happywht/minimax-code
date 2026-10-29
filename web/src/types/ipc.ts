@@ -1064,6 +1064,11 @@ export interface BudgetStateResult {
   day_blockers?: {total: number; items: Array<{attempt_id: string; family_id: string; known_tokens: number | null; run_id: string | null; session_id: string | null}>};
 }
 
+export interface DailyBudgetSettings {
+  service_id: string; saved_limit: number | null; effective_limit: number | null;
+  source: "settings" | "environment" | "unconfigured"; day: BudgetDay; timezone: "Asia/Shanghai";
+}
+
 export interface BudgetReconcileParams {
   target: "day" | "family" | "attempt";
   target_id: string;

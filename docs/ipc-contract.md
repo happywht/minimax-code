@@ -1855,6 +1855,8 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 | `budget.get` | 读取 `{run_id?, day?}` 的预算家族、Asia/Shanghai 日账、家族 attempts、当日 day_blockers（总数及最多 20 项身份/owner run/session/已知下界）与覆盖起点 |
 | `budget.get` 的 `day` | `accounting_resolved` 表示当日无待核对的未知责任，活动请求仍可存在；`usage_complete` 表示指定预留日期的全家族请求均已测得或确证未发送，且无未测得历史责任。两个布尔值与日汇总同事务计算，仅证明当前快照。旧响应缺字段保持未知，不能默认为 true。 |
 | `budget.reconcile` | 核定历史/未知责任；要求明确确认、依据和不少于已知下界的累计责任 |
+| `budget.settings_get` | 读取服务身份、当前生效的日 token 限额及 Asia/Shanghai 日账快照；设置文件无效时拒绝。 |
+| `budget.settings_set` | `{expected_service_id,limit_tokens}`；正整数保存日限额，null 恢复环境变量回退。与同一服务进程的预算预留串行化。设置保存在数据目录 daily-budget-settings.json，现有数据库导出/数据包不包含该文件；在途请求不撤回，Codex 活动 turn 在后续用量通知上读取新限额。 |
 
 ### checkpoint.* — 工作区快照
 

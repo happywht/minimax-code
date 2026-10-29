@@ -126,6 +126,14 @@ class BudgetsDAO:
             return await self._snapshot(conn, family_id, day)
 
     async def reserve(self, *, family_id, run_id, provider, model, estimate, purpose="inference", pricing=None, daily_limit=None, day=None, reactive=False, attempt_id=None):
+        from ...budget_settings import get_config, policy_lock
+        async with policy_lock:
+            effective = get_config(self.db.path.parent, fallback=daily_limit)["effective_limit"]
+            return await self._reserve(family_id=family_id, run_id=run_id, provider=provider, model=model,
+                estimate=estimate, purpose=purpose, pricing=pricing, daily_limit=effective, day=day,
+                reactive=reactive, attempt_id=attempt_id)
+
+    async def _reserve(self, *, family_id, run_id, provider, model, estimate, purpose="inference", pricing=None, daily_limit=None, day=None, reactive=False, attempt_id=None):
         if getattr(self.db, "_budget_governance_error", None):
             raise BudgetExhausted("Budget persistence/recovery is unavailable; restart and complete recovery before paid work")
         if type(estimate) is not int or estimate < 0:
