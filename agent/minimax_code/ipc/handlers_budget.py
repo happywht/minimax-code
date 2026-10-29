@@ -73,7 +73,7 @@ def register_budget_handlers(server):
             await ctx.reply_error(INVALID_PARAMS, str(exc))
 
     async def settings_set(params, ctx):
-        from ..budget_settings import policy_lock, set_config
+        from ..budget_settings import get_config, policy_lock, set_config
         from ..storage.dao.text_artifacts import ArtifactDAO
         try:
             request = BudgetSettingsSetParams.model_validate(params)
@@ -82,6 +82,10 @@ def register_budget_handlers(server):
                 service = await ArtifactDAO(db).service_id()
                 if service != request.expected_service_id:
                     raise ValueError("Service identity changed; reload budget settings")
+                if "expected_saved_limit" in request.model_fields_set:
+                    current = get_config(db.path.parent)["saved_limit"]
+                    if current != request.expected_saved_limit:
+                        raise ValueError("Daily budget settings changed; refresh before replacing")
                 config = set_config(db.path.parent, request.limit_tokens)
                 day = (await BudgetsDAO(db).snapshot())["day"]
             await ctx.reply({"service_id": service, **config, "day": day, "timezone": "Asia/Shanghai"})

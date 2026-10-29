@@ -445,6 +445,7 @@ class BudgetSettingsSetParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     expected_service_id: str = Field(min_length=1, max_length=128)
     limit_tokens: int | None = Field(gt=0, le=2**53 - 1)
+    expected_saved_limit: int | None = Field(default=None, gt=0, le=2**53 - 1)
 
 
 class BudgetReconcileParams(BaseModel):

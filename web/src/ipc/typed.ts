@@ -250,7 +250,7 @@ export interface TypedIPC {
   resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number): Promise<RunAdmissionResult>;
   getBudget(runId?: string, day?: string): Promise<BudgetStateResult>;
   getDailyBudgetSettings(): Promise<import("../types/ipc").DailyBudgetSettings>;
-  setDailyBudgetSettings(service: string, limit: number | null): Promise<import("../types/ipc").DailyBudgetSettings>;
+  setDailyBudgetSettings(service: string, limit: number | null, expectedSavedLimit?: number | null): Promise<import("../types/ipc").DailyBudgetSettings>;
   reconcileBudget(params: BudgetReconcileParams): Promise<{ok: boolean}>;
   getRunSteps(runId: string): Promise<RunStepsResult>;
   searchPublicResearch(params: { session_id: string; project_id: string; expected_service_id: string; query: string }): Promise<import("../types/ipc").ResearchSourceScope & { result: { results: { title: string; url: string; snippet: string; title_truncated: boolean; snippet_truncated: boolean }[]; accessed_at: string; results_truncated: boolean } }>;
@@ -763,7 +763,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     getRun: (runId) => client.request<RunGetResult>("run.get", { run_id: runId }),
     cancelRun: (runId) => client.request("run.cancel", { run_id: runId }),
     getDailyBudgetSettings: () => client.request("budget.settings_get", {}),
-    setDailyBudgetSettings: (service, limit) => client.request("budget.settings_set", { expected_service_id: service, limit_tokens: limit }),
+    setDailyBudgetSettings: (service, limit, expectedSavedLimit) => client.request("budget.settings_set", { expected_service_id: service, limit_tokens: limit, ...(expectedSavedLimit !== undefined ? { expected_saved_limit: expectedSavedLimit } : {}) }),
     getBudget: (runId, day) => client.request<BudgetStateResult>("budget.get", { ...(runId ? {run_id: runId} : {}), ...(day ? {day} : {}) }),
     reconcileBudget: (params) => client.request<{ok: boolean}>("budget.reconcile", params),
     resumeRun: (runId, idempotencyKey, reviewed = false, budgetTokens?: number) =>
