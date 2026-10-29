@@ -1388,6 +1388,10 @@ Semantics:
 * **Replace, not merge** — each envelope table is fully `DELETE`-d then
   refilled; tables absent from the envelope keep their current rows.
   Re-importing the same file is therefore idempotent.
+  On Schema048, imports containing `webhooks` or `webhook_deliveries`
+  are rejected before mutation, including older configuration exports.
+  Other protected execution and accounting tables are also rejected;
+  a complete JSON export is therefore not a supported full restore.
 * **Column whitelist** — row keys are intersected with the target
   table's `PRAGMA table_info` columns (drifted columns dropped, absent
   columns fall back to SQL defaults); values are always bound
@@ -1849,8 +1853,11 @@ one return HTTP 403 without dispatch. Signature mismatch retains its HTTP 200
 validation response. After verification, the receiver durably claims the SHA-256
 body digest per hook before awaiting the mapped action. GitHub/Gitee delivery IDs
 are untrusted correlation hints: the signature covers the body, not those headers.
-A completed claim with the same ID and digest returns `ok: true, duplicate: true`
-without dispatch. A repeated body with a different or missing ID, or a reused ID
+A completed claim with the same ID, digest, source and interpreted event returns
+`ok: true, duplicate: true` without dispatch. A changed event or a legacy completed
+record without an event fingerprint requires review. The event header itself is
+not authenticated; matching fingerprints do not establish its authenticity.
+A repeated body with a different or missing ID, or a reused ID
 with a different body, returns HTTP 409 for review; identical bodies from independent
 events may therefore require review. Pending or failed claims also return 409 on
 retry. A dispatch failure returns HTTP 500 with `ok: false` and an `error_id` for

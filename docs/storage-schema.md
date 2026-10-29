@@ -689,7 +689,9 @@ DB+vault备份恢复到新目录，不能删表或手动改写版本号。
 `webhook_deliveries` 保存入站投递的持久化 claim：`webhook_id` 与认证请求体
 的 `body_sha256` 构成复合主键；可空的 `delivery_id` 与 `webhook_id` 组合唯一，
 ID 是未签名的关联提示。`state` 非空且仅允许 `pending`、`completed`、`review`；
-`error_id`、`stage` 可空，`created_at` 和 `updated_at` 非空。记录没有外键或级联删除，
+`error_id`、`stage` 可空，`created_at` 和 `updated_at` 非空。完成记录的 `stage`
+保存有界事件语义指纹（并不认证事件头）；旧完成记录无指纹时重试需要核对。
+记录没有外键或级联删除，
 保留历史核对依据。处理中断和部分失败不可自动重试；详见 [IPC 契约](ipc-contract.md)。
 
 当前离线 bundle v8 对应 Schema048；v1–v7 继续支持验证及原样恢复。恢复旧备份会回退

@@ -753,11 +753,18 @@ def build_app(
         from .webhooks.deliveries import claim, finish
 
         digest = hashlib.sha256(body).hexdigest()
+        # Event headers are not HMAC-authenticated. Bind their interpreted
+        # value to the completed record only to detect inconsistent retries.
+        import json
+
+        event_fingerprint = "event-v1:" + hashlib.sha256(json.dumps(
+            [payload.source, payload.event], ensure_ascii=True, separators=(",", ":")
+        ).encode("ascii")).hexdigest()
         webhook_id = cfg["id"]
         delivery_id = headers.get("x-github-delivery") or headers.get("x-gitee-delivery")
         if delivery_id and (len(delivery_id) > 200 or not delivery_id.isascii()):
             return JSONResponse(content={"ok": False, "error": "invalid delivery id"}, status_code=400)
-        state = await claim(db, webhook_id, digest, delivery_id)
+        state = await claim(db, webhook_id, digest, delivery_id, event_fingerprint)
         if state == "completed":
             return JSONResponse(content={"ok": True, "duplicate": True}, status_code=200)
         if state != "claimed":
@@ -785,7 +792,7 @@ def build_app(
                 status_code=500,
             )
 
-        await finish(db, webhook_id, digest, "completed")
+        await finish(db, webhook_id, digest, "completed", stage=event_fingerprint)
         return JSONResponse(content={"ok": True}, status_code=200)
 
     # ---- POST /complete — inline code completion (v0.6.0) ---------------

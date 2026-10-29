@@ -870,3 +870,9 @@ HostTunnelManager 使用真实 Windows OpenSSH 隧道打开浏览器，页面加
 从 schema 46 升至 47，测试会话标记保留，服务健康检查通过；测试单元随后已停止
 并移除。事务和隔离数据保留在 `/tmp/minimax-upgrade-accept-7ffd671a7e`。该测试
 未升级正式服务，也未模拟整机重启或真实模型任务。
+
+2026-10-29：以提交 `1926a84` 在另一临时 Linux 用户服务复测，从 Schema046 升至
+Schema048；核对测试会话标记和 webhook_deliveries 表，并通过升级后健康检查。
+升级前 v6 数据包恢复至独立新目录，确认 Schema046 和测试会话标记保留。测试单元
+已停止并移除，事务与隔离数据保留于 `/tmp/minimax-upgrade-accept-8ad6e8af40`。
+本次未切换正式服务，也未验证整机重启、真实模型或工作区的备份恢复。

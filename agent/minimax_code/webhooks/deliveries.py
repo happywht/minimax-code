@@ -4,7 +4,8 @@ from __future__ import annotations
 from ..storage.dao._base import now_iso
 
 
-async def claim(db, webhook_id: str, digest: str, delivery_id: str | None) -> str:
+async def claim(db, webhook_id: str, digest: str, delivery_id: str | None,
+                event_fingerprint: str | None = None) -> str:
     async with db.transaction() as conn:
         now = now_iso()
         cursor = await conn.execute(
@@ -15,11 +16,16 @@ async def claim(db, webhook_id: str, digest: str, delivery_id: str | None) -> st
         if cursor.rowcount:
             return "claimed"
         cursor = await conn.execute(
-            "SELECT state, delivery_id FROM webhook_deliveries WHERE webhook_id=? AND body_sha256=?",
+            "SELECT state, delivery_id, stage FROM webhook_deliveries "
+            "WHERE webhook_id=? AND body_sha256=?",
             (webhook_id, digest),
         )
         row = await cursor.fetchone()
         if row and delivery_id and row[1] == delivery_id:
+            if row[0] == "completed" and (
+                not event_fingerprint or row[2] != event_fingerprint
+            ):
+                return "conflict"
             return row[0]
         return "conflict"
 

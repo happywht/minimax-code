@@ -429,8 +429,9 @@ async def test_delivery_claims_reject_ambiguous_and_persist(async_db):
 
     assert await claim(async_db, "wh", "hash1", "id1") == "claimed"
     assert await claim(async_db, "wh", "hash1", "id1") == "pending"
-    await finish(async_db, "wh", "hash1", "completed")
-    assert await claim(async_db, "wh", "hash1", "id1") == "completed"
+    await finish(async_db, "wh", "hash1", "completed", stage="event-v1:test")
+    assert await claim(async_db, "wh", "hash1", "id1", "event-v1:test") == "completed"
+    assert await claim(async_db, "wh", "hash1", "id1", "event-v1:other") == "conflict"
     assert await claim(async_db, "wh", "hash1", "id2") == "conflict"
     assert await claim(async_db, "wh", "hash2", "id1") == "conflict"
     assert await claim(async_db, "wh", "hash1", None) == "conflict"
@@ -438,6 +439,58 @@ async def test_delivery_claims_reject_ambiguous_and_persist(async_db):
     await finish(async_db, "wh", "hash3", "review", "error1", "notification")
     row = await async_db.fetchone("SELECT state, error_id, stage FROM webhook_deliveries WHERE body_sha256=?", ("hash3",))
     assert tuple(row) == ("review", "error1", "notification")
+
+
+async def test_http_event_change_and_legacy_completed_require_review(async_db, monkeypatch):
+    import io
+
+    import httpx
+
+    from minimax_code import webhooks
+    from minimax_code.config import Config
+    from minimax_code.http_server import build_app
+    from minimax_code.ipc.server import IPCServer
+    from minimax_code.webhooks.deliveries import claim, finish
+
+    row = await WebhookDAO(async_db).create(name="hook", source="github", secret="secret")
+    server = IPCServer(Config(), stdin=io.StringIO(), stdout=io.StringIO())
+    server._app_state = {"db": async_db}
+    app = build_app(server)
+    events = []
+
+    async def dispatch(payload, **kwargs):
+        events.append(payload.event)
+
+    monkeypatch.setattr(webhooks, "dispatch_webhook_action", dispatch)
+    body = b"{}"
+    signature = "sha256=" + hmac.new(b"secret", body, hashlib.sha256).hexdigest()
+    headers = {"X-Hub-Signature-256": signature, "X-GitHub-Delivery": "delivery",
+               "X-GitHub-Event": "ping"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": f"Bearer {app.state.auth.token}"}) as client:
+        first = await client.post(row["url_path"], content=body, headers=headers)
+        retry = await client.post(row["url_path"], content=body, headers=headers)
+        changed = await client.post(row["url_path"], content=body,
+                                    headers={**headers, "X-GitHub-Event": "push"})
+        assert first.json() == {"ok": True}
+        assert retry.json() == {"ok": True, "duplicate": True}
+        assert changed.status_code == 409
+        assert events == ["ping"]
+
+        legacy_body = b'{"legacy":true}'
+        legacy_digest = hashlib.sha256(legacy_body).hexdigest()
+        assert await claim(async_db, row["id"], legacy_digest, "legacy") == "claimed"
+        await finish(async_db, row["id"], legacy_digest, "completed")
+        legacy_signature = "sha256=" + hmac.new(
+            b"secret", legacy_body, hashlib.sha256).hexdigest()
+        legacy = await client.post(row["url_path"], content=legacy_body,
+            headers={**headers, "X-GitHub-Delivery": "legacy",
+                     "X-Hub-Signature-256": legacy_signature})
+        assert legacy.status_code == 409
+        assert events == ["ping"]
+    server.listeners.clear()
+
 
 async def test_concurrent_claim_and_interrupted_dispatch(async_db):
     import asyncio

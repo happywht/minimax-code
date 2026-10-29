@@ -77,6 +77,27 @@ async def test_process_identity_restore_rejected_before_any_mutation(async_db, t
     assert (await dump_database(async_db))["tables"] == before["tables"]
 
 
+@pytest.mark.parametrize("state", ["pending", "completed", "review"])
+async def test_webhook_ledger_restore_cannot_clear_live_claim(async_db, state):
+    from minimax_code.webhooks.deliveries import claim, finish
+
+    assert await claim(async_db, "wh", "digest", "delivery") == "claimed"
+    if state != "pending":
+        await finish(async_db, "wh", "digest", state, stage="event-v1:test")
+    envelope = {"format": EXPORT_FORMAT, "schema_version": 48,
+                "tables": {"webhook_deliveries": [], "settings": []}}
+    with pytest.raises(ValueError, match="Webhook configuration/delivery ledger JSON restore"):
+        await restore_database(async_db, envelope)
+    assert await claim(async_db, "wh", "digest", "delivery", "event-v1:test") == state
+
+
+async def test_old_webhook_configuration_restore_is_rejected(async_db):
+    envelope = {"format": EXPORT_FORMAT, "schema_version": 47,
+                "tables": {"webhooks": []}}
+    with pytest.raises(ValueError, match="Webhook configuration/delivery ledger JSON restore"):
+        await restore_database(async_db, envelope)
+
+
 class TestBudgetRestoreFence:
     @pytest.mark.parametrize("source", ["old", "partial", "current"])
     async def test_accounting_restore_rejected_before_any_mutation(self, async_db, source):

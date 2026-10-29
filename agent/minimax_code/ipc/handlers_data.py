@@ -171,6 +171,14 @@ async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
             "restore the complete SQLite database offline with its original private marker "
             "and reconcile exact container responsibility before accepting new work."
         )
+    if max(current, default=0) >= 48 and (
+        {"webhooks", "webhook_deliveries"} & envelope_tables.keys()
+    ):
+        raise ValueError(
+            "Webhook configuration/delivery ledger JSON restore is unsupported on Schema048; "
+            "use a reviewed offline SQLite restore and reconcile side effects "
+            "before accepting webhook deliveries."
+        )
 
     # FK enforcement must be off for the truncate-and-refill dance (SQLite
     # bulk-load idiom); PRAGMA is a no-op inside a transaction, so toggle it
