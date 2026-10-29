@@ -56,9 +56,9 @@ from .text_artifacts import (
 )
 
 FORMAT = "minimax-code-data-vault"
-FORMAT_VERSION = 6
-SCHEMA_VERSION = 46
-SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46}
+FORMAT_VERSION = 7
+SCHEMA_VERSION = 47
+SUPPORTED_SCHEMAS = {1: 41, 2: 42, 3: 43, 4: 44, 5: 45, 6: 46, 7: 47}
 MAX_FILES = 10_000
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 MAX_WAL_BYTES = MAX_DATABASE_BYTES
@@ -387,7 +387,7 @@ def _inventory(path):
             "artifacts": artifacts,
             **({"attachments": attachments} if schema_version >= 42 else {}),
             **({"office_deliveries": _office_inventory(conn, service_id)}
-               if schema_version == 46 else {}),
+               if schema_version >= 46 else {}),
         }
 
 
@@ -399,11 +399,11 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
     _require(columns == ["id", "project_id", "service_id", "snapshot_id", "original_name",
                          "declared_type", "recognized_type", "size_bytes", "sha256", "version",
                          "parser_status", "parser_version", "preview_text", "preview_truncated",
-                         "quality_status", "created_at"] + (["parser_reason", "parser_scope"] if schema_version in {43, 44, 45, 46} else []), "Unsupported attachment schema")
+                         "quality_status", "created_at"] + (["parser_reason", "parser_scope"] if schema_version in {43, 44, 45, 46, 47} else []), "Unsupported attachment schema")
     rows = conn.execute("SELECT id,snapshot_id,size_bytes,sha256,version,service_id,original_name,"
                         "declared_type,recognized_type,parser_status,parser_version,preview_text,"
                         "preview_truncated,quality_status,"
-                        + ("parser_reason,parser_scope" if schema_version in {43, 44, 45, 46} else "'legacy_v1','legacy_v1'")
+                        + ("parser_reason,parser_scope" if schema_version in {43, 44, 45, 46, 47} else "'legacy_v1','legacy_v1'")
                         + " FROM attachments ORDER BY snapshot_id LIMIT ?",
                         (MAX_FILES + 1,)).fetchall()
     _require(len(rows) + artifact_count <= MAX_FILES, "Too many registered vault files")
@@ -418,7 +418,7 @@ def _attachment_inventory(conn, service_id, artifact_count, schema_version):
                  and declared in DECLARED_TYPES and recognized in RECOGNIZED_TYPES
                  and status in STATUSES and type(parser) is int
                  and (parser == 1 and reason == scope == "legacy_v1"
-                      or schema_version in {43, 44, 45, 46} and parser == 2 and reason in REASONS
+                      or schema_version in {43, 44, 45, 46, 47} and parser == 2 and reason in REASONS
                       and scope in {"inert_text", "docx_body_paragraphs_tables", "original_only"})
                  and isinstance(preview, str) and len(preview.encode("utf-8")) <= MAX_PREVIEW_BYTES
                  and len(preview.splitlines()) <= MAX_PREVIEW_LINES and truncated in (0, 1)
@@ -599,7 +599,7 @@ def _report(manifest, operation):
         "artifact_count": len(manifest["artifacts"]),
         "attachment_count": len(manifest.get("attachments", [])),
         **({"office_delivery_count": len(manifest["office_deliveries"])}
-           if manifest["format_version"] == 6 else {}),
+           if manifest["format_version"] >= 6 else {}),
         "excluded_vault_entries": manifest["excluded_vault_entries"],
         **({"excluded_attachment_entries": manifest["excluded_attachment_entries"]}
            if manifest["format_version"] >= 2 else {}),
@@ -650,7 +650,7 @@ def create_bundle(data_dir, output):
             _snapshot(root, stage, lease)
             inventory = _inventory(stage.path / "data.db")
             _require(inventory["schema_version"] == SCHEMA_VERSION,
-                     "Create requires known Schema046; old v1/041 through v5/045 are verify/restore only")
+                     "Create requires known Schema047; old v1/041 through v6/046 are verify/restore only")
             database = _file_meta(stage.path / "data.db", MAX_DATABASE_BYTES)
             excluded = _collect_vault(root, stage, VAULT, inventory["artifacts"], MAX_BYTES)
             excluded_attachments = _collect_vault(root, stage, ATTACHMENT_VAULT,
@@ -743,7 +743,7 @@ def _manifest(payload):
     _require(type(version) is int and version in SUPPORTED_SCHEMAS, "Unsupported bundle format")
     if version >= 2:
         keys |= {"attachments", "excluded_attachment_entries"}
-    if version == 6:
+    if version >= 6:
         keys.add("office_deliveries")
     _require(set(value) == keys, "Invalid manifest fields")
     _require(
@@ -819,7 +819,7 @@ def _manifest(payload):
             attachment_ids.add(row["attachment_id"])
             attachment_snapshots.add(row["snapshot_id"])
             total += row["size_bytes"]
-    if version == 6:
+    if version >= 6:
         _office_manifest(value["office_deliveries"], value["service_id"], value["attachments"])
     _require(total <= MAX_TOTAL_BYTES, "Bundle exceeds shared total size limit")
     for key in ["excluded_vault_entries", *(["excluded_attachment_entries"] if version >= 2 else [])]:

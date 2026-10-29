@@ -42,7 +42,9 @@ describe("remote host contract", () => {
     try {
       await expect(api.createHost(config)).rejects.toThrow("already taken");
       expect((await api.getHost(host.id)).host).toMatchObject({ ...config, enabled: true, port: 22 });
-      await api.updateHost(host.id, { enabled: false, port: 2222 });
+      await api.updateHost(host.id, { enabled: false, port: 2222, remote_port: 9999 });
+      expect((await api.getHost(host.id)).host.remote_port).toBe(9999);
+      await expect(api.updateHost(host.id, { remote_port: 0 })).rejects.toThrow("port");
       expect((await api.listHosts({ enabled: false })).hosts).toContainEqual(expect.objectContaining({ id: host.id, port: 2222 }));
       expect((await api.listHosts({ enabled: true })).hosts.some((h) => h.id === host.id)).toBe(false);
       await expect(api.probeHost(host.id)).rejects.toThrow("disabled");

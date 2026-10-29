@@ -116,6 +116,7 @@ export interface HostConfig {
   username: string;
   port?: number;
   identity_file?: string;
+  remote_port?: number;
 }
 
 export interface HostConnection {
@@ -128,6 +129,7 @@ export interface HostConnection {
 
 export interface RemoteHost extends HostConfig {
   id: string;
+  remote_port: number;
   port: number;
   identity_file: string;
   enabled: boolean;

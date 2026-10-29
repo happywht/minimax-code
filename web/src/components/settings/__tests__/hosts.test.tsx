@@ -4,7 +4,7 @@ import { HostsTab } from "../HostsTab";
 
 const api = vi.hoisted(() => ({ listHosts: vi.fn(), getHostConnection: vi.fn(), connectHost: vi.fn(), disconnectHost: vi.fn(), createHost: vi.fn(), updateHost: vi.fn() }));
 vi.mock("../../../ipc", () => ({ typedIPC: api }));
-const host = { id: "h", name: "build", hostname: "linux", username: "user", port: 22, enabled: true };
+const host = { id: "h", name: "build", hostname: "linux", username: "user", port: 22, remote_port: 8765, enabled: true };
 const disconnected = { host_id: "h", state: "disconnected", local_url: null, remote_port: null, error: null };
 
 describe("remote host settings", () => {
@@ -22,10 +22,21 @@ describe("remote host settings", () => {
     expect(link).toHaveAttribute("href", "http://127.0.0.1:4567/");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
-    expect(api.connectHost).toHaveBeenCalledWith({ host_id: "h", remote_port: 8765 });
+    expect(api.connectHost).toHaveBeenCalledWith({ host_id: "h" });
     fireEvent.click(screen.getByRole("button", { name: "断开" }));
     await waitFor(() => expect(screen.queryByRole("link")).not.toBeInTheDocument());
     expect(api.disconnectHost).toHaveBeenCalledWith("h");
+  });
+  it("saves each host port independently and connects using saved configuration", async () => {
+    const other = { ...host, id: "other", name: "other", remote_port: 9999 };
+    api.listHosts.mockResolvedValueOnce({ hosts: [host, other] })
+      .mockResolvedValueOnce({ hosts: [{ ...host, remote_port: 8888 }, other] });
+    api.updateHost.mockResolvedValue({ ok: true });
+    render(<HostsTab />);
+    fireEvent.change(await screen.findByLabelText("build 远端服务端口"), { target: { value: "8888" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "保存端口" })[0]);
+    await waitFor(() => expect(api.updateHost).toHaveBeenCalledWith("h", { remote_port: 8888 }));
+    expect(screen.getByLabelText("other 远端服务端口")).toHaveValue(9999);
   });
   it("shows errors and never exposes a non-loopback returned URL", async () => {
     api.getHostConnection.mockResolvedValue({ connection: { ...disconnected, state: "connected", local_url: "https://example.com" } });

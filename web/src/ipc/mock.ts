@@ -225,9 +225,10 @@ function mockHandle(
       if ([...mockHosts.values()].some((host) => host.name === p.name)) {
         throw new Error(`host name already taken: ${p.name}`);
       }
+      if (p.remote_port != null && (!Number.isInteger(p.remote_port) || p.remote_port < 1 || p.remote_port > 65535)) throw new Error("port must be 1..65535");
       const now = new Date().toISOString();
       const host: import("../types/ipc").RemoteHost = {
-        ...p, id: `mock-host-${crypto.randomUUID()}`, port: p.port ?? 22,
+        ...p, id: `mock-host-${crypto.randomUUID()}`, port: p.port ?? 22, remote_port: p.remote_port ?? 8765,
         identity_file: p.identity_file ?? "", enabled: true, agent_version: "",
         created_at: now, updated_at: now, last_probe_at: null, last_probe_ok: null,
       };
@@ -243,6 +244,7 @@ function mockHandle(
     }
     case "host.update": {
       const { host_id, ...fields } = params as Partial<import("../types/ipc").HostConfig> & { host_id: string; enabled?: boolean };
+      if (fields.remote_port != null && (!Number.isInteger(fields.remote_port) || fields.remote_port < 1 || fields.remote_port > 65535)) throw new Error("port must be 1..65535");
       const host = { ...requireMockHost(host_id), ...fields, updated_at: new Date().toISOString() };
       mockHosts.set(host_id, host);
       return { ok: true, host };

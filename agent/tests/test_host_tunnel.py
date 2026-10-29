@@ -406,3 +406,21 @@ async def test_ipc_connection_update_and_delete_close_transport():
     await call("host.delete", {"host_id": HOST["id"]})
     assert manager.connection(HOST["id"])["state"] == "disconnected"
     await manager.close()
+
+
+async def test_ipc_uses_saved_port_and_disconnects_on_change():
+    host = {**HOST, "remote_port": 9999}
+    manager = SimpleNamespace(connect=AsyncMock(return_value={"state": "connected"}),
+                              disconnect=AsyncMock())
+    dao = SimpleNamespace(get=AsyncMock(return_value=host),
+                          update=AsyncMock(return_value={**host, "remote_port": 7777}))
+    handlers = {}
+    register_host_handlers(SimpleNamespace(register=lambda n, h: handlers.update({n: h})),
+                           dao=dao, tunnel_manager=manager)
+    ctx = SimpleNamespace(reply=AsyncMock(), reply_error=AsyncMock())
+    await handlers["host.connect"]({"host_id": host["id"]}, ctx)
+    manager.connect.assert_awaited_once_with(host, remote_port=9999, local_port=0)
+    await handlers["host.update"]({"host_id": host["id"], "remote_port": 7777}, ctx)
+    manager.disconnect.assert_awaited_once_with(host["id"])
+    dao.update.assert_awaited_once_with(host["id"], remote_port=7777)
+    ctx.reply_error.assert_not_awaited()

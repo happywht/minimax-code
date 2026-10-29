@@ -246,13 +246,13 @@ on the next `readline() == ""`.
 | `workspace.merge_worktree` | req/res | M3 — commit pending worktree changes, run the project validate command inside the worktree, then `--no-ff` merge into the main checkout. Conflicts abort cleanly and report unmerged files; a failing validation stops the merge with evidence. |
 | `engine.list` | req/res | M4 — capability cards for every registered engine (native / Codex), availability probed live; `default: "native"`. |
 | `engine.status` | req/res | M4 — one engine's card by id. Unavailable engines carry `unavailable_reason` so the UI can disable them explicitly. |
-| `host.create` | req/res | M5 — register a remote Linux run host (name/hostname/username/port/identity_file reference — credentials are never stored). Duplicate names and missing identity files fail fast. |
+| `host.create` | req/res | M5 — register a remote Linux run host (name/hostname/username/SSH port/remote_port/identity_file reference — credentials are never stored). Duplicate names and missing identity files fail fast. |
 | `host.list` | req/res | M5 — list hosts, optional `enabled` filter. |
-| `host.connect` | req/res | Start an owned loopback SSH forward to an existing remote agent; returns connection status. |
+| `host.connect` | req/res | Start an owned loopback SSH forward to an existing remote agent using its saved `remote_port` (default 8765); an optional `remote_port` overrides it for this connection only. Returns connection status. |
 | `host.disconnect` | req/res | Close and reap the host's SSH forward. |
 | `host.connection` | req/res | Read the current forward status. |
 | `host.get` | req/res | M5 — one host by id. |
-| `host.update` | req/res | M5 — tri-state field update incl. enable/disable. |
+| `host.update` | req/res | M5 — tri-state field update incl. enable/disable and `remote_port`; connection coordinate changes disconnect an existing tunnel. |
 | `host.delete` | req/res | M5 — remove the host (its runs are history and survive). |
 | `host.probe` | req/res | M5 — SSH connection diagnosis + version handshake (uname / python3 / codex), outcome persisted (`last_probe_at` / `last_probe_ok` / `agent_version`). |
 | `host.exec` | req/res | M5 — execute one command on the remote host over ssh (BatchMode, bounded timeout); structured `{ok, exit_code, stdout, stderr, timed_out}`. Disabled hosts refuse. |
@@ -1609,7 +1609,7 @@ mock 模式只在页内存保留原件，Office 为 generic ZIP 候选且不可�
 核对大小/hash/身份，缺失/损坏拒绝，没有 source fallback。返回 application/octet-stream、
 attachment disposition（固定 ASCII fallback + 过滤后的 RFC5987 名称）、no-store、nosniff、sandbox CSP、
 上述两个身份 header。前端再次检查服务/项目 epoch、大小和实际 SHA-256 后才发布 Blob 下载。
-原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，当前Schema046/bundle v6新增办公成果关联表，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
+原件和解析元数据从Schema043/bundle v3起纳入离线包；Schema045/bundle v5扩展MCP传输检查，Schema046/bundle v6新增办公成果关联表；当前Schema047/bundle v7保存各主机远端服务端口，均不改变附件字段。PDF/XLSX沿用v2/inert_text但使用各自精确类型校验。
 旧v1/041至v5/045仍只读校验/恢复，不自动迁移或重解析，详见data-vault-bundle.md。
 
 ### office.* — 手动生成纯数据 XLSX（Schema046）

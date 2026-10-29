@@ -41,16 +41,17 @@ class HostsDAO:
         username: str,
         port: int = 22,
         identity_file: str = "",
+        remote_port: int = 8765,
     ) -> dict[str, Any]:
         host_id = f"host_{uuid.uuid4().hex[:10]}"
         now = now_iso()
         sql = (
             "INSERT INTO hosts (id, name, hostname, port, username, identity_file, "
-            "enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)"
+            "enabled, created_at, updated_at, remote_port) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"
         )
         async with self._db.transaction() as conn:
             await conn.execute(
-                sql, (host_id, name, hostname, port, username, identity_file, now, now)
+                sql, (host_id, name, hostname, port, username, identity_file, now, now, remote_port)
             )
         row = await self._db.fetchone("SELECT * FROM hosts WHERE id = ?", (host_id,))
         return _hydrate(row)
@@ -92,12 +93,13 @@ class HostsDAO:
         port: int | None = None,
         identity_file: str | None = None,
         enabled: bool | None = None,
+        remote_port: int | None = None,
     ) -> dict[str, Any] | None:
         sets: list[str] = []
         params: list[Any] = []
         for column, value in (
             ("name", name), ("hostname", hostname), ("username", username),
-            ("port", port), ("identity_file", identity_file),
+            ("port", port), ("identity_file", identity_file), ("remote_port", remote_port),
         ):
             if value is not None:
                 sets.append(f"{column} = ?")

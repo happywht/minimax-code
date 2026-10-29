@@ -129,6 +129,7 @@ async def test_host_create_update_probe_delete(host_server) -> None:
     }, ctx)
     host = ctx.reply.await_args.args[0]["host"]
     assert host["port"] == 2200 and host["enabled"] is True
+    assert host["remote_port"] == 8765
 
     # Duplicate names are rejected.
     dup = host_server.ctx()
@@ -151,9 +152,10 @@ async def test_host_create_update_probe_delete(host_server) -> None:
 
     # Update tri-state + disable.
     await srv._handlers["host.update"]({
-        "host_id": host["id"], "enabled": False, "port": 22}, host_server.ctx())
+        "host_id": host["id"], "enabled": False, "port": 22, "remote_port": 9999}, host_server.ctx())
     updated = await dao.get(host["id"])
     assert updated["enabled"] is False and updated["port"] == 22
+    assert updated["remote_port"] == 9999
 
     ok = await dao.delete(host["id"])
     assert ok is True
@@ -389,3 +391,12 @@ async def test_transfer_status_unknown_id_never_prepares_or_commits(host_server,
     assert not result["ok"] and result["publication_state"] == "unknown"
     assert remote.read_bytes() == b"original"
     assert not list(tmp_path.glob(".minimax-upload-*"))
+
+
+@pytest.mark.parametrize("port", [0, 65536, True, 2.5])
+async def test_host_rejects_invalid_remote_port(host_server, port):
+    ctx = host_server.ctx()
+    await host_server.server._handlers["host.create"](
+        {"name": "bad", "hostname": "linux", "username": "me", "remote_port": port}, ctx)
+    ctx.reply_error.assert_awaited_once()
+    assert await host_server.hosts.list() == []

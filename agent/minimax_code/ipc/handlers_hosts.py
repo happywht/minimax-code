@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 def _validate_port(port: Any) -> int:
+    if isinstance(port, bool) or not isinstance(port, (int, str)):
+        raise HandlerError(INVALID_PARAMS, "port must be an integer")
     try:
         port_int = int(port)
     except (TypeError, ValueError):
@@ -63,6 +65,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             if not name or not hostname or not username:
                 raise HandlerError(INVALID_PARAMS, "name, hostname and username are required")
             port = _validate_port(params.get("port", 22))
+            remote_port = _validate_port(params.get("remote_port", 8765))
             identity_file = str(params.get("identity_file") or "").strip()
             if identity_file and not Path(identity_file).expanduser().exists():
                 raise HandlerError(INVALID_PARAMS,
@@ -71,7 +74,8 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             if await dao_obj.get_by_name(name) is not None:
                 raise HandlerError(INVALID_PARAMS, f"host name already taken: {name!r}")
             row = await dao_obj.create(name=name, hostname=hostname, username=username,
-                                       port=port, identity_file=identity_file)
+                                       port=port, identity_file=identity_file,
+                                       remote_port=remote_port)
             await ctx.reply({"host": row})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
@@ -112,6 +116,8 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
                     updates[key] = value
             if params.get("port") is not None:
                 updates["port"] = _validate_port(params["port"])
+            if params.get("remote_port") is not None:
+                updates["remote_port"] = _validate_port(params["remote_port"])
             if params.get("identity_file") is not None:
                 identity = str(params["identity_file"]).strip()
                 if identity and not Path(identity).expanduser().exists():
@@ -126,7 +132,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
                 await _require_host(host_id)
                 # Editing connection coordinates or disabling a host cannot
                 # leave a live tunnel attached to its obsolete configuration.
-                if ({"hostname", "username", "port", "identity_file"} & updates.keys()
+                if ({"hostname", "username", "port", "identity_file", "remote_port"} & updates.keys()
                         or updates.get("enabled") is False):
                     await tunnels.disconnect(host_id)
                 row = await (await dao_factory()).update(host_id, **updates)
@@ -305,7 +311,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             async with lifecycle_lock:
                 host = await _require_host(str(params["host_id"]))
                 connection = await tunnels.connect(
-                    host, remote_port=params.get("remote_port", 8765),
+                    host, remote_port=params.get("remote_port", host.get("remote_port", 8765)),
                     local_port=params.get("local_port", 0))
             await ctx.reply({"connection": connection})
         except (HandlerError, ValueError) as exc:

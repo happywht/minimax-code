@@ -14,11 +14,13 @@ from test_attachment_bundle import (
     legacy_v3_writer,
     legacy_v4_pdf_writer,
     legacy_v5_writer,
+    legacy_v6_writer,
     legacy_writer,
 )
 from xlsx_fixture import cell, worksheet, xlsx_bytes
 
-from minimax_code import bundle, office_metadata
+from minimax_code import office_metadata
+bundle = legacy_v6_writer()
 from minimax_code.storage import db as db_module
 from minimax_code.storage.db import AsyncDatabase, Database
 
@@ -27,6 +29,13 @@ SERVICE = "svc_" + "1" * 32
 ATTACHMENT = "att_" + "2" * 32
 OFFICE = "off_" + "3" * 32
 migration = importlib.import_module("minimax_code.storage.migrations.046_office_deliveries")
+
+
+@pytest.fixture(autouse=True)
+def schema046_only(monkeypatch):
+    discover = db_module.discover_migrations
+    monkeypatch.setattr(db_module, "discover_migrations", lambda applied: [
+        (number, run) for number, run in discover(applied) if number <= 46])
 
 
 def report(**changes):

@@ -29,12 +29,14 @@ export function HostsTab(): JSX.Element {
   const [port, setPort] = useState("22");
   const [identity, setIdentity] = useState("");
   const [remotePort, setRemotePort] = useState("8765");
+  const [hostPorts, setHostPorts] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     setBusy(true); setError(null);
     try {
       const result = await typedIPC.listHosts();
       setHosts(result.hosts);
+      setHostPorts(Object.fromEntries(result.hosts.map((host) => [host.id, String(host.remote_port)])));
       const statuses = await Promise.all(result.hosts.map(async (host) => {
         try { return [host.id, (await typedIPC.getHostConnection(host.id)).connection] as const; }
         catch (err) { return [host.id, { host_id: host.id, state: "failed", local_url: null, remote_port: null, error: String(err) } as HostConnection] as const; }
@@ -71,8 +73,8 @@ export function HostsTab(): JSX.Element {
   const register = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(null);
     try {
-      await typedIPC.createHost({ name: name.trim(), hostname: hostname.trim(), username: username.trim(), port: Number(port), identity_file: identity.trim() });
-      setName(""); setHostname(""); setUsername(""); setPort("22"); setIdentity("");
+      await typedIPC.createHost({ name: name.trim(), hostname: hostname.trim(), username: username.trim(), port: Number(port), identity_file: identity.trim(), remote_port: Number(remotePort) });
+      setName(""); setHostname(""); setUsername(""); setPort("22"); setIdentity(""); setRemotePort("8765");
       await refresh();
     } catch (err) { setError(String(err)); setBusy(false); }
   };
@@ -80,11 +82,19 @@ export function HostsTab(): JSX.Element {
     setBusy(true); setError(null);
     try {
       const result = connect
-        ? await typedIPC.connectHost({ host_id: host.id, remote_port: Number(remotePort) })
+        ? await typedIPC.connectHost({ host_id: host.id })
         : await typedIPC.disconnectHost(host.id);
       setConnections((current) => ({ ...current, [host.id]: result.connection }));
     } catch (err) { setError(String(err)); }
     finally { setBusy(false); }
+  };
+
+  const savePort = async (host: RemoteHost) => {
+    setBusy(true); setError(null);
+    try {
+      await typedIPC.updateHost(host.id, { remote_port: Number(hostPorts[host.id]) });
+      await refresh();
+    } catch (err) { setError(String(err)); setBusy(false); }
   };
 
   const toggleHost = async (host: RemoteHost) => {
@@ -106,25 +116,27 @@ export function HostsTab(): JSX.Element {
         <label className="text-xs">主机地址<Input aria-label="主机地址" required value={hostname} onChange={(e) => setHostname(e.target.value)} /></label>
         <label className="text-xs">用户名<Input aria-label="用户名" required value={username} onChange={(e) => setUsername(e.target.value)} /></label>
         <label className="text-xs">SSH 端口<Input aria-label="SSH 端口" type="number" min="1" max="65535" required value={port} onChange={(e) => setPort(e.target.value)} /></label>
+        <label className="text-xs">远端服务端口<Input aria-label="远端服务端口" type="number" min="1" max="65535" required value={remotePort} onChange={(e) => setRemotePort(e.target.value)} /></label>
         <label className="text-xs sm:col-span-2">SSH 私钥路径（可选）<Input aria-label="SSH 私钥路径" value={identity} onChange={(e) => setIdentity(e.target.value)} /></label>
       </div>
       <Button type="submit" size="sm" disabled={busy}>登记</Button>
     </form>
-    <div className="flex items-end gap-2">
-      <label className="text-xs">远端服务端口<Input aria-label="远端服务端口" type="number" min="1" max="65535" value={remotePort} onChange={(e) => setRemotePort(e.target.value)} /></label>
-      <Button size="sm" disabled={busy} onClick={() => void refresh()}>刷新状态</Button>
-    </div>
+    <Button size="sm" disabled={busy} onClick={() => void refresh()}>刷新状态</Button>
     {hosts.length === 0 && <p className="text-xs text-ink-2">暂无主机。</p>}
     {hosts.map((host) => {
       const connection = connections[host.id];
       const url = tunnelUrl(connection);
       return <article key={host.id} className="space-y-2 rounded-md border border-line p-3">
         <h3 className="text-xs font-medium">{host.name} ({host.username}@{host.hostname}:{host.port})</h3>
+        <div className="flex items-end gap-2">
+          <label className="text-xs">远端服务端口<Input aria-label={`${host.name} 远端服务端口`} type="number" min="1" max="65535" value={hostPorts[host.id] ?? ""} onChange={(e) => setHostPorts((current) => ({ ...current, [host.id]: e.target.value }))} /></label>
+          <Button size="sm" disabled={busy || !Number.isInteger(Number(hostPorts[host.id])) || Number(hostPorts[host.id]) < 1 || Number(hostPorts[host.id]) > 65535 || Number(hostPorts[host.id]) === host.remote_port} onClick={() => void savePort(host)}>保存端口</Button>
+        </div>
         <p className="text-xs text-ink-2">{!host.enabled ? "已禁用 · " : ""}状态：{connection ? STATUS_LABELS[connection.state] : "未知"}</p>
         {connection?.error && <p role="alert" className="text-xs text-status-error">{connection.error}</p>}
         {connection?.state === "connected" && !url && <p role="alert" className="text-xs text-status-error">隧道地址无效，无法打开。</p>}
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={busy || !host.enabled || connection?.state === "connected" || connection?.state === "reconnecting" || !Number.isInteger(Number(remotePort)) || Number(remotePort) < 1 || Number(remotePort) > 65535} onClick={() => void changeConnection(host, true)}>连接</Button>
+          <Button size="sm" disabled={busy || !host.enabled || connection?.state === "connected" || connection?.state === "reconnecting"} onClick={() => void changeConnection(host, true)}>连接</Button>
           <Button size="sm" disabled={busy || (connection?.state !== "connected" && connection?.state !== "reconnecting")} onClick={() => void changeConnection(host, false)}>断开</Button>
           <Button size="sm" disabled={busy} onClick={() => void toggleHost(host)}>{host.enabled ? "禁用" : "启用"}</Button>
           {url && <a className="text-xs text-accent underline" href={url} target="_blank" rel="noopener noreferrer">在新标签页打开远端</a>}

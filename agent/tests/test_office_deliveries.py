@@ -90,7 +90,7 @@ async def test_generation_requires_explicit_absolute_project_root(office, monkey
     assert not service.originals.vault.exists()
 
 
-async def test_actual_generated_file_bundle6_exact_restore_and_read(office, tmp_path):
+async def test_actual_generated_file_bundle7_exact_restore_and_read(office, tmp_path):
     from minimax_code import bundle
 
     service, db, _, identity = office
@@ -102,7 +102,7 @@ async def test_actual_generated_file_bundle6_exact_restore_and_read(office, tmp_
     (data_dir / "test.db").rename(data_dir / "data.db")
     archive = tmp_path / "generated.zip"
     assert bundle.create_bundle(data_dir, archive)["office_delivery_count"] == 1
-    assert bundle.verify_bundle(archive)["format_version"] == 6
+    assert bundle.verify_bundle(archive)["format_version"] == 7
     target = tmp_path / "restored"
     bundle.restore_bundle(archive, target)
     restored = AsyncDatabase(target / "data.db")
