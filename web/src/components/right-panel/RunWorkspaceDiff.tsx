@@ -16,7 +16,7 @@ function filterDiff(diff: string, query: string): string {
 }
 
 /** Render complete file patches without interpreting Git's quoted path syntax. */
-function FileDiffs({ diff, query, label }: { diff: string; query: string; label: string }): JSX.Element {
+function FileDiffs({ diff, query, label, onSelect, disabled }: { diff: string; query: string; label: string; onSelect: (block: string) => void; disabled: boolean }): JSX.Element {
   const filtered = filterDiff(diff, query);
   if (!filtered) return <p>{diff ? `没有匹配的${label}` : `无${label}`}</p>;
   if (!filtered.startsWith("diff --git ")) {
@@ -39,6 +39,7 @@ function FileDiffs({ diff, query, label }: { diff: string; query: string; label:
           <span className="text-status-error">-{removed}</span>
         </summary>
         <div className="overflow-auto border-t border-line"><DiffLines text={block} /></div>
+        <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={() => onSelect(block)}>针对这份差异准备后续任务</Button>
       </details>;
     })}
   </div>;
@@ -55,22 +56,25 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   const [comparison, setComparison] = useState<Record<string, unknown> | null>(null);
   const [search, setSearch] = useState("");
   const [preview, setPreview] = useState<{ path: string; text: string } | null>(null);
-  const version = useRef(0);
+  const [selected, setSelected] = useState<{ scope: "working" | "staged"; block: string } | null>(null);
+  const [reviewNote, setReviewNote] = useState("");
+  const [draftMessage, setDraftMessage] = useState("");
+  const version = useRef(0), appending = useRef(false);
   const available = !!workspace && !!runProject && run.session_id === sessionId && runProject === projectId;
 
   useEffect(() => {
     const revision = version;
-    ++revision.current; setResult(null); setComparison(null); setPreview(null); setError(null); setLoading(false); setSearch("");
+    ++revision.current; setResult(null); setComparison(null); setPreview(null); setError(null); setLoading(false); setSearch(""); setSelected(null); setReviewNote(""); setDraftMessage("");
     return () => { ++revision.current; };
   }, [run.id, sessionId, projectId]);
   useEffect(() => ipc.onSideCar(() => {
-    ++version.current; setResult(null); setComparison(null); setPreview(null); setError(null); setLoading(false);
+    ++version.current; setResult(null); setComparison(null); setPreview(null); setSelected(null); setReviewNote(""); setDraftMessage(""); setError(null); setLoading(false);
   }), []);
 
   const load = async () => {
     if (!available || !sessionId) return;
     const request = ++version.current, host = ipc.agentBaseUrl;
-    setLoading(true); setError(null); setResult(null); setPreview(null);
+    setLoading(true); setError(null); setResult(null); setPreview(null); setSelected(null); setReviewNote(""); setDraftMessage("");
     const current = () => request === version.current && ipc.agentBaseUrl === host
       && useSessionStore.getState().currentSessionId === sessionId
       && (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
@@ -126,6 +130,40 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
     } finally { if (current()) setLoading(false); }
   };
 
+  const appendReview = async () => {
+    if (appending.current || !selected || !result || !sessionId || !available || !reviewNote.trim()) return;
+    appending.current = true;
+    const request = ++version.current, host = ipc.agentBaseUrl;
+    const snapshot = result, choice = selected;
+    setLoading(true); setDraftMessage("");
+    const current = () => request === version.current && ipc.agentBaseUrl === host
+      && useSessionStore.getState().currentSessionId === sessionId
+      && (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
+    try {
+      const fresh = await typedIPC.gitRunWorkspaceDiff(run.id, sessionId);
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (fresh.run_id !== run.id || fresh.session_id !== sessionId || fresh.project_id !== runProject ||
+          fresh.workspace !== workspace || fresh.scope !== "current_workspace" ||
+          fresh.service_id !== snapshot.service_id || identity.service_id !== snapshot.service_id ||
+          fresh.workspace_identity !== snapshot.workspace_identity) throw new Error("工作区或服务已变化，请重新审阅。");
+      const diff = choice.scope === "working" ? fresh.diff : fresh.staged_diff;
+      const blocks = diff.startsWith("diff --git ") ? diff.split(/(?=^diff --git )/m).filter(Boolean) : [];
+      if (!blocks.includes(choice.block)) throw new Error("所选差异已变化，请重新读取并审阅。");
+      const excerpt = choice.block.slice(0, 12000);
+      const text = `请处理以下审阅意见（目标和处理方式可在发送前编辑）：\n来源运行：${run.id}\n` +
+        `工作区：${fresh.workspace}；${choice.scope === "working" ? "未暂存" : "已暂存"}的当前差异可能包含其他人的修改，不能归因于该运行。\n` +
+        `审阅意见：\n${reviewNote.trim()}\n\n审阅时的差异：\n${excerpt}` +
+        (choice.block.length > excerpt.length ? "\n（差异仅附前 12000 个字符，请重新读取完整文件。）" : "");
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project: projectId, session: sessionId, text };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      setDraftMessage(detail.result ?? "当前聊天输入区未打开，请先切换到聊天再操作。");
+      if (detail.result === "已添加到当前会话草稿，尚未发送。") { setSelected(null); setReviewNote(""); }
+    } catch (reason) {
+      if (current()) setDraftMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally { appending.current = false; if (current()) setLoading(false); }
+  };
+
   const reviewPath = (path: string) => {
     setSearch(path);
     if (!result) void load();
@@ -163,8 +201,20 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
       {search.trim() && ((result.diff && !result.diff.startsWith("diff --git ")) || (result.staged_diff && !result.staged_diff.startsWith("diff --git "))) &&
         <p className="text-ink-2">部分差异格式无法按文件筛选，已保留完整原文。</p>}
       <p className="text-ink-2">展开文件查看完整差异；加减数字为文本行数。</p>
-      <details open><summary>未暂存的已跟踪文件差异</summary><FileDiffs diff={result.diff} query={search} label="未暂存差异" /></details>
-      <details open={search.trim() ? true : undefined}><summary>已暂存的差异</summary><FileDiffs diff={result.staged_diff} query={search} label="已暂存差异" /></details>
+      <details open><summary>未暂存的已跟踪文件差异</summary><FileDiffs diff={result.diff} query={search} label="未暂存差异" disabled={loading} onSelect={(block) => { setSelected({ scope: "working", block }); setReviewNote(""); setDraftMessage(""); }} /></details>
+      <details open={search.trim() ? true : undefined}><summary>已暂存的差异</summary><FileDiffs diff={result.staged_diff} query={search} label="已暂存差异" disabled={loading} onSelect={(block) => { setSelected({ scope: "staged", block }); setReviewNote(""); setDraftMessage(""); }} /></details>
+      {selected && <div className="space-y-2 rounded border border-line p-2">
+        <p className="break-all">已选择：{selected.block.split("\n")[0]}（{selected.scope === "working" ? "未暂存" : "已暂存"}）。追加前会重新读取并核对这份差异。</p>
+        <label className="block">审阅意见或后续目标
+          <textarea value={reviewNote} disabled={loading} maxLength={4000} onChange={(event) => setReviewNote(event.target.value)}
+            className="mt-1 block w-full rounded border border-line bg-surface-1 p-2 text-ink-0" rows={3} />
+        </label>
+        <Button type="button" size="sm" disabled={loading || !reviewNote.trim()} onClick={() => void appendReview()}>追加到当前会话草稿</Button>{" "}
+        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => { setSelected(null); setReviewNote(""); }}>取消</Button>
+        <p>追加后可在聊天中编辑，不会自动发送；差异超过 12000 字符时只附前段。</p>
+      </div>}
+      {draftMessage && <p role="status" className="break-words text-ink-1">{draftMessage}</p>}
+      {draftMessage === "已添加到当前会话草稿，尚未发送。" && <Button type="button" size="sm" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}
       <details open={search.trim() ? true : undefined}><summary>未跟踪文件（{result.untracked.length}）</summary>
         <ul aria-label="未跟踪文件" className="max-h-40 overflow-auto">{result.untracked.filter((path) => path.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).map((path) =>
           <li key={path}><button type="button" disabled={loading} onClick={() => void previewPath(path)} className="w-full break-all py-1 text-left text-accent underline disabled:opacity-50">{path}</button></li>)}</ul>
