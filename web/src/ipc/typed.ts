@@ -161,10 +161,13 @@ export interface TypedIPC {
 
   // session
   listSessions(opts?: { archived?: boolean; limit?: number; offset?: number; search?: string }): Promise<ListSessionsResult>;
+  getSession(sessionId: string): Promise<{ session: import("../types/ipc").Session }>;
   createSession(opts?: {
     engine?: "native" | "codex";
     title?: string;
     reuse_empty_session_id?: string;
+    expected_service_id?: string;
+    handoff_source_session_id?: string;
     model_id?: string;
     project_id?: string;
     workspace_mode?: "local" | "worktree";
@@ -657,6 +660,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
 
     listSessions: (opts) =>
       client.request<ListSessionsResult>("session.list", opts ?? {}),
+    getSession: (sessionId) => client.request("session.get", { session_id: sessionId, messages_limit: 1 }),
     createSession: (opts) =>
       client.request<CreateSessionResult>("session.create", opts ?? {}),
     createWorktreeSession: (opts) =>

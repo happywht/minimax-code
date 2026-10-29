@@ -303,17 +303,31 @@ function mockHandle(
       return { pong: Date.now(), uptime_s: 0, server: "mock" };
     }
 
+    case "session.get": {
+      const p = params as { session_id: string };
+      const session = mockSessions.get(p.session_id);
+      if (!session) throw new Error("Unknown session");
+      return { session: structuredClone(session), recent_messages: [] };
+    }
     case "session.create": {
       const p = params as {
         engine?: "native" | "codex";
         title?: string;
         reuse_empty_session_id?: string;
+        expected_service_id?: string;
+        handoff_source_session_id?: string;
         project_id?: string;
         workspace_mode?: "local" | "worktree";
         workspace_path?: string;
         worktree_branch?: string;
         base_branch?: string;
       } | undefined;
+      if (p?.handoff_source_session_id) {
+        const source = mockSessions.get(p.handoff_source_session_id);
+        if (p.expected_service_id !== "mock" || !source || source.archived ||
+            (source.project_id ?? "inbox") !== (p.project_id ?? "inbox") || (source.engine ?? "native") === (p.engine ?? "native") ||
+            (source.workspace_mode ?? "local") !== "local" || source.workspace_path || p.reuse_empty_session_id) throw new Error("Handoff source or service mismatch");
+      }
       const reusable = p?.reuse_empty_session_id
         ? mockSessions.get(p.reuse_empty_session_id)
         : undefined;

@@ -25,6 +25,7 @@ import { MessageList } from "./MessageList";
 import { ProviderReadinessBanner } from "./ProviderReadinessBanner";
 import { WorkspaceDiagnostic } from "./WorkspaceDiagnostic";
 import { CurrentRunOverview } from "./CurrentRunOverview";
+import { EngineHandoff } from "./EngineHandoff";
 import { AskUserCard } from "./AskUserCard";
 import { useChat, useSessionStore } from "../../stores";
 import { DropdownMenu, type DropdownMenuItem } from "../../ui/DropdownMenu";
@@ -64,6 +65,7 @@ export function ChatPanel({
   const status = useChat((s) => s.status);
   const error = useChat((s) => s.error);
   const [newEngine, setNewEngine] = useState<"native" | "codex">("native");
+  const [handoff, setHandoff] = useState<{ source: string; target: "native" | "codex" } | null>(null);
   const [engines, setEngines] = useState<EngineInfo[]>([]);
   const runs = useRunTimelineStore((s) => s.runs);
   useEffect(() => { void typedIPC.listEngines().then((result) => setEngines(result.engines)).catch(() => {}); }, []);
@@ -279,6 +281,10 @@ export function ChatPanel({
               </option>
             ))}
           </select>
+          <button type="button" data-testid="chat-header-handoff" disabled={!current || connectionState !== "connected" || (current.engine ?? "native") === newEngine || !engines.some((engine) => engine.id === newEngine && engine.available)}
+            onClick={() => { if (current) setHandoff({ source: current.id, target: newEngine }); }}
+            className="rounded-md border border-line px-2 py-1 text-xs text-ink-1 hover:bg-surface-2 disabled:opacity-50"
+            title="先选择与当前会话不同的可用引擎，然后审阅交接内容">切换并交接</button>
           <button
             type="button"
             data-testid="chat-header-new"
@@ -373,6 +379,7 @@ export function ChatPanel({
       {recovery && <div className="px-4 py-2"><RunRecoveryActions key={recovery.id} run={recovery}
         refresh={() => useRunTimelineStore.getState().loadForSession(currentId)} /></div>}
       {current?.engine === "codex" && <p className="px-4 text-xs text-ink-2">Codex 会话使用独立模型配置，仅支持文本。历史与外部线程绑定；如需修改历史，请新建会话并交接上下文。</p>}
+      {handoff && <EngineHandoff sessionId={handoff.source} target={handoff.target} onClose={() => setHandoff(null)} />}
       {/* Inline questionnaire while the agent is suspended in ask_user */}
       <AskUserCard />
       {current?.engine !== "codex" && <WorkspaceDiagnostic />}

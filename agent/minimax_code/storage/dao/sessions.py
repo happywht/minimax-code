@@ -74,6 +74,8 @@ class SessionsDAO:
         base_branch: str | None = None,
         project_id: str | None = None,
         engine: str = "native",
+        handoff_source_session_id: str | None = None,
+        expected_service_id: str | None = None,
     ) -> dict[str, Any]:
         """Insert a new session row; returns the persisted dict.
 
@@ -105,6 +107,16 @@ class SessionsDAO:
             engine,
         )
         async with self._db.transaction() as conn:
+            if handoff_source_session_id is not None:
+                cursor = await conn.execute("SELECT project_id,engine,archived,workspace_mode,workspace_path FROM sessions WHERE id=?", (handoff_source_session_id,))
+                source = await cursor.fetchone()
+                cursor = await conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1")
+                service = await cursor.fetchone()
+                if (not source or not service or service[0] != expected_service_id or source[2]
+                        or (source[0] or "inbox") != (project_id or "inbox") or source[1] == engine
+                        or (source[3] or "local") != "local" or source[4]
+                        or workspace_mode != "local" or workspace_path):
+                    raise ValueError("Handoff source, service or project changed during creation")
             await conn.execute(sql, params)
         row = await self._db.fetchone(
             "SELECT * FROM sessions WHERE id = ?", (id,)

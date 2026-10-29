@@ -93,6 +93,22 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
             engine = p.get("engine", "native")
             if engine not in {"native", "codex"}:
                 raise HandlerError(INVALID_PARAMS, "engine must be native or codex")
+            expected_service = p.get("expected_service_id")
+            source_id = p.get("handoff_source_session_id")
+            if expected_service is not None or source_id is not None:
+                if not isinstance(expected_service, str) or not expected_service or not isinstance(source_id, str) or not source_id:
+                    raise HandlerError(INVALID_PARAMS, "Handoff requires source session and expected service")
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                if await ArtifactDAO(sess_dao._db).service_id() != expected_service:
+                    raise HandlerError(INVALID_PARAMS, "Handoff service changed")
+                source = await sess_dao.get(source_id)
+                target_project = _optional_string(p, "project_id") or "inbox"
+                if (not source or source.get("archived") or (source.get("project_id") or "inbox") != target_project
+                        or source.get("engine", "native") == engine or source.get("workspace_mode", "local") != "local"
+                        or source.get("workspace_path") or p.get("reuse_empty_session_id")
+                        or p.get("workspace_mode", "local") != "local" or p.get("workspace_path")
+                        or p.get("worktree_branch") or p.get("base_branch")):
+                    raise HandlerError(INVALID_PARAMS, "Handoff source or project is unavailable or unsupported")
             if {"engine_thread_id", "engine_state"} & p.keys():
                 raise HandlerError(INVALID_PARAMS, "Engine thread binding is runtime-owned")
 
@@ -141,6 +157,7 @@ def register_session_handlers(server: Any, *, dao: Any = None) -> None:
                 worktree_branch=_optional_string(p, "worktree_branch"),
                 base_branch=_optional_string(p, "base_branch"),
                 project_id=_optional_string(p, "project_id") or "inbox",
+                **({"handoff_source_session_id": source_id, "expected_service_id": expected_service} if source_id else {}),
             )
             # ``row`` is the persisted dict; echo back the
             # subset the frontend's CreateSessionResult wants
