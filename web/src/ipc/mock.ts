@@ -2071,7 +2071,11 @@ function mockHandle(
       return { team: t } satisfies { team: AgentTeam };
     }
     case "team.spawn": {
-      const p = params as { team_name: string; request: string };
+      const p = params as { team_name: string; request: string; session_id?: string; parent_session_id?: string };
+      const sessionId = p.session_id || p.parent_session_id;
+      if (!sessionId || !mockSessions.has(sessionId) || (p.parent_session_id && !mockSessions.has(p.parent_session_id))) {
+        throw new Error("team.spawn requires an existing session");
+      }
       return {
         team_name: p.team_name,
         orchestration_mode: "parallel",

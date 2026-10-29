@@ -17,15 +17,16 @@ export interface TeamRowProps {
   onDelete: () => void;
   /** Start a team run with the given request text. */
   onRun: (request: string) => void;
+  canRun: boolean;
 }
 
-export function TeamRow({ team, onToggleEnabled, onDelete, onRun }: TeamRowProps): JSX.Element {
+export function TeamRow({ team, onToggleEnabled, onDelete, onRun, canRun }: TeamRowProps): JSX.Element {
   const [showRunForm, setShowRunForm] = useState(false);
   const [request, setRequest] = useState("");
 
   const submitRun = () => {
     const trimmed = request.trim();
-    if (!trimmed) return;
+    if (!trimmed || !canRun) return;
     onRun(trimmed);
     setShowRunForm(false);
     setRequest("");
@@ -117,7 +118,7 @@ export function TeamRow({ team, onToggleEnabled, onDelete, onRun }: TeamRowProps
               size="sm"
               variant="subtle"
               data-testid={`settings-team-run-submit-${team.name}`}
-              disabled={!request.trim()}
+              disabled={!request.trim() || !canRun}
               onClick={submitRun}
             >
               {strings.settings.teams.runSubmit}

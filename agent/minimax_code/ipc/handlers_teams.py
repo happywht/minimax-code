@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..workspace_ctx import session_root_scope
+from ..workspace_ctx import WorkspaceUnavailableError, session_root_scope
 from .handler_utils import HandlerError, check_params
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
@@ -289,6 +289,22 @@ def register_team_handlers(
             if parent_session_id is not None:
                 parent_session_id = str(parent_session_id)
 
+            # Direct team execution has no enclosing chat run to supply an
+            # authority or workspace. Never silently fall back to the server
+            # process directory when the caller has not selected a session.
+            session_id = (session_id or parent_session_id or "").strip()
+            if not session_id:
+                await ctx.reply_error(INVALID_PARAMS, "team.spawn requires an existing session_id")
+                return
+            parent_session_id = (parent_session_id or "").strip() or None
+            from .host_session_gate import require_host_session
+            from ..workspace_ctx import resolve_root_for_session
+
+            await require_host_session(session_id)
+            if parent_session_id and parent_session_id != session_id:
+                await require_host_session(parent_session_id)
+                await resolve_root_for_session(parent_session_id)
+
             # Resolve DAOs lazily
             team_dao = await dao_factory()
             if team_dao is None:
@@ -322,7 +338,7 @@ def register_team_handlers(
             # root — members spawned via ``create_task`` copy the context
             # and inherit it; the scope makes this handler independent of
             # whether it was called from a parent run or directly.
-            async with session_root_scope(session_id or parent_session_id):
+            async with session_root_scope(session_id):
                 result = await orch.run(
                     team_name,
                     request,
@@ -358,6 +374,8 @@ def register_team_handlers(
             })
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message)
+        except WorkspaceUnavailableError as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception:
             logger.exception("team.spawn failed")
             await ctx.reply_error(INTERNAL_ERROR, "team.spawn failed")

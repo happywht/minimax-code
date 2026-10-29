@@ -52,11 +52,12 @@ function TeamsTab(): JSX.Element {
   };
 
   const handleRun = (teamName: string, request: string) => {
+    if (!currentSessionId) return;
     toast.info(strings.settings.teams.runStartedToast, strings.settings.teams.runStartedDetail);
     void spawnRun({
       team_name: teamName,
       request,
-      session_id: currentSessionId ?? undefined,
+      session_id: currentSessionId,
     });
   };
 
@@ -85,6 +86,8 @@ function TeamsTab(): JSX.Element {
 
       {form.showForm && <TeamForm form={form} agents={agents} />}
 
+      {!currentSessionId && <p className="text-xs text-ink-2">请先选择会话，再运行团队；团队使用该会话的工作目录。</p>}
+
       {loading && teams.length === 0 ? (
         <div className="flex items-center justify-center gap-2 py-4 text-xs text-ink-2">
           <Spinner size={12} /> {strings.settings.teams.loading}
@@ -103,6 +106,7 @@ function TeamsTab(): JSX.Element {
               onToggleEnabled={() => void (t.enabled ? disable(t.name) : enable(t.name))}
               onDelete={() => void handleDelete(t)}
               onRun={(request) => handleRun(t.name, request)}
+              canRun={Boolean(currentSessionId)}
             />
           ))}
         </ul>

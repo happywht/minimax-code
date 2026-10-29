@@ -1991,6 +1991,12 @@ UI 依据 `cancel_supported` 禁用动作，不能只改任务账本制造已停
 | `team.spawn` | 触发一次团队运行 |
 | `team.run.get` | 团队运行详情 |
 
+`team.spawn` requires an existing `session_id` (or, for older callers, an
+existing `parent_session_id`); the selected session determines the workspace.
+Any supplied parent session is also checked against host-execution restrictions.
+The standalone team run is not a normal chat run and does not inherit its
+durable cancellation or shared budget. Its working-copy boundary is not an OS sandbox.
+
 ### webhook.* — Webhook
 
 Inbound `POST /hooks/{path}` requires a configured HMAC secret; hooks without
