@@ -59,6 +59,23 @@ def test_coerce_validate_timeout() -> None:
     assert coerce_validate_timeout(99999) == 900.0  # ceiling
 
 
+async def test_timed_out_validation_retains_partial_output(monkeypatch, tmp_path) -> None:
+    from minimax_code.execution import ProcessOutput, ProcessTimeoutError
+    from minimax_code.verification import run_validate_command, verification_evidence
+
+    proc = SimpleNamespace(returncode=-1)
+    monkeypatch.setattr("minimax_code.verification.spawn_shell", AsyncMock(return_value=proc))
+    output = ProcessOutput(b"partial stdout", b"failure details", True, False)
+    monkeypatch.setattr("minimax_code.verification.communicate_bounded",
+                        AsyncMock(side_effect=ProcessTimeoutError(output)))
+    result = await run_validate_command("validate", cwd=str(tmp_path), timeout_s=1)
+    assert result["timed_out"] and not result["ok"]
+    assert result["stdout"] == "partial stdout" and result["stdout_truncated"]
+    assert result["stderr"] == "failure details" and not result["stderr_truncated"]
+    evidence = verification_evidence(configured=True, validation=result)
+    assert evidence["verdict"] == "unknown" and evidence["requires_review"]
+
+
 def test_run_touched_files_matches_run_attribute() -> None:
     class FakeBus:
         def __init__(self, events):

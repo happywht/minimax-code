@@ -289,6 +289,14 @@ class ProcessOutput:
     stderr_truncated: bool
 
 
+class ProcessTimeoutError(TimeoutError):
+    """Timeout with the bounded output observed before process cleanup."""
+
+    def __init__(self, output: ProcessOutput) -> None:
+        super().__init__("Process timed out")
+        self.output = output
+
+
 async def capture_output(proc: asyncio.subprocess.Process, *, timeout: float,
                          limit: int = 5 * 1024 * 1024) -> tuple[bytes, bytes]:
     """For parsers: never interpret truncated diagnostic output as complete."""
@@ -306,15 +314,18 @@ async def communicate_bounded(proc: asyncio.subprocess.Process, *, timeout: floa
     Cancellation and timeout both reap the process tree. Reader cleanup has a
     deadline so inherited handles cannot leave the task waiting indefinitely.
     """
-    async def read(stream: asyncio.StreamReader | None) -> tuple[bytes, bool]:
-        data = bytearray()
-        truncated = False
+    buffers = [bytearray(), bytearray()]
+    truncated = [False, False]
+
+    async def read(stream: asyncio.StreamReader | None, index: int) -> None:
         if stream is not None:
             while chunk := await stream.read(65536):
-                remaining = max(0, limit - len(data))
-                data.extend(chunk[:remaining])
-                truncated |= len(chunk) > remaining
-        return bytes(data), truncated
+                remaining = max(0, limit - len(buffers[index]))
+                buffers[index].extend(chunk[:remaining])
+                truncated[index] |= len(chunk) > remaining
+
+    def output() -> ProcessOutput:
+        return ProcessOutput(bytes(buffers[0]), bytes(buffers[1]), truncated[0], truncated[1])
 
     async def write() -> None:
         if proc.stdin is not None:
@@ -327,7 +338,7 @@ async def communicate_bounded(proc: asyncio.subprocess.Process, *, timeout: floa
             finally:
                 proc.stdin.close()
 
-    tasks = [asyncio.create_task(read(proc.stdout)), asyncio.create_task(read(proc.stderr)),
+    tasks = [asyncio.create_task(read(proc.stdout, 0)), asyncio.create_task(read(proc.stderr, 1)),
              asyncio.create_task(write()), asyncio.create_task(proc.wait())]
 
     async def cleanup() -> None:
@@ -341,8 +352,11 @@ async def communicate_bounded(proc: asyncio.subprocess.Process, *, timeout: floa
             await asyncio.gather(*tasks, return_exceptions=True)
 
     try:
-        stdout, stderr, _, _ = await asyncio.wait_for(asyncio.gather(*tasks), timeout)
-        return ProcessOutput(stdout[0], stderr[0], stdout[1], stderr[1])
+        try:
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout)
+        except TimeoutError as exc:
+            raise ProcessTimeoutError(output()) from exc
+        return output()
     finally:
         # Retain the same cleanup on success, timeout and cancellation. Shield
         # prevents an interrupted owner from cancelling it; continuing to await

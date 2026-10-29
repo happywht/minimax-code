@@ -25,7 +25,7 @@ import asyncio
 import logging
 from typing import Any
 
-from .execution import communicate_bounded, spawn_shell
+from .execution import ProcessTimeoutError, communicate_bounded, spawn_shell
 
 logger = logging.getLogger(__name__)
 
@@ -160,10 +160,10 @@ async def run_validate_command(
         captured = await communicate_bounded(proc, timeout=timeout_s, limit=_VALIDATE_OUTPUT_CAP)
         stdout_b, stderr_b = captured.stdout, captured.stderr
         stdout_trunc, stderr_trunc = captured.stdout_truncated, captured.stderr_truncated
-    except TimeoutError:
+    except ProcessTimeoutError as exc:
         timed_out = True
-        stdout_b = stderr_b = b""
-        stdout_trunc = stderr_trunc = False
+        stdout_b, stderr_b = exc.output.stdout, exc.output.stderr
+        stdout_trunc, stderr_trunc = exc.output.stdout_truncated, exc.output.stderr_truncated
 
     evidence: dict[str, Any] = {
         "command": command,

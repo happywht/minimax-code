@@ -188,6 +188,24 @@ async def test_timeout_reaps_child(tmp_path):
     assert proc.returncode is not None
 
 
+async def test_timeout_preserves_bounded_output_and_reaps_child(tmp_path):
+    from minimax_code.execution import ProcessTimeoutError
+
+    proc = await spawn_exec(
+        sys.executable, "-c",
+        "import sys,time; sys.stdout.write('a'*2048); sys.stdout.flush(); "
+        "sys.stderr.write('failure'); sys.stderr.flush(); time.sleep(30)",
+        cwd=tmp_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    with pytest.raises(ProcessTimeoutError) as caught:
+        await communicate_bounded(proc, timeout=3, limit=1024)
+    assert caught.value.output.stdout == b"a" * 1024
+    assert caught.value.output.stdout_truncated
+    assert caught.value.output.stderr == b"failure"
+    assert not caught.value.output.stderr_truncated
+    assert proc.returncode is not None
+
+
 async def test_cancellation_during_spawn_recovers_and_reaps_handle(tmp_path, monkeypatch):
     original = asyncio.create_subprocess_exec
     created = asyncio.Event()
