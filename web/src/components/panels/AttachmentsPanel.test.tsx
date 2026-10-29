@@ -86,6 +86,20 @@ describe("project attachment panel and dispatch epochs", () => {
     expect(screen.getByLabelText("附件纯文本预览")).toHaveTextContent("第一段");
     expect(screen.getByRole("button", { name: "下载附件原始字节" })).toBeEnabled();
   });
+  it("submits ordered sections and table cells from the structured report editor", async () => {
+    const docx: AttachmentOriginal = { ...row, original_name: "报告.docx", declared_type: "docx", recognized_type: "docx", parser_version: 2, parser_scope: "docx_body_paragraphs_tables", parser_reason: "ok" };
+    wire.request.mockImplementation(async (method: string) => method === "attachment.list"
+      ? { attachments: [], service_id: "svc_test" } : { attachment: docx, preview_text: "第一章\n钢材" });
+    render(<AttachmentsPanel onClose={vi.fn()} />);
+    await screen.findByText("当前项目还没有附件原件。");
+    fireEvent.change(screen.getByLabelText("报告标题"), { target: { value: "资料报告" } });
+    fireEvent.change(screen.getByLabelText("报告内容形式"), { target: { value: "sections" } });
+    const sections = [{ heading: "第一章", blocks: [{ kind: "paragraph", text: "正文" }, { kind: "table", rows: [["名称"], ["钢材"]] }] }];
+    fireEvent.change(screen.getByLabelText("章节和表格 JSON"), { target: { value: JSON.stringify(sections) } });
+    fireEvent.click(screen.getByRole("button", { name: "生成 DOCX" }));
+    await screen.findByLabelText("附件纯文本预览");
+    expect(wire.request).toHaveBeenCalledWith("attachment.generate_docx", { project_id: "p", expected_service_id: "svc_test", filename: "报告.docx", title: "资料报告", sections });
+  });
   it("uploads selected raw file, escapes preview, separates quality and downloads original", async () => {
     const createURL = vi.fn().mockReturnValue("blob:original");
     vi.stubGlobal("URL", { createObjectURL: createURL, revokeObjectURL: vi.fn() });

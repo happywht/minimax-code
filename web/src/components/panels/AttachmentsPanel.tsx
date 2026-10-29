@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 import { ipc } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
-import type { AttachmentParserStatus } from "../../types/ipc";
+import type { AttachmentParserStatus, DocxSection } from "../../types/ipc";
+
+const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
+  { kind: "paragraph", text: "在此填写正文及来源。" },
+  { kind: "table", rows: [["项目", "结果"], ["示例", "待核实"]] },
+] }], null, 2);
 
 const labels: Record<AttachmentParserStatus, string> = {
   parsed: "已解析", empty: "空文本", truncated: "预览已截断", parse_failed: "解析失败",
@@ -16,8 +21,10 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
   const [file, setFile] = useState<File | null>(null);
   const [docName, setDocName] = useState("报告.docx"), [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [structured, setStructured] = useState(false), [sections, setSections] = useState(sectionExample);
+  const [formError, setFormError] = useState<string | null>(null);
   useEffect(() => {
-    setFile(null); setTitle(""); setBody(""); void useAttachmentStore.getState().activate(projectId);
+    setFile(null); setTitle(""); setBody(""); setStructured(false); setSections(sectionExample); setFormError(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
@@ -35,14 +42,26 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(projectId)}>刷新</Button>
     </form>
     <form className="flex flex-col gap-2 rounded border border-line p-3" onSubmit={(event) => {
-      event.preventDefault(); void state.generateDocx(docName, title, body.split(/\r?\n/));
+      event.preventDefault(); setFormError(null);
+      if (!structured) { void state.generateDocx(docName, title, { paragraphs: body.split(/\r?\n/) }); return; }
+      try {
+        const value: unknown = JSON.parse(sections);
+        if (!Array.isArray(value)) throw new Error("章节必须是 JSON 数组");
+        void state.generateDocx(docName, title, { sections: value as DocxSection[] });
+      } catch { setFormError("章节 JSON 无效，请使用示例格式。"); }
     }}>
       <h3>生成 DOCX 报告</h3>
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
       <Input aria-label="DOCX 文件名" value={docName} onChange={(event) => setDocName(event.target.value)} />
       <Input aria-label="报告标题" value={title} onChange={(event) => setTitle(event.target.value)} />
-      <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />
-      <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !body.trim()}>生成 DOCX</Button>
+      <label>内容形式 <select aria-label="报告内容形式" value={structured ? "sections" : "plain"} onChange={(event) => { setStructured(event.target.value === "sections"); setFormError(null); }}>
+        <option value="plain">普通段落</option><option value="sections">章节和表格 JSON</option>
+      </select></label>
+      {structured ? <><p>按示例填写章节标题与依次排列的段落、表格；表格每行列数必须一致，单元格均为文本。</p>
+        <Textarea aria-label="章节和表格 JSON" rows={12} value={sections} onChange={(event) => setSections(event.target.value)} /></> :
+        <Textarea aria-label="报告正文（每行一个段落）" rows={6} value={body} onChange={(event) => setBody(event.target.value)} />}
+      {formError && <p role="alert">{formError}</p>}
+      <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim())}>生成 DOCX</Button>
       {ipc.isMock && <p role="status">演示模式不能生成 DOCX。</p>}
     </form>
     {file && file.size > 10485760 && <p role="alert">文件超过 10 MiB，未上传。</p>}

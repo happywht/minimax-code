@@ -326,8 +326,8 @@ class AttachmentService:
         finally:
             await _blocking(upload.close)
 
-    async def generate_docx(self, project_id, expected_service_id, filename, title, paragraphs,
-                            *, expected_session=None):
+    async def generate_docx(self, project_id, expected_service_id, filename, title, paragraphs=None,
+                            sections=None, *, expected_session=None):
         from .execution import require_write_access
         from .report_docx import generate_document
 
@@ -335,7 +335,7 @@ class AttachmentService:
         await self.dao.project(project_id)
         if expected_service_id != await self.dao.service_id():
             raise ValueError("Attachment service identity changed; refresh")
-        data = await _blocking(generate_document, filename, title, paragraphs)
+        data = await _blocking(generate_document, filename, title, paragraphs, sections)
 
         async def chunks():
             yield data

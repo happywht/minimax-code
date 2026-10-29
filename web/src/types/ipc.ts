@@ -57,9 +57,12 @@ export interface AttachmentOriginal {
   created_at: string;
 }
 export interface AttachmentListResult { attachments: AttachmentOriginal[]; service_id: string }
-export interface AttachmentGenerateDocxParams {
-  project_id: string; expected_service_id: string; filename: string; title: string; paragraphs: string[];
-}
+export type DocxBlock = { kind: "paragraph"; text: string } | { kind: "table"; rows: string[][] };
+export interface DocxSection { heading: string; blocks: DocxBlock[] }
+export type DocxContent = { paragraphs: string[]; sections?: never } | { sections: DocxSection[]; paragraphs?: never };
+export type AttachmentGenerateDocxParams = {
+  project_id: string; expected_service_id: string; filename: string; title: string;
+} & DocxContent;
 export interface AttachmentGetResult { attachment: AttachmentOriginal; preview_text: string }
 
 export interface OfficeTableSpec {

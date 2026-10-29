@@ -15,7 +15,8 @@ class GenerateReportDocxTool(Tool):
     name = "generate_report_docx"
     description = (
         "Create and register a DOCX report in the current project's attachments from a title "
-        "and paragraphs. Include source citations supplied or verified by the user. "
+        "and either paragraphs or sections containing ordered paragraph/table blocks. "
+        "Use only one of paragraphs or sections. Include source citations supplied or verified by the user. "
         "The file is not rendered or fact-checked. An ambiguous failure may have committed: "
         "check project attachments before retrying."
     )
@@ -25,8 +26,23 @@ class GenerateReportDocxTool(Tool):
             "filename": {"type": "string", "description": "A .docx display filename"},
             "title": {"type": "string"},
             "paragraphs": {"type": "array", "items": {"type": "string"}},
+            "sections": {"type": "array", "items": {
+                "type": "object", "properties": {
+                    "heading": {"type": "string"},
+                    "blocks": {"type": "array", "items": {
+                        "type": "object", "properties": {
+                            "kind": {"type": "string", "enum": ["paragraph", "table"]},
+                            "text": {"type": "string"},
+                            "rows": {"type": "array", "items": {
+                                "type": "array", "items": {"type": "string"},
+                            }},
+                        }, "required": ["kind"], "additionalProperties": False,
+                    }},
+                }, "required": ["heading", "blocks"], "additionalProperties": False,
+            }},
         },
-        "required": ["filename", "title", "paragraphs"],
+        "required": ["filename", "title"],
+        "anyOf": [{"required": ["paragraphs"]}, {"required": ["sections"]}],
         "additionalProperties": False,
     }
 
@@ -34,7 +50,8 @@ class GenerateReportDocxTool(Tool):
         self.db, self.session_id, self.project_id = db, session_id, project_id
         self.service = AttachmentService(db, db.path.parent)
 
-    async def run(self, filename: str, title: str, paragraphs: list[str]) -> ToolResult:
+    async def run(self, filename: str, title: str, paragraphs: list[str] | None = None,
+                  sections: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
             require_write_access()
             if not isinstance(self.project_id, str) or not self.project_id:
@@ -45,7 +62,7 @@ class GenerateReportDocxTool(Tool):
             identity = await self.service.dao.service_id()
             params = AttachmentGenerateDocxParams.model_validate({
                 "project_id": self.project_id, "expected_service_id": identity,
-                "filename": filename, "title": title, "paragraphs": paragraphs,
+                "filename": filename, "title": title, "paragraphs": paragraphs, "sections": sections,
             })
             result = await self.service.generate_docx(**params.model_dump(), expected_session=self.session_id)
             attachment = result["attachment"]

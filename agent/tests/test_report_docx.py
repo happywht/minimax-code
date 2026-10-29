@@ -204,3 +204,49 @@ async def test_agent_report_permission_combines_existing_write_rules(rules, has_
     core = AgentCore(llm=object(), registry=registry, permission_store=Store(), permission_gater=gater)
     result = await core._dispatch_tool({"name": "generate_report_docx", "arguments": {}})
     assert result.success is allowed
+
+
+async def test_structured_report_agent_and_real_docx_body_order(tmp_path):
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    from minimax_code.agent.tools import ToolRegistry
+    from minimax_code.agent.tools.generate_report_docx import register_report_docx_tool
+    from minimax_code.storage.dao.sessions import SessionsDAO
+
+    db = AsyncDatabase(tmp_path / "data" / "test.db")
+    await db.connect()
+    await db.migrate()
+    await ProjectsDAO(db).create(id="p", name="project", root_path=str(tmp_path))
+    await SessionsDAO(db).create(id="s", project_id="p")
+    registry = ToolRegistry()
+    register_report_docx_tool(registry, db, "s", "p")
+    sections = [{"heading": "第一章", "blocks": [
+        {"kind": "paragraph", "text": "中文正文及来源"},
+        {"kind": "table", "rows": [["名称", "数量"], ["钢材", "12"]]},
+        {"kind": "paragraph", "text": "表后说明"},
+    ]}, {"heading": "第二章", "blocks": [{"kind": "paragraph", "text": "结论"}]}]
+    result = await registry.dispatch("generate_report_docx", {
+        "filename": "报告.docx", "title": "资料报告", "sections": sections})
+    assert result.success, result.error
+    service = AttachmentService(db, db.path.parent)
+    _, data = await service.content("p", result.output["attachment_id"])
+    document = Document(BytesIO(data))
+    body = []
+    for element in document.element.body:
+        if element.tag == qn("w:p"):
+            body.append(Paragraph(element, document).text)
+        elif element.tag == qn("w:tbl"):
+            body.append([[cell.text for cell in row.cells] for row in Table(element, document).rows])
+    assert body == ["资料报告", "第一章", "中文正文及来源", [["名称", "数量"], ["钢材", "12"]], "表后说明", "第二章", "结论"]
+    entry = await service.get("p", result.output["attachment_id"])
+    assert "钢材" in entry["preview_text"]
+    bad = await registry.dispatch("generate_report_docx", {"filename": "bad.docx", "title": "报告",
+        "sections": [{"heading": "章", "blocks": [{"kind": "table", "rows": [["a"], ["b", "c"]]}]}]})
+    assert not bad.success
+    both = await registry.dispatch("generate_report_docx", {"filename": "bad.docx", "title": "报告",
+        "paragraphs": ["a"], "sections": sections})
+    assert not both.success
+    assert len((await service.list("p"))["attachments"]) == 1
+    await db.close()

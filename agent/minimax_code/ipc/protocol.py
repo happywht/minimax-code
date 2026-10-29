@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..office_xlsx import XlsxSpec
 from ..office_xlsx import filename as office_filename
@@ -81,11 +81,52 @@ class AttachmentListParams(ArtifactListParams):
     """Project association only; caller host/path authority is not accepted."""
 
 
+class DocxBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal["paragraph", "table"]
+    text: str | None = Field(default=None, max_length=4096)
+    rows: list[list[str]] | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def check_content(self):
+        if self.kind == "paragraph":
+            if self.text is None or self.rows is not None:
+                raise ValueError("Paragraph requires text only")
+        else:
+            if self.text is not None or not self.rows:
+                raise ValueError("Table requires rows only")
+            width = len(self.rows[0])
+            if (not 1 <= width <= 20 or any(len(row) != width for row in self.rows)
+                    or any(len(cell) > 4096 for row in self.rows for cell in row)):
+                raise ValueError("Table rows must have equal width, at most 20 columns and 4096 characters per cell")
+        return self
+
+
+class DocxSection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    heading: str = Field(min_length=1, max_length=200)
+    blocks: list[DocxBlock] = Field(min_length=1, max_length=100)
+
+
 class AttachmentGenerateDocxParams(AttachmentListParams):
     expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
     filename: str = Field(min_length=6, max_length=120)
     title: str = Field(min_length=1, max_length=200)
-    paragraphs: list[str] = Field(min_length=1, max_length=100)
+    paragraphs: list[str] | None = Field(default=None, min_length=1, max_length=100)
+    sections: list[DocxSection] | None = Field(default=None, min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def check_structure(self):
+        if (self.paragraphs is None) == (self.sections is None):
+            raise ValueError("Provide either paragraphs or sections")
+        if self.sections:
+            if sum(len(section.blocks) for section in self.sections) > 100:
+                raise ValueError("Report exceeds 100 blocks")
+            cells = sum(sum(len(row) for row in block.rows or [])
+                        for section in self.sections for block in section.blocks)
+            if cells > 2000:
+                raise ValueError("Report exceeds 2000 table cells")
+        return self
 
 
 class AttachmentGetParams(AttachmentListParams):

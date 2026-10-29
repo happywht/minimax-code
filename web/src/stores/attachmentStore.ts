@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { ipc, typedIPC } from "../ipc";
 import { fetchAttachmentContent, uploadAttachment } from "../ipc/attachmentContent";
-import type { AttachmentOriginal } from "../types/ipc";
+import type { AttachmentOriginal, DocxContent } from "../types/ipc";
 
 interface AttachmentState {
   projectId: string | null; host: string; serviceId: string | null;
@@ -9,7 +9,7 @@ interface AttachmentState {
   loading: boolean; busy: boolean; error: string | null;
   activate: (projectId: string | null) => Promise<void>;
   upload: (file: File) => Promise<void>;
-  generateDocx: (filename: string, title: string, paragraphs: string[]) => Promise<void>;
+  generateDocx: (filename: string, title: string, content: DocxContent) => Promise<void>;
   select: (id: string) => Promise<void>;
   download: () => Promise<void>;
   clear: () => void;
@@ -70,13 +70,13 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
       } catch (error) { if (current(ticket, project, host)) set({ error: errorText(error) }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
     },
-    generateDocx: async (filename, title, paragraphs) => {
+    generateDocx: async (filename, title, content) => {
       const { projectId: project, host, serviceId } = get();
       if (get().busy || !ready(project, host, serviceId) || !project || !serviceId) return;
       const ticket = epoch;
       set({ busy: true, error: null });
       try {
-        const result = await typedIPC.generateDocx({ project_id: project, expected_service_id: serviceId, filename, title, paragraphs });
+        const result = await typedIPC.generateDocx({ project_id: project, expected_service_id: serviceId, filename, title, ...content });
         if (!current(ticket, project, host)) return;
         validate(result.attachment, project, serviceId);
         set({ attachments: [result.attachment, ...get().attachments].slice(0, 200) });
