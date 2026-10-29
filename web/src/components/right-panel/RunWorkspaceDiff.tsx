@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import type { AgentRun, RunWorkspaceDiffResult } from "../../types/ipc";
-import { Button } from "../../ui";
+import { Button, DiffLines } from "../../ui";
 
 /** Keep matching file patches intact so their context and headers remain visible. */
 function filterDiff(diff: string, query: string): string {
@@ -13,6 +13,35 @@ function filterDiff(diff: string, query: string): string {
   return diff.split(/(?=^diff --git )/m)
     .filter((block) => block.toLocaleLowerCase().includes(needle))
     .join("");
+}
+
+/** Render complete file patches without interpreting Git's quoted path syntax. */
+function FileDiffs({ diff, query, label }: { diff: string; query: string; label: string }): JSX.Element {
+  const filtered = filterDiff(diff, query);
+  if (!filtered) return <p>{diff ? `没有匹配的${label}` : `无${label}`}</p>;
+  if (!filtered.startsWith("diff --git ")) {
+    return <div aria-label={label} className="max-h-60 overflow-auto"><DiffLines text={filtered} /></div>;
+  }
+  const blocks = filtered.split(/(?=^diff --git )/m).filter(Boolean);
+  return <div aria-label={label} className="max-h-96 space-y-1 overflow-auto">
+    {blocks.map((block, index) => {
+      const lines = block.split("\n");
+      const title = lines[0].slice("diff --git ".length);
+      let added = 0, removed = 0, inHunk = false;
+      for (const line of lines) {
+        if (line.startsWith("@@ ")) inHunk = true;
+        else if (inHunk && line.startsWith("+")) added++;
+        else if (inHunk && line.startsWith("-")) removed++;
+      }
+      return <details key={`${index}-${title}`} className="rounded border border-line">
+        <summary className="cursor-pointer break-all px-2 py-1">
+          {title} <span className="text-status-success">+{added}</span>{" "}
+          <span className="text-status-error">-{removed}</span>
+        </summary>
+        <div className="overflow-auto border-t border-line"><DiffLines text={block} /></div>
+      </details>;
+    })}
+  </div>;
 }
 
 export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
@@ -133,8 +162,9 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
       {search.trim() && <p className="text-ink-2">显示包含关键词的完整文件差异；未跟踪文件只按名称筛选。</p>}
       {search.trim() && ((result.diff && !result.diff.startsWith("diff --git ")) || (result.staged_diff && !result.staged_diff.startsWith("diff --git "))) &&
         <p className="text-ink-2">部分差异格式无法按文件筛选，已保留完整原文。</p>}
-      <details open><summary>未暂存的已跟踪文件差异</summary><pre aria-label="未暂存差异" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{filterDiff(result.diff, search) || (result.diff ? "没有匹配的未暂存差异" : "无未暂存差异")}</pre></details>
-      <details open={search.trim() ? true : undefined}><summary>已暂存的差异</summary><pre aria-label="已暂存差异" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{filterDiff(result.staged_diff, search) || (result.staged_diff ? "没有匹配的已暂存差异" : "无已暂存差异")}</pre></details>
+      <p className="text-ink-2">展开文件查看完整差异；加减数字为文本行数。</p>
+      <details open><summary>未暂存的已跟踪文件差异</summary><FileDiffs diff={result.diff} query={search} label="未暂存差异" /></details>
+      <details open={search.trim() ? true : undefined}><summary>已暂存的差异</summary><FileDiffs diff={result.staged_diff} query={search} label="已暂存差异" /></details>
       <details open={search.trim() ? true : undefined}><summary>未跟踪文件（{result.untracked.length}）</summary>
         <ul aria-label="未跟踪文件" className="max-h-40 overflow-auto">{result.untracked.filter((path) => path.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).map((path) =>
           <li key={path}><button type="button" disabled={loading} onClick={() => void previewPath(path)} className="w-full break-all py-1 text-left text-accent underline disabled:opacity-50">{path}</button></li>)}</ul>
