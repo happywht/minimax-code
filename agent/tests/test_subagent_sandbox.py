@@ -291,7 +291,7 @@ async def test_external_creation_does_not_become_a_late_baseline(workspace_root,
 def test_prompt_appends_sandbox_protocol_last() -> None:
     """Source-order pin: the sandbox paragraph is concatenated after the
     report protocol (and after the task-precedence declaration)."""
-    src = inspect.getsource(SpawnSubagentTool.run)
+    src = inspect.getsource(SpawnSubagentTool._run)
     # Anchor on the concatenation expressions themselves — the constant
     # names also appear in the leading comments, which would skew a
     # naive first-occurrence comparison.
@@ -304,6 +304,48 @@ def test_prompt_appends_sandbox_protocol_last() -> None:
     # And the constants themselves are distinct, non-empty teachings.
     assert SANDBOX_PROTOCOL_PROMPT.strip()
     assert SANDBOX_PROTOCOL_PROMPT is not REPORT_PROTOCOL_PROMPT
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+@pytest.mark.parametrize("allowlist", [None, ["read_file"]])
+async def test_spawn_passes_composed_config_through_public_entrypoint(
+    app_db: AsyncDatabase, stub_runtime, workspace_root: Path, monkeypatch, sandbox, allowlist
+) -> None:
+    from minimax_code.agent.tools.subagents import (
+        PROGRESS_PROTOCOL_PROMPT,
+        SOFT_COMPLETION_NUDGE_PROMPT,
+        TASK_PRECEDENCE_PROMPT,
+    )
+
+    name = f"config_{uuid.uuid4().hex[:8]}"
+    await AgentDAO(app_db).upsert(
+        name=name, system_prompt="agent role  ", tool_allowlist=allowlist
+    )
+    captured = []
+    original_build = SubAgentRuntime.build
+
+    def capture_build(self, config, *args, **kwargs):
+        captured.append(config)
+        return original_build(self, config, *args, **kwargs)
+
+    monkeypatch.setattr(SubAgentRuntime, "build", capture_build)
+    result = await SpawnSubagentTool().run(
+        agent_name=name, prompt="current assignment", sandbox=sandbox
+    )
+    assert result.success, result.error
+    assert len(captured) == 1
+    config = captured[0]
+    assert config.system_prompt == (
+        "agent role"
+        + TASK_PRECEDENCE_PROMPT
+        + REPORT_PROTOCOL_PROMPT
+        + PROGRESS_PROTOCOL_PROMPT
+        + SOFT_COMPLETION_NUDGE_PROMPT
+        + (SANDBOX_PROTOCOL_PROMPT if sandbox else "")
+    )
+    assert config.tool_allowlist == (
+        None if allowlist is None else [*allowlist, "report_completion", "report_progress"]
+    )
 
 
 def test_tool_description_teaches_sandbox_for_writes() -> None:

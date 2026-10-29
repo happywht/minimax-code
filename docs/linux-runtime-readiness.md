@@ -923,3 +923,25 @@ Schema048；核对测试会话标记和 webhook_deliveries 表，并通过升级
 `/home/ubuntu/.local/share/minimax-code-remote-backups-1ca9016/upgrade-6s0g8tj8`。
 升级后通过认证 SSH 隧道再次读取运行 `run_f902ba324044` 和完成标记，浏览器在
 本机 SSH 进程断开后恢复。此次没有模拟物理断网、机器重启或执行中服务重启。
+
+### 执行中进程异常退出恢复（2026-10-29）
+
+正式服务之后从 `1ca9016` 更新至
+`/home/ubuntu/.local/share/minimax-code-releases/d1e854c41d9113ada0ca48fdf864c0830c9dd089`；
+升级前采样无活动运行、定时计划或其他已建立客户端连接。升级前 Schema048 数据包
+和交易保留在 `/home/ubuntu/.local/share/minimax-code-remote-backups-d1e854c/upgrade-r8vpjkzi`。
+该采样不是原子接单屏障。
+
+随后在正式服务创建受控测试会话 `ses_ac4008e9` 和运行 `run_e7e2e24dc663`；
+命令在独立 `acceptance-crash-*` 工作目录创建唯一标记并进入有界等待。确认该测试
+是唯一活动运行、无计划或其他客户端连接，校验 systemd 服务 PID 与监听归属后，
+对该用户服务主进程发送 SIGKILL。systemd 以新进程身份恢复服务。重新通过认证
+SSH 隧道读取持久运行步骤：run 为 `interrupted`，未完成工具步骤关闭为 `failed`，
+payload 标记 `outcome=unknown` 和 `requires_review=true`；标记文件只有一行，服务
+cgroup 中只剩主进程。测试会话和标记目录保留，未调用模型。
+
+首个验收脚本在进程恢复后误用已关闭的隧道管理器，后续由新隧道读取运行并用独立
+SSH 检查标记和 cgroup，未再次终止服务。脚本为 `.verification/formal-crash-recovery.py`、
+`verify-formal-crash-run.py` 和 `verify-formal-crash-marker.py`。该测试只覆盖本次受控
+终端命令及可观察的 cgroup，不证明任意脱离 cgroup 的子进程或所有副作用恰好执行一次；
+未模拟物理断网或机器重启。

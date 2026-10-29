@@ -194,9 +194,9 @@ def test_spawn_injection_order_precedence_before_protocol() -> None:
     from minimax_code.agent.tools import subagents as mod
 
     assert mod.TASK_PRECEDENCE_PROMPT != mod.REPORT_PROTOCOL_PROMPT
-    # The composition happens inline in SpawnSubagentTool.run; pin the
+    # The composition happens inline in SpawnSubagentTool._run; pin the
     # ordering by checking the source keeps the tuple order.
     import inspect
 
-    src = inspect.getsource(mod.SpawnSubagentTool.run)
+    src = inspect.getsource(mod.SpawnSubagentTool._run)
     assert src.index("TASK_PRECEDENCE_PROMPT") < src.index("REPORT_PROTOCOL_PROMPT")

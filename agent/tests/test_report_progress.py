@@ -228,7 +228,7 @@ async def test_progress_protocol_prompt_ordering() -> None:
 
     from minimax_code.agent.tools import subagents as mod
 
-    src = inspect.getsource(mod.SpawnSubagentTool.run)
+    src = inspect.getsource(mod.SpawnSubagentTool._run)
     # Anchor on the concatenation expressions, not bare names — the run
     # method's comments mention SANDBOX_PROTOCOL_PROMPT before the join.
     order = [
@@ -256,5 +256,5 @@ async def test_allowlist_source_appends_report_progress() -> None:
 
     from minimax_code.agent.tools import subagents as mod
 
-    src = inspect.getsource(mod.SpawnSubagentTool.run)
+    src = inspect.getsource(mod.SpawnSubagentTool._run)
     assert '"report_completion", "report_progress"' in src
