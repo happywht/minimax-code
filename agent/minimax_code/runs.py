@@ -33,6 +33,7 @@ class RunJob:
     run_id: str | None = None
     dao: Any = None
     started: bool = False
+    operation_started: bool = False
     task: asyncio.Task[Any] | None = None
     cancel_callback: Callable[[], None] | None = None
     cancel_requested: bool = False
@@ -111,6 +112,7 @@ class RunService:
                     try:
                         if job.cancel_requested:
                             raise asyncio.CancelledError
+                        job.operation_started = True
                         baseline = None
                         if job.capture_file_changes:
                             from .run_file_changes import capture
@@ -244,12 +246,42 @@ class RunService:
         assert job.task is not None
         return await asyncio.shield(job.task)
 
-    def cancel_session(self, session_id: str) -> int:
-        """Request stop for active and queued work; retain leases until teardown."""
-        jobs = list(self._jobs.get(session_id, []))
-        for job in jobs:
-            self._cancel(job)
-        return len(jobs)
+    async def cancel_session(self, session_id: str) -> tuple[int, list[dict[str, Any]]]:
+        """Fence admitted work before confirming durable queued cancellations."""
+        async def cancel_admitted() -> tuple[int, list[dict[str, Any]]]:
+            # Include admissions already committing, but release this global lock
+            # before any cancellation persistence or session cleanup can wait.
+            async with self._admission_lock:
+                jobs = list(self._jobs.get(session_id, []))
+                queued = {job: not job.operation_started for job in jobs}
+                for job in jobs:
+                    self._cancel(job)
+
+            updates = []
+            failures = []
+            for job in jobs:
+                if not job.cancel_requested or not job.run_id or job.dao is None:
+                    continue
+                # A previously queued cancellation can already be finalizing;
+                # retry its durable fence too if an earlier write failed.
+                try:
+                    run = await job.dao.request_queued_cancel(job.run_id)
+                    if run is None:
+                        run = await job.dao.get_run(job.run_id)
+                        if queued[job] and (run is None or run.get("status") != "cancelled"):
+                            raise RuntimeError(f"Could not confirm queued cancellation for {job.run_id}")
+                    if run is not None:
+                        updates.append(run)
+                except Exception as exc:
+                    failures.append(exc)
+            if failures:
+                raise RuntimeError("Could not confirm all session cancellations") from failures[0]
+            return len(jobs), updates
+
+        # A disconnected caller must not interrupt persistence halfway through.
+        task = asyncio.create_task(cancel_admitted(), name=f"cancel-session:{session_id}")
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return await asyncio.shield(task)
 
     def cancel_run(self, run_id: str) -> bool:
         job = self.get_job(run_id)

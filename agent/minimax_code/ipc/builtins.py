@@ -1899,7 +1899,10 @@ async def handle_agent_cancel(params: Any, ctx: Context) -> None:
         await ctx.reply_error(-32602, "session_id is required")
         return
 
-    if get_run_service(ctx.server).cancel_session(str(session_id)):
+    cancelled, updates = await get_run_service(ctx.server).cancel_session(str(session_id))
+    for run in updates:
+        await _notify_run(ctx, "run.updated", {"run": run})
+    if cancelled:
         await ctx.reply({"ok": True, "cancelled": str(session_id)})
         return
     entry = _ACTIVE_RUNS.get(str(session_id))
