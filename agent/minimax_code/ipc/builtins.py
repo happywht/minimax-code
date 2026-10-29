@@ -1257,7 +1257,7 @@ async def _handle_agent_send_message(
         from ..agent.tools.public_research import register_public_research_tools
         from ..agent.tools.research_sources import ResearchSources
 
-        research_sources = ResearchSources()
+        research_sources = ResearchSources(db, session_id, project_id, job.run_id)
         register_project_attachment_tools(registry, db, session_id, project_id)
         register_report_docx_tool(registry, db, session_id, project_id, research_sources)
         register_table_xlsx_tool(registry, db, session_id, project_id)

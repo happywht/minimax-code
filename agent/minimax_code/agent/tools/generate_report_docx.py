@@ -17,7 +17,7 @@ class GenerateReportDocxTool(Tool):
         "Create and register a DOCX report in the current project's attachments from a title "
         "and either paragraphs or sections containing ordered paragraph/table blocks. "
         "Provide sources as title, HTTP(S) URL, and optional actual access time; cite them in body as [1], [2] in source order. Never invent sources or access times. "
-        "For pages read in this task, pass page_source_ids returned by read_public_page; actual title, URL, access time and bounded excerpt are inserted automatically. Manual sources come first, then page_source_ids in order. "
+        "Pass page_source_ids returned by read_public_page or list_research_sources for this project; actual page metadata and bounded excerpt are inserted automatically. Manual sources come first, then page_source_ids in order. "
         "Use only one of paragraphs or sections. Include source citations supplied or verified by the user. "
         "The file is not rendered or fact-checked. An ambiguous failure may have committed: "
         "check project attachments before retrying."
@@ -33,7 +33,7 @@ class GenerateReportDocxTool(Tool):
                 "accessed_at": {"type": "string", "description": "Optional ISO date or timezone-aware timestamp"},
             }, "required": ["title", "url"], "additionalProperties": False}},
             "page_source_ids": {"type": "array", "maxItems": 30, "uniqueItems": True,
-                                "items": {"type": "string"}, "description": "IDs returned by successful read_public_page calls in this task"},
+                                "items": {"type": "string"}, "description": "IDs of pages read in this project on this service"},
             "sections": {"type": "array", "items": {
                 "type": "object", "properties": {
                     "heading": {"type": "string"},
@@ -59,12 +59,12 @@ class GenerateReportDocxTool(Tool):
         self.research_sources = research_sources
         self.service = AttachmentService(db, db.path.parent)
 
-    def _sources(self, sources, page_source_ids):
+    async def _sources(self, sources, page_source_ids):
         if page_source_ids is not None and page_source_ids != [] and self.research_sources is None:
             raise ValueError("Page source IDs are unavailable in this task")
         if self.research_sources is None:
             return [] if sources is None else sources
-        return self.research_sources.resolve(page_source_ids, sources)
+        return await self.research_sources.resolve_pages(page_source_ids, sources)
 
     operation = "generate_docx"
 
@@ -83,7 +83,7 @@ class GenerateReportDocxTool(Tool):
             params = AttachmentGenerateDocxParams.model_validate({
                 "project_id": self.project_id, "expected_service_id": identity,
                 "filename": filename, "title": title, "paragraphs": paragraphs, "sections": sections,
-                "sources": self._sources(sources, page_source_ids),
+                "sources": await self._sources(sources, page_source_ids),
             })
             result = await getattr(self.service, self.operation)(**params.model_dump(), expected_session=self.session_id)
             attachment = result["attachment"]
@@ -106,7 +106,7 @@ class GenerateReportPdfTool(GenerateReportDocxTool):
         "Create and register a PDF report in the current project using a title and either "
         "paragraphs or structured sections with ordered paragraph/table blocks. Include source "
         "citations where available in sources and cite them in body as [1], [2] in source order; do not invent sources or access times. "
-        "Pass page_source_ids from read_public_page for actual per-task page metadata and excerpts, ordered after manual sources. "
+        "Pass project page_source_ids from read_public_page or list_research_sources for page metadata and excerpts, ordered after manual sources. "
         "A Chinese TrueType font is embedded; missing dependencies or font coverage cause an explicit error. Facts and visual layout are not verified. "
         "If the outcome is uncertain, inspect project attachments before retrying."
     )
@@ -121,7 +121,7 @@ class GenerateReportPairTool(GenerateReportDocxTool):
     description = (
         "Generate DOCX and PDF from the same title and paragraphs or sections, saving each in "
         "current-project attachments. Provide known sources with actual URLs and optional access times, and cite them as [1], [2] in source order; never invent them. "
-        "Use page_source_ids from read_public_page to append actual per-task page metadata and excerpts after manual sources. "
+        "Use project page_source_ids from read_public_page or list_research_sources to append actual page metadata and excerpts after manual sources. "
         "Each format is reported separately; partial success is not "
         "full success. Check project attachments before retrying an unconfirmed format, then request "
         "only that format. Neither factual accuracy nor visual rendering is verified."
@@ -149,7 +149,7 @@ class GenerateReportPairTool(GenerateReportDocxTool):
                 "project_id": self.project_id, "expected_service_id": identity, "filename": filename,
                 "title": title, "paragraphs": paragraphs, "sections": sections,
                 "formats": ["docx", "pdf"] if formats is None else formats,
-                "sources": self._sources(sources, page_source_ids),
+                "sources": await self._sources(sources, page_source_ids),
             })
             result = await self.service.generate_report_pair(**params.model_dump(), expected_session=self.session_id)
             row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
