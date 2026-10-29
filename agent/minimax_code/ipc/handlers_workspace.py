@@ -152,7 +152,7 @@ def register_workspace_handlers(
         Flow: commit the worktree's pending changes → run the project's
         validate command *inside the worktree* (完成验证后再合并) → merge
         the worktree commits into the main checkout with --no-ff.
-        Conflicts abort the merge and are reported — never auto-resolved;
+        Conflicts leave the merge state for inspection — never auto-resolved;
         a failing validation stops the merge before it starts.
         """
         try:
@@ -200,6 +200,7 @@ def register_workspace_handlers(
             if main_branch in {"", "HEAD"}:
                 raise HandlerError(INVALID_PARAMS,
                                    "main checkout is in detached HEAD; give it a branch before merging")
+            main_head = (await _run_git(main_repo, "rev-parse", "--verify", "HEAD^{commit}")).strip()
 
             # 1) Commit pending work inside the worktree (a dirty tree
             #    cannot be merged).
@@ -245,6 +246,26 @@ def register_workspace_handlers(
                                              "worktree_head": head, "validation": validation})
                             return
 
+            # Validation can run arbitrary project commands and take a long time.
+            # Do not merge a stale source or target if either changed while it ran.
+            # This is a preflight, not a lock against external Git or file writers.
+            source_head = (await _run_git(worktree, "rev-parse", "--verify", "HEAD^{commit}")).strip()
+            source_status = await _run_git(worktree, "status", "--porcelain")
+            if source_head != head or source_status.strip():
+                await ctx.reply({"merged": False, "reason": "worktree_changed",
+                                 "worktree_head": head, "current_worktree_head": source_head,
+                                 "validation": validation})
+                return
+            current_branch = (await _run_git(main_repo, "rev-parse", "--abbrev-ref", "HEAD")).strip()
+            current_head = (await _run_git(main_repo, "rev-parse", "--verify", "HEAD^{commit}")).strip()
+            current_status = await _run_git(main_repo, "status", "--porcelain")
+            if current_branch != main_branch or current_head != main_head or current_status.strip():
+                await ctx.reply({"merged": False, "reason": "main_checkout_changed",
+                                 "main_branch": main_branch, "current_main_branch": current_branch,
+                                 "main_head": main_head, "current_main_head": current_head,
+                                 "worktree_head": head, "validation": validation})
+                return
+
             # Git accepts the detached commit directly; no user branch is created or deleted.
             try:
                 await _run_git(main_repo, "merge", "--no-ff", head, "-m", commit_message)
@@ -255,13 +276,11 @@ def register_workspace_handlers(
                 except HandlerError:
                     conflicts = []
                 if conflicts:
-                    try:
-                        await _run_git(main_repo, "merge", "--abort")
-                    except HandlerError:
-                        logger.warning("merge --abort failed; leaving repo state for inspection", exc_info=True)
                     await ctx.reply({
                         "merged": False, "reason": "conflicts", "conflicts": conflicts,
                         "worktree_head": head, "main_branch": main_branch,
+                        "merge_in_progress": True,
+                        "notice": "Merge state was preserved; inspect concurrent edits before resolving or aborting it.",
                         "detail": exc.data.get("stderr", "")[:500] if exc.data else "",
                     })
                     return
