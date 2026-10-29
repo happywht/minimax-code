@@ -14,11 +14,9 @@ from minimax_code.hosts.ssh import _run_scp, fetch_file, run_ssh
 HOST = {"hostname": "test.invalid", "username": "user"}
 
 
-@pytest.mark.parametrize("failure", ["checksum", "partial", "cancel", "changed", "created"])
+@pytest.mark.parametrize("failure", ["checksum", "partial", "cancel", "created"])
 async def test_download_failure_preserves_destination(tmp_path, failure):
     dest = tmp_path / "report.txt"
-    if failure != "created":
-        dest.write_bytes(b"original")
 
     async def runner(argv):
         if argv[0] == "scp":
@@ -29,7 +27,7 @@ async def test_download_failure_preserves_destination(tmp_path, failure):
                 return 1, b"", b"connection lost"
             if failure == "cancel":
                 raise asyncio.CancelledError
-            if failure in {"changed", "created"}:
+            if failure == "created":
                 dest.write_bytes(b"concurrent user edit")
             return 0, b"", b""
         digest = "wrong" if failure == "checksum" else hashlib.sha256(b"incoming").hexdigest()
@@ -41,25 +39,23 @@ async def test_download_failure_preserves_destination(tmp_path, failure):
     else:
         result = await fetch_file(HOST, "/remote", dest, runner=runner)
         assert not result.ok
-    assert dest.read_bytes() == (b"concurrent user edit" if failure in {"changed", "created"} else b"original")
+    if failure == "created":
+        assert dest.read_bytes() == b"concurrent user edit"
+    else:
+        assert not dest.exists()
     assert not list(tmp_path.glob(".minimax-*"))
 
 
-async def test_verified_download_replaces_unchanged_destination(tmp_path):
+async def test_download_refuses_existing_destination(tmp_path):
     dest = tmp_path / "report.txt"
     dest.write_bytes(b"original")
 
     async def runner(argv):
-        if argv[0] == "scp":
-            Path(argv[-1]).write_bytes(b"verified")
-            assert dest.read_bytes() == b"original"
-            return 0, b"", b""
-        assert dest.read_bytes() == b"original"
-        return 0, hashlib.sha256(b"verified").hexdigest().encode(), b""
+        raise AssertionError("existing destination should be rejected before transfer")
 
     result = await fetch_file(HOST, "/remote", dest, runner=runner)
-    assert result.ok
-    assert dest.read_bytes() == b"verified"
+    assert not result.ok
+    assert dest.read_bytes() == b"original"
     assert not list(tmp_path.glob(".minimax-*"))
 
 

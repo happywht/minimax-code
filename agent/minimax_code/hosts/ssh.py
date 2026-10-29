@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import re
 import shlex
 import tempfile
@@ -232,9 +233,8 @@ async def fetch_file(
     timeout: float = 300.0,
     runner: Any = None,
 ) -> SshResult:
-    """Verify a staged download before replacing an unchanged destination."""
+    """Verify a staged download and publish only to an unused destination."""
     from ..execution import require_write_access
-    from ..file_mutations import atomic_copy_file
 
     require_write_access()
     # Resolve the parent, not the destination: following a final symlink would
@@ -242,7 +242,8 @@ async def fetch_file(
     local_path = Path(local_path).expanduser().absolute()
     if local_path.is_symlink() or local_path.parent.resolve() != local_path.parent:
         return SshResult(False, None, "", "download destination must not be a symbolic link")
-    baseline = _sha256_file(local_path) if local_path.exists() else None
+    if local_path.exists():
+        return SshResult(False, None, "", "download destination already exists; choose a new path")
     with tempfile.TemporaryDirectory(prefix=".minimax-download-", dir=local_path.parent) as tmp:
         staged = Path(tmp) / "payload"
         argv = _scp_args(host, f"{_target(host)}:{remote_path}", str(staged), sftp_only=True)
@@ -257,7 +258,10 @@ async def fetch_file(
             return SshResult(False, None, result.stdout,
                              f"sha256 mismatch after download: local={local_sha} remote={remote_sha}")
         try:
-            atomic_copy_file(staged, local_path, baseline_sha256=baseline)
+            # The staging directory is on the same filesystem. Linking is an
+            # atomic create-if-absent, including if another process creates
+            # the destination while the transfer is running.
+            os.link(staged, local_path)
         except OSError as exc:
             return SshResult(False, None, result.stdout, f"download not published: {exc}")
         return result

@@ -56,7 +56,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
   };
   const confirm = async (action: "upload" | "download") => requestConfirmation({
     title: action === "upload" ? "确认上传到远端？" : "确认下载到本机？",
-    description: action === "upload" ? `主机 ${host.name} (${host.username}@${host.hostname})：将本机 ${local} 发送到 ${remote}。若目标存在，将在校验和未变化确认后替换，并保留远端备份。` : `主机 ${host.name} (${host.username}@${host.hostname})：将 ${remote} 下载到本机 ${local}。目标已存在时会在校验后替换，不自动备份。`,
+    description: action === "upload" ? `主机 ${host.name} (${host.username}@${host.hostname})：将本机 ${local} 发送到 ${remote}。若目标存在，将在校验和未变化确认后替换，并保留远端备份。` : `主机 ${host.name} (${host.username}@${host.hostname})：将 ${remote} 下载到本机 ${local}。目标已存在时不会覆盖，请选择新路径。`,
     confirmLabel: action === "upload" ? "确认上传" : "确认下载",
   });
   const transfer = async (action: "upload" | "download") => {
@@ -103,7 +103,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     <HostFileBrowser host={host} onSelect={(path) => { if (!busy) setRemote(path); }} />
     <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void transfer("upload")}>上传到此主机</Button>
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void transfer("download")}>从此主机下载</Button></div>
-    <p className="text-xs text-ink-2">上传备份位于远端传输记录目录；下载不自动备份本机已有文件。两者进行 SHA-256 比对，不能证明业务内容正确。响应中断时先核对，不自动重试。</p>
+    <p className="text-xs text-ink-2">上传备份位于远端传输记录目录；下载只创建新文件，不覆盖本机已有文件。两者进行 SHA-256 比对，不能证明业务内容正确。响应中断时先核对，不自动重试。</p>
     <label className="block text-xs">上传传输编号<Input aria-label={`${host.name} 上传传输编号`} value={manualId} maxLength={32} disabled={busy} onChange={(e) => setManualId(e.target.value)} /></label>
     <label className="block text-xs">查询用远端路径<Input aria-label={`${host.name} 上传查询路径`} value={manualRemote} disabled={busy} onChange={(e) => setManualRemote(e.target.value)} /></label>
     <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void inspect()}>查询上传状态</Button>
