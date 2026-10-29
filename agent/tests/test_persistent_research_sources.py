@@ -87,4 +87,3 @@ async def test_source_survives_new_task_and_is_project_scoped(native, tmp_path, 
             pass
     finally:
         await db.execute("UPDATE artifact_service SET service_id=? WHERE singleton=1", (identity,))
-
