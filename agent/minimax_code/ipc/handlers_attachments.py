@@ -9,8 +9,8 @@ from ..attachments import get_attachment_service
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
-    AttachmentGenerateDocxParams,
-    AttachmentGenerateReportPairParams,
+    AttachmentGenerateWithResearchParams,
+    AttachmentGeneratePairWithResearchParams,
     AttachmentGetParams,
     AttachmentListParams,
 )
@@ -24,6 +24,23 @@ def register_attachment_handlers(server):
             try:
                 values = model.model_validate(params).model_dump()
                 service = await get_attachment_service()
+                if operation.startswith("generate_"):
+                    source_ids = values.pop("page_source_ids")
+                    session_id = values.pop("session_id")
+                    if source_ids:
+                        if not session_id:
+                            raise ValueError("A project-bound session is required for research sources")
+                        from ..agent.tools.research_sources import ResearchSources
+                        from .host_session_gate import require_host_session
+                        await require_host_session(session_id)
+                        research = ResearchSources(service.dao.db, session_id, values["project_id"])
+                        if await research._binding() != values["expected_service_id"]:
+                            raise ValueError("Research service identity changed")
+                        values["sources"] = await research.resolve_pages(source_ids, values["sources"])
+                        if await research._binding() != values["expected_service_id"]:
+                            raise ValueError("Research service or project binding changed")
+                        await require_host_session(session_id)
+                        values["expected_session"] = session_id
                 await ctx.reply(await getattr(service, operation)(**values))
             except ValidationError:
                 await ctx.reply_error(INVALID_PARAMS, "Invalid attachment parameters")
@@ -33,8 +50,8 @@ def register_attachment_handlers(server):
                 logger.exception("attachment.%s failed", operation)
                 await ctx.reply_error(INTERNAL_ERROR, "Attachment storage operation failed")
         return handle
-    server.register("attachment.generate_report_pair", handler(AttachmentGenerateReportPairParams, "generate_report_pair"))
-    server.register("attachment.generate_pdf", handler(AttachmentGenerateDocxParams, "generate_pdf"))
-    server.register("attachment.generate_docx", handler(AttachmentGenerateDocxParams, "generate_docx"))
+    server.register("attachment.generate_report_pair", handler(AttachmentGeneratePairWithResearchParams, "generate_report_pair"))
+    server.register("attachment.generate_pdf", handler(AttachmentGenerateWithResearchParams, "generate_pdf"))
+    server.register("attachment.generate_docx", handler(AttachmentGenerateWithResearchParams, "generate_docx"))
     server.register("attachment.list", handler(AttachmentListParams, "list"))
     server.register("attachment.get", handler(AttachmentGetParams, "get"))

@@ -169,6 +169,11 @@ class AttachmentGenerateDocxParams(AttachmentListParams):
         return self
 
 
+class AttachmentGenerateWithResearchParams(AttachmentGenerateDocxParams):
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    page_source_ids: list[str] = Field(default_factory=list, max_length=30)
+
+
 class AttachmentGenerateReportPairParams(AttachmentGenerateDocxParams):
     filename: str = Field(min_length=1, max_length=115)
     formats: list[Literal["docx", "pdf"]] = Field(default_factory=lambda: ["docx", "pdf"], min_length=1, max_length=2)
@@ -348,6 +353,11 @@ class RunOutputClearParams(BaseModel):
     output_ref: str = Field(min_length=1, max_length=128)
     expected_service_id: str = Field(min_length=1, max_length=128)
     expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AttachmentGeneratePairWithResearchParams(AttachmentGenerateReportPairParams):
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    page_source_ids: list[str] = Field(default_factory=list, max_length=30)
 
 
 class RuntimeWorkspaceCheckParams(BaseModel):

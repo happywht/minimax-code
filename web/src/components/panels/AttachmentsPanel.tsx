@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { ipc } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
-import type { AttachmentParserStatus, DocxSection, ReportSource } from "../../types/ipc";
+import type { AttachmentParserStatus, DocxSection, ReportSource, ResearchSource } from "../../types/ipc";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
 import { ReportSectionsEditor, readEditableSections } from "./ReportSectionsEditor";
+import { ReportResearchPicker } from "./ReportResearchPicker";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -18,6 +19,7 @@ const labels: Record<AttachmentParserStatus, string> = {
 };
 export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
+  const sessionId = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
   const state = useAttachmentStore(), host = ipc.agentBaseUrl;
   const scoped = state.projectId === projectId && state.host === host;
@@ -28,13 +30,15 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
   const [structured, setStructured] = useState(false), [sections, setSections] = useState(sectionExample);
   const [visualSections, setVisualSections] = useState(false);
   const [sources, setSources] = useState<ReportSource[]>([]);
+  const [researchSources, setResearchSources] = useState<ResearchSource[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
-  const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources]);
+  const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources, researchSources.map((item) => item.page_source_id), sessionId]);
   useEffect(() => {
     setFile(null); setTitle(""); setBody(""); setFormat("docx"); setDocName("报告.docx"); setStructured(false); setVisualSections(false); setSections(sectionExample); setSources([]); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
+  useEffect(() => { setResearchSources([]); }, [projectId, sessionId, host, state.serviceId]);
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目附件">
     <div className="flex items-center justify-between">
       <h2 className="text-lg font-semibold">项目附件 · {project?.name ?? "选择项目"}</h2>
@@ -54,10 +58,16 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
       if (sources.some((source) => !source.title.trim() || !source.url.trim())) {
         setFormError("请填写每条来源的标题和网址，或删除空来源。"); return;
       }
-      const references = sources.length ? { sources: sources.map((source) => ({
-        title: source.title.trim(), url: source.url.trim(),
-        ...(source.accessed_at?.trim() ? { accessed_at: source.accessed_at.trim() } : {}),
-      })) } : {};
+      if (sources.length + researchSources.length > 30 || (researchSources.length && !sessionId)) {
+        setFormError("来源总数最多 30 条，研究来源需要当前项目会话。"); return;
+      }
+      const references = {
+        ...(sources.length ? { sources: sources.map((source) => ({
+          title: source.title.trim(), url: source.url.trim(),
+          ...(source.accessed_at?.trim() ? { accessed_at: source.accessed_at.trim() } : {}),
+        })) } : {}),
+        ...(researchSources.length && sessionId ? { session_id: sessionId, page_source_ids: researchSources.map((item) => item.page_source_id) } : {}),
+      };
       if (!structured) {
         const content = { paragraphs: body.split(/\r?\n/), ...references };
         if (format === "both") { setSubmittedPair(pairFingerprint); void state.generatePair(docName, title, content); }
@@ -103,8 +113,10 @@ export function AttachmentsPanel({ onClose }: { onClose: () => void }): JSX.Elem
           <Input aria-label={`来源 ${index + 1} 访问时间`} placeholder="可选：2026-10-29 或带时区的 ISO 时间" value={source.accessed_at ?? ""} onChange={(event) => setSources((current) => current.map((item, i) => i === index ? { ...item, accessed_at: event.target.value } : item))} />
           <Button type="button" variant="secondary" onClick={() => setSources((current) => current.filter((_, i) => i !== index))}>删除来源 {index + 1}</Button>
         </div>)}
-        <Button type="button" variant="secondary" disabled={sources.length >= 30} onClick={() => setSources((current) => [...current, { title: "", url: "" }])}>添加来源</Button>
+        <Button type="button" variant="secondary" disabled={sources.length + researchSources.length >= 30} onClick={() => setSources((current) => [...current, { title: "", url: "" }])}>添加来源</Button>
       </div>
+      <ReportResearchPicker project={projectId} session={sessionId} service={scoped ? state.serviceId : null}
+        selected={researchSources} onChange={setResearchSources} manualCount={sources.length} />
       {formError && <p role="alert">{formError}</p>}
       <Button type="submit" disabled={!scoped || !state.serviceId || state.busy || state.loading || ipc.isMock || !title.trim() || !(structured ? sections.trim() : body.trim()) || (format === "both" && !!state.reportBatch && submittedPair === pairFingerprint)}>生成 {format === "both" ? "DOCX + PDF" : format.toUpperCase()}</Button>
       {ipc.isMock && <p role="status">演示模式不能生成报告。</p>}
