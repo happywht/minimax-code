@@ -23,6 +23,9 @@ import { strings } from "../../ui/strings";
 import { Button } from "../../ui";
 import { ipc } from "../../ipc";
 
+// In-memory only: a draft belongs to one live request on one host.
+const drafts = new Map<string, { selections: string[][]; others: Array<string | null> }>();
+
 export interface AskUserCardProps {
   testId?: string;
 }
@@ -55,14 +58,34 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
   const [submitting, setSubmitting] = useState(false);
 
   // Reset local draft state whenever a new questionnaire arrives.
-  const requestKey = askUser?.request_id ?? null;
+  const requestKey = askUser ? JSON.stringify([ipc.agentBaseUrl, askUser.session_id, askUser.run_id, askUser.request_id]) : null;
   const questionCount = askUser?.questions.length ?? 0;
   useEffect(() => {
     if (!requestKey) return;
-    setSelections(Array.from({ length: questionCount }, () => []));
-    setOthers(Array.from({ length: questionCount }, () => null));
+    const draft = drafts.get(requestKey);
+    setSelections(draft?.selections ?? Array.from({ length: questionCount }, () => []));
+    setOthers(draft?.others ?? Array.from({ length: questionCount }, () => null));
     setSubmitting(false);
   }, [requestKey, questionCount]);
+
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+  useEffect(() => {
+    if (!askUser) { setRemainingSeconds(null); return; }
+    const deadline = askUser.remaining_ms !== undefined
+      ? Date.now() + askUser.remaining_ms
+      : (askUser.expires_at_ms ?? Date.now() + askUser.timeout_s * 1000);
+    const update = () => setRemainingSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [askUser]);
+
+  const saveDraft = (nextSelections: string[][], nextOthers: Array<string | null>) => {
+    if (!requestKey) return;
+    drafts.delete(requestKey);
+    drafts.set(requestKey, { selections: nextSelections, others: nextOthers });
+    if (drafts.size > 50) drafts.delete(drafts.keys().next().value!);
+  };
 
   const visible = askUser !== null && askUser.session_id === sessionId;
   const otherText = (qi: number) => (others[qi] ?? "").trim();
@@ -93,6 +116,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
       } else {
         next[qi] = idx >= 0 ? [] : [label];
       }
+      saveDraft(next, others);
       return next;
     });
   };
@@ -115,6 +139,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
     setSubmitting(true);
     try {
       await submit(buildAnswers());
+      if (useChat.getState().askUser?.request_id !== askUser.request_id && requestKey) drafts.delete(requestKey);
     } finally {
       setSubmitting(false);
     }
@@ -125,6 +150,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
     setSubmitting(true);
     try {
       await skip();
+      if (useChat.getState().askUser?.request_id !== askUser.request_id && requestKey) drafts.delete(requestKey);
     } finally {
       setSubmitting(false);
     }
@@ -154,7 +180,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
           <p className="mt-0.5 text-xs text-ink-2">
             {strings.chat.askUser.subtitle}
             <span className="ml-1.5 text-ink-2/80">
-              {strings.chat.askUser.timeoutHint(askUser.timeout_s)}
+              {remainingSeconds !== null && `剩余 ${Math.floor(remainingSeconds / 60)} 分 ${remainingSeconds % 60} 秒`}
             </span>
           </p>
         </div>
@@ -213,6 +239,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
                     const next = [...prev];
                     // Toggling "其他" off discards the draft text.
                     next[qi] = otherOpen(qi) ? null : "";
+                    saveDraft(selections, next);
                     return next;
                   })
                 }
@@ -237,6 +264,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
                   setOthers((prev) => {
                     const next = [...prev];
                     next[qi] = e.target.value;
+                    saveDraft(selections, next);
                     return next;
                   })
                 }
