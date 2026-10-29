@@ -22,6 +22,7 @@ import type {
 } from "../../types/ipc";
 import { InlineCode, TabHeader } from "./fields";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { TableArchive } from "./TableArchive";
 
 export { DataTab };
 
@@ -235,6 +236,8 @@ function DataTab(): JSX.Element {
           </Button>
         </div>
       </Panel>
+
+      <TableArchive disabled={exporting || importing || backing || diagnosing} />
 
       <Panel title={strings.settings.data.importTitle}>
         <p className="text-[11px] text-ink-2">
