@@ -148,6 +148,8 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
 
     # --- pass 1: collect raw material across all old turns ------------
     first_user_text = ""
+    later_user_messages: list[str] = []
+    later_messages_omitted = False
     constraint_sentences: list[str] = []
     changed_paths: list[str] = []
     verification_lines: list[str] = []
@@ -157,6 +159,8 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
             if isinstance(msg, _CompactedMessage):
                 state = msg.state
                 first_user_text = first_user_text or state.get("objective", "")
+                later_user_messages.extend(state.get("later_user_messages", []))
+                later_messages_omitted |= state.get("later_messages_omitted", False)
                 constraint_sentences.extend(state.get("constraints", []))
                 verification_lines.extend(state.get("commands", []))
                 changed_paths.extend(state.get("paths", []))
@@ -167,6 +171,8 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
             if role == "user":
                 if not first_user_text:
                     first_user_text = content
+                elif content.strip():
+                    later_user_messages.append(_clip(content.strip(), 300))
                 for sentence in _split_sentences(content):
                     if _is_constraint(sentence):
                         constraint_sentences.append(sentence)
@@ -188,16 +194,24 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
         constraints = constraints[:3] + ["[other constraints omitted]"] + constraints[-3:]
     commands = verification_lines[-4:]
     changed_paths = _dedupe(changed_paths)[-12:]
-    state = {"objective": _clip(objective, 500), "constraints": constraints, "commands": commands, "paths": changed_paths}
+    later_messages_omitted |= len(later_user_messages) > 4
+    later_user_messages = later_user_messages[-4:]
+    state = {"objective": _clip(objective, 500), "constraints": constraints, "commands": commands,
+             "paths": changed_paths, "later_user_messages": later_user_messages,
+             "later_messages_omitted": later_messages_omitted}
+    later_excerpt = "\n".join(f"- {message}" for message in reversed(later_user_messages))
+    if later_messages_omitted:
+        later_excerpt += "\n[Earlier user messages omitted]"
     # Reserve separate space for each class, so a long objective cannot
     # crowd out constraints or the most recent command output.
     budget = min(2400, max(0, int(available * .6) - 20))
     parts = []
     for title, value, fraction in (
-        ("Task objective", objective, .23),
-        ("User constraints", "; ".join(constraints), .23),
-        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .34),
-        ("File write requests (outcomes not established)", ", ".join(changed_paths), .20),
+        ("Task objective", objective, .18),
+        ("User constraints", "; ".join(constraints), .20),
+        ("Later user messages (newest first; excerpts)", later_excerpt, .24),
+        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .22),
+        ("File write requests (outcomes not established)", ", ".join(changed_paths), .16),
     ):
         if value:
             cap = int(budget * fraction) - len(title) - 6
