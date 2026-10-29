@@ -672,8 +672,6 @@ def register_run_handlers(server: Any) -> None:
                 if run.get("started_at") and not request.reviewed:
                     raise HandlerError(INVALID_PARAMS, "Review Codex's prior actions and workspace before recovery, including budget interruption")
                 saved = (metadata.get("budget") or {}).get("limit_tokens")
-                if budget_paused and request.budget_tokens is None:
-                    raise HandlerError(INVALID_PARAMS, "Pass budget_tokens to authorize a raised recovery cap")
                 prompt = (f"[Recovery of Codex run {run['id']} ending as {run['status']}. "
                           "Inspect the existing workspace and conversation. Determine which side effects already occurred "
                           "and verify them before taking further action. Continue only the unfinished work; "
@@ -696,11 +694,6 @@ def register_run_handlers(server: Any) -> None:
             # the caller first authorised.
             saved_budget = (metadata.get("budget") or {}).get("limit_tokens")
             budget_override = request.budget_tokens if request.budget_tokens is not None else saved_budget
-            if budget_paused and request.budget_tokens is None:
-                raise HandlerError(
-                    INVALID_PARAMS,
-                    "This run paused on its token budget; pass budget_tokens to raise the cap before resuming",
-                )
             note = (
                 f"\n\n[Runtime recovery context: prior run {run['id']} ended as {run['status']}. "
                 "Continue the original task after inspecting the existing workspace and prior conversation. "
@@ -709,8 +702,8 @@ def register_run_handlers(server: Any) -> None:
             if budget_paused and not recovery_requires_review:
                 note = (
                     f"\n\n[Budget recovery context: prior run {run['id']} paused at a model-call "
-                    f"boundary with its token budget exhausted. The workspace reflects only confirmed "
-                    "effects; continue the task with the raised budget.]"
+                    f"boundary. The workspace reflects only confirmed effects; continue the task "
+                    "under the authorized cumulative budget.]"
                 )
             content = previous["content"]
             if isinstance(content, list):

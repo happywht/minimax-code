@@ -733,7 +733,9 @@ async def handle_agent_send_message(
     from ..budget import daily_budget_limit, resolve_run_budget
 
     budget_override = params.get("budget_tokens")
-    run_budget = internal_schedule["context"]["budget_tokens"] if internal_schedule is not None else resolve_run_budget(budget_override)
+    run_budget = (internal_schedule["context"]["budget_tokens"] if internal_schedule is not None
+                  else budget_override if resumed_from_id is not None
+                  else resolve_run_budget(budget_override))
     daily_limit = daily_budget_limit()
     daily_baseline = 0
 

@@ -464,8 +464,8 @@ class ContinueRunParams(_Base):
 class RunResumeParams(RunIdParams):
     idempotency_key: str = Field(min_length=1, max_length=128)
     reviewed: bool = False
-    # M2 — raise the per-run cap when resuming a budget_paused run.
-    # None inherits the original run's cap from its metadata.
+    # None preserves the original cumulative cap, including an unset cap.
+    # A supplied value may preserve or raise it; the ledger rejects reductions.
     budget_tokens: int | None = Field(default=None, ge=0)
     expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
     expected_session_id: str | None = Field(default=None, min_length=1, max_length=128)

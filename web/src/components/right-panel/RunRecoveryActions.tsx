@@ -14,6 +14,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   const [reviewed, setReviewed] = useState(false), [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null), [cancelRequested, setCancelRequested] = useState(false);
   const [resumed, setResumed] = useState(false), [budgetTokens, setBudgetTokens] = useState("");
+  const [changeBudget, setChangeBudget] = useState(false);
   const [review, setReview] = useState<Review | null>(null), [attempt, setAttempt] = useState<Attempt | null>(null);
   const [loading, setLoading] = useState(false);
   const epoch = useRef(0), inFlight = useRef(false);
@@ -25,7 +26,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   const resumable = ["interrupted", "failed", "cancelled", "budget_paused"].includes(run.status);
   const active = ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status);
   useEffect(() => {
-    ++epoch.current; setReview(null); setAttempt(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens("");
+    ++epoch.current; setReview(null); setAttempt(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens(""); setChangeBudget(false);
     return () => { ++epoch.current; };
   }, [run.id, run.status, session, project, selectedProject, host]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setReview(null); setAttempt(null); setReviewed(false); setPending(false); setLoading(false); setError("连接变化，请重新读取运行和待确认请求。"); }), []);
@@ -76,7 +77,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
         }
       } catch (failure) { throw new Error(`无法读取安全重试记录：${failure instanceof Error ? failure.message : String(failure)}`); }
       setReview({ snapshot, service: identity.service_id, host, project }); setAttempt(saved);
-      if (saved?.budget != null) setBudgetTokens(String(saved.budget));
+      if (saved?.budget != null) { setBudgetTokens(String(saved.budget)); setChangeBudget(true); }
     } catch (failure) { if (current(ticket)) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { if (current(ticket)) setLoading(false); }
   };
@@ -92,10 +93,10 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
       finally { inFlight.current = false; setPending(false); }
       return;
     }
-    if (!review || !reviewed || !session || session !== run.session_id || !sameProject || (budgetPaused && !attempt && !validBudget)) return;
+    if (!review || !reviewed || !session || session !== run.session_id || !sameProject || (budgetPaused && changeBudget && !attempt && !validBudget)) return;
     if (attempt && attempt.cursor !== review.snapshot.cursor) { setError("原运行记录已变化；请检查是否已有接续运行，不能直接重试旧请求。"); return; }
     const payload: Attempt = attempt ?? { key: crypto.randomUUID(), run: run.id, session, project, service: review.service,
-      host, cursor: review.snapshot.cursor, budget: budgetPaused ? Number(budgetTokens) : null, reviewed: true };
+      host, cursor: review.snapshot.cursor, budget: budgetPaused && changeBudget ? Number(budgetTokens) : null, reviewed: true };
     try { localStorage.setItem(retryStorage(payload), JSON.stringify(payload)); }
     catch { setError("浏览器存储不可用，无法保留重试身份；未发送恢复请求。"); return; }
     const ticket = ++epoch.current; setAttempt(payload); inFlight.current = true; setPending(true); setError(null);
@@ -133,10 +134,14 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
         {review.snapshot.steps.length > 50 && <p>较早步骤未在此显示，请查看完整时间线。</p>}
         <RunWorkspaceDiff run={review.snapshot.run} />
         <label className="flex items-start gap-2"><input type="checkbox" checked={reviewed} disabled={pending} onChange={(event) => setReviewed(event.target.checked)} />已核对记录、当前文件及可能的外部副作用。</label>
-        {budgetPaused && <label className="block">恢复 token 上限（累计含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} disabled={pending || !!attempt} onChange={(event) => setBudgetTokens(event.target.value)} /></label>}
+        {budgetPaused && <div className="space-y-1">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={changeBudget} disabled={pending || !!attempt} onChange={(event) => setChangeBudget(event.target.checked)} />修改累计 token 上限</label>
+          <p>默认保留原运行的累计上限（包括未设置上限），不清除已用额度或未知责任。日额度及账本检查仍然生效；如家族额度已变化，请先核对最新运行。</p>
+          {changeBudget && <label className="block">恢复 token 上限（累计含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} disabled={pending || !!attempt} onChange={(event) => setBudgetTokens(event.target.value)} /></label>}
+        </div>}
         {attempt && <p>存在待确认恢复请求；重试保留原请求 ID 和预算，不会创建新的重试身份。请先核对时间线。</p>}
         {attempt && attempt.cursor !== review.snapshot.cursor && <p role="status">原记录版本已变化，不能直接重试；请先核对是否已创建接续运行。</p>}
-        <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" onClick={() => void act()} disabled={pending || resumed || !reviewed || (budgetPaused && !attempt && !validBudget) || (!!attempt && attempt.cursor !== review.snapshot.cursor)}>
+        <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" onClick={() => void act()} disabled={pending || resumed || !reviewed || (budgetPaused && changeBudget && !attempt && !validBudget) || (!!attempt && attempt.cursor !== review.snapshot.cursor)}>
           {pending ? "处理中…" : resumed ? "已创建接续运行" : attempt ? "重试同一恢复请求" : "确认恢复为新运行"}</Button>
           {attempt && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={forget}>移除本地待确认记录</Button>}</div>
       </div>}

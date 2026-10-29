@@ -65,7 +65,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
     if expected_snapshot and (session.get("engine_thread_id") != expected_snapshot.get("codex_thread_id")
                               or workspace != expected_snapshot.get("workspace_snapshot")):
         raise HandlerError(-32602, "Codex recovery thread or workspace binding differs from the original run")
-    budget = resolve_run_budget(request.budget_tokens)
+    budget = request.budget_tokens if resumed_from_id is not None else resolve_run_budget(request.budget_tokens)
     daily = daily_budget_limit()
     baseline = 0  # The shared ledger reads current daily liabilities atomically.
 

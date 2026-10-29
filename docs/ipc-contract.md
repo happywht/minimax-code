@@ -586,8 +586,8 @@ closed as `failed` to end its waiting state, while its payload records
 its side effects occurred. Original dictionary fields are retained; non-dictionary
 payloads are retained under `original_payload`. The recovery event and step carry
 the same evidence. Tools are not automatically retried. If the run was budget
-paused before restart, resumption still requires an explicit `budget_tokens` value;
-an unfinished tool additionally requires the caller to review its side effects.
+paused before restart, resumption preserves the original cumulative cap when
+`budget_tokens` is omitted; an unfinished tool additionally requires the caller to review its side effects.
 Terminal run steps with `payload.source = "terminal"` periodically checkpoint a
 bounded `output_tail` and stdout/stderr segments while running, then persist a
 final tail on completion. `output_truncated` indicates whether earlier output was
@@ -889,7 +889,10 @@ has not started, while a previously running request needs review. No request or
 tool is automatically replayed. `run.resume` accepts `{run_id, idempotency_key,
 reviewed?: boolean, budget_tokens?: positive integer}`; started requests require explicit
 `reviewed: true` (including Codex budget pauses, whose external side effects need review).
-Native clean budget boundaries retain their existing exemption. It creates
+Native clean budget boundaries retain their existing exemption. Omitting `budget_tokens`
+preserves the source run's cumulative cap, including an unset cap; supplying a value
+may preserve or raise it. The ledger rejects a reduction against the current family
+cap and continues enforcing family and daily liabilities. It creates
 a new request with a recovery handoff and `resumed_from_id`; the original record
 stays intact. The original provider/model/effort and workspace binding must still
 match. Codex uses its saved thread/workspace/protocol rather than a Native model snapshot;
