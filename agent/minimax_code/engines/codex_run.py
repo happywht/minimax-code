@@ -155,6 +155,82 @@ async def drive_codex_run(
     # Retain bounded previews keyed by the full external identity, so an
     # approval can never display changes from another thread or turn.
     file_previews: dict[tuple[str, str, str], dict[str, Any]] = {}
+    # Only items belonging to this turn are exposed. Map external IDs to
+    # run-scoped IDs so reconnects and concurrent sessions cannot collide.
+    tool_items: dict[str, dict[str, Any]] = {}
+
+    async def tool_event(method: str, params: dict[str, Any]) -> None:
+        if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
+            return
+        item = params.get("item")
+        if not isinstance(item, dict) or item.get("type") not in {"commandExecution", "fileChange"}:
+            return
+        item_id = item.get("id")
+        if not isinstance(item_id, str) or not item_id:
+            raise ValueError("Codex tool item is missing its ID")
+        entry = tool_items.get(item_id)
+        if entry is None:
+            kind = item["type"]
+            name = "codex.commandExecution" if kind == "commandExecution" else "codex.fileChange"
+            args: dict[str, Any] = {}
+            if kind == "commandExecution":
+                for key in ("command", "cwd"):
+                    if isinstance(item.get(key), str):
+                        args[key] = item[key][:4000]
+            else:
+                preview = file_previews.get((thread_id, turn_id, item_id))
+                args["changes"] = preview or {"changes": [], "unavailable": True}
+            call_id = f"codex:{job.run_id}:{uuid.uuid4().hex}"
+            entry = {"kind": kind, "name": name, "args": args, "id": call_id,
+                     "step_id": None, "completed": False}
+            tool_items[item_id] = entry
+            if conversation:
+                step = await job.dao.create_step(run_id=job.run_id, session_id=job.session_id,
+                    kind="tool_call", title=name, summary=json.dumps(args, ensure_ascii=False)[:300],
+                    tool_call_id=call_id, tool_name=name, payload={"args": args})
+                entry["step_id"] = step["id"]
+                await emit("run.step.started", {"run_id": job.run_id, "step": step})
+            await emit("agent.tool_call", {"session_id": job.session_id, "run_id": job.run_id,
+                "message_id": job.message_id, "tool_call_id": call_id, "name": name, "args": args})
+        elif entry["kind"] != item["type"]:
+            raise ValueError("Codex item type changed within a turn")
+        if method != "item/completed" or entry["completed"]:
+            return
+        status = item.get("status")
+        # Unknown or absent statuses must never be reported as successful.
+        success = status == "completed"
+        if entry["kind"] == "commandExecution":
+            output = item.get("aggregatedOutput")
+            output = output if isinstance(output, str) else ""
+            result = {"status": status, "exit_code": item.get("exitCode"),
+                      "output": output[:16000], "truncated": len(output) > 16000}
+            if type(item.get("exitCode")) is int and item["exitCode"] != 0:
+                success = False
+        else:
+            result = {"status": status, **(file_previews.get((thread_id, turn_id, item_id))
+                                             or {"changes": [], "unavailable": True})}
+        error = None if success else f"Codex item outcome: {status or 'unknown'}"
+        if not success and result.get("exit_code") is not None:
+            error += f" (exit code {result['exit_code']})"
+        await finish_tool(entry, result, error)
+
+    async def finish_tool(entry: dict[str, Any], result: dict[str, Any], error: str | None) -> None:
+        if entry["completed"]:
+            return
+        output = json.dumps(result, ensure_ascii=False)
+        if conversation:
+            parent, observation = await job.dao.record_tool_result(
+                run_id=job.run_id, session_id=job.session_id, parent_id=entry["step_id"],
+                tool_call_id=entry["id"], tool_name=entry["name"], success=error is None,
+                summary=(error or output)[:600], error=error,
+                payload={"success": error is None, "output_preview": output[:1200], "result": result})
+            if parent:
+                await emit("run.step.completed", {"run_id": job.run_id, "step": parent})
+            await emit("run.step.completed", {"run_id": job.run_id, "step": observation})
+        entry["completed"] = True
+        await emit("agent.tool_result", {"session_id": job.session_id, "run_id": job.run_id,
+            "message_id": job.message_id, "tool_call_id": entry["id"], "name": entry["name"],
+            "result": output, "error": error})
 
     async def interrupt() -> None:
         if turn_id and thread_id:
@@ -199,7 +275,9 @@ async def drive_codex_run(
             return
         if conversation and relevant and method != "error" and (not tid or not external_turn):
             raise ValueError("Invalid Codex notification: missing thread/turn identity")
-        if method == "item/agentMessage/delta":
+        if method in {"item/started", "item/completed"}:
+            await tool_event(method, params)
+        elif method == "item/agentMessage/delta":
             delta = str(params.get("delta") or "")
             if conversation:
                 await conversation.delta(delta)
@@ -490,6 +568,10 @@ async def drive_codex_run(
             try:
                 await conn.close()
                 await queue.join()
+                for entry in tool_items.values():
+                    if not entry["completed"]:
+                        await finish_tool(entry, {"status": "unknown"},
+                                          "Codex item outcome unknown: no completion received")
                 status = ("cancelled" if isinstance(failure, asyncio.CancelledError) else
                           "failed" if failure is not None or cleanup_error or event_errors else
                           (result_receipt or {}).get("run_status", "failed"))
