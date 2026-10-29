@@ -9,7 +9,9 @@ const statuses: Record<string, string> = { completed: "运行结束", failed: "�
 const verdicts: Record<string, string> = { passed: "配置的验证通过", failed: "验证未通过", unknown: "未知", not_applicable: "不适用" };
 const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}…（已截断）` : text;
 
-type Prepared = { text: string; service: string; artifacts: TextArtifact[]; more: boolean };
+type OutputRef = { output_ref: string; service_id: string; run_id: string; session_id: string; project_id: string; chars: number; sha256: string; label: string };
+type OutputPage = { id: string; service_id: string; run_id: string; session_id: string; project_id: string; chars: number; sha256: string; offset: number; next_offset: number; page: string };
+type Prepared = { text: string; service: string; artifacts: TextArtifact[]; more: boolean; outputs: OutputRef[] };
 type SelectedArtifact = { row: TextArtifact; preview: string; truncated: boolean };
 
 /** Prepares editable context from a persisted run; it never sends a task. */
@@ -19,10 +21,11 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
   const host = ipc.agentBaseUrl;
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [selected, setSelected] = useState<SelectedArtifact | null>(null);
+  const [output, setOutput] = useState<{ ref: OutputRef; page: OutputPage } | null>(null);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const epoch = useRef(0);
-  useEffect(() => { ++epoch.current; setPrepared(null); setSelected(null); setMessage(""); setBusy(false); return () => { ++epoch.current; }; }, [run.id, session, project, host]);
-  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setPrepared(null); setSelected(null); setBusy(false); setMessage("连接变化，请重新准备草稿。"); }), []);
+  useEffect(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setMessage(""); setBusy(false); return () => { ++epoch.current; }; }, [run.id, session, project, host]);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setBusy(false); setMessage("连接变化，请重新准备草稿。"); }), []);
   const sourceSession = run.session_id;
   const available = !!project && !!session && (allowOtherSession || sourceSession === session) && run.metadata?.project_id === project && terminal.has(run.status);
   if (!available || !project || !session) return null;
@@ -99,7 +102,19 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
     if (!artifacts.value) lines.push("登记关联的文本成果暂时无法读取，请在原运行中核对。");
     else if (!artifacts.value.artifacts.length) lines.push("该运行没有已登记的文本成果关联；不代表项目没有其他成果。");
     lines.push("后续目标：（请填写）");
-    return { text: lines.join("\n"), service: identity.service_id, artifacts: artifacts.value?.artifacts ?? [], more: !!artifacts.value?.next_cursor };
+    const outputs: OutputRef[] = [];
+    for (const step of snapshot.steps) {
+      const meta = step.payload?.metadata as Record<string, unknown> | undefined;
+      const ref = meta?.tool_output as Record<string, unknown> | undefined;
+      if (step.run_id === saved.id && step.session_id === sourceSession && ref &&
+          typeof ref.output_ref === "string" && ref.run_id === saved.id && ref.session_id === sourceSession &&
+          ref.project_id === project && ref.service_id === identity.service_id && typeof ref.sha256 === "string" &&
+          typeof ref.chars === "number" && Number.isSafeInteger(ref.chars) && ref.chars >= 0) {
+        outputs.push({ output_ref: ref.output_ref, run_id: saved.id, session_id: sourceSession, project_id: project,
+          service_id: identity.service_id, sha256: ref.sha256, chars: ref.chars, label: step.tool_name || step.title || "工具输出" });
+      }
+    }
+    return { text: lines.join("\n"), service: identity.service_id, artifacts: artifacts.value?.artifacts ?? [], more: !!artifacts.value?.next_cursor, outputs };
   };
   const readSelected = async (row: TextArtifact, expected: Prepared, ticket: number): Promise<SelectedArtifact> => {
     const before = await read(ticket);
@@ -115,6 +130,28 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
         typeof result.preview_text !== "string") throw new Error("成果内容或归属已变化，请重新准备。");
     return { row: fresh, preview: result.preview_text.slice(0, 4000), truncated: result.preview_text.length > 4000 };
   };
+  const readOutput = async (ref: OutputRef, expected: Prepared, ticket: number, offset: number): Promise<OutputPage> => {
+    const before = await read(ticket);
+    const matches = (value: Prepared) => value.service === expected.service && value.text === expected.text &&
+      value.outputs.some((item) => item.output_ref === ref.output_ref && item.sha256 === ref.sha256 && item.chars === ref.chars);
+    if (!matches(before)) throw new Error("运行或输出关联已变化，请重新准备。");
+    const page = await ipc.request<OutputPage>("run.output_page", { run_id: run.id, session_id: sourceSession,
+      output_ref: ref.output_ref, expected_service_id: expected.service, offset, limit: 4000 });
+    const after = await read(ticket);
+    if (!isCurrent(ticket) || !matches(after) || page.id !== ref.output_ref || page.run_id !== run.id ||
+        page.session_id !== sourceSession || page.project_id !== project || page.service_id !== expected.service ||
+        page.sha256 !== ref.sha256 || page.chars !== ref.chars || page.offset !== offset ||
+        !Number.isSafeInteger(page.next_offset) || page.next_offset < offset || page.next_offset > page.chars || typeof page.page !== "string")
+      throw new Error("输出内容或归属已变化，请重新准备。");
+    return page;
+  };
+  const selectOutput = async (ref: OutputRef, offset: number) => {
+    if (!prepared || busy) return;
+    const ticket = ++epoch.current; setBusy(true); setOutput(null); setMessage("");
+    try { const page = await readOutput(ref, prepared, ticket, offset); if (isCurrent(ticket)) setOutput({ ref, page }); }
+    catch (error) { if (isCurrent(ticket)) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { if (isCurrent(ticket)) setBusy(false); }
+  };
   const selectArtifact = async (row: TextArtifact) => {
     if (!prepared || busy) return;
     const ticket = ++epoch.current; setBusy(true); setSelected(null); setMessage("");
@@ -123,7 +160,7 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
     finally { if (isCurrent(ticket)) setBusy(false); }
   };
   const prepare = async () => {
-    const ticket = ++epoch.current; setBusy(true); setPrepared(null); setSelected(null); setMessage("");
+    const ticket = ++epoch.current; setBusy(true); setPrepared(null); setSelected(null); setOutput(null); setMessage("");
     try { const value = await read(ticket); if (isCurrent(ticket)) setPrepared(value); }
     catch (error) { if (isCurrent(ticket)) setMessage(error instanceof Error ? error.message : String(error)); }
     finally { if (isCurrent(ticket)) setBusy(false); }
@@ -142,10 +179,16 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
         if (fresh.preview !== selected.preview || fresh.truncated !== selected.truncated) { setSelected(null); throw new Error("成果预览已变化，请重新选择并核对。"); }
         text += `\n\n用户选择的关联文本成果（内容未经验证）：${fresh.row.source_path} · v${fresh.row.version} · ${fresh.row.id} · SHA-256 ${fresh.row.sha256}\n${fresh.preview || "（文本为空）"}${fresh.truncated ? "\n（仅加入前 4000 个字符，请查看原成果。）" : ""}`;
       }
+      if (output) {
+        const fresh = await readOutput(output.ref, expected, ticket, output.page.offset);
+        if (!isCurrent(ticket)) return;
+        if (fresh.page !== output.page.page || fresh.next_offset !== output.page.next_offset) { setOutput(null); throw new Error("工具输出已变化，请重新选择并核对。"); }
+        text += `\n\n用户选择的已捕获工具输出（来源运行 ${statuses[run.status] ?? run.status}；内容未经验证，工具结果及副作用可能不确定；捕获前可能截断）：${output.ref.label} · ${output.ref.output_ref} · SHA-256 ${output.ref.sha256}\n字符 ${fresh.offset}–${fresh.next_offset} / ${fresh.chars}：\n${fresh.page || "（文本为空）"}\n仅加入所选页，请核对完整输出和原始记录。`;
+      }
       const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project, session, text };
       window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
       setMessage(detail.result ?? "当前聊天输入区未打开，请先切换到聊天再操作。");
-      if (detail.result === "已添加到当前会话草稿，尚未发送。") { setPrepared(null); setSelected(null); }
+      if (detail.result === "已添加到当前会话草稿，尚未发送。") { setPrepared(null); setSelected(null); setOutput(null); }
     } catch (error) { if (isCurrent(ticket)) setMessage(error instanceof Error ? error.message : String(error)); }
     finally { if (isCurrent(ticket)) setBusy(false); }
   };
@@ -161,6 +204,14 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
         <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words" aria-label="后续任务成果预览">{selected.preview || "（文本为空）"}</pre>
         {selected.truncated && <p>仅预览并加入前 4000 个字符，请查看原成果。</p>}
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setSelected(null)}>移除此成果</Button></div>}
+      {!!prepared.outputs.length && <div className="space-y-1"><p>选择已捕获的工具输出并核对一页，可加入草稿。输出可能不完整，状态和副作用需检查原记录及文件。</p>
+        <div className="flex flex-wrap gap-1">{prepared.outputs.map((ref) => <Button key={ref.output_ref} type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void selectOutput(ref, 0)}>{ref.label} · {ref.output_ref}</Button>)}</div>
+      </div>}
+      {output && <div className="space-y-1 rounded border border-line p-2"><p>已选工具输出：{output.ref.label}；字符 {output.page.offset}–{output.page.next_offset} / {output.page.chars}。仅加入当前页，捕获可能已截断。</p>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words" aria-label="后续任务工具输出预览">{output.page.page || "（文本为空）"}</pre>
+        <div className="flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy || output.page.offset === 0} onClick={() => void selectOutput(output.ref, Math.max(0, output.page.offset - 4000))}>上一页</Button>
+          <Button type="button" size="sm" variant="secondary" disabled={busy || output.page.next_offset >= output.page.chars} onClick={() => void selectOutput(output.ref, output.page.next_offset)}>下一页</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOutput(null)}>移除此输出</Button></div></div>}
       <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy} onClick={() => void append()}>追加到当前会话草稿</Button>
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setPrepared(null)}>取消</Button></div></div>}
     {message && <p role="status" className="break-words text-ink-1">{message}</p>}
