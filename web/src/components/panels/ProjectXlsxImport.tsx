@@ -3,13 +3,12 @@ import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import type { AttachmentOriginal } from "../../types/ipc";
 import { Button, Input } from "../../ui";
-import { parseXlsxProjection } from "./XlsxTablePreview";
 import { parseOfficeCsv, type CsvTable } from "./officeCsv";
 
 type Extraction = { rows: string[][]; date_columns: string[]; percentage_columns: string[]; currency_columns: string[] };
 export function ProjectXlsxImport({ project, session, service, onImport }: { project: string | null; session: string | null; service: string | null; onImport: (text: string, table: CsvTable) => void }): JSX.Element {
   const [items, setItems] = useState<AttachmentOriginal[]>([]), [item, setItem] = useState<AttachmentOriginal | null>(null);
-  const [sheets, setSheets] = useState<string[]>([]), [sheet, setSheet] = useState("");
+  const [sheets, setSheets] = useState<{ name: string; state: "visible" | "hidden" | "veryHidden" }[]>([]), [sheet, setSheet] = useState("");
   const [extraction, setExtraction] = useState<Extraction | null>(null), [columns, setColumns] = useState<number[]>([]);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const epoch = useRef(0), host = ipc.agentBaseUrl;
@@ -29,11 +28,9 @@ export function ProjectXlsxImport({ project, session, service, onImport }: { pro
   const select = async (id: string) => {
     const row = items.find((x) => x.id === id); if (!row || !project || !session || !service) return;
     const ticket = ++epoch.current; setItem(null); setSheets([]); setSheet(""); setExtraction(null); setBusy(true); setError("");
-    try { const result = await typedIPC.getAttachment(project, id); if (!current(ticket)) return;
-      if (result.attachment.id !== id || result.attachment.project_id !== project || result.attachment.service_id !== service || result.attachment.sha256 !== row.sha256) throw new Error("附件身份变化，请重新读取");
-      setItem(row);
-      try { const names = parseXlsxProjection(result.preview_text).filter((x) => x.state === "visible").map((x) => x.name); setSheets(names); setSheet(names[0] ?? ""); }
-      catch { setError("工作表预览不完整，可手动填写准确的可见工作表名称。"); }
+    try { const result = await typedIPC.listAttachmentXlsxSheets({ project_id: project, session_id: session, expected_service_id: service, attachment_id: id, expected_sha256: row.sha256 }); if (!current(ticket)) return;
+      if (result.project_id !== project || result.session_id !== session || result.service_id !== service || result.attachment_id !== id || result.sha256 !== row.sha256) throw new Error("附件身份变化，请重新读取");
+      setItem(row); setSheets(result.sheets); setSheet(result.sheets.find((x) => x.state === "visible")?.name ?? "");
     } catch (e) { if (current(ticket)) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (current(ticket)) setBusy(false); }
   };
@@ -60,7 +57,7 @@ export function ProjectXlsxImport({ project, session, service, onImport }: { pro
     {!project || !session || !service ? <p>请先选择项目会话并连接服务。</p> : <>
       <Button type="button" variant="secondary" disabled={busy} onClick={() => void list()}>读取项目 XLSX 附件</Button>
       <label>附件 <select aria-label="项目 XLSX 附件" value={item?.id ?? ""} disabled={busy} onChange={(e) => void select(e.target.value)}><option value="">选择附件</option>{items.map((x) => <option key={x.id} value={x.id}>{x.original_name} · v{x.version}</option>)}</select></label>
-      {item && <><label>可见工作表 <select aria-label="XLSX 可见工作表" value={sheets.includes(sheet) ? sheet : ""} onChange={(e) => { setSheet(e.target.value); setExtraction(null); }}><option value="">选择或手动填写</option>{sheets.map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
+      {item && <><p>工作表列表来自完整元数据；隐藏表不可读取，可见表仍可能含不支持的内容。</p><label>可见工作表 <select aria-label="XLSX 可见工作表" value={sheets.some((x) => x.name === sheet && x.state === "visible") ? sheet : ""} onChange={(e) => { setSheet(e.target.value); setExtraction(null); }}><option value="">选择或手动填写</option>{sheets.map((entry) => <option key={entry.name} value={entry.name} disabled={entry.state !== "visible"}>{entry.name}{entry.state === "visible" ? "" : ` · ${entry.state}`}</option>)}</select></label>
         <Input aria-label="XLSX 工作表名称" value={sheet} maxLength={31} placeholder="准确的可见工作表名称" onChange={(e) => { setSheet(e.target.value); setExtraction(null); }} />
         <Button type="button" variant="secondary" disabled={busy || !sheet.trim()} onClick={() => void extract()}>读取完整工作表</Button></>}
       {busy && <p role="status">正在读取…</p>}{error && <p role="alert">{error}</p>}

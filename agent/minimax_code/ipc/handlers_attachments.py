@@ -13,6 +13,7 @@ from .protocol import (
     AttachmentGeneratePairWithResearchParams,
     AttachmentGetParams,
     AttachmentExtractXlsxParams,
+    AttachmentXlsxParams,
     AttachmentListParams,
     AttachmentReadDocumentParams,
     AttachmentOcrParams,
@@ -54,12 +55,12 @@ def register_attachment_handlers(server):
                 logger.exception("attachment.%s failed", operation)
                 await ctx.reply_error(INTERNAL_ERROR, "Attachment storage operation failed")
         return handle
-    async def extract_xlsx(params, ctx):
+    async def xlsx_operation(params, ctx, *, listing=False):
         try:
-            from ..attachment_parser import extract_xlsx as extract_sheet
+            from ..attachment_parser import extract_xlsx as extract_sheet, list_xlsx_sheets
             from ..agent.tools.generate_xlsx_from_xlsx import _MESSAGES
             from .host_session_gate import require_host_session
-            request = AttachmentExtractXlsxParams.model_validate(params)
+            request = (AttachmentXlsxParams if listing else AttachmentExtractXlsxParams).model_validate(params)
             service = await get_attachment_service()
             async def check_scope():
                 await require_host_session(request.session_id)
@@ -73,13 +74,14 @@ def register_attachment_handlers(server):
             original, data = await service.content(request.project_id, request.attachment_id)
             if original["recognized_type"] != "xlsx" or original["sha256"] != request.expected_sha256:
                 raise ValueError("XLSX attachment identity changed")
-            result = await extract_sheet(data, request.sheet_name)
+            result = await list_xlsx_sheets(data) if listing else await extract_sheet(data, request.sheet_name)
             if not result["ok"]:
                 raise ValueError(_MESSAGES.get(result["reason"], "Workbook is unsupported or parser unavailable"))
             await check_scope()
             await ctx.reply({**result, "project_id": request.project_id, "session_id": request.session_id,
                 "service_id": request.expected_service_id, "attachment_id": request.attachment_id,
-                "sha256": request.expected_sha256, "sheet_name": request.sheet_name})
+                "sha256": request.expected_sha256,
+                **({} if listing else {"sheet_name": request.sheet_name})})
         except ValidationError:
             await ctx.reply_error(INVALID_PARAMS, "Invalid XLSX extraction parameters")
         except (ValueError, OSError) as exc:
@@ -87,6 +89,12 @@ def register_attachment_handlers(server):
         except Exception:
             logger.exception("attachment.extract_xlsx failed")
             await ctx.reply_error(INTERNAL_ERROR, "XLSX extraction failed")
+
+    async def extract_xlsx(params, ctx):
+        await xlsx_operation(params, ctx)
+
+    async def list_xlsx_sheets(params, ctx):
+        await xlsx_operation(params, ctx, listing=True)
 
     async def read_document(params, ctx):
         try:
@@ -191,6 +199,7 @@ def register_attachment_handlers(server):
     server.register("attachment.ocr_image", ocr_image)
     server.register("attachment.read_document", read_document)
     server.register("attachment.extract_xlsx", extract_xlsx)
+    server.register("attachment.list_xlsx_sheets", list_xlsx_sheets)
     server.register("attachment.generate_report_pair", handler(AttachmentGeneratePairWithResearchParams, "generate_report_pair"))
     server.register("attachment.generate_pdf", handler(AttachmentGenerateWithResearchParams, "generate_pdf"))
     server.register("attachment.generate_docx", handler(AttachmentGenerateWithResearchParams, "generate_docx"))

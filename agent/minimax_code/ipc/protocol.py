@@ -103,11 +103,14 @@ class AttachmentListParams(ArtifactListParams):
     query: str | None = Field(default=None, min_length=1, max_length=240)
 
 
-class AttachmentExtractXlsxParams(ArtifactListParams):
+class AttachmentXlsxParams(ArtifactListParams):
     session_id: str = Field(min_length=1, max_length=128)
     expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
     expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AttachmentExtractXlsxParams(AttachmentXlsxParams):
     sheet_name: str = Field(min_length=1, max_length=31)
 
 

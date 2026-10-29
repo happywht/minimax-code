@@ -138,6 +138,7 @@ export interface TypedIPC {
   generatePdf(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   generateDocx(params: import("../types/ipc").AttachmentGenerateDocxParams): Promise<import("../types/ipc").AttachmentGetResult>;
   extractAttachmentXlsx(params: { project_id: string; session_id: string; expected_service_id: string; attachment_id: string; expected_sha256: string; sheet_name: string }): Promise<{ ok: true; project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; sheet_name: string; rows: string[][]; date_columns: string[]; percentage_columns: string[]; currency_columns: string[] }>;
+  listAttachmentXlsxSheets(params: { project_id: string; session_id: string; expected_service_id: string; attachment_id: string; expected_sha256: string }): Promise<{ ok: true; project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; sheets: { name: string; state: "visible" | "hidden" | "veryHidden" }[] }>;
   ocrAttachmentImage(params: import("../types/ipc").AttachmentOcrParams): Promise<import("../types/ipc").AttachmentOcrResult>;
   ocrAttachmentPdfPage(params: import("../types/ipc").AttachmentPdfOcrParams): Promise<import("../types/ipc").AttachmentPdfOcrResult>;
   readAttachmentDocument(params: import("../types/ipc").AttachmentDocumentParams): Promise<import("../types/ipc").AttachmentDocumentResult>;
@@ -649,6 +650,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     generatePdf: (params) => client.request("attachment.generate_pdf", params),
     generateDocx: (params) => client.request("attachment.generate_docx", params),
     extractAttachmentXlsx: (params) => client.request("attachment.extract_xlsx", params),
+    listAttachmentXlsxSheets: (params) => client.request("attachment.list_xlsx_sheets", params),
     ocrAttachmentImage: (params) => client.request("attachment.ocr_image", params),
     ocrAttachmentPdfPage: (params) => client.request("attachment.ocr_pdf_page", params),
     readAttachmentDocument: (params) => client.request("attachment.read_document", params),

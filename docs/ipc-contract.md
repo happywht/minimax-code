@@ -1758,6 +1758,7 @@ document the migration in this file.
 | `attachment.ocr_image` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language}` | 手动执行本地 PNG/JPEG OCR，返回临时未核验文本 |
 | `attachment.read_document` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, unit, offset}` | 读取匹配原件的 PDF 物理页或 DOCX 正文段落的有界文本片段，返回来源、位置与下一游标 |
 | `attachment.extract_xlsx` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, sheet_name}` | 复核会话、服务与附件后返回受控完整工作表行及日期、百分比、货币列；不计算公式 |
+| `attachment.list_xlsx_sheets` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256}` | 复核会话、服务与原件后返回最多 32 个工作表的名称及可见状态，不读取行或计算公式 |
 | `attachment.list` | `{project_id, cursor?, query?}` | `{attachments, service_id, next_cursor}`，每页最多 200 条元数据，不含预览。可选 query（1–240 字符）按名称区分大小写作字面子串匹配，不读取或搜索原件；搜索游标绑定项目、服务和 query，继续时必须使用相同参数。无 query 保持原游标行为 |
 | `attachment.get` | `{project_id, attachment_id}` | `{attachment, preview_text}`，核对原件后返回有界纯文本 |
 
@@ -1831,6 +1832,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 `attachment.read_document` 仅在会话归属项目、服务及附件 SHA-256 匹配时读取原件，复用隔离解析器；单次最多 4000 字符，初始游标为 unit=1、offset=0，按返回的 next_cursor 继续。PDF 为物理页已有文本（最多 200 页），DOCX 为正文与表格段落；不读取页眉页脚、脚注、文本框、修订或图像文字，不执行 OCR，不还原版式。空文本不代表原件无内容；文字未经核验。原件不修改，也不自动加入对话。缺依赖或资源限制不可用时返回错误。
 
 `attachment.extract_xlsx` 仅在会话归属项目、服务和附件校验值匹配时读取不可变原件，使用现有隔离解析器完整提取一个可见工作表；上限 2 MiB、A1:T1001、5000 格及 1 MiB 提取数据。公式、隐藏行列、复杂表和不明确数字格式等拒绝；日期转 ISO，百分比和货币为底层数值，不保留格式。返回前再次核对会话和服务；不会修改原件。
+
+`attachment.list_xlsx_sheets` 使用相同的身份与 2 MiB 原件边界，返回完整工作表名称及 `visible`、`hidden` 或 `veryHidden` 状态，超出解析限制或不支持时返回错误。列表不保证表内容可提取；隐藏表不能提取。只读取元数据，不修改原件、不计算公式。
 
 `attachment.generate_docx` 接受安全 `.docx` 显示名和单行标题（最多 200 字），内容使用两种互斥格式之一：`paragraphs` 为 1–100 个段落；或 `sections` 为 1–50 个 `{heading, blocks}`，每个 block 为 `{kind:"paragraph",text}` 或 `{kind:"table",rows:[[文本,...],...]}`，顺序保留。合计最多 100 块、2000 个单元格，每表最多 100 行、20 列且各行等宽；每段/格最多 4096 字，总 UTF-8 最多 256 KiB。章节标题也限单行 200 字。使用本地 python-docx 创建，回读并比较全部章节、段落、表格单元格及顺序，再经现有 DOCX 有界解析与不可变附件 vault 登记。不会读取或修改项目文件、调用模型或抓取资料；用户提供的来源文本需自行核实。不保证版式、分页、事实或业务质量。响应丢失时先刷新附件列表；重试会创建新版本。文件与现有附件共享备份协议及未验证状态，不作为已完成报告的质量证明。 普通聊天 Agent 可通过 `generate_report_docx` 生成当前会话项目的文档；提交时复核会话项目绑定，遵循规划模式与写入权限规则。该工具默认要求确认，拒绝规则优先，无法确认时拒绝。
 

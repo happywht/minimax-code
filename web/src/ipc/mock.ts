@@ -527,7 +527,9 @@ function mockHandle(
     case "attachment.ocr_image":
     case "attachment.read_document":
       throw new Error("演示模式不支持读取文档，请连接真实后端。");
+    case "attachment.list_xlsx_sheets":
     case "attachment.extract_xlsx":
+      throw new Error("演示模式不支持读取 XLSX，请连接真实后端。");
     case "attachment.generate_report_pair":
     case "attachment.generate_pdf":
     case "attachment.generate_docx":
