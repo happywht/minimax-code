@@ -19,7 +19,7 @@ Codex 只能根据外部用量通知反应式中断，无法预留引擎内部�
 已认证本地 RPC：
 
 - budget.get 参数 `{run_id?, day?}`，返回 `{budget, day, attempts, day_blockers, coverage_started_at}`。budget 可为 null，表示旧任务尚无完整家族记录。attempts 仅属当前家族；day_blockers 返回当日未知请求总数及最多 20 项身份/家族/所属 run/session/已知下界，子任务无独立记录时回退根任务。UI 可跳转所属任务逐项核查，日历史核定不能清除其他家族的未知请求。
-- budget.reconcile 参数 `{target: "day"|"family"|"attempt", target_id, liability_tokens, reason, acknowledged: true}`。责任不得小于已知下界。只允许核定 unknown 请求，活动 sent 不可核定；活动根任务也会拒绝。责任核定留下时间、依据和 provenance=reconciled，保持原 usage/known_tokens 不变。
+- budget.reconcile 参数 `{target: "day"|"family"|"attempt", target_id, liability_tokens, reason, acknowledged: true}`。责任不得小于已知下界。只允许核定 unknown 请求，活动 sent 不可核定；核定家族历史或请求责任时，任何共享该家族的排队、运行或等待中的任务都会阻止核定。此检查和核定在同一写事务中完成。责任核定留下时间、依据和 provenance=reconciled，保持原 usage/known_tokens 不变；核定本身不会续跑任务。
 
 ### 全日日账完整性
 

@@ -76,6 +76,20 @@ class BudgetsDAO:
     def __init__(self, db):
         self.db = db
 
+    async def _require_inactive_family(self, conn, family_id):
+        """Do not release shared accounting holds while any family owner runs."""
+        family = await _fetchone(conn, "SELECT root_run_id FROM budget_families WHERE id=?", (family_id,))
+        if not family:
+            raise ValueError("Budget family is missing")
+        owners = await _fetchall(conn, "SELECT DISTINCT run_id FROM budget_attempts WHERE family_id=?", (family_id,))
+        owner_ids = {family["root_run_id"], *(row["run_id"] for row in owners)}
+        active = await _fetchall(conn, "SELECT id, metadata FROM agent_runs WHERE status IN "
+                                 "('queued','planning','running','awaiting_approval','waiting_input')")
+        for run in active:
+            metadata = loads_json(run["metadata"]) or {}
+            if run["id"] in owner_ids or metadata.get("budget_family_id") == family_id:
+                raise ValueError("Wait for all runs in the budget family to stop before reconciling")
+
     async def _snapshot(self, conn, family_id=None, day=None):
         day = day or reservation_day()
         family = await _fetchone(conn, "SELECT * FROM budget_families WHERE id=?", (family_id,)) if family_id else None
@@ -259,6 +273,7 @@ class BudgetsDAO:
                 row = await _fetchone(conn, "SELECT * FROM budget_families WHERE id=?", (target_id,))
                 if not row or not row["legacy_incomplete"] or liability_tokens < row["legacy_lower_bound"]:
                     raise ValueError("Authorized family liability must cover its known lower bound")
+                await self._require_inactive_family(conn, target_id)
                 auth = loads_json(row["authorizations"]) or []
                 auth.append({"at": now_iso(), "historical_liability": liability_tokens, "reason": reason})
                 await conn.execute("UPDATE budget_families SET legacy_liability=?,legacy_incomplete=0,authorizations=? WHERE id=?", (liability_tokens, dumps_json(auth), target_id))
@@ -266,11 +281,7 @@ class BudgetsDAO:
                 row = await _fetchone(conn, "SELECT * FROM budget_attempts WHERE id=?", (target_id,))
                 if not row or row["state"] != "unknown" or liability_tokens < (row["known_tokens"] or 0):
                     raise ValueError("Only unresolved attempts can be reconciled above their known lower bound")
-                owner = await _fetchone(conn, "SELECT status FROM agent_runs WHERE id=?", (row["run_id"],))
-                if owner is None:
-                    owner = await _fetchone(conn, "SELECT r.status FROM budget_families f JOIN agent_runs r ON r.id=f.root_run_id WHERE f.id=?", (row["family_id"],))
-                if owner and owner["status"] in {"queued", "planning", "running", "awaiting_approval", "waiting_input"}:
-                    raise ValueError("Wait for owner execution and cleanup before reconciling its attempt")
+                await self._require_inactive_family(conn, row["family_id"])
                 await conn.execute("UPDATE budget_attempts SET state='reconciled',liability_tokens=?,provenance='reconciled',reason=?,settled_at=? WHERE id=?", (liability_tokens, reason, now_iso(), target_id))
                 await self._event(conn, row["run_id"], target_id, "reconciled", {"authorized_liability": liability_tokens, "reason": reason})
             else:

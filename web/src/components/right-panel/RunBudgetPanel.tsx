@@ -109,7 +109,7 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
     </div>}
     {!!targets.length && <fieldset className="space-y-1 rounded border border-minimax-border p-2">
       <legend>明确核定未确认责任</legend>
-      <p>核定额度仅授权记账，不会生成测得用量，也不会重置累计花费。活动请求结束后才能核对。</p>
+      <p>核定额度仅授权记账，不会生成测得用量，也不会重置累计花费。核定任务或请求责任前，须等待共享预算的所有运行停止。</p>
       <label>核定 token 责任<input aria-label="核定 token 责任" type="number" min="0" value={liability} onChange={(event) => setLiability(event.target.value)} /></label>
       <label>核对依据<input aria-label="预算核对依据" value={reason} onChange={(event) => setReason(event.target.value)} /></label>
       <label><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />确认依据与责任额度</label>
