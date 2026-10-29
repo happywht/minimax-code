@@ -467,11 +467,14 @@ For task review, `git.diff({run_id, session_id})` reads the **current** bound
 workspace for a Native or Codex run and returns `{run_id, session_id, project_id,
 workspace, scope:"current_workspace", diff, staged_diff, untracked}`. The two
 diffs cover tracked unstaged and staged changes; `untracked` lists names only.
+Git status paths retain whitespace, including leading and trailing spaces.
 No committed changes are included. No other parameters may be supplied. The
 run's recorded project, engine and workspace must still match the session, and
 host restrictions apply. Runs without these bindings cannot use this view.
 Results can include edits by the user or other runs and are not attribution to
 the selected run. The separate Git reads are not an atomic snapshot.
+In `git.status`, a rename is listed under its destination; its source is not a
+separate entry.
 
 `agent.send_message` and `run.start` accept optional boolean
 `capture_file_changes` (default false, included in request identity when true).

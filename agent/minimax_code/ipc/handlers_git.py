@@ -267,12 +267,13 @@ def _parse_status_porcelain_v2(text: str) -> tuple[list[str], list[str], list[st
     modified: list[str] = []
     untracked: list[str] = []
     staged: list[str] = []
-    for raw in text.split("\x00"):
+    records = iter(text.split("\x00"))
+    for raw in records:
         if not raw:
             continue
         # Untracked: "? <path>" — single ``?`` then a space.
         if raw.startswith("? "):
-            path = raw[2:].strip()
+            path = raw[2:]
             if path:
                 untracked.append(path)
             continue
@@ -281,19 +282,22 @@ def _parse_status_porcelain_v2(text: str) -> tuple[list[str], list[str], list[st
         if raw.startswith("1 ") and len(raw) >= 4:
             x = raw[2]
             y = raw[3]
-            path = raw[4:].split(" ", 8)[-1].strip()  # path is the last field
+            parts = raw.split(" ", 8)
+            if len(parts) != 9:
+                continue
+            path = parts[8]
         elif raw.startswith("2 ") and len(raw) >= 4:
             # Renamed/copied: "2 <XY> ... <X><score> <path>"
             # The path is the field after ``<X><score>``.
             x = raw[2]
             y = raw[3]
-            # Find the path: it comes after a space following the
-            # <X><score> token, near the end.
-            parts = raw.split(" ")
-            # ``parts[-1]`` is the path. Renames append a NUL
-            # then the original path to a separate entry, which
-            # we already split on above.
-            path = parts[-1].strip() if parts else ""
+            # With -z, the next NUL-delimited record is the source path,
+            # even if it resembles a status entry. Do not parse it as one.
+            next(records, None)
+            parts = raw.split(" ", 9)
+            if len(parts) != 10:
+                continue
+            path = parts[9]
         else:
             continue
         if not path:
