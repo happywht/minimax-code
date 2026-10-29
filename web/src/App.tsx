@@ -50,6 +50,9 @@ const SkillsPanel = lazy(() =>
 const ProjectRunDashboard = lazy(() =>
   import("./components/panels/ProjectRunDashboard").then((module) => ({ default: module.ProjectRunDashboard })),
 );
+const AutomationWorkspace = lazy(() =>
+  import("./components/panels/AutomationWorkspace").then((module) => ({ default: module.AutomationWorkspace })),
+);
 const DeliveryWorkspace = lazy(() =>
   import("./components/panels/DeliveryWorkspace").then((module) => ({ default: module.DeliveryWorkspace })),
 );
@@ -82,6 +85,7 @@ export default function App() {
   const refreshProviders = useProviderStore((s) => s.refresh);
   const refreshCrashReport = useCrashRecoveryStore((s) => s.loadPreviousReport);
   const [view, setView] = useState<MainView>("chat");
+  const automationEdited = useRef(false);
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
@@ -150,7 +154,15 @@ export default function App() {
     }
   }, [init, refreshSessions, refreshModels, refreshRules, refreshProviders, refreshCrashReport, probeStorageHealth, initializeNotifications]);
 
+  const leaveAutomation = useCallback(() => {
+    if (!automationEdited.current) return true;
+    if (!window.confirm("自动化工作区可能有未保存的编辑。离开会丢失草稿，确定离开吗？")) return false;
+    automationEdited.current = false;
+    return true;
+  }, []);
   const handleViewChange = useCallback((next: SidebarView) => {
+    const automation = (value: string | null) => value === "scheduled" || value === "workflows" || value === "webhooks";
+    if (automation(overlayView) && !automation(next) && !leaveAutomation()) return;
     if (next === "skills" || next === "settings" || next === "scheduled" || next === "workflows" || next === "webhooks" || next === "agents" || next === "artifacts" || next === "attachments" || next === "office" || next === "research" || next === "run-artifacts" || next === "task-dashboard") {
       if (next === "settings") setSettingsInitialTab("models");
       if (next === "scheduled" || next === "workflows" || next === "webhooks") setSettingsInitialTab(next);
@@ -160,24 +172,25 @@ export default function App() {
     }
     setOverlayView(null);
     setView(next);
-  }, []);
+  }, [overlayView, leaveAutomation]);
 
   const openSettings = useCallback((tab: SettingsTab) => {
+    if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return;
     setSettingsInitialTab(tab);
     setOverlayView("settings");
-  }, []);
+  }, [overlayView, leaveAutomation]);
 
   useEffect(() => {
-    const openChat = () => { setOverlayView(null); setView("chat"); };
+    const openChat = () => { if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return; setOverlayView(null); setView("chat"); };
     window.addEventListener("minimax:open-chat", openChat);
     return () => window.removeEventListener("minimax:open-chat", openChat);
-  }, []);
+  }, [overlayView, leaveAutomation]);
 
   useEffect(() => {
-    const openScheduled = () => openSettings("scheduled");
+    const openScheduled = () => setOverlayView("scheduled");
     window.addEventListener("minimax:open-scheduled", openScheduled);
     return () => window.removeEventListener("minimax:open-scheduled", openScheduled);
-  }, [openSettings]);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -366,7 +379,7 @@ export default function App() {
               </>
             )}
             {overlayView && (
-              <WorkspaceOverlay onClose={() => setOverlayView(null)}>
+              <WorkspaceOverlay onClose={() => { if (overlayView !== "scheduled" && overlayView !== "workflows" && overlayView !== "webhooks" || leaveAutomation()) setOverlayView(null); }}>
                 <Suspense fallback={<DeferredPanelFallback />}>
                   {overlayView === "task-dashboard" ? (
                     <ProjectRunDashboard onClose={() => setOverlayView(null)} onOpenSession={() => {
@@ -374,6 +387,8 @@ export default function App() {
                     }} />
                   ) : overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
                     <DeliveryWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onClose={() => setOverlayView(null)} />
+                  ) : overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks" ? (
+                    <AutomationWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (leaveAutomation()) { setOverlayView(null); setView("chat"); } }} />
                   ) : overlayView === "skills" ? (
                     <SkillsPanel onClose={() => setOverlayView(null)} />
                   ) : (

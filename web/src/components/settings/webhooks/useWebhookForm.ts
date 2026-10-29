@@ -35,7 +35,8 @@ export function useWebhookForm() {
       return;
     }
     setCreateError("");
-    await create({ name: newName.trim(), source: newSource, action_type: newAction });
+    const created = await create({ name: newName.trim(), source: newSource, action_type: newAction });
+    if (!created) return;
     setNewName("");
     setShowCreate(false);
   };

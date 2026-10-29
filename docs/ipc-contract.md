@@ -1338,6 +1338,7 @@ pipeline is fail-open: a recovery fault never blocks boot.
 | Method | Params | Result | Notes |
 |--------|--------|--------|-------|
 | `runtime.recovery_status` | `{}` | `{ available, clean_start?, previous_crash?, crash?, recovered_runs?, run_ids?, sessions?, reason? }` | `available:false` before recovery has run this boot. `clean_start:true` when the previous boot exited cleanly and nothing was recovered. `crash` carries `{crashed_pid, started_at, detected_at}` from the consumed marker. `reason` is set only when recovery could not import its deps (fail-open). |
+| `runtime.service_identity` | `{}` | `{service_id}` | 当前数据存储身份；用于界面连接作用域确认。 |
 | `runtime.research_get` | `{}` | `{saved_url, effective_url, source}` | 搜索地址及来源；环境变量值不回显。 |
 | `runtime.workspace_check` | `{session_id,project_id}` | `{session_id,project_id,service_id,status,source,path,reason}` | 检查本机会话目录解析；不测试模型、写权限或远程执行。 |
 | `runtime.research_set` | `{search_url: string|null}` | `{saved_url, effective_url, source}` | 原子保存公开 HTTPS /search 地址；null 清除并回退环境变量。拒绝 URL 凭据、查询及片段；不进行联网测试。 |

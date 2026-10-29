@@ -24,7 +24,7 @@ import { StreamEvent } from "../../types/ipc";
 
 export { ScheduledTab };
 
-function ScheduledTab({onOpenSession}: {onOpenSession?: () => void}): JSX.Element {
+function ScheduledTab({onOpenSession, active = true}: {onOpenSession?: () => void; active?: boolean}): JSX.Element {
   const jobs = useScheduleStore((s) => s.jobs);
   const refresh = useScheduleStore((s) => s.refresh);
   const create = useScheduleStore((s) => s.create);
@@ -39,14 +39,15 @@ function ScheduledTab({onOpenSession}: {onOpenSession?: () => void}): JSX.Elemen
   const [draftPrompt, setDraftPrompt] = useState("");
   const [draftContext, setDraftContext] = useState(emptyScheduleContext);
 
-  useEffect(() => { if (jobs.length === 0) void refresh(); }, [jobs.length, refresh]);
+  useEffect(() => { if (active && jobs.length === 0) void refresh(); }, [active, jobs.length, refresh]);
   useEffect(() => {
+    if (!active) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const wake = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => void refresh(), 200); };
     const unsubs = [StreamEvent.RunUpdated, StreamEvent.RunCompleted, StreamEvent.TaskProgress, StreamEvent.ScheduleUpdated].map((event) => ipc.on(event, wake));
     unsubs.push(ipc.onSideCar((event) => { if (event.status === "started") wake(); }));
     return () => { if (timer) clearTimeout(timer); unsubs.forEach((unsub) => unsub()); };
-  }, [refresh]);
+  }, [refresh, active]);
 
   const handleCreate = async () => {
     const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context: draftContext });

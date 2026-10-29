@@ -1810,6 +1810,8 @@ function mockHandle(
       return { trace_id: null, spans: [], tree: [], span_count: 0, enabled: false };
 
     // ── runtime.* mock (R12) — clean start, nothing recovered ──────────
+    case "runtime.service_identity":
+      return { service_id: "mock" };
     case "runtime.workspace_check":
       throw new Error("演示模式无法检查真实会话目录");
     case "runtime.research_get":

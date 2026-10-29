@@ -27,11 +27,12 @@ function WorkflowsTab(): JSX.Element {
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
-    await create({
+    const created = await create({
       name: newName.trim(),
       trigger_type: newTriggerType,
       description: newDescription.trim(),
     });
+    if (!created) return;
     setNewName("");
     setNewDescription("");
     setShowCreate(false);

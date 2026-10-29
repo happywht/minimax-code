@@ -17,6 +17,7 @@ export interface WorkflowState {
   loading: boolean;
   error: string | null;
 
+  invalidateScope: () => void;
   refresh: (opts?: { trigger_type?: string; enabled_only?: boolean }) => Promise<void>;
   create: (opts: {
     name: string;
@@ -41,18 +42,25 @@ export interface WorkflowState {
   trigger: (id: string, context?: Record<string, unknown>) => Promise<void>;
 }
 
+let scopeEpoch = 0;
+
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   entries: [],
   total: 0,
   loading: false,
   error: null,
 
+  invalidateScope: () => { scopeEpoch++; set({ entries: [], total: 0, loading: false, error: null }); },
+
   refresh: async (opts) => {
+    const scope = scopeEpoch;
     set({ loading: true, error: null });
     try {
       const result = await typedIPC.listWorkflows(opts);
+      if (scope !== scopeEpoch) return;
       set({ entries: result.entries, total: result.total, loading: false });
     } catch (e) {
+      if (scope !== scopeEpoch) return;
       const msg = String(e);
       toast.error(strings.toasts.workflowsLoadFailed, msg);
       set({ error: msg, loading: false });
@@ -60,11 +68,14 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   create: async (opts) => {
+    const scope = scopeEpoch;
     try {
       const wf = await typedIPC.createWorkflow(opts);
+      if (scope !== scopeEpoch) return null;
       await get().refresh();
-      return wf;
+      return scope === scopeEpoch ? wf : null;
     } catch (e) {
+      if (scope !== scopeEpoch) return null;
       const msg = String(e);
       toast.error(strings.toasts.workflowCreateFailed, msg);
       set({ error: msg });
@@ -73,10 +84,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   update: async (id, fields) => {
+    const scope = scopeEpoch;
     try {
       await typedIPC.updateWorkflow(id, fields);
+      if (scope !== scopeEpoch) return ;
       await get().refresh();
     } catch (e) {
+      if (scope !== scopeEpoch) return;
       const msg = String(e);
       toast.error(strings.toasts.workflowUpdateFailed, msg);
       set({ error: msg });
@@ -84,10 +98,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   remove: async (id) => {
+    const scope = scopeEpoch;
     try {
       await typedIPC.deleteWorkflow(id);
+      if (scope !== scopeEpoch) return ;
       await get().refresh();
     } catch (e) {
+      if (scope !== scopeEpoch) return;
       const msg = String(e);
       toast.error(strings.toasts.workflowDeleteFailed, msg);
       set({ error: msg });
@@ -95,10 +112,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   enable: async (id) => {
+    const scope = scopeEpoch;
     try {
       await typedIPC.enableWorkflow(id);
+      if (scope !== scopeEpoch) return ;
       await get().refresh();
     } catch (e) {
+      if (scope !== scopeEpoch) return;
       const msg = String(e);
       toast.error(strings.toasts.workflowEnableFailed, msg);
       set({ error: msg });
@@ -106,10 +126,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   disable: async (id) => {
+    const scope = scopeEpoch;
     try {
       await typedIPC.disableWorkflow(id);
+      if (scope !== scopeEpoch) return ;
       await get().refresh();
     } catch (e) {
+      if (scope !== scopeEpoch) return;
       const msg = String(e);
       toast.error(strings.toasts.workflowDisableFailed, msg);
       set({ error: msg });
@@ -117,10 +140,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   trigger: async (id, context) => {
+    const scope = scopeEpoch;
     try {
       await typedIPC.triggerWorkflow(id, context);
+      if (scope !== scopeEpoch) return ;
       await get().refresh();
     } catch (e) {
+      if (scope !== scopeEpoch) return;
       const msg = String(e);
       toast.error(strings.toasts.workflowTriggerFailed, msg);
       set({ error: msg });

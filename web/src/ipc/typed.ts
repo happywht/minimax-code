@@ -447,6 +447,7 @@ export interface TypedIPC {
 
   // runtime — boot-time crash-recovery diagnostics (R12).
   runtimeRecoveryStatus(): Promise<RuntimeRecoveryResult>;
+  getServiceIdentity(): Promise<{ service_id: string }>;
   getResearchConfig(): Promise<ResearchConfigResult>;
   setResearchConfig(searchUrl: string | null, options?: { provider: "searxng" | "brave"; brave_key?: string; clear_brave_key?: boolean }): Promise<ResearchConfigResult>;
 
@@ -977,6 +978,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<TelemetryTraceResult>("telemetry.trace", { trace_id }),
     runtimeRecoveryStatus: () =>
       client.request<RuntimeRecoveryResult>("runtime.recovery_status", {}),
+    getServiceIdentity: () => client.request<{ service_id: string }>("runtime.service_identity", {}),
     getResearchConfig: () => client.request<ResearchConfigResult>("runtime.research_get", {}),
     setResearchConfig: (searchUrl, options) => client.request<ResearchConfigResult>("runtime.research_set", { search_url: searchUrl, ...options }),
 

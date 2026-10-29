@@ -92,6 +92,24 @@ async def _handle_research_set(params: Any, ctx: Context) -> None:
     await _research_config(params, ctx, write=True)
 
 
+async def _handle_service_identity(params: Any, ctx: Context) -> None:
+    from ..app import ensure_db
+    from ..storage.dao.text_artifacts import ArtifactDAO
+    from .protocol import INVALID_PARAMS, ResearchConfigGetParams
+
+    try:
+        ResearchConfigGetParams.model_validate(params)
+        db = await ensure_db()
+        if db is None:
+            raise RuntimeError("Storage unavailable")
+        await ctx.reply({"service_id": await ArtifactDAO(db).service_id()})
+    except ValidationError:
+        await ctx.reply_error(INVALID_PARAMS, "Invalid parameters")
+    except Exception:
+        logger.exception("runtime.service_identity failed")
+        await ctx.reply_error(INTERNAL_ERROR, "Service identity unavailable")
+
+
 async def _handle_workspace_check(params: Any, ctx: Context) -> None:
     """Check the same local workspace selection as Native admission, without running a command."""
     import os
@@ -176,6 +194,7 @@ def register_runtime_handlers(server: Any) -> None:
     server.register("runtime.recovery_status", _handle_runtime_recovery_status)
     server.register("runtime.research_get", _handle_research_get)
     server.register("runtime.research_set", _handle_research_set)
+    server.register("runtime.service_identity", _handle_service_identity)
     server.register("runtime.workspace_check", _handle_workspace_check)
     logger.debug("registered runtime.* handlers")
 
