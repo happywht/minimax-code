@@ -70,17 +70,22 @@ async def save(db, run_id, session_id, tool_call_id, tool_name, output):
             "project_id": project, "bytes": len(data), "chars": len(text), "sha256": digest}
 
 
-async def read(db, *, run_id, session_id, ref, service_id, offset=0, limit=MAX_PAGE_CHARS):
+async def read(db, *, run_id, session_id, ref, service_id, offset=0, limit=MAX_PAGE_CHARS,
+               tail=False):
     if (not isinstance(offset, int) or isinstance(offset, bool) or offset < 0 or
-            not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_PAGE_CHARS):
+            not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_PAGE_CHARS
+            or not isinstance(tail, bool) or (tail and offset != 0)):
         raise ValueError("Invalid output page")
     project, identity = await _binding(db, run_id, session_id)
     if service_id != identity:
         raise ValueError("Service identity changed")
     row = await db.fetchone("""SELECT id,run_id,session_id,summary,
-        length(payload) AS stored_chars,substr(payload,?,?) AS page FROM agent_run_steps
+        length(payload) AS stored_chars,
+        CASE WHEN ? THEN max(length(payload)-?,0) ELSE ? END AS page_offset,
+        substr(payload,CASE WHEN ? THEN max(length(payload)-?,0)+1 ELSE ?+1 END,?) AS page
+        FROM agent_run_steps
         WHERE id=? AND run_id=? AND session_id=? AND tool_name=?""",
-        (offset + 1, limit, ref, run_id, session_id, STORAGE_TOOL))
+        (tail, limit, offset, tail, limit, offset, limit, ref, run_id, session_id, STORAGE_TOOL))
     metadata = json.loads(row["summary"]) if row else None
     if (row and isinstance(metadata, dict) and metadata.get("project_id") == project
             and metadata.get("service_id") == identity and metadata.get("cleared_at")):
@@ -91,6 +96,7 @@ async def read(db, *, run_id, session_id, ref, service_id, offset=0, limit=MAX_P
         raise ValueError("Output reference unavailable for this run")
     if await _binding(db, run_id, session_id) != (project, identity):
         raise ValueError("Run or service changed during output read")
+    offset = row["page_offset"]
     return {"id": row["id"], "run_id": run_id, "session_id": session_id, **metadata,
             "page": row["page"], "offset": offset,
             "next_offset": min(row["stored_chars"], offset + len(row["page"]))}

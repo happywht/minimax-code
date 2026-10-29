@@ -347,6 +347,7 @@ function CapturedToolOutput({ step }: { step: AgentRunStep }): JSX.Element | nul
   };
   return <div className="mt-1 text-[11px] text-minimax-muted">
     <button type="button" disabled={busy || cleared} onClick={() => void load(0)}>查看已捕获输出</button>
+    {Number.isSafeInteger(ref.chars) && ref.chars >= 0 && <>{" "}<button type="button" disabled={busy || cleared} onClick={() => void load(Math.max(0, ref.chars - 4000))}>查看末尾</button></>}
     {cleared && <p>已清理，无法再读取。</p>}
     <p>仅包含工具实际捕获内容；{meta?.truncated_stdout === true || meta?.truncated_stderr === true ? "命令输出在捕获时已截断。" : "请核对原始截断标记。"}</p>
     {error && <p role="alert">{error}</p>}

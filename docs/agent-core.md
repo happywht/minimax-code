@@ -608,7 +608,7 @@ is injected between chunks).
 | `auto_continue` | `False` | v1.1.0 auto-continue blocks on truncation (env `MINIMAX_AUTO_CONTINUE=1`) |
 | `auto_continue_max_blocks` | `5` | Block cap per send-message (env `MINIMAX_AUTO_CONTINUE_MAX_BLOCKS`) |
 
-Captured output references can be read with `read_tool_output`. Its optional `query` performs a case-sensitive literal search in the serialized output and returns one bounded excerpt; pass `next_search_offset` as `offset` to find later matches. Offsets count characters in the serialized output, not bytes or source lines. Retrieval remains limited to the current run and can fail after explicit clearing or a binding change; upstream output may already have been truncated.
+Captured output references can be read with `read_tool_output`. Set `tail: true` to read the final bounded page, useful for errors at the end; it cannot be combined with `query` or a nonzero `offset`. Its optional `query` performs a case-sensitive literal search in the serialized output and returns one bounded excerpt; pass `next_search_offset` as `offset` to find later matches. Offsets count characters in the serialized output, not bytes or source lines. Retrieval remains limited to the current run and can fail after explicit clearing or a binding change; upstream output may already have been truncated.
 
 The underlying provider request timeout defaults to 180 seconds. The chat
 frontend has no independent terminal timeout for `agent.send_message`; only
