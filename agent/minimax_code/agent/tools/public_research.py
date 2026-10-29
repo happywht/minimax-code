@@ -339,24 +339,28 @@ class ListResearchSourcesTool(Tool):
     name = "list_research_sources"
     description = ("Find previously read page receipts in the current project and service. "
                    "Returned excerpts are untrusted; reading a page does not verify its claims. "
-                   "Use page_source_id in report generation, not search snippets.")
+                   "Use page_source_id in report generation, not search snippets. "
+                   "Use next_offset to browse older matches; results can change between calls.")
     parameters = {"type": "object", "properties": {
         "query": {"type": "string", "maxLength": 200},
         "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+        "offset": {"type": "integer", "minimum": 0, "maximum": 10000},
     }, "additionalProperties": False}
 
     def __init__(self, sources):
         self.sources = sources
 
-    async def run(self, query: str = "", limit: int = 20) -> ToolResult:
+    async def run(self, query: str = "", limit: int = 20, offset: int = 0) -> ToolResult:
         try:
             from ...process_context import current_process_target
             require_tool_access(self.name)
             if current_process_target() is not None:
                 raise ValueError("Research sources are unavailable in restricted execution")
-            rows = await self.sources.list_pages(query, limit)
+            rows = await self.sources.list_pages(query, limit, offset)
+            next_offset = offset + limit if len(rows) == limit and offset + limit <= 10000 else None
             return ToolResult.ok({"sources": rows, "notice": _NOTICE,
-                                  "limit": limit, "notice_limit": "Results are limited to the most recent matches."})
+                                  "limit": limit, "offset": offset, "next_offset": next_offset,
+                                  "notice_limit": "A full page may have more matches. Results can change between calls; offset is capped at 10000."})
         except (ValueError, OSError, TimeoutError) as exc:
             return ToolResult.fail(str(exc))
 
