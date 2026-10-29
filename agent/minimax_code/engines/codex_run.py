@@ -154,6 +154,13 @@ async def drive_codex_run(
         if turn_id and thread_id:
             await conn.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id}, timeout=10)
 
+    async def interrupt_cancelled_turn() -> None:
+        try:
+            await interrupt()
+        except Exception as exc:
+            if not turn_done.done():
+                turn_done.set_exception(RuntimeError(f"Codex cancellation interrupt failed; turn outcome unknown: {exc}"))
+
     def close_approvals() -> None:
         for request_id in gate.close_all():
             spawn_notify(emit("permission.closed", {"request_id": request_id,
@@ -301,9 +308,14 @@ async def drive_codex_run(
     conn.on_exited = on_exited
     def on_cancel() -> None:
         nonlocal cancelled
+        if cancelled or turn_done.done():
+            return
         cancelled = True
         close_approvals()
-        spawn_notify(interrupt())
+        # Before the turn is ready its identity may not exist yet. The
+        # startup path sends the deferred interrupt once it is available.
+        if turn_ready.is_set():
+            spawn_notify(interrupt_cancelled_turn())
     job.cancel_callback = on_cancel
     worker = asyncio.create_task(consume(), name=f"codex-events:{job.run_id}")
     result_receipt = None
@@ -338,6 +350,8 @@ async def drive_codex_run(
         if conversation:
             await conversation.start_turn(turn_id)
         turn_ready.set()
+        if cancelled:
+            spawn_notify(interrupt_cancelled_turn())
         completed = await turn_done
         await queue.join()
         if event_errors:
@@ -346,7 +360,7 @@ async def drive_codex_run(
         status = terminal.get("status")
         if status not in {"completed", "failed", "interrupted"}:
             raise RuntimeError(f"Codex returned an unrecognized terminal status: {status!r}")
-        if cancelled:
+        if cancelled and status == "interrupted":
             status = "cancelled"
         elif status != "failed" and (ledger_exceeded or (conversation is not None and (not usage or uncertain)) or (bounded and (not usage or uncertain or budget.would_exceed(1)))):
             status = "budget_paused"
@@ -400,7 +414,7 @@ async def drive_codex_run(
             try:
                 await conn.close()
                 await queue.join()
-                status = ("cancelled" if isinstance(failure, asyncio.CancelledError) or cancelled else
+                status = ("cancelled" if isinstance(failure, asyncio.CancelledError) else
                           "failed" if failure is not None or cleanup_error or event_errors else
                           (result_receipt or {}).get("run_status", "failed"))
                 if status not in {"failed", "cancelled"} and (ledger_exceeded or (bounded and (
