@@ -267,9 +267,13 @@ def _summarise_old_turns(
                         write_results.append(f"{path}: {_write_result(content)}")
                 call = _matching_command(msg, group)
                 if call:
-                    command = _clip(str(call.get("args", {}).get("command", "")), 64)
+                    command = _clip(str(call.get("args", {}).get("command", "")), 96)
+                    cwd = _clip(str(call.get("args", {}).get("cwd", "")), 80)
                     excerpt = _command_excerpt(content)
-                    verification_lines.append(f"{call['name']} result: {excerpt}; command: {command}")
+                    output_excerpt = _command_output_excerpt(content)
+                    verification_lines.append(f"{call['name']}: {excerpt}; command: {command}"
+                                              + (f"; cwd: {cwd}" if cwd else "")
+                                              + (f"; output excerpt: {output_excerpt}" if output_excerpt else ""))
 
     objective = (first_user_text or "").strip()
     constraints = list(reversed(_dedupe(list(reversed(constraint_sentences)))))
@@ -301,7 +305,7 @@ def _summarise_old_turns(
         ("Later user messages (newest first; excerpts)", later_excerpt, .14),
         ("Assistant decisions (unverified)", "\n".join(reversed(decisions)), .12),
         ("Assistant pending-work excerpts (may be stale)", "\n".join(reversed(pending_items)), .10),
-        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .10),
+        ("Command tool results (not independently verified)", "\n".join(reversed(commands)), .10),
         ("File tool results (not independently verified)", "\n".join(reversed(write_results)), .10),
         ("File write requests (outcomes not established)", ", ".join(changed_paths), .06),
     ):
@@ -348,9 +352,28 @@ def _command_excerpt(content: str) -> str:
     if not isinstance(payload, dict):
         return _clip(content, 240)
     output = payload.get("output")
-    exit_code = output.get("exit_code") if isinstance(output, dict) else None
-    facts = {"success": payload.get("success"), "exit_code": exit_code, "error": payload.get("error")}
-    return json.dumps(facts, ensure_ascii=False) + " output excerpt: " + _clip(str(output), 160)
+    fields = output if isinstance(output, dict) else {}
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    facts = {"success": payload.get("success"), "exit_code": fields.get("exit_code", metadata.get("exit_code")),
+             "timed_out": fields.get("timed_out", metadata.get("timed_out")),
+             "truncated_stdout": fields.get("truncated_stdout", metadata.get("truncated_stdout")),
+             "truncated_stderr": fields.get("truncated_stderr", metadata.get("truncated_stderr"))}
+    if payload.get("error"):
+        facts["error"] = _clip(str(payload["error"]), 100)
+    return json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
+
+
+def _command_output_excerpt(content: str) -> str:
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return ""
+    output = payload.get("output") if isinstance(payload, dict) else None
+    if not isinstance(output, dict):
+        return ""
+    snippets = [f"{key}: {value}" for key in ("stderr", "stdout")
+                if isinstance(value := output.get(key), str) and value]
+    return _clip(" ".join(snippets), 120)
 
 
 def _message_tokens(msg: Message) -> int:
@@ -445,9 +468,13 @@ def _message_tool_calls(msg: Message) -> list[dict[str, Any]]:
     for call in calls:
         if not isinstance(call, dict):
             continue
-        fn = call.get("function") or {}
+        fn = call.get("function") if isinstance(call.get("function"), dict) else {}
         name = str(fn.get("name") or call.get("name") or "")
         raw_args = fn.get("arguments") if isinstance(fn, dict) else None
+        if raw_args is None:
+            raw_args = call.get("arguments")
+        if raw_args is None:
+            raw_args = call.get("args")
         args: Any = raw_args
         if isinstance(raw_args, str):
             import json as _json

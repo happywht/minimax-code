@@ -105,6 +105,12 @@ when their recorded run ID matches the active durable run; a missing identity
 means no references are included. This does not guarantee that an output still
 exists or is readable. Excerpts can be truncated or omitted.
 
+Both nested and flat tool-call arguments are read when associating file and
+command results. Command excerpts prioritize the reported success, exit code,
+timeout and output-truncation flags, then a bounded command and optional cwd;
+missing fields remain unknown. These are tool-reported results, not proof that
+the intended validation ran or that the current workspace is unchanged.
+
 If protected recent turns alone exceed the estimated target, a long latest
 Native turn can also be compacted at a completed tool-round boundary. Its user
 message and last four tool rounds remain verbatim; malformed or incomplete tool
