@@ -7,6 +7,7 @@ verified file transfer and queryable upload publication journals.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from .protocol import (
     PERMISSION_DENIED,
     HostBindingParams,
     HostBoundTransferStatusParams,
+    HostBoundFetchParams,
     HostDirectoryListParams,
     HostFetchPreviewParams,
     HostPushParams,
@@ -406,6 +408,84 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             logger.exception("host.directory_list failed")
             await ctx.reply_error(INTERNAL_ERROR, "Remote directory unavailable")
 
+    async def handle_host_fetch_bound(params: Any, ctx: Context) -> None:
+        """Copy one bound remote regular file to a new local service path."""
+        from ..execution import ExecutionDeniedError, network_tools_restricted, require_write_access
+        from ..host_download_http import _read
+
+        try:
+            request = HostBoundFetchParams.model_validate(params)
+            try:
+                require_write_access()
+                if network_tools_restricted():
+                    raise ExecutionDeniedError("Remote transfers are unavailable under this task's network restriction")
+            except ExecutionDeniedError as exc:
+                raise HandlerError(PERMISSION_DENIED, str(exc)) from exc
+            parts = request.remote_path.split("/")
+            if (not request.remote_path.startswith("/") or any(p in {"", ".", ".."} for p in parts[1:])
+                    or "\0" in request.remote_path):
+                raise HandlerError(INVALID_PARAMS, "invalid remote path")
+            destination = Path(request.local_path).expanduser()
+            if not destination.is_absolute() or not destination.name:
+                raise HandlerError(INVALID_PARAMS, "local path must be an absolute file path")
+            destination = destination.absolute()
+            if not destination.parent.is_dir() or destination.parent.resolve() != destination.parent:
+                raise HandlerError(INVALID_PARAMS, "local parent must exist without symbolic links")
+            before = destination.parent.stat()
+            if not before.st_ino:
+                raise HandlerError(INVALID_PARAMS, "local parent directory identity is unavailable")
+            parent_identity = before.st_dev, before.st_ino
+            async with lifecycle_lock:
+                host = await _bound_host(request)
+                if os.path.lexists(destination):
+                    await ctx.reply({"ok": False, "reason": "exists", "sha256": None, "size_bytes": None})
+                    return
+                data, digest = await _read(host, request.remote_path, strict_host_key=True)
+                stage_fd, stage_name = tempfile.mkstemp(prefix=".minimax-bound-fetch-", dir=destination.parent)
+                staged = Path(stage_name)
+                stage_identity = os.fstat(stage_fd)
+                if not stage_identity.st_ino:
+                    os.close(stage_fd)
+                    raise ValueError("Local staging identity is unavailable; inspect temporary file")
+                try:
+                    with os.fdopen(stage_fd, "wb") as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    with staged.open("rb") as stream:
+                        opened = os.fstat(stream.fileno())
+                        if (opened.st_dev, opened.st_ino) != (stage_identity.st_dev, stage_identity.st_ino):
+                            raise ValueError("Local staging identity changed")
+                        staged_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+                    if staged_hash != digest:
+                        raise ValueError("Staged local file failed checksum verification")
+                    current = destination.parent.stat()
+                    if destination.parent.resolve() != destination.parent or (current.st_dev, current.st_ino) != parent_identity:
+                        raise ValueError("Local destination directory changed; review before retrying")
+                    stage_now = staged.lstat()
+                    if staged.is_symlink() or stage_now.st_nlink != 1 or (stage_now.st_dev, stage_now.st_ino) != (stage_identity.st_dev, stage_identity.st_ino):
+                        raise ValueError("Local staging identity changed")
+                    try:
+                        os.link(staged, destination)
+                    except FileExistsError:
+                        await ctx.reply({"ok": False, "reason": "exists", "sha256": None, "size_bytes": None})
+                        return
+                finally:
+                    try:
+                        now = staged.lstat()
+                        if not staged.is_symlink() and (now.st_dev, now.st_ino) == (stage_identity.st_dev, stage_identity.st_ino):
+                            staged.unlink()
+                    except FileNotFoundError:
+                        pass
+            await ctx.reply({"ok": True, "reason": None, "sha256": digest, "size_bytes": len(data)})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except (ValidationError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.fetch_bound failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Download not confirmed; inspect destination before retrying")
+
     async def handle_host_fetch_preview(params: Any, ctx: Context) -> None:
         """Publish only the exact previewed remote bytes to an unused local path."""
         from ..execution import require_write_access
@@ -653,6 +733,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             await ctx.reply_error(exc.code, exc.message, exc.data)
 
     server.register("host.directory_list", handle_host_directory_list)
+    server.register("host.fetch_bound", handle_host_fetch_bound)
     server.register("host.fetch_preview", handle_host_fetch_preview)
     server.register("host.reconnect_bound", handle_host_reconnect_bound)
     server.register("host.transfer_status_bound", handle_host_transfer_status_bound)

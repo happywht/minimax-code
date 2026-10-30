@@ -270,6 +270,7 @@ function mockHandle(
       if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");
       throw new Error("SSH is unavailable in mock mode");
     }
+    case "host.fetch_bound":
     case "host.fetch_preview": {
       const p = params as { host_id: string };
       if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");

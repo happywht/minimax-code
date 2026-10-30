@@ -4,6 +4,7 @@ import type { HostTransferResult, RemoteHost } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileBrowser } from "./HostFileBrowser";
+import { HostBoundDownload } from "./HostBoundDownload";
 import { HostTextPreview } from "./HostTextPreview";
 import { HostServiceStart } from "./HostServiceStart";
 import { HostConnectionRecovery } from "./HostConnectionRecovery";
@@ -191,6 +192,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
         setRemote(target); setMessage("已填入目标路径；请核对后确认上传。若目标存在，上传会在校验后替换并保留备份。");
       }}>用所选目录和文件名填入目标</Button>
       <p>仅填入路径，上传仍需单独确认；同名目标可能被替换并保留备份。</p></div>}
+    <HostBoundDownload host={host} remotePath={remote.trim()} active={transferOpen} />
     <HostTextPreview host={host} path={remote.trim()} active={transferOpen} />
     <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void transfer("upload")}>上传到此主机</Button>
       <Button type="button" size="sm" disabled={busy || !host.enabled || !browserFile} onClick={() => void browserUpload()}>上传浏览器文件</Button>

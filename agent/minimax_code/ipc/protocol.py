@@ -849,6 +849,11 @@ class HostDirectoryListParams(HostBindingParams):
     offset: int = Field(ge=0, le=10000)
 
 
+class HostBoundFetchParams(HostBindingParams):
+    remote_path: str = Field(min_length=1, max_length=4096)
+    local_path: str = Field(min_length=1, max_length=4096)
+
+
 class HostFetchPreviewParams(HostBindingParams):
     remote_path: str = Field(min_length=1, max_length=4096)
     local_path: str = Field(min_length=1, max_length=4096)

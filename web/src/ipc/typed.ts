@@ -159,6 +159,7 @@ export interface TypedIPC {
   deleteHost(hostId: string): Promise<{ ok: boolean; host_id: string }>;
   probeHost(hostId: string): Promise<import("../types/ipc").HostProbeResult>;
   listHostDirectory(params: import("../types/ipc").HostDirectoryListParams): Promise<import("../types/ipc").HostDirectoryListing>;
+  fetchBoundHostFile(params: import("../types/ipc").HostBoundFetchParams): Promise<import("../types/ipc").HostBoundFetchResult>;
   saveHostPreview(params: import("../types/ipc").HostFetchPreviewParams): Promise<{ ok: boolean; reason: "changed" | "exists" | null }>;
   reconnectBoundHost(params: import("../types/ipc").HostBindingParams): Promise<{ connection: import("../types/ipc").HostConnection }>;
   connectHost(params: { host_id: string; remote_port?: number; local_port?: number }): Promise<{ connection: import("../types/ipc").HostConnection }>;
@@ -697,6 +698,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     deleteHost: (hostId) => client.request("host.delete", { host_id: hostId }),
     probeHost: (hostId) => client.request("host.probe", { host_id: hostId }),
     listHostDirectory: (params) => client.request("host.directory_list", params),
+    fetchBoundHostFile: (params) => client.request("host.fetch_bound", params),
     saveHostPreview: (params) => client.request("host.fetch_preview", params),
     reconnectBoundHost: (params) => client.request("host.reconnect_bound", params),
     connectHost: (params) => client.request("host.connect", params),

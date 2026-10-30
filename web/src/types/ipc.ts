@@ -184,6 +184,11 @@ export interface HostDirectoryListing {
   offset: number; next_offset: number | null; limited: boolean;
 }
 
+export interface HostBoundFetchParams extends HostBindingParams { remote_path: string; local_path: string }
+export type HostBoundFetchResult =
+  | { ok: true; reason: null; sha256: string; size_bytes: number }
+  | { ok: false; reason: "exists"; sha256: null; size_bytes: null };
+
 export interface HostFetchPreviewParams extends HostBindingParams {
   remote_path: string; local_path: string; expected_sha256: string;
 }
