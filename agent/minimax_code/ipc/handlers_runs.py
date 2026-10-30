@@ -746,6 +746,10 @@ def register_run_handlers(server: Any) -> None:
             await init_runtime()
             await require_chat_session(request.session_id)
             db = get_db()
+            if request.expected_service_id is not None:
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                if db is None or await ArtifactDAO(db).service_id() != request.expected_service_id:
+                    raise HandlerError(INVALID_PARAMS, "Service identity changed; review the pending request")
             session = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (request.session_id,)) if db else None
             pinned = session["engine"] if session else (request.engine or "native")
             if request.engine is not None and request.engine != pinned:
@@ -755,7 +759,7 @@ def register_run_handlers(server: Any) -> None:
                     raise HandlerError(INVALID_PARAMS, "Network tool restriction is supported only for Native runs")
                 await _start_codex_run(request, ctx)
             else:
-                await handle_agent_send_message(request.model_dump(exclude={"engine"}), ctx, wait=False)
+                await handle_agent_send_message(request.model_dump(exclude={"engine", "expected_service_id"}), ctx, wait=False)
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except (ValueError, RuntimeError) as exc:

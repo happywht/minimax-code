@@ -41,7 +41,7 @@ function QueuedTaskEditor({ sessionId, host, budgetTokens, budgetValid }: { sess
     if (inFlight.current) return;
     const state = useSessionStore.getState();
     const project = state.currentProjectId ?? null;
-    const value = pending ?? { project, draft: text, request: {
+    let value: Pending = pending ?? { project, draft: text, request: {
       session_id: sessionId, content: text.trim(), idempotency_key: crypto.randomUUID(),
       engine: state.sessions.find((s) => s.id === sessionId)?.engine ?? "native",
       mode: useChat.getState().executionMode,
@@ -52,6 +52,21 @@ function QueuedTaskEditor({ sessionId, host, budgetTokens, budgetValid }: { sess
     if (value.project !== project || !current()) {
       setNotice("会话或项目已切换；请回到原项目核对待确认请求。"); return;
     }
+    if (pending && !pending.request.expected_service_id) {
+      setNotice("旧待确认记录没有服务身份，不能安全重试；请核对时间线后处理本地记录。"); return;
+    }
+    setBusy(true); inFlight.current = true;
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current() || (useSessionStore.getState().currentProjectId ?? null) !== project) return;
+      if (!identity.service_id || (pending && pending.request.expected_service_id !== identity.service_id)) {
+        setNotice("服务身份已变化或不可用；请核对原任务，不能向当前服务重试。"); return;
+      }
+      if (!pending) value = { ...value, request: { ...value.request, expected_service_id: identity.service_id } };
+    } catch (error) {
+      if (current()) setNotice(`无法确认服务身份，未提交：${error instanceof Error ? error.message : String(error)}`);
+      return;
+    } finally { inFlight.current = false; if (current()) setBusy(false); }
     // Persist the retry identity before the request can reach the service.
     try { localStorage.setItem(pendingKey, JSON.stringify(value)); }
     catch { setNotice("浏览器存储不可用，无法安全保留重试凭据；未提交。"); return; }

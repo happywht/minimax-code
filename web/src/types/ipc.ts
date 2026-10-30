@@ -1205,6 +1205,7 @@ export interface SendMessageParams {
 export interface RunStartParams extends SendMessageParams {
   session_id: string;
   idempotency_key: string;
+  expected_service_id?: string;
   engine?: "native" | "codex";
 }
 
