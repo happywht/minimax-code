@@ -94,11 +94,19 @@ model's context window the loop compacts history in-flight (see the
 
 Native compaction uses bounded deterministic excerpts: it carries the original
 task objective and selected user constraints across repeated compactions within
-the same run, and associates command excerpts by tool call ID. Write calls are
-listed as requests, not proof of completed changes; command excerpts are not
-independent verification. Excerpts can be truncated or omitted. System messages
-and recent turns remain intact, so they can exceed the estimated target; this
-heuristic is not a tokenizer or a substitute for the separate paid-call budget.
+the same run, and associates command excerpts and file-tool results with calls
+by tool call ID. Explicit assistant pending-work statements are retained as
+possibly stale excerpts. Write requests and reported tool success or failure are
+not proof of the current file state; command excerpts are not independent
+verification. Excerpts can be truncated or omitted.
+
+If protected recent turns alone exceed the estimated target, a long latest
+Native turn can also be compacted at a completed tool-round boundary. Its user
+message and last four tool rounds remain verbatim; malformed or incomplete tool
+sequences are not split. Older recent turns may then be summarized. System
+messages and the protected tail can still exceed the target. Compaction is
+heuristic, uses no extra model call, and is not a tokenizer or a substitute for
+the separate paid-call budget.
 
 **Foreign-change note (v1.5.1).** Before each iteration's LLM call the
 loop also polls the fs-bus (seq-high-watermark poll, not a

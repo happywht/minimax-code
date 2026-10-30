@@ -5,7 +5,7 @@ module provides utilities to compress older turns while preserving
 recent context. The strategy:
 
 1. Keep all system messages verbatim (never compact).
-2. Keep the most recent N turns (``keep_recent``) verbatim.
+2. Keep the most recent N turns (``keep_recent``) verbatim when possible.
 3. Summarise older user messages into a single compressed block.
 4. Summarise tool call/result pairs into one-line descriptions.
 5. Return the compacted list.
@@ -61,7 +61,7 @@ def compact_history(
     Strategy
     --------
     - System messages are never compacted.
-    - The most recent ``keep_recent`` user/assistant turns are kept verbatim.
+    - Recent turns are kept verbatim unless a long tool turn must be split.
     - Older turns are summarised into a single compacted message block.
     - Tool call/result pairs are compressed to one-line summaries.
 
@@ -106,8 +106,18 @@ def compact_history(
     old_turns = turn_boundaries[:recent_start]
     recent_msgs = turns[turn_boundaries[recent_start][0]:] if recent_start < len(turn_boundaries) else []
 
+    # A single long Native turn can contain many tool rounds. If the protected
+    # recent turns alone exceed the target, compact its older completed rounds
+    # too, keeping the latest user message and four complete rounds verbatim.
+    if sum(_message_tokens(m) for m in system_msgs + recent_msgs) >= max_tokens:
+        split = _long_turn_split(turns, turn_boundaries)
+        if split is not None:
+            user_index, split_index = split
+            old_turns = [*turn_boundaries[:-1], (user_index, split_index)]
+            recent_msgs = [turns[user_index], *turns[split_index:]]
+
     if not old_turns:
-        # Everything is recent; can't compact further.
+        # Everything is recent or no safe completed-tool boundary exists.
         return system_msgs + turns
 
     # Compact old turns into a summary.
@@ -143,6 +153,48 @@ def _find_turn_boundaries(turns: list[Message]) -> list[tuple[int, int]]:
     return boundaries
 
 
+def _long_turn_split(
+    turns: list[Message], boundaries: list[tuple[int, int]],
+) -> tuple[int, int] | None:
+    """Find a boundary before the last four complete tool rounds of the last turn.
+
+    Refuse malformed/incomplete call sequences rather than orphan a tool result.
+    """
+    if not boundaries:
+        return None
+    start, end = boundaries[-1]
+    if turns[start].get("role") != "user":
+        return None
+    pending: set[str] = set()
+    round_starts: list[int] = []
+    for i in range(start + 1, end):
+        msg = turns[i]
+        if msg.get("role") == "assistant":
+            if pending:
+                return None
+            calls = _message_tool_calls(msg)
+            if msg.get("tool_calls") and len(calls) != len(msg["tool_calls"]):
+                return None
+            if calls:
+                ids = [call.get("id") for call in calls]
+                if any(not isinstance(call_id, str) or not call_id for call_id in ids):
+                    return None
+                if len(set(ids)) != len(ids):
+                    return None
+                pending.update(ids)
+                round_starts.append(i)
+        elif msg.get("role") == "tool":
+            call_id = msg.get("tool_call_id")
+            if call_id not in pending:
+                return None
+            pending.remove(call_id)
+        else:
+            return None
+    if pending or len(round_starts) <= 4:
+        return None
+    return start, round_starts[-4]
+
+
 def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tuple[str, dict[str, Any]]:
     """Extract bounded, explicitly incomplete context without a model call."""
 
@@ -152,6 +204,8 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     later_messages_omitted = False
     constraint_sentences: list[str] = []
     decision_sentences: list[str] = []
+    pending_items: list[str] = []
+    write_results: list[str] = []
     changed_paths: list[str] = []
     verification_lines: list[str] = []
     captured_output_refs: list[str] = []
@@ -165,6 +219,8 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                 later_messages_omitted |= state.get("later_messages_omitted", False)
                 constraint_sentences.extend(state.get("constraints", []))
                 decision_sentences.extend(state.get("decisions", []))
+                pending_items.extend(state.get("pending_items", []))
+                write_results.extend(state.get("write_results", []))
                 verification_lines.extend(state.get("commands", []))
                 changed_paths.extend(state.get("paths", []))
                 captured_output_refs.extend(state.get("captured_output_refs", []))
@@ -184,6 +240,8 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                 for sentence in _split_sentences(content):
                     if _is_decision(sentence):
                         decision_sentences.append(_clip(sentence, 200))
+                    if _is_pending(sentence):
+                        pending_items.append(_clip(sentence, 200))
                 for call in _message_tool_calls(msg):
                     path = _mutating_path(call)
                     if path and path not in changed_paths:
@@ -192,6 +250,11 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                 reference = _captured_output_ref(content)
                 if reference:
                     captured_output_refs.append(reference)
+                write_call = _matching_call(msg, group, ("write_file", "edit_file", "append_file"))
+                if write_call:
+                    path = _mutating_path(write_call)
+                    if path:
+                        write_results.append(f"{path}: {_write_result(content)}")
                 call = _matching_command(msg, group)
                 if call:
                     command = _clip(str(call.get("args", {}).get("command", "")), 64)
@@ -204,12 +267,14 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
         constraints = constraints[:3] + ["[other constraints omitted]"] + constraints[-3:]
     commands = verification_lines[-4:]
     decisions = _dedupe(decision_sentences)[-4:]
+    pending_items = _dedupe(pending_items)[-4:]
+    write_results = _dedupe(write_results)[-12:]
     changed_paths = _dedupe(changed_paths)[-12:]
     captured_output_refs = _dedupe(captured_output_refs)[-4:]
     later_messages_omitted |= len(later_user_messages) > 4
     later_user_messages = later_user_messages[-4:]
     state = {"objective": _clip(objective, 500), "constraints": constraints, "decisions": decisions,
-             "commands": commands,
+             "commands": commands, "pending_items": pending_items, "write_results": write_results,
              "paths": changed_paths, "later_user_messages": later_user_messages,
              "captured_output_refs": captured_output_refs,
              "later_messages_omitted": later_messages_omitted}
@@ -221,12 +286,14 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     budget = min(2400, max(0, int(available * .6) - 20))
     parts = []
     for title, value, fraction in (
-        ("Task objective", objective, .14),
-        ("User constraints", "; ".join(constraints), .16),
-        ("Later user messages (newest first; excerpts)", later_excerpt, .16),
-        ("Assistant decisions (unverified)", "\n".join(reversed(decisions)), .18),
-        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .12),
-        ("File write requests (outcomes not established)", ", ".join(changed_paths), .10),
+        ("Task objective", objective, .12),
+        ("User constraints", "; ".join(constraints), .14),
+        ("Later user messages (newest first; excerpts)", later_excerpt, .14),
+        ("Assistant decisions (unverified)", "\n".join(reversed(decisions)), .12),
+        ("Assistant pending-work excerpts (may be stale)", "\n".join(reversed(pending_items)), .10),
+        ("Command output excerpts (not independently verified)", "\n".join(reversed(commands)), .10),
+        ("File tool results (not independently verified)", "\n".join(reversed(write_results)), .10),
+        ("File write requests (outcomes not established)", ", ".join(changed_paths), .06),
     ):
         if value:
             cap = int(budget * fraction) - len(title) - 6
@@ -234,7 +301,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                 parts.append(f"## {title}\n{_clip(value, cap)}")
     # Never truncate an opaque reference: a partial identifier cannot be read.
     title = "Output refs (read_tool_output; current run, unverified)"
-    cap = int(budget * .14) - len(title) - 6
+    cap = int(budget * .12) - len(title) - 6
     refs = []
     for ref in reversed(captured_output_refs):
         if len(", ".join(refs + [ref])) > cap:
@@ -312,6 +379,24 @@ def _is_decision(sentence: str) -> bool:
     return any(marker in lowered for marker in _DECISION_MARKERS)
 
 
+def _is_pending(sentence: str) -> bool:
+    """Retain explicit pending-work statements, attributed and possibly stale."""
+    markers = ("待办", "尚未", "仍需", "还需", "下一步", "todo", "remaining", "next step", "still need")
+    return any(marker in sentence.lower() for marker in markers)
+
+
+def _write_result(content: str) -> str:
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return "result unknown"
+    if not isinstance(payload, dict) or not isinstance(payload.get("success"), bool):
+        return "result unknown"
+    status = "reported success" if payload["success"] else "reported failure"
+    error = payload.get("error")
+    return status + (f"; error: {_clip(str(error), 120)}" if error else "")
+
+
 def _dedupe(items: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -363,6 +448,10 @@ def _mutating_path(call: dict[str, Any]) -> str:
 
 def _matching_command(msg: Message, group: list[Message]) -> dict[str, Any] | None:
     """Match a result only to its own command call, never a prior unrelated call."""
+    return _matching_call(msg, group, ("exec_command", "bash", "run_terminal", "verify_subagent"))
+
+
+def _matching_call(msg: Message, group: list[Message], names: tuple[str, ...]) -> dict[str, Any] | None:
     call_id = msg.get("tool_call_id")
     if not isinstance(call_id, str) or not call_id:
         return None
@@ -371,7 +460,7 @@ def _matching_command(msg: Message, group: list[Message]) -> dict[str, Any] | No
             break
         if candidate.get("role") == "assistant":
             for call in _message_tool_calls(candidate):
-                if call.get("id") == call_id and call.get("name") in ("exec_command", "bash", "run_terminal", "verify_subagent"):
+                if call.get("id") == call_id and call.get("name") in names:
                     return call
     return None
 
