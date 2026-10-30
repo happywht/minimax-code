@@ -365,6 +365,7 @@ def register_workspace_handlers(
             # 3) Validate inside the worktree BEFORE merging (M3: 完成
             #    验证后再合并). A failure stops the merge with evidence.
             validation: dict[str, Any] | None = None
+            command = ""
             if run_validate and session.get("project_id"):
                 from ..app import get_projects_dao
                 from ..verification import normalize_validate_command, run_validate_command
@@ -431,6 +432,36 @@ def register_workspace_handlers(
                 raise
 
             merge_commit = (await _run_git(main_repo, "rev-parse", "HEAD")).strip()
+            # A successful worktree check does not validate the combined tree.
+            # Do not roll back a completed merge, even if the command fails or
+            # changes files: those changes may belong to the user.
+            post_merge: dict[str, Any] = {"status": "skipped", "reason": "not_configured"}
+            if not run_validate:
+                post_merge["reason"] = "disabled"
+            elif command:
+                post_merge = {"status": "unknown", "reason": "checkout_changed"}
+                try:
+                    async def target_matches() -> bool:
+                        branch = (await _run_git(main_repo, "rev-parse", "--abbrev-ref", "HEAD")).strip()
+                        current = (await _run_git(main_repo, "rev-parse", "--verify", "HEAD^{commit}")).strip()
+                        parents = (await _run_git(main_repo, "rev-list", "--parents", "-n", "1", current)).split()
+                        status = await _run_git(main_repo, "status", "--porcelain")
+                        return (branch == main_branch and current == merge_commit
+                                and parents == [merge_commit, main_head, head] and not status.strip())
+
+                    if await target_matches():
+                        evidence = await run_validate_command(command, cwd=str(main_repo))
+                        post_merge["validation"] = evidence
+                        if await target_matches():
+                            if evidence.get("ok") is True and evidence.get("exit_code") == 0:
+                                post_merge.update(status="passed", reason="validation_passed")
+                            elif evidence.get("timed_out") or evidence.get("exit_code") is None:
+                                post_merge.update(status="unknown", reason="validation_incomplete")
+                            else:
+                                post_merge.update(status="failed", reason="validation_failed")
+                except Exception:
+                    logger.exception("Post-merge validation could not be confirmed")
+                    post_merge.update(status="unknown", reason="validation_error")
             await ctx.reply({
                 "merged": True,
                 "worktree_head": head,
@@ -438,6 +469,7 @@ def register_workspace_handlers(
                 "main_branch": main_branch,
                 "committed_pending": committed_pending,
                 "validation": validation,
+                "post_merge_validation": post_merge,
             })
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

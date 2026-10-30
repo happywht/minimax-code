@@ -61,6 +61,12 @@ class WorkspaceReviewCommitsParams(BaseModel):
     expected_service_id: str = Field(min_length=1, max_length=128)
 
 
+class WorkspacePostMergeValidation(BaseModel):
+    status: Literal["passed", "failed", "unknown", "skipped"]
+    reason: str
+    validation: dict[str, Any] | None = None
+
+
 class McpResourcesParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     server_name: str = Field(min_length=1, max_length=256)

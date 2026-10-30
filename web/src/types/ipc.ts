@@ -1657,6 +1657,12 @@ export interface GitDiffResult {
   ref?: string;
   diff: string;
 }
+export interface WorktreePostMergeValidation {
+  status: "passed" | "failed" | "unknown" | "skipped";
+  reason: string;
+  validation?: unknown;
+}
+
 export interface WorktreeCommittedReview {
   session_id: string; project_id: string; service_id: string; workspace: string; target: string;
   target_branch: string; target_head: string; source_head: string; merge_base: string;

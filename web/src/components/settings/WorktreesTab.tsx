@@ -243,7 +243,7 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
     const ticket = ++epoch.current;
     setBusy(true); setError(""); setMergeResult(null);
     try {
-      const accepted = await requestConfirmation({ title: "合并已审阅提交", description: `将 ${snapshot.source_head} 合并到 ${snapshot.target} 的 ${snapshot.target_branch} 分支（当前 HEAD ${snapshot.target_head}）。如项目配置了验证命令，将先运行该命令。`, confirmLabel: "确认合并" });
+      const accepted = await requestConfirmation({ title: "合并已审阅提交", description: `将 ${snapshot.source_head} 合并到 ${snapshot.target} 的 ${snapshot.target_branch} 分支（当前 HEAD ${snapshot.target_head}）。如项目配置了验证命令，将在工作树合并前及目标目录合并后各运行一次。合并后验证失败不会自动撤销合并。`, confirmLabel: "确认合并" });
       if (!accepted || ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
       const identity = await typedIPC.getServiceIdentity();
       if (ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
@@ -275,7 +275,8 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
       <p>{mergeResult.merged ? "合并完成。" : mergeReasons[mergeResult.reason ?? ""] ?? `未合并：${mergeResult.reason ?? "原因未知"}`}</p>
       {mergeResult.merge_commit && <p className="break-all">合并提交：{mergeResult.merge_commit}</p>}
       {mergeResult.conflicts && mergeResult.conflicts.length > 0 && <p className="break-all">冲突文件：{mergeResult.conflicts.join("、")}</p>}
-      <p>{mergeResult.validation ? "已返回项目验证记录。" : "未返回项目验证记录，不能据此判断检查是否通过。"}</p>
+      <p>{mergeResult.validation ? "已返回合并前工作树验证记录。" : "未返回合并前工作树验证记录。"}</p>
+      {mergeResult.merged && <p>{({ passed: "合并后目标目录验证通过。", failed: "合并后目标目录验证失败；合并已保留，请检查结果。", unknown: "合并后验证结果无法确认，请检查目标目录和完整结果。", skipped: "未执行合并后验证，不能判断合并结果是否通过。" } as const)[mergeResult.post_merge_validation?.status ?? "unknown"]}</p>}
       <details><summary>查看完整结果</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(mergeResult, null, 2)}</pre></details>
     </div>}
     {value && <><details open><summary>未暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.working} emptyText="无已跟踪文件差异" /></div></details>
