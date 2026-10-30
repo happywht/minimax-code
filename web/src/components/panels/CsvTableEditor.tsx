@@ -4,6 +4,7 @@ import { CsvGroupEditor } from "./CsvGroupEditor";
 import { CsvReplaceEditor } from "./CsvReplaceEditor";
 import { CsvFillDown } from "./CsvFillDown";
 import { CsvSplitColumn } from "./CsvSplitColumn";
+import { CsvCombineColumns } from "./CsvCombineColumns";
 import { CsvNumericFilter } from "./CsvNumericFilter";
 import type { OfficeTableSpec } from "../../types/ipc";
 import { calculateOfficeColumn, csvToOfficeSpec, type CsvTable } from "./officeCsv";
@@ -154,6 +155,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
     <CsvReplaceEditor table={table} onApply={(next) => onChange(next)} />
     <CsvFillDown table={table} onApply={(next) => onChange(next)} />
     <CsvSplitColumn table={table} onApply={(next) => onChange(next, [...kinds, "text", "text"])} />
+    <CsvCombineColumns table={table} onApply={(next) => onChange(next, [...kinds, "text"])} />
     <CsvNumericFilter table={table} onApply={(next) => { onChange(next); setPage(0); }} />
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>按列排序</legend>
