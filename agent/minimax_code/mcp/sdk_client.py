@@ -368,6 +368,11 @@ class SDKMCPClient:
             return False
 
     async def close(self) -> None:
+        if self._close_task is not None and self._close_task.done():
+            # A previously unconfirmed cleanup may have finished since the
+            # last attempt. Keep the client reachable and allow rechecking.
+            if not self._close_task.cancelled() and self._close_task.exception() is not None:
+                self._close_task = None
         if self._close_task is None:
             self._closing = True
             self._close_task = asyncio.create_task(self._finish_close(), name="mcp-sdk-close")
@@ -388,8 +393,8 @@ class SDKMCPClient:
         operations = list(self._operations)
         for task in operations:
             task.cancel()
-        if operations:
-            await asyncio.gather(*operations, return_exceptions=True)
+        # Do not wait indefinitely for an operation that suppresses
+        # cancellation before the owner can close the transport/process.
         if self._owner is not None:
             if self._ready is not None and not self._ready.done():
                 self._owner.cancel()
@@ -410,6 +415,10 @@ class SDKMCPClient:
                     raise MCPClientError(
                         "MCP close timeout; owner cleanup is unconfirmed"
                     ) from None
+        if operations:
+            _, pending = await asyncio.wait(operations, timeout=self._close_timeout)
+            if pending:
+                raise MCPClientError("MCP close timeout; operation cleanup is unconfirmed")
         if self._ready is not None and self._ready.done():
             # A close-before-initialize waiter must not emit an unobserved
             # Future exception warning. initialize() still sees the exception.

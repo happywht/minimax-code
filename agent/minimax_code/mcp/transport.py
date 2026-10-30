@@ -214,12 +214,16 @@ class StdioTransport(MCPTransport):
                 await self._reader_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-        if self._proc is not None:
-            await terminate_tree(self._proc)
-        if self._stderr_task is not None:
-            self._stderr_task.cancel()
-            await asyncio.gather(self._stderr_task, return_exceptions=True)
-        await self._queue.put(None)
+        try:
+            if self._proc is not None:
+                await terminate_tree(self._proc)
+                if self._proc.returncode is None:
+                    raise MCPTransportError("MCP process termination is unconfirmed")
+        finally:
+            if self._stderr_task is not None:
+                self._stderr_task.cancel()
+                await asyncio.gather(self._stderr_task, return_exceptions=True)
+            await self._queue.put(None)
 
 
 # ---------------------------------------------------------------------------
