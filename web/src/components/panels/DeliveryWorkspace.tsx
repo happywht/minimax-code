@@ -124,6 +124,7 @@ function SessionDeliveries({ binding, target, onClearTarget, onPrepareReport, on
   const load = useRunTimelineStore((s) => s.loadForSession);
   const [targetRun, setTargetRun] = useState<(AgentRun & { steps: AgentRunStep[] }) | null>(null);
   const [targetBusy, setTargetBusy] = useState(false), [targetError, setTargetError] = useState("");
+  const [deliveryKind, setDeliveryKind] = useState<"all" | "attachments" | "text">("all"), [deliveryQuery, setDeliveryQuery] = useState("");
   const targetEpoch = useRef(0);
   useEffect(() => { void load(binding.session); }, [binding.session, load]);
   const targetMatches = !!target && target.host === binding.host && target.service === binding.service && target.project === binding.project && target.session === binding.session;
@@ -162,17 +163,27 @@ function SessionDeliveries({ binding, target, onClearTarget, onPrepareReport, on
   const visible = target ? (targetMatches && targetRun ? [targetRun] : []) : associated;
   return <div className="space-y-3 text-sm"><h3 className="font-semibold">当前会话的任务关联成果</h3>
     <p>默认列出当前项目和会话的近期运行及活动运行；指定任务时按 ID 单独读取，包括较早运行。附件来自已记录的工具结果；文本成果需按运行读取登记关联。关联不证明成果由该运行生成，内容均需自行核对。</p>
+    <div className="flex flex-wrap items-end gap-2 rounded border border-line p-2 text-xs" aria-label="查找任务关联成果">
+      <label className="min-w-0 flex-1">查找成果记录<input aria-label="查找任务成果" className="mt-1 block w-full rounded border border-line bg-surface-0 p-1" value={deliveryQuery} maxLength={200} onChange={(event) => setDeliveryQuery(event.target.value)} placeholder="文件名、路径或记录 ID" /></label>
+      <label>成果类型<select aria-label="筛选任务成果类型" className="mt-1 block rounded border border-line bg-surface-0 p-1" value={deliveryKind} onChange={(event) => setDeliveryKind(event.target.value as typeof deliveryKind)}>
+        <option value="all">全部</option><option value="attachments">关联附件</option><option value="text">登记文本成果</option>
+      </select></label>
+      {(deliveryQuery || deliveryKind !== "all") && <Button type="button" size="sm" variant="ghost" onClick={() => { setDeliveryQuery(""); setDeliveryKind("all"); }}>清除筛选</Button>}
+      <p className="w-full text-ink-2">仅筛选当前显示运行中已记录的附件名称/ID，以及手动读取后已加载的文本路径/ID；不搜索内容或未加载页面。筛选不清除已选预览或登记草稿。</p>
+    </div>
     {binding.session && (target && targetMatches ? <Button type="button" size="sm" variant="secondary" disabled={targetBusy} onClick={() => void loadTarget()}>重新读取此任务</Button> :
       <Button type="button" size="sm" variant="secondary" disabled={loading} onClick={() => void load(binding.session)}>刷新运行</Button>)}
     {target && <div><p>{targetMatches ? `正在查看任务 ${target.run}` : "目标任务的项目、会话或服务已变化，请重新选择。"}</p><Button type="button" size="sm" variant="ghost" onClick={onClearTarget}>查看全部近期运行</Button></div>}
     {!binding.session ? <p>请先选择会话。</p> : target && !targetMatches ? null : target && targetBusy ? <p role="status">正在读取并核对目标任务…</p> : target && targetError ? <p role="alert">无法读取目标任务：{targetError}</p> : !target && error ? <p role="alert">无法读取运行记录：{error}</p> : !target && loading ? <p role="status">正在读取运行记录…</p> : !visible.length ? <p>{target ? "目标任务尚未确认，请重新读取。" : "当前会话没有可确认项目归属的近期运行。"}</p> : visible.map((run) => <article key={run.id} className="rounded border border-line p-3">
       <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p>
-      {!run.steps.some((step) => step.status === "completed" && step.run_id === run.id && step.session_id === binding.session &&
-        step.payload?.source === "run_attachment_v1" && step.payload.project_id === binding.project && step.payload.service_id === binding.service &&
-        typeof step.payload.attachment_id === "string" && typeof step.payload.sha256 === "string") &&
-        <p className="text-xs text-ink-2">没有可确认的任务关联附件；未关联的项目成果不在这里显示。</p>}
-      <RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} verifyRun={!!target} transferPending={attachmentTransferPending} onPrepareAttachment={(attachment, runId) => onPrepareAttachment({ attachment, runId })} />
-      <details className="mt-2"><summary>登记关联的文本成果</summary><RunTextArtifacts runId={run.id} sessionId={binding.session!} projectId={binding.project} serviceId={binding.service} review={!!target} onPrepareReport={onPrepareReport} /></details>
+      <div hidden={deliveryKind === "text"}>
+        {!run.steps.some((step) => step.status === "completed" && step.run_id === run.id && step.session_id === binding.session &&
+          step.payload?.source === "run_attachment_v1" && step.payload.project_id === binding.project && step.payload.service_id === binding.service &&
+          typeof step.payload.attachment_id === "string" && typeof step.payload.sha256 === "string") &&
+          <p className="text-xs text-ink-2">没有可确认的任务关联附件；未关联的项目成果不在这里显示。</p>}
+        <RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} verifyRun={!!target} search={deliveryQuery} transferPending={attachmentTransferPending} onPrepareAttachment={(attachment, runId) => onPrepareAttachment({ attachment, runId })} />
+      </div>
+      <div hidden={deliveryKind === "attachments"}><details className="mt-2"><summary>登记关联的文本成果</summary><RunTextArtifacts runId={run.id} sessionId={binding.session!} projectId={binding.project} serviceId={binding.service} review={!!target} search={deliveryQuery} onPrepareReport={onPrepareReport} /></details></div>
       <FollowupRunDraft run={run} />
     </article>)}
   </div>;

@@ -6,10 +6,11 @@ import type { TextArtifact } from "../../types/ipc";
 import { RunArtifactFollowup } from "./RunArtifactFollowup";
 
 /** Explicitly registered run links only; registration does not prove authorship. */
-export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, review = false, onPrepareReport }: { runId: string; sessionId: string; projectId: string; serviceId: string; review?: boolean; onPrepareReport?: (row: TextArtifact) => void }): JSX.Element {
+export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, review = false, onPrepareReport, search = "" }: { runId: string; sessionId: string; projectId: string; serviceId: string; review?: boolean; onPrepareReport?: (row: TextArtifact) => void; search?: string }): JSX.Element {
   const activeSession = useSessionStore((state) => state.currentSessionId);
   const host = ipc.agentBaseUrl;
   const [items, setItems] = useState<TextArtifact[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selected, setSelected] = useState<{ row: TextArtifact; preview: string } | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -19,7 +20,7 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
   const [pending, setPending] = useState<{ path: string; requestId: string } | null>(null);
   const epoch = useRef(0), download = useRef<AbortController | null>(null);
   useEffect(() => {
-    ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setMessage(""); setBusy(false);
+    ++epoch.current; download.current?.abort(); setItems(null); setNextCursor(null); setSelected(null); setMessage(""); setBusy(false);
     setPath(""); setCandidates(null);
     try {
       const saved = JSON.parse(sessionStorage.getItem(key) || "null");
@@ -27,7 +28,7 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
     } catch { setPending(null); }
     return () => { ++epoch.current; download.current?.abort(); };
   }, [runId, sessionId, projectId, serviceId, review, activeSession, host, key]);
-  useEffect(() => ipc.onSideCar(() => { ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setCandidates(null); setBusy(false); setMessage("连接变化，请重新读取成果。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; download.current?.abort(); setItems(null); setNextCursor(null); setSelected(null); setCandidates(null); setBusy(false); setMessage("连接变化，请重新读取成果。"); }), []);
   const current = (ticket: number, host: string) => ticket === epoch.current && host === ipc.agentBaseUrl &&
     useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === projectId &&
     (review || (activeSession === sessionId && useSessionStore.getState().sessions.find((s) => s.id === sessionId)?.project_id === projectId));
@@ -39,17 +40,26 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
     if (scope.project_id !== projectId || scope.service_id !== serviceId || scope.detail?.id !== runId || scope.detail.session_id !== sessionId)
       throw new Error("运行或会话归属已改变，请刷新任务。");
   };
-  const load = async () => {
-    const ticket = ++epoch.current, host = ipc.agentBaseUrl; setBusy(true); setMessage(""); setSelected(null);
+  const load = async (more = false) => {
+    const cursor = more ? nextCursor : null;
+    if (more && (!cursor || busy)) return;
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl; setBusy(true); setMessage("");
     try {
       await verifyScope(ticket, host);
-      const result = await typedIPC.listArtifacts(projectId, runId);
+      const result = await typedIPC.listArtifacts(projectId, runId, cursor ?? undefined);
       await verifyScope(ticket, host);
       if (!current(ticket, host)) return;
-      if (result.service_id !== serviceId) throw new Error("服务身份已变化");
-      setItems(result.artifacts.filter((row) => row.project_id === projectId && row.service_id === serviceId && row.run_id === runId));
-      if (result.artifacts.length >= 200) setMessage("此运行最多返回最近 200 项，可能还有更早的关联成果。");
-    } catch (error) { if (current(ticket, host)) { setItems(null); setMessage(String(error)); } }
+      if (result.service_id !== serviceId || result.artifacts.length > 200 ||
+          result.artifacts.some((row) => row.project_id !== projectId || row.service_id !== serviceId || row.run_id !== runId ||
+            typeof row.id !== "string" || typeof row.source_path !== "string") ||
+          (result.next_cursor != null && (result.next_cursor === cursor || !/^art_[a-f0-9]{32}$/.test(result.next_cursor) ||
+            result.next_cursor !== result.artifacts[result.artifacts.length - 1]?.id))) throw new Error("服务或成果分页关联不一致，请重新读取。");
+      setItems((previous) => {
+        const existing = new Set((more ? previous ?? [] : []).map((row) => row.id));
+        return [...(more ? previous ?? [] : []), ...result.artifacts.filter((row) => !existing.has(row.id))];
+      });
+      setNextCursor(result.next_cursor ?? null);
+    } catch (error) { if (current(ticket, host)) { if (!more) { setItems(null); setNextCursor(null); } setMessage(String(error)); } }
     finally { if (current(ticket, host)) setBusy(false); }
   };
   const discover = async () => {
@@ -122,6 +132,8 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
     } catch (error) { if (current(ticket, host)) setMessage(String(error)); }
     finally { if (current(ticket, host)) setBusy(false); }
   };
+  const needle = search.trim().toLocaleLowerCase();
+  const matchingItems = items?.filter((row) => row.source_path.toLocaleLowerCase().includes(needle) || row.id.toLocaleLowerCase().includes(needle));
   return <div className="mt-2 space-y-1 text-xs"><button type="button" disabled={busy} onClick={() => void load()}>读取登记关联的文本成果</button>
     <p>仅显示登记时关联此运行的文本版本；关联不证明由该运行生成或内容已验证。</p>
     <button type="button" disabled={busy || !!pending} onClick={() => void discover()}>查找任务写入的文本路径</button>
@@ -136,7 +148,10 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
     {pending && <div><p>登记结果尚未确认。重试使用相同请求，避免重复创建；路径和文件内容须保持不变。</p>
       <button type="button" disabled={busy} onClick={() => { sessionStorage.removeItem(key); setPending(null); setMessage("已清除本地重试记录；原请求可能已登记，请先读取成果确认，避免重复。"); }}>清除本地重试记录</button>
     </div>}
-    {items && (items.length ? <ul>{items.map((row) => <li key={row.id}><button type="button" disabled={busy} onClick={() => void select(row)}>{row.source_path} · v{row.version}</button></li>)}</ul> : <p>此运行没有登记的文本关联。</p>)}
+    {items && <><p>已加载 {items.length} 项{needle ? ` · 匹配 ${matchingItems?.length ?? 0} 项` : ""}{nextCursor ? " · 还有后续记录" : ""}。</p>
+      {matchingItems?.length ? <ul>{matchingItems.map((row) => <li key={row.id}><button type="button" disabled={busy} onClick={() => void select(row)}>{row.source_path} · v{row.version}</button></li>)}</ul> :
+        <p>{items.length && needle ? "已加载的文本成果没有匹配项；后续页可能仍有匹配。" : "此运行没有已加载的文本关联。"}</p>}
+      {nextCursor && <button type="button" disabled={busy} onClick={() => void load(true)}>加载更多关联文本成果</button>}</>}
     {selected && <div><button type="button" disabled={busy} onClick={() => void save()}>下载文本原件</button>{onPrepareReport && <button type="button" disabled={busy} onClick={() => onPrepareReport(selected.row)}>在报告中复用此成果</button>}<pre aria-label="文本成果预览" className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{selected.preview || "（无可用预览）"}</pre>
       {!review && <RunArtifactFollowup key={`${selected.row.id}:${selected.row.sha256}`} artifact={selected.row} session={sessionId} />}</div>}
     {message && <p role="status">{message}</p>}

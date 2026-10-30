@@ -8,7 +8,7 @@ import { PdfOriginalPreview } from "../panels/PdfOriginalPreview";
 import { XlsxTablePreview } from "../panels/XlsxTablePreview";
 import { SearchableTextPreview } from "../panels/SearchableTextPreview";
 
-export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, transferPending = false, verifyRun = false }: { run: AgentRun; steps: AgentRunStep[]; reviewScope?: { sessionId: string; projectId: string; serviceId: string }; onPrepareAttachment?: (attachment: AttachmentOriginal, runId: string) => void; transferPending?: boolean; verifyRun?: boolean }): JSX.Element | null {
+export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, transferPending = false, verifyRun = false, search = "" }: { run: AgentRun; steps: AgentRunStep[]; reviewScope?: { sessionId: string; projectId: string; serviceId: string }; onPrepareAttachment?: (attachment: AttachmentOriginal, runId: string) => void; transferPending?: boolean; verifyRun?: boolean; search?: string }): JSX.Element | null {
   const activeSession = useSessionStore((state) => state.currentSessionId);
   const activeProject = useSessionStore((state) => state.currentProjectId) ?? "inbox";
   const session = reviewScope?.sessionId ?? activeSession;
@@ -24,6 +24,9 @@ export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, t
     && step.payload?.project_id === project && typeof step.payload?.attachment_id === "string"
     && typeof step.payload?.service_id === "string" && typeof step.payload?.sha256 === "string"
     && (!reviewScope || step.payload.service_id === reviewScope.serviceId));
+  const needle = search.trim().toLocaleLowerCase();
+  const matchingRows = rows.filter((step) => [step.payload?.filename, step.payload?.attachment_id].some((value) =>
+    typeof value === "string" && value.toLocaleLowerCase().includes(needle)));
   const available = session === run.session_id && run.metadata?.project_id === project;
   const visible = selected && selected.project_id === project && (!reviewScope || selected.service_id === reviewScope.serviceId) ? selected : null;
   const current = (ticket: number, origin: string) => ticket === version.current && ipc.agentBaseUrl === origin
@@ -99,9 +102,10 @@ export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, t
   };
 
   if (!available || !rows.length) return null;
-  return <div className="mt-2 space-y-2 text-xs"><p className="font-medium text-ink-1">关联成果 · {rows.length} 项</p><p className="text-ink-2">运行记录中的工具返回附件（可能复用旧成果；关联不证明由此任务生成，内容未验证）</p><div className="flex flex-wrap gap-1">
-    {rows.map((step) => <Button key={step.id} size="sm" variant="secondary" disabled={loading}
-      onClick={() => void select(step)}>{String(step.payload?.filename || "查看成果")}</Button>)}</div>
+  return <div className="mt-2 space-y-2 text-xs"><p className="font-medium text-ink-1">关联成果 · {rows.length} 项{needle ? ` · 匹配 ${matchingRows.length} 项` : ""}</p><p className="text-ink-2">运行记录中的工具返回附件（可能复用旧成果；关联不证明由此任务生成，内容未验证）</p><div className="flex flex-wrap gap-1">
+    {matchingRows.map((step) => <Button key={step.id} size="sm" variant="secondary" disabled={loading}
+      onClick={() => void select(step)}>{String(step.payload?.filename || step.payload?.attachment_id || "查看成果")}</Button>)}</div>
+    {needle && !matchingRows.length && <p>当前运行记录的附件名称或 ID 没有匹配项。</p>}
     {error && <p role="alert" className="break-words text-status-warning">{error}</p>}
     {visible && <div className="space-y-1"><p>解析状态：{visible.parser_status}；质量未验证</p>
       <Button size="sm" disabled={loading} onClick={() => void save()}>下载原件</Button>
