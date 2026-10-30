@@ -324,12 +324,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const session = get().sessions.find((x) => x.id === id);
       if (session?.workspace_mode === "worktree") {
         try {
-          await typedIPC.deleteWorktree(id);
+          await typedIPC.deleteWorktree(id, true);
         } catch (cleanupErr) {
-          // The directory may already be gone; still delete the row,
-          // but surface that cleanup was skipped.
+          // Preserve the session and its workspace binding for inspection.
           const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
           toast.error(strings.toasts.worktreeCleanupDegraded, msg);
+          return;
         }
       }
       await typedIPC.deleteSession(id);

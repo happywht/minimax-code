@@ -108,7 +108,7 @@ def register_workspace_handlers(
             logger.exception("workspace.list_worktrees failed")
             await ctx.reply_error(INTERNAL_ERROR, f"workspace.list_worktrees failed: {exc}")
 
-    async def handle_delete_worktree(params: Any, ctx: Context) -> None:
+    async def _delete_worktree(params: Any, ctx: Context) -> None:
         try:
             check_params(params, expected_keys={"session_id"})
             session_id = str(params["session_id"])
@@ -145,6 +145,43 @@ def register_workspace_handlers(
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("workspace.delete_worktree failed")
             await ctx.reply_error(INTERNAL_ERROR, f"workspace.delete_worktree failed: {exc}")
+
+    async def handle_delete_worktree(params: Any, ctx: Context) -> None:
+        """Fence new admissions while checking and removing the bound worktree."""
+        from ..runs import get_run_service
+
+        try:
+            check_params(params, expected_keys={"session_id"})
+            session_id = str(params["session_id"])
+            service = get_run_service(ctx.server)
+            async with service._admission_lock:
+                sess_dao = await dao_factory()
+                session = await sess_dao.get(session_id)
+                if not session:
+                    raise HandlerError(INVALID_PARAMS, "Session is unavailable")
+                if params.get("for_session_delete") is True:
+                    table = await sess_dao._db.fetchone("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_root_admissions'")
+                    if table and await sess_dao._db.fetchone(
+                            "SELECT run_id FROM agent_root_admissions WHERE source_session_id=? OR execution_session_id=? LIMIT 1",
+                            (session_id, session_id)):
+                        raise HandlerError(INVALID_PARAMS, "Session retains durable Agent history; archive it instead")
+                workspace = session.get("workspace_path")
+                if any(job.task is not None and not job.task.done() and
+                       (job.session_id == session_id or (workspace and job.workspace and
+                        Path(job.workspace).is_relative_to(Path(workspace))))
+                       for jobs in service._jobs.values() for job in jobs):
+                    raise HandlerError(INVALID_PARAMS, "Worktree is used by a queued or active run; stop it and wait for cleanup")
+                active = await sess_dao._db.fetchone(
+                    "SELECT id FROM agent_runs WHERE session_id=? AND status IN "
+                    "('queued','planning','running','awaiting_approval','waiting_input') LIMIT 1", (session_id,))
+                if active:
+                    raise HandlerError(INVALID_PARAMS, "Session has an unfinished run; review its status before cleanup")
+                await _delete_worktree(params, ctx)
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception:
+            logger.exception("workspace.delete_worktree admission check failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Unable to confirm worktree is unused")
 
     async def handle_merge_worktree(params: Any, ctx: Context) -> None:
         """``workspace.merge_worktree`` — commit, validate, then merge (M3).

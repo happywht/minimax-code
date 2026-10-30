@@ -257,7 +257,7 @@ binding or an expired request.
 | `project.unarchive`        | req/res   | Unarchive a project.                               |
 | `workspace.create_worktree_session` | req/res | Create an isolated Git worktree-backed session. Optional `project_id` (v1.3.0) files the session under that project — unknown ids fail fast with `-32602` before any checkout is created; omitted → `inbox`. |
 | `workspace.list_worktrees` | req/res | List sessions whose `workspace_mode` is `worktree`. |
-| `workspace.delete_worktree` | req/res | Remove a managed worktree and mark the session local. |
+| `workspace.delete_worktree` | req/res | Remove a managed worktree and mark the session local. Rejects queued or active owned work; optional `for_session_delete:true` additionally rejects sessions with retained Agent admissions before removing the worktree. These checks do not detect external processes or other services. |
 | `workspace.merge_worktree` | req/res | M3 — commit pending worktree changes, optionally run the project validate command inside the worktree, then `--no-ff` merge into the main checkout. Validation failure stops the merge; source or target drift after validation returns `worktree_changed` or `main_checkout_changed`. Conflicts report unmerged files and leave the merge in progress for inspection, rather than automatically aborting. These checks do not lock out external writers. |
 | `engine.list` | req/res | M4 — capability cards for every registered engine (native / Codex), availability probed live; `default: "native"`. |
 | `engine.status` | req/res | M4 — one engine's card by id. Unavailable engines carry `unavailable_reason` so the UI can disable them explicitly. |
