@@ -13,6 +13,7 @@ import { ProjectXlsxImport } from "./ProjectXlsxImport";
 import { DraftFileControl } from "./DraftFileControl";
 import type { ReportTableTransfer } from "./DeliveryWorkspace";
 import { OfficeFollowupDraft } from "./OfficeFollowupDraft";
+import { OfficeDeliveryReuse } from "./OfficeDeliveryReuse";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
   { name: "名称", kind: "text" }, { name: "数量", kind: "number" },
@@ -201,9 +202,13 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         <pre className="whitespace-pre-wrap break-words">{JSON.stringify(state.selected.delivery.validation_report.processing, null, 2)}</pre>
       </details>}
       {state.selected.delivery.validation_report.scope === "xlsx_plain_cells_v1" && <OfficeFollowupDraft selected={state.selected} />}
+      {state.selected.delivery.validation_report.scope === "xlsx_plain_cells_v1" && <OfficeDeliveryReuse key={`${state.selected.delivery.id}:${state.selected.attachment.sha256}`}
+        selected={state.selected} project={project} session={session} service={state.serviceId} host={host}
+        draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, filePending])} filePending={filePending}
+        onApply={(text, table, name) => { cancelFileRead(); applyCsv(text, table); setFilename(name); edited(); }} />}
       <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
         <Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>
-        <Button variant="secondary" disabled={state.busy || ipc.isMock} onClick={() => { const next = crypto.randomUUID(); setKey(next); submit(next); }}>按当前输入生成同名新版本</Button></div>
+        <Button variant="secondary" disabled={state.busy || ipc.isMock} onClick={() => { const next = crypto.randomUUID(); setKey(next); submit(next); }}>按当前文件名和输入生成新文件</Button></div>
       {inputs[`${state.selected.delivery.service_id}:${state.selected.delivery.id}`] ? <Button variant="secondary" onClick={() => saveJson(inputs[`${state.selected!.delivery.service_id}:${state.selected!.delivery.id}`], "office-input.json")}>下载此成果的输入 JSON</Button> :
         <p role="status">此成果的输入未保存在当前页面，请使用生成时另行保存的输入 JSON 复验；当前编辑器内容不一定匹配。</p>}
       <p>校验报告不是数字签名。空串已按空白规范化。输入快照仅保留到离开页面或切换项目；图表输入包含图表配置及原始数据行数。</p>
