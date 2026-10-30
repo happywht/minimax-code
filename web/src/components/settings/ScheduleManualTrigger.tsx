@@ -61,6 +61,28 @@ export function ScheduleManualTrigger({ job, serviceId }: { job: ScheduledJob; s
     } catch { if (current(ticket, scope)) { setPending(read()); setMessage("请求未确认；请先核对历史，必要时使用原请求键重试，不要另发新请求。"); } }
     finally { inFlight.current = false; setBusy(false); }
   };
+  const recoverReceipt = async (intent: Intent) => {
+    if (inFlight.current || !serviceId || intent.service_id !== serviceId || intent.job_id !== job.id) return;
+    inFlight.current = true; setBusy(true); setMessage(""); setReceipt(null);
+    const ticket = epoch.current, scope = currentScope;
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current(ticket, scope)) return;
+      if (identity.service_id !== intent.service_id) throw new Error("服务身份已变化");
+      const result = await typedIPC.getScheduleManualReceipt(intent.job_id, intent.key, intent.revision, intent.service_id);
+      if (!current(ticket, scope)) return;
+      const after = await typedIPC.getServiceIdentity();
+      if (!current(ticket, scope)) return;
+      if (after.service_id !== intent.service_id) throw new Error("服务身份已变化");
+      if (!result.found) { setMessage("当前数据库没有找到该请求的接单记录；在途请求或数据库恢复可能影响判断，记录仍保留。"); return; }
+      const saved = result.receipt;
+      if (!saved || saved.ok !== true || saved.job_id !== intent.job_id || !saved.occurrence_id || !saved.task_id || saved.created !== false || JSON.stringify(read()) !== JSON.stringify(intent)) throw new Error("回执或本地请求不匹配");
+      sessionStorage.removeItem(storageKey); setPending(null); setReceipt(saved);
+      setMessage("已找回原接单回执并清除本地待确认记录；未触发或重试运行。请查看发生记录和结果。");
+      await useScheduleStore.getState().refresh();
+    } catch { if (current(ticket, scope)) { setPending(read()); setMessage("无法确认原回执；请求记录仍保留，请核对连接与历史。"); } }
+    finally { inFlight.current = false; setBusy(false); }
+  };
   const begin = async () => {
     if (busy || pending || !serviceId || !job.revision || !job.enabled || job.binding_state !== "ready" || job.active_occurrence_id) return;
     if (read()) { setPending(read()); return; }
@@ -90,12 +112,13 @@ export function ScheduleManualTrigger({ job, serviceId }: { job: ScheduledJob; s
     {pending === "unavailable" && <div><p role="alert">浏览器存储不可用或记录损坏；无法安全发起新请求。请先检查原记录及计划历史。</p><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void discard()}>清除损坏记录</Button></div>}
     {pending && pending !== "unavailable" && <div className="space-y-1"><p>有待确认的立即运行请求；请先核对计划历史。</p>
       <Textarea aria-label={`${job.name} 立即运行恢复记录`} readOnly rows={4} value={JSON.stringify(pending)} />
-      <div className="flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void submit(pending, true)}>重试原请求</Button>
+      <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void recoverReceipt(pending)}>找回原接单回执</Button>
+        <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void submit(pending, true)}>重试原请求</Button>
         <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void discard()}>清除本地记录</Button></div></div>}
     <details><summary>导入立即运行恢复记录</summary><p>从原标签页复制记录后粘贴；仅匹配服务身份和计划 ID，不自动运行。数据库克隆可能复用服务身份，请人工确认远端主机。</p>
       <Textarea aria-label={`${job.name} 导入立即运行记录`} rows={3} value={input} disabled={busy || !!pending} onChange={(event) => setInput(event.target.value)} />
       <Button type="button" size="sm" variant="secondary" disabled={busy || !!pending || !input.trim()} onClick={importRecord}>填入恢复记录</Button></details>
-    {receipt && <p className="break-all">发生记录：{receipt.occurrence_id} · 接单时状态：{receipt.status}</p>}
+    {receipt && <p className="break-all">发生记录：{receipt.occurrence_id} · 读取时状态：{receipt.status}；请在发生历史中核对最新状态。</p>}
     {message && <p role="status">{message}</p>}
   </div>;
 }

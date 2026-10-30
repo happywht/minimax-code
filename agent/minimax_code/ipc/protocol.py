@@ -383,6 +383,14 @@ class ScheduleRunNowParams(BaseModel):
     expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class ScheduleManualReceiptParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    job_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    expected_revision: int = Field(gt=0)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+
+
 class ScheduleOccurrence(_Base):
     id: str
     job_id: str

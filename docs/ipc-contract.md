@@ -2138,6 +2138,7 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 | `schedule.update` | expected_revision 比较并交换，保留旧发生记录快照 |
 | `schedule.occurrences` | 按 job_id 查询准确发生记录和执行/校验证据 |
 | `schedule.enable` / `schedule.disable` | 启用/停用 |
+| `schedule.manual_receipt` | 按计划、请求键、版本和服务身份只读找回原手动接单回执，不调用调度器或触发运行 |
 | `schedule.run_now` | 立即触发一次 |
 
 ### secrets.* — 旧版 MiniMax 密钥
@@ -2392,3 +2393,5 @@ publication, so the saved ID and remote path must be used to query
 `host.fetch_preview` requires `host_id`, `expected_service_id`, exact SSH host fields and `remote_port`, `remote_path`, absolute `local_path` and `expected_sha256`. After explicit confirmation it rereads the remote ordinary file without following symlinks, using a trusted SSH host key and the existing 10 MiB/descriptor consistency checks. The complete SHA-256 must equal the preview hash; a private staging file is fsynced and atomically linked only to a previously unused destination in an existing non-symlink parent. The destination is on the machine running this service, not necessarily the browser machine. An interrupted or failed response can leave a published file; inspect it before retrying. External changes to parent directories or SSH key contents are not locked; hashing does not establish business correctness. No automatic transfer is performed.
 
 立即运行界面在发送前把包含服务身份、计划 ID、版本及幂等键的待确认记录保存到 sessionStorage；重载不会自动重试，用户可复制/导入该记录并显式重试相同请求。原请求未接单时重试可能首次创建运行，因此应先核对历史。回执已确认后才清除记录；清除记录不取消已接单运行。浏览器存储不可用或记录损坏时阻止新的界面接单。导入按服务身份与计划 ID 校验，数据库克隆可能复用服务身份，不能代替人工核对远端主机；不同标签页的待确认记录不互相协调。旧客户端不带 expected_service_id 的调用仍兼容。
+
+`schedule.manual_receipt` 必须传入 `job_id`、`idempotency_key`、`expected_revision` 和 `expected_service_id`。服务端在同一数据库事务内核对服务身份，查找原 manual occurrence 并验证与版本对应的指纹，不调用调度器、不创建或重试任务。返回 `{found:false,receipt:null}` 或 `{found:true,receipt}`；匹配回执只包含原发生/任务/运行 ID 与读取时状态，`created:false`。界面显式查询找到后核对本地原请求、清除待确认记录并展示原发生编号；查不到或错误保留记录。结果只代表当前数据库快照，未找到不证明在途请求不会接单，也不能排除备份恢复或克隆导致的历史差异。

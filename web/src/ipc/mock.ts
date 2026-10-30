@@ -1195,6 +1195,7 @@ function mockHandle(
       if (job) job.enabled=false;
       return {job:job??null};
     }
+    case "schedule.manual_receipt": throw new Error("Mock 模式不提供真实接单回执");
     case "schedule.run_now": throw new Error("Mock 模式不执行真实调度");
 
     case "agent.list":

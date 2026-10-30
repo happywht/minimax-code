@@ -85,6 +85,23 @@ class ScheduleOccurrencesDAO:
                 )
         return rows
 
+    async def find_manual_receipt(self, *, job_id, manual_key, expected_revision, expected_service_id):
+        """Read an exact admission receipt without scheduling or changing the occurrence."""
+        fingerprint = hashlib.sha256(
+            json.dumps({"expected_revision": expected_revision}, sort_keys=True).encode()
+        ).hexdigest()
+        async with self.db.transaction() as conn:
+            from .scheduled_jobs import ScheduledJobsDAO
+            await ScheduledJobsDAO._check_service(conn, expected_service_id)
+            row = await fetch(conn,
+                "SELECT * FROM schedule_occurrences WHERE job_id=? AND manual_key=? AND source='manual'",
+                (job_id, manual_key))
+            if row is None:
+                return None
+            if row["fingerprint"] != fingerprint:
+                raise ValueError("Idempotency key conflicts with the original revision")
+            return hydrate(row)
+
     async def claim(
         self,
         job_id,

@@ -356,6 +356,7 @@ export interface TypedIPC {
   deleteJob(jobId: string): Promise<{ ok: true }>;
   enableJob(jobId: string, acknowledgeOccurrenceId?: string, expectedRevision?: number, expectedService?: string): Promise<{ job: ScheduledJob }>;
   disableJob(jobId: string, scope?: { expected_revision: number; expected_service_id: string; expected_occurrence_id: string }): Promise<{ job: ScheduledJob }>;
+  getScheduleManualReceipt(jobId: string, idempotencyKey: string, expectedRevision: number, expectedService: string): Promise<{ found: boolean; receipt: ScheduleTriggerResult | null }>;
   runNowJob(jobId: string, idempotencyKey: string, expectedRevision: number, expectedService?: string): Promise<ScheduleTriggerResult>;
 
   // agent (multi-agent)
@@ -922,6 +923,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       const result = await client.request<{ job: WireScheduledJob }>("schedule.disable", { job_id: jid, ...scope });
       return { job: normalizeScheduledJob(result.job) };
     },
+    getScheduleManualReceipt: (jid, idempotencyKey, expectedRevision, expectedService) =>
+      client.request("schedule.manual_receipt", { job_id: jid, idempotency_key: idempotencyKey, expected_revision: expectedRevision, expected_service_id: expectedService }),
     runNowJob: (jid, idempotencyKey, expectedRevision, expectedService) =>
       client.request<ScheduleTriggerResult>("schedule.run_now", { job_id: jid, idempotency_key: idempotencyKey, expected_revision: expectedRevision, ...(expectedService ? { expected_service_id: expectedService } : {}) }),
 

@@ -34,6 +34,7 @@ from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
+    ScheduleManualReceiptParams,
 )
 from .server import Context
 
@@ -218,6 +219,34 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             logger.exception("schedule.run_now failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.run_now failed")
 
+    async def handle_schedule_manual_receipt(params: Any, ctx: Context) -> None:
+        """Look up a manual admission without invoking the scheduler."""
+        from pydantic import ValidationError
+        from ..app import ensure_db
+        from ..storage.dao.schedule_occurrences import ScheduleOccurrencesDAO
+
+        try:
+            request = ScheduleManualReceiptParams.model_validate(params)
+            if not request.idempotency_key.strip():
+                raise ValueError("A non-blank request key is required")
+            db = scheduler._db if scheduler is not None else await ensure_db()
+            if db is None:
+                raise RuntimeError("Storage unavailable")
+            occurrence = await ScheduleOccurrencesDAO(db).find_manual_receipt(
+                job_id=request.job_id, manual_key=request.idempotency_key,
+                expected_revision=request.expected_revision, expected_service_id=request.expected_service_id)
+            if occurrence is None:
+                await ctx.reply({"found": False, "receipt": None})
+                return
+            await ctx.reply({"found": True, "receipt": {"ok": True, "job_id": request.job_id,
+                "occurrence_id": occurrence["id"], "task_id": occurrence["task_id"],
+                "run_id": occurrence["run_id"], "status": occurrence["status"], "created": False}})
+        except (ValidationError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("schedule.manual_receipt failed")
+            await ctx.reply_error(INTERNAL_ERROR, "schedule.manual_receipt unavailable")
+
     async def handle_schedule_update(params, ctx):
         try:
             sched = await scheduler_factory()
@@ -267,6 +296,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
     server.register("schedule.delete", handle_schedule_delete)
     server.register("schedule.enable", handle_schedule_enable)
     server.register("schedule.disable", handle_schedule_disable)
+    server.register("schedule.manual_receipt", handle_schedule_manual_receipt)
     server.register("schedule.run_now", handle_schedule_run_now)
 
 # ---------------------------------------------------------------------------
