@@ -2249,7 +2249,7 @@ the authorized skill execution boundary; non-push or empty-commit events are ski
 command、self_evolution、use_runservice:false、混合或未知字段在创建、修改、启用、手动触发及实际分派路径拒绝。
 旧任务升级后 disabled/needs_rebind，原 payload 保留供导出/查看/删除；不会自动转成可执行提示词。
 
-schedule.create/update 的 context 输入选择 project_id、provider_id/model（必须一起指定，均省略则在此刻固定当前选择）、reasoning_effort、mode(chat/execute/plan)、budget_tokens、timezone，以及 restart_missed_policy（coalesce 默认或 skip）。`schedule.create` 可传布尔 `enabled`（省略时兼容默认 true），以及 `expected_service_id`，服务身份不匹配时拒绝创建；创建无幂等键，结果不明时需先核对列表。
+schedule.create/update 的 context 输入选择 project_id、provider_id/model（必须一起指定，均省略则在此刻固定当前选择）、reasoning_effort、mode(chat/execute/plan)、budget_tokens、timezone，以及 restart_missed_policy（coalesce 默认或 skip）。`schedule.create` 可传布尔 `enabled`（省略时兼容默认 true）和 `expected_service_id`；还可传非空、最多 128 字符的 `idempotency_key`。Schema052 将键、规范化请求摘要和计划同事务保存；同键同内容返回原计划当前状态及 `created: false`，同键不同内容拒绝。原计划已软删除仍返回其删除状态，不重新创建。没有键的旧调用仍不去重。数据库恢复或克隆可能改变幂等历史，须核对服务与备份状态。
 输入也可回传已知的 v1 快照字段以支持编辑；服务端重新捕获只读字段，不采用其值。未知顶层字段和未知 context 字段（包括 execution_profile_id、execution_target）均拒绝，已有快照携带未知字段时启用和分派也会拒绝。调度仍只支持受信宿主 Local / Native，不支持受限容器或无人值守容器执行；请求受限目标不能被忽略后转为宿主执行。
 返回的 context v1 固定 canonical workspace+目录身份、local/native、provider ID/协议/endpoint 配置摘要、模型/强度、顺序权限规则及默认策略版本、hooks_policy=disabled、正 token 上限、校验命令及时区。
 密钥不序列化。正预算来自显式值或 MINIMAX_CODE_SCHEDULED_BUDGET_TOKENS / MINIMAX_CODE_RUN_BUDGET_TOKENS；无正上限拒绝。全局模型切换不改变任务，Provider 配置/目录身份漂移及缺失密钥均阻止推理。

@@ -157,7 +157,7 @@ async def restore_database(db: Any, envelope: dict[str, Any]) -> dict[str, Any]:
     columns_by_table = await _business_table_columns(db)
     envelope_tables = envelope["tables"]
     protected = {"sessions", "messages", "agent_runs", "agent_run_steps", "run_events",
-                 "schedule_occurrences", "scheduled_jobs", "tasks", "agent_root_admissions",
+                 "schedule_occurrences", "scheduled_jobs", "schedule_create_keys", "tasks", "agent_root_admissions",
                  "research_sources"}
     if max(current, default=0) >= 37 and any(
         name.startswith("budget_") or name in protected for name in envelope_tables

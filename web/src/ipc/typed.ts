@@ -341,7 +341,7 @@ export interface TypedIPC {
   // The JS API is friendlier (cron / prompt) than the wire (cron_expr / payload)
   // and the binding translates at the boundary.
   listJobs(): Promise<ListJobsResult>;
-  createJob(opts: ScheduleDefinition & { enabled?: boolean; expected_service_id?: string }): Promise<{ job: ScheduledJob }>;
+  createJob(opts: ScheduleDefinition & { enabled?: boolean; expected_service_id?: string; idempotency_key?: string }): Promise<{ job: ScheduledJob; created?: boolean }>;
   updateJob(jobId: string, expectedRevision: number, opts: ScheduleDefinition, expectedService?: string): Promise<{job: ScheduledJob}>;
   listScheduleOccurrences(jobId: string, before?: ScheduleOccurrenceCursor, statusGroup?: string): Promise<{occurrences: ScheduleOccurrence[]; next_cursor?: ScheduleOccurrenceCursor | null}>;
   deleteJob(jobId: string): Promise<{ ok: true }>;
@@ -598,6 +598,7 @@ interface WireScheduledJob {
   binding_state?: ScheduledJob["binding_state"];
   binding_reason?: string | null;
   active_occurrence_id?: string | null;
+  deleted_at?: string | null;
   id: string;
   name: string;
   cron?: string;
@@ -614,7 +615,7 @@ function normalizeScheduledJob(job: WireScheduledJob): ScheduledJob {
   return {
     id: job.id,
     revision: job.revision, context: job.context, binding_state: job.binding_state,
-    binding_reason: job.binding_reason, active_occurrence_id: job.active_occurrence_id,
+    binding_reason: job.binding_reason, active_occurrence_id: job.active_occurrence_id, deleted_at: job.deleted_at,
     name: job.name,
     cron: job.cron ?? job.cron_expr ?? "",
     prompt: job.prompt ?? (typeof payloadPrompt === "string" ? payloadPrompt : ""),
@@ -880,15 +881,16 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       return { jobs: result.jobs.map(normalizeScheduledJob) } satisfies ListJobsResult;
     },
     createJob: async (opts) => {
-      const result = await client.request<{ job: WireScheduledJob }>("schedule.create", {
+      const result = await client.request<{ job: WireScheduledJob; created?: boolean }>("schedule.create", {
         name: opts.name,
         // Wire names differ from the JS API for historical reasons.
         cron_expr: opts.cron,
         payload: { prompt: opts.prompt }, context: opts.context,
         ...(opts.enabled !== undefined ? { enabled: opts.enabled } : {}),
         ...(opts.expected_service_id ? { expected_service_id: opts.expected_service_id } : {}),
+        ...(opts.idempotency_key ? { idempotency_key: opts.idempotency_key } : {}),
       });
-      return { job: normalizeScheduledJob(result.job) };
+      return { job: normalizeScheduledJob(result.job), created: result.created };
     },
     updateJob: async (jid, expectedRevision, opts, expectedService) => {
       const result = await client.request<{job: WireScheduledJob}>("schedule.update", { job_id: jid, expected_revision: expectedRevision, name: opts.name, cron_expr: opts.cron, payload: {prompt:opts.prompt}, context: opts.context, ...(expectedService ? {expected_service_id: expectedService} : {}) });

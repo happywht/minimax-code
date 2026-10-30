@@ -185,6 +185,8 @@ class JobScheduler:
         payload: dict[str, Any] | None = None,
         enabled: bool = True,
         context: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        expected_service_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a new scheduled job in the DB and register it with APScheduler.
 
@@ -192,14 +194,33 @@ class JobScheduler:
         Raises :class:`InvalidCronError` if ``cron_expr`` is malformed.
         """
         from ..schedule_context import capture_context, validate_payload
+        import hashlib
+        import json
+
+        request_hash = None
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 128:
+                raise ValueError("idempotency_key must be a non-empty string of at most 128 characters")
+            canonical = json.dumps({"name": name, "cron_expr": cron_expr, "payload": payload,
+                                    "enabled": enabled, "context": context}, sort_keys=True,
+                                   separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+            request_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            previous = await self._dao.find_create(idempotency_key, request_hash, expected_service_id)
+            if previous is not None:
+                if (previous["enabled"] and not previous.get("deleted_at") and self._started
+                        and self._aps.get_job(_aps_id(previous["id"])) is None):
+                    self._register_with_aps(previous)
+                return {**previous, "_create_replayed": True}
         validate_payload(payload)
         saved = await capture_context(self._db, context or {})
         next_run = _next_due(cron_expr, saved["timezone"])
         row = await self._dao.create(
             name=name, cron_expr=cron_expr, payload=payload, enabled=enabled,
             next_run_at=next_run, bound_context=saved,
+            request_key=idempotency_key, request_hash=request_hash, expected_service_id=expected_service_id,
         )
-        if enabled and self._started:
+        if (row["enabled"] and not row.get("deleted_at") and self._started
+                and self._aps.get_job(_aps_id(row["id"])) is None):
             self._register_with_aps(row)
         return row
 

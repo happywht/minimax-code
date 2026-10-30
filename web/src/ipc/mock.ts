@@ -160,6 +160,7 @@ const mockRunReceipts = new Map<string, import("../types/ipc").SendMessageResult
 const mockRunRequests = new Map<string, import("../types/ipc").SendMessageParams>();
 const mockAgentKeys = new Map<string, { signature: string; runId: string }>();
 const mockSkillKeys = new Map<string, { signature: string; runId: string }>();
+const mockScheduleCreateKeys = new Map<string, { signature: string; jobId: string }>();
 const mockRequestKeys = new Map<string, { signature: string; runId: string }>();
 const mockTeamRequests = new Map<string, { signature: string; result: Record<string, unknown> }>();
 const mockRunEvents = new Map<string, import("../types/ipc").RunEvent[]>();
@@ -1132,12 +1133,23 @@ function mockHandle(
       return { jobs: mockJobs };
 
     case "schedule.create": {
-      const p = params as {name: string; cron_expr: string; payload: {prompt: string}; context: import("../types/ipc").ScheduleContext};
+      const p = params as {name: string; cron_expr: string; payload: {prompt: string}; context: import("../types/ipc").ScheduleContext; enabled?: boolean; expected_service_id?: string; idempotency_key?: string};
+      if (p.expected_service_id && p.expected_service_id !== "mock") throw new Error("Service identity changed");
+      if (p.idempotency_key !== undefined && (typeof p.idempotency_key !== "string" || !p.idempotency_key.trim() || p.idempotency_key.length > 128)) throw new Error("Invalid idempotency key");
+      const signature = JSON.stringify({name:p.name.trim(), cron_expr:p.cron_expr.trim(), payload:p.payload, context:p.context, enabled:p.enabled ?? true});
+      const previous = p.idempotency_key ? mockScheduleCreateKeys.get(p.idempotency_key) : undefined;
+      if (previous) {
+        if (previous.signature !== signature) throw new Error("idempotency_key already belongs to a different schedule request");
+        const job = mockJobs.find((item) => item.id === previous.jobId);
+        if (!job) throw new Error("Original schedule is unavailable; do not create a replacement automatically");
+        return {job, created:false};
+      }
       if (!p.context?.project_id || !p.context.provider_id || !p.context.model || !(p.context.budget_tokens > 0) || Object.keys(p.payload).some((key) => key !== "prompt")) throw new Error("Bind local Native context and a positive budget");
       const job: ScheduledJob = {id:crypto.randomUUID(), name:p.name, cron:p.cron_expr, prompt:p.payload.prompt,
         context:p.context, revision:1, enabled:false, binding_state:"blocked", binding_reason:"Mock 模式不执行真实调度",last_run_at:null,next_run_at:null};
       mockJobs.push(job);
-      return {job};
+      if (p.idempotency_key) mockScheduleCreateKeys.set(p.idempotency_key, {signature, jobId:job.id});
+      return {job, ...(p.idempotency_key ? {created:true} : {})};
     }
     case "schedule.update": {
       const p = params as {job_id:string; expected_revision:number; name:string; cron_expr:string; payload:{prompt:string}; context:import("../types/ipc").ScheduleContext};

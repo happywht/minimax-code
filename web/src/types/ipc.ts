@@ -467,6 +467,7 @@ export interface ScheduledJob {
   binding_state?: "ready" | "needs_rebind" | "blocked" | "requires_review";
   binding_reason?: string | null;
   active_occurrence_id?: string | null;
+  deleted_at?: string | null;
 }
 
 export interface ScheduleContext {

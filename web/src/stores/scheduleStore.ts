@@ -27,7 +27,7 @@ export interface ScheduleState {
 
   invalidateScope: (clearPending?: boolean) => void;
   refresh: () => Promise<void>;
-  create: (opts: ScheduleDefinition & { enabled?: boolean; expected_service_id?: string }) => Promise<ScheduledJobEntry | null>;
+  create: (opts: ScheduleDefinition & { enabled?: boolean; expected_service_id?: string; idempotency_key?: string }) => Promise<ScheduledJobEntry | null>;
   remove: (jobId: string) => Promise<void>;
   /**
    * Compare-and-swap the definition; running occurrences retain their snapshot.
@@ -75,7 +75,7 @@ export const useScheduleStore = create<ScheduleState>((set, get) => ({
       const r = await typedIPC.createJob(opts);
       if (scope !== scopeEpoch) return null;
       refreshEpoch++;
-      set((s) => ({ jobs: [...s.jobs, r.job], loading: false }));
+      set((s) => ({ jobs: r.job.deleted_at ? s.jobs.filter((job) => job.id !== r.job.id) : [...s.jobs.filter((job) => job.id !== r.job.id), r.job], loading: false }));
       return r.job;
     } catch (err) {
       if (scope !== scopeEpoch) return null;

@@ -17,7 +17,7 @@ import { strings } from "../../ui/strings";
 import { useScheduleStore } from "../../stores";
 import { useSessionStore } from "../../stores/sessionStore";
 import { toast } from "../layout/ErrorBoundary";
-import type { ScheduledJob, ScheduleContext } from "../../types/ipc";
+import type { ScheduledJob, ScheduleContext, ScheduleDefinition } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { InlineCode, TabHeader } from "./fields";
 import { emptyScheduleContext, validScheduleContext, ScheduleContextFields, ScheduleSnapshot, ScheduleHistory } from "./ScheduleContextFields";
@@ -32,9 +32,19 @@ type CreateDraft = { name: string; cron: string; prompt: string; context: Schedu
 type EditDraft = CreateDraft & { revision: number | null; service: string | null; initial: string };
 const createDrafts = new Map<string, CreateDraft>();
 const editDrafts = new Map<string, EditDraft>();
-// A lost create reply may have created a job. Retain the fence across remounts
-// for this service scope until the user has checked the list.
-const uncertainCreates = new Set<string>();
+type CreateIntent = ScheduleDefinition & { enabled: boolean; expected_service_id: string; idempotency_key: string };
+const createStorageKey = (scope: string) => `minimax-code:schedule-create:${scope}`;
+function readPendingCreate(scope: string): CreateIntent | null | "unavailable" {
+  try {
+    const raw = sessionStorage.getItem(createStorageKey(scope));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as CreateIntent;
+    if (!value || typeof value.idempotency_key !== "string" || !value.idempotency_key ||
+        typeof value.expected_service_id !== "string" || !value.context || typeof value.name !== "string" ||
+        typeof value.cron !== "string" || typeof value.prompt !== "string" || typeof value.enabled !== "boolean") return "unavailable";
+    return value;
+  } catch { return "unavailable"; }
+}
 
 function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, draftScope, target}: {target?: { jobId: string; occurrenceId?: string } | null; onOpenSession?: () => boolean | void; onDraftEdit?: () => void; active?: boolean; serviceId?: string; draftScope?: string}): JSX.Element {
   const jobs = useScheduleStore((s) => s.jobs);
@@ -72,12 +82,12 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
   const [draftContext, setDraftContext] = useState(() => (draftScope && createDrafts.get(draftScope)?.context) || emptyScheduleContext());
   const [draftEnabled, setDraftEnabled] = useState(() => !!(draftScope && createDrafts.get(draftScope)?.enabled));
   const createScope = JSON.stringify([ipc.agentBaseUrl, serviceId]);
-  const [creating, setCreating] = useState(false), [createUncertain, setCreateUncertain] = useState(() => uncertainCreates.has(createScope));
+  const [creating, setCreating] = useState(false), [pendingCreate, setPendingCreate] = useState<CreateIntent | null | "unavailable">(() => readPendingCreate(createScope));
   const createInFlight = useRef(false), copyEpoch = useRef(0);
   const draftSignature = JSON.stringify([draftName, draftCron, draftPrompt, draftContext, draftEnabled]);
   const draftSignatureRef = useRef(draftSignature); draftSignatureRef.current = draftSignature;
   useEffect(() => () => { copyEpoch.current++; }, []);
-  useEffect(() => { setCreateUncertain(uncertainCreates.has(createScope)); }, [createScope]);
+  useEffect(() => { setPendingCreate(readPendingCreate(createScope)); }, [createScope]);
 
   useEffect(() => {
     if (draftScope) createDrafts.set(draftScope, { name: draftName, cron: draftCron, prompt: draftPrompt, context: draftContext, enabled: draftEnabled });
@@ -93,23 +103,39 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
     return () => { if (timer) clearTimeout(timer); unsubs.forEach((unsub) => unsub()); };
   }, [refresh, active]);
 
-  const handleCreate = async () => {
-    if (createInFlight.current || createUncertain || uncertainCreates.has(createScope) || !serviceId || !active) return;
-    createInFlight.current = true; uncertainCreates.add(createScope); setCreating(true);
+  const submitCreate = async (intent: CreateIntent) => {
+    if (createInFlight.current || !active || !serviceId || intent.expected_service_id !== serviceId) return;
+    createInFlight.current = true; setCreating(true);
     try {
-      const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context: draftContext, enabled: draftEnabled, expected_service_id: serviceId });
+      const job = await create(intent);
       if (job) {
-        uncertainCreates.delete(createScope);
-        toast.success(strings.settings.scheduled.createdToast, job.name);
+        try { sessionStorage.removeItem(createStorageKey(createScope)); setPendingCreate(null); }
+        catch { setPendingCreate(intent); toast.error("无法清除创建回执", "请保留原请求键并重新读取结果。"); return; }
+        toast.success(job.deleted_at ? "原计划已删除" : strings.settings.scheduled.createdToast, `${job.name} · ${job.id}`);
         setDraftName(""); setDraftCron(""); setDraftPrompt(""); setDraftContext(emptyScheduleContext()); setDraftEnabled(false);
-      } else setCreateUncertain(true);
+      } else setPendingCreate(intent);
     } finally { createInFlight.current = false; setCreating(false); }
   };
+  const handleCreate = async () => {
+    if (createInFlight.current || pendingCreate || !serviceId || !active) return;
+    const saved = readPendingCreate(createScope);
+    if (saved) { setPendingCreate(saved); return; }
+    const context: ScheduleContext = { project_id: draftContext.project_id, provider_id: draftContext.provider_id,
+      model: draftContext.model, reasoning_effort: draftContext.reasoning_effort, mode: draftContext.mode,
+      budget_tokens: draftContext.budget_tokens, timezone: draftContext.timezone,
+      restart_missed_policy: draftContext.restart_missed_policy };
+    const intent: CreateIntent = { name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context,
+      enabled: draftEnabled, expected_service_id: serviceId, idempotency_key: crypto.randomUUID() };
+    try { sessionStorage.setItem(createStorageKey(createScope), JSON.stringify(intent)); }
+    catch { setPendingCreate("unavailable"); toast.error("无法保存创建请求", "浏览器存储不可用，未提交计划。"); return; }
+    setPendingCreate(intent);
+    await submitCreate(intent);
+  };
   const copyToDraft = async (job: ScheduledJob) => {
-    if (creating || createUncertain) return;
+    if (creating || pendingCreate) return;
     const ticket = ++copyEpoch.current, host = ipc.agentBaseUrl, signature = draftSignature;
     if ((draftName || draftCron || draftPrompt || validScheduleContext(draftContext)) && !await requestConfirmation({ title: "替换新建草稿？", description: "当前新建草稿将被所选计划替换。", confirmLabel: "替换草稿" })) return;
-    if (ticket !== copyEpoch.current || ipc.agentBaseUrl !== host || !active || createInFlight.current || uncertainCreates.has(createScope)) return;
+    if (ticket !== copyEpoch.current || ipc.agentBaseUrl !== host || !active || createInFlight.current || readPendingCreate(createScope)) return;
     if (signature !== draftSignatureRef.current) { toast.error("草稿已变化", "请重新选择复制，避免覆盖新的编辑。"); return; }
     const source = job.context;
     setDraftName(`${job.name}（副本）`); setDraftCron(job.cron); setDraftPrompt(job.prompt);
@@ -134,7 +160,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
       />
 
       <Panel title={strings.settings.scheduled.newTitle}>
-        <fieldset disabled={creating}>
+        <fieldset disabled={creating || !!pendingCreate}>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
           <label htmlFor="scheduled-job-name" className="sr-only">{strings.settings.scheduled.fieldName}</label>
           <Input
@@ -174,7 +200,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
             size="sm"
             variant="subtle"
             data-testid="settings-job-add"
-            disabled={!active || !serviceId || creating || createUncertain || !draftName.trim() || !draftCron.trim() || !draftPrompt.trim() || !validScheduleContext(draftContext)}
+            disabled={!active || !serviceId || creating || !!pendingCreate || !draftName.trim() || !draftCron.trim() || !draftPrompt.trim() || !validScheduleContext(draftContext)}
             loading={creating}
             onClick={() => void handleCreate()}
             icon={<Plus />}
@@ -187,8 +213,16 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
         <ScheduleContextFields value={draftContext} onChange={setDraftContext} />
         <label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={draftEnabled} onChange={(event) => setDraftEnabled(event.target.checked)} />创建后启用计划</label>
         <p className="text-xs text-ink-2">默认先创建为停用，核对后可启用；启用的计划会在到期时执行。</p>
-        {createUncertain && <div className="mt-2 text-xs text-status-warning" role="alert"><p>创建结果未确认。请刷新计划列表，核对是否已创建，避免重复计划。</p><Button type="button" size="sm" variant="secondary" onClick={async () => { await refresh(); }}>刷新计划列表</Button> <Button type="button" size="sm" variant="secondary" onClick={async () => { if (await requestConfirmation({title: "已核对创建结果？", description: "只有确认不会造成重复计划时，才可再次提交此草稿。", confirmLabel: "已核对，允许再次提交"})) { uncertainCreates.delete(createScope); setCreateUncertain(false); } }}>已核对，允许再次提交</Button></div>}
         </fieldset>
+        {pendingCreate && <div className="mt-2 text-xs text-status-warning" role="alert">
+          {pendingCreate === "unavailable" ? <><p>无法读取浏览器中的创建请求；请检查浏览器存储并核对计划列表，避免重复创建。</p><Button type="button" size="sm" onClick={() => setPendingCreate(readPendingCreate(createScope))}>重新读取浏览器存储</Button></> : <><p>创建结果待确认：{pendingCreate.name} · 请求 {pendingCreate.idempotency_key}。重试会使用保存的原始请求；如果此前未创建，重试将创建计划。</p><Button type="button" size="sm" variant="secondary" disabled={!active || creating || pendingCreate.expected_service_id !== serviceId} loading={creating} onClick={() => void submitCreate(pendingCreate)}>核对或安全重试原请求</Button> <Button type="button" size="sm" variant="ghost" disabled={creating} onClick={async () => {
+            const intent = pendingCreate;
+            if (!await requestConfirmation({title:"放弃原创建请求？", description:"原计划可能已创建或启用。请先核对列表；放弃后使用新请求可能创建另一个计划。", confirmLabel:"已核对，放弃原请求"})) return;
+            try { sessionStorage.removeItem(createStorageKey(createScope)); }
+            catch { toast.error("无法清除请求", "请检查浏览器存储。"); return; }
+            setDraftName(intent.name); setDraftCron(intent.cron); setDraftPrompt(intent.prompt); setDraftContext(intent.context); setDraftEnabled(intent.enabled); setPendingCreate(null); onDraftEdit?.();
+          }}>放弃请求并编辑草稿</Button></>}
+        </div>}
       </Panel>
 
       {draftScope && !loading && [...editDrafts.entries()].filter(([key]) => {

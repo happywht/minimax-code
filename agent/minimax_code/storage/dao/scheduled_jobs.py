@@ -52,6 +52,9 @@ class ScheduledJobsDAO:
         next_run_at: str | None = None,
         created_at: str | None = None,
         bound_context: dict[str, Any] | None = None,
+        request_key: str | None = None,
+        request_hash: str | None = None,
+        expected_service_id: str | None = None,
     ) -> dict[str, Any]:
         """Insert a scheduled job.
 
@@ -76,11 +79,45 @@ class ScheduledJobsDAO:
             params += (dumps_json(bound_context), 1, bound_context["timezone"], "ready", None)
         sql = f"INSERT INTO scheduled_jobs ({columns}) VALUES ({', '.join('?' for _ in params)})"
         async with self._db.transaction() as conn:
+            await self._check_service(conn, expected_service_id)
+            if request_key is not None:
+                previous = await self._existing_create(conn, request_key, request_hash)
+                if previous is not None:
+                    return {**previous, "_create_replayed": True}
             await conn.execute(sql, params)
-        row = await self._db.fetchone(
-            "SELECT * FROM scheduled_jobs WHERE id = ?", (row_id,)
-        )
+            if request_key is not None:
+                await conn.execute("INSERT INTO schedule_create_keys VALUES(?,?,?,?)",
+                                   (request_key, request_hash, row_id, now_iso()))
+            cursor = await conn.execute("SELECT * FROM scheduled_jobs WHERE id=?", (row_id,))
+            row = await cursor.fetchone()
+        return {**_hydrate(row), "_create_replayed": False} if request_key is not None else _hydrate(row)
+
+    @staticmethod
+    async def _check_service(conn, expected_service_id):
+        if expected_service_id is not None:
+            cursor = await conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1")
+            service = await cursor.fetchone()
+            if service is None or service[0] != expected_service_id:
+                raise ValueError("Service identity changed; review the schedule again")
+
+    @staticmethod
+    async def _existing_create(conn, request_key, request_hash):
+        cursor = await conn.execute("SELECT request_hash,job_id FROM schedule_create_keys WHERE request_key=?", (request_key,))
+        previous = await cursor.fetchone()
+        if previous is None:
+            return None
+        if previous["request_hash"] != request_hash:
+            raise ValueError("idempotency_key already belongs to a different schedule request")
+        cursor = await conn.execute("SELECT * FROM scheduled_jobs WHERE id=?", (previous["job_id"],))
+        row = await cursor.fetchone()
+        if row is None:
+            raise ValueError("Original schedule is unavailable; do not create a replacement automatically")
         return _hydrate(row)
+
+    async def find_create(self, request_key, request_hash, expected_service_id):
+        async with self._db.transaction() as conn:
+            await self._check_service(conn, expected_service_id)
+            return await self._existing_create(conn, request_key, request_hash)
 
     async def get(self, job_id: str) -> dict[str, Any] | None:
         row = await self._db.fetchone(

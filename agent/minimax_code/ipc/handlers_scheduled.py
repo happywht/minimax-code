@@ -82,7 +82,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
         try:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"name", "cron_expr"})
-            if set(params) - {"name", "cron_expr", "payload", "enabled", "context", "expected_service_id"}:
+            if set(params) - {"name", "cron_expr", "payload", "enabled", "context", "expected_service_id", "idempotency_key"}:
                 raise HandlerError(INVALID_PARAMS, "Unsupported schedule creation fields")
             expected_service = params.get("expected_service_id")
             if expected_service is not None:
@@ -107,8 +107,11 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
                 payload=payload,
                 enabled=enabled,
                 context=params.get("context") or {},
+                idempotency_key=params.get("idempotency_key"),
+                expected_service_id=expected_service,
             )
-            await ctx.reply({"job": job})
+            replayed = job.pop("_create_replayed", None)
+            await ctx.reply({"job": job, **({"created": not replayed} if replayed is not None else {})})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
