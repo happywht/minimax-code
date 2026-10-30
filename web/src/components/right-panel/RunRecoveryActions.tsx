@@ -181,7 +181,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
           })}
         </div>}
         <RunWorkspaceDiff run={review.snapshot.run} />
-        {codex && session && <CodexRecoveryInput run={run.id} session={session} project={project} service={review.service}
+        {session && <CodexRecoveryInput run={run.id} session={session} project={project} service={review.service} engine={codex ? "codex" : "native"}
           cursor={review.snapshot.cursor} disabled={pending || !!attempt} onAdd={(text) => {
             const addition = `${handoff.trim() ? "\n\n" : ""}原任务文字摘录（请核对是否已被处理）：\n${text}`;
             if (handoff.length + addition.length > 4000) return "交接超过 4000 字，请缩短摘录或已有交接。";

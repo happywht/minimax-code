@@ -803,7 +803,7 @@ function mockHandle(
     case "run.input_image":
       throw new Error("演示模式没有已保存的 Codex 输入图片");
     case "run.input_text":
-      throw new Error("演示模式没有已保存的 Codex 任务输入");
+      throw new Error("演示模式没有已保存的任务输入");
     case "run.output_page":
       throw new Error("演示模式没有已保存的工具输出");
     case "run.output_inventory":

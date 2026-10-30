@@ -89,21 +89,31 @@ def register_run_handlers(server: Any) -> None:
                     row = await cursor.fetchone()
                 if (not identity or identity[0] != req.expected_service_id or not row
                         or row["session_id"] != req.session_id or row["project_id"] != req.project_id
-                        or row["engine"] != "codex" or row["cursor"] != req.expected_cursor):
+                        or row["engine"] not in {"native", "codex"} or row["cursor"] != req.expected_cursor):
                     raise ValueError("Run, session, project, service or review cursor changed")
                 metadata = loads_json(row["metadata"]) or {}
-                if metadata.get("engine") != "codex" or metadata.get("project_id") != req.project_id:
-                    raise ValueError("Codex input binding is unavailable")
+                engine = row["engine"]
+                if (metadata.get("project_id") != req.project_id or
+                        (engine == "codex" and metadata.get("engine") != "codex") or
+                        (engine == "native" and metadata.get("engine") == "codex")):
+                    raise ValueError("Run input binding is unavailable")
                 raw = row["request"]
                 if not isinstance(raw, str) or len(raw) > MAX_IMAGE_BYTES * 2 + 200_000:
                     raise ValueError("Saved input is unavailable or exceeds the preview limit")
                 request = loads_json(raw)
-                if not isinstance(request, dict) or request.get("engine") != "codex" or request.get("session_id") != req.session_id:
-                    raise ValueError("Saved Codex input is unavailable")
+                if (not isinstance(request, dict) or request.get("session_id") != req.session_id or
+                        (engine == "codex" and request.get("engine") != "codex") or
+                        (engine == "native" and request.get("engine") not in (None, "native"))):
+                    raise ValueError("Saved run input is unavailable")
                 content = request.get("content")
-                codex_input(content)
-                text = content if isinstance(content, str) else "\n".join(part["text"] for part in content if part["type"] == "text")
-                count = sum(part["type"] == "image" for part in content) if isinstance(content, list) else 0
+                if engine == "codex":
+                    codex_input(content)
+                    text = content if isinstance(content, str) else "\n".join(part["text"] for part in content if part["type"] == "text")
+                    count = sum(part["type"] == "image" for part in content) if isinstance(content, list) else 0
+                else:
+                    if not isinstance(content, str):
+                        raise ValueError("Native multimodal input preview is unavailable; inspect the original conversation")
+                    text, count = content, 0
                 result = {"run_id": req.run_id, "session_id": req.session_id, "project_id": req.project_id,
                           "service_id": identity[0], "cursor": row["cursor"], "text": text[:8000],
                           "truncated": len(text) > 8000, "image_count": count}
@@ -113,15 +123,15 @@ def register_run_handlers(server: Any) -> None:
                 "(SELECT COALESCE(MAX(seq),0) FROM run_events WHERE run_id=r.id) AS cursor "
                 "FROM agent_runs r JOIN sessions s ON s.id=r.session_id WHERE r.id=?", (req.run_id,))
             if (not current or current["session_id"] != req.session_id or current["cursor"] != req.expected_cursor
-                    or current["project_id"] != req.project_id or current["engine"] != "codex"
+                    or current["project_id"] != req.project_id or current["engine"] != engine
                     or await ArtifactDAO(dao._db).service_id() != req.expected_service_id):
                 raise ValueError("Run binding or review cursor changed while reading")
             await ctx.reply(result)
         except (ValidationError, ValueError, HandlerError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception:
-            logger.exception("Codex input text unavailable")
-            await ctx.reply_error(INTERNAL_ERROR, "Codex input text unavailable")
+            logger.exception("Run input text unavailable")
+            await ctx.reply_error(INTERNAL_ERROR, "Run input text unavailable")
 
     async def handle_input_image(params: Any, ctx: Context) -> None:
         from ..engines.codex_multimodal import MAX_IMAGE_BYTES, codex_input

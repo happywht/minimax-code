@@ -223,7 +223,7 @@ binding or an expired request.
 | `run.child_list` | req/res | Recover recent direct child runs scoped to the parent session, parent runs, project and service. |
 | `run.output_page` | req/res | Read a bounded page of captured tool output bound to a run, session, project and service. |
 | `run.input_image` | req/res | Read one saved Codex input image, bound to its run, session, project and service. |
-| `run.input_text` | req/res | Read a bounded Codex input text preview tied to the reviewed run cursor and scope. |
+| `run.input_text` | req/res | Read a bounded Native text or Codex input text preview tied to the reviewed run cursor and scope. |
 | `run.output_inventory` | req/res | Inspect global usage and current-session captured-output records. |
 | `run.output_clear` | req/res | Explicitly clear one finished run's captured output, retaining a tombstone. |
 | `run.research_list` | req/res | List current project's recorded page sources with session and service binding. |
@@ -1924,7 +1924,7 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 `run.input_image({run_id,session_id,project_id,expected_service_id,index})` 按需读取原 Codex 任务请求的一张图片，返回相同绑定、零基 `index`、图片总数、`media_type` 与 base64 `data`。运行和当前会话项目必须匹配接单时项目，且输入须符合 Codex 的五张、总计 4 MiB 和格式校验。旧记录或无图片时返回错误；数据不进入事件，接口不发送或修改草稿。项目、服务或会话变动时客户端丢弃在途结果和预览。
 
-`run.input_text({run_id,session_id,project_id,expected_service_id,expected_cursor})` 按需返回相同绑定、运行记录游标、原 Codex 输入文字前 8000 个字符、截断标记和图片数量，不返回图片数据。绑定或记录游标变化、原请求缺失或无效时拒绝。恢复面板允许用户编辑最多 4000 字的摘录并明确加入恢复交接；该操作不发送，后续恢复仍需重新确认并遵守原有预算、审批与游标校验。
+`run.input_text({run_id,session_id,project_id,expected_service_id,expected_cursor})` 按需返回相同绑定、运行记录游标、原 Codex 或 Native 文本输入前 8000 个字符、截断标记和图片数量，不返回图片数据。Native 多模态输入暂不支持预览；请查看原会话。绑定或记录游标变化、原请求缺失或无效时拒绝。恢复面板允许用户编辑最多 4000 字的摘录并明确加入恢复交接；该操作不发送，后续恢复仍需重新确认并遵守原有预算、审批与游标校验。Native 恢复按原有流程使用保存的原任务输入，摘录是附加交接，不替换它。
 
 已完成的 Codex 运行也可按需读取并编辑原任务文字，追加到同一会话的后续任务草稿。追加前再次核对原输入、运行游标、服务、项目、会话及已绑定的 Codex 线程；不会自动附加图片、修改预算或发送。缺少原线程绑定、输入或当前聊天输入区时不能使用此入口。
 

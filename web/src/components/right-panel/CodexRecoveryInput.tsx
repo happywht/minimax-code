@@ -4,9 +4,10 @@ import { useSessionStore } from "../../stores";
 import type { RunInputText } from "../../types/ipc";
 import { Button } from "../../ui";
 
-export function CodexRecoveryInput({ run, session, project, service, cursor, disabled, onAdd }: {
+export function CodexRecoveryInput({ run, session, project, service, cursor, disabled, onAdd, engine = "codex" }: {
   run: string; session: string; project: string | null; service: string; cursor: number;
   disabled: boolean; onAdd: (text: string) => string;
+  engine?: "native" | "codex";
 }): JSX.Element {
   const [value, setValue] = useState<RunInputText | null>(null), [excerpt, setExcerpt] = useState("");
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
@@ -17,7 +18,7 @@ export function CodexRecoveryInput({ run, session, project, service, cursor, dis
     clear();
     const stop = ipc.onSideCar(clear);
     return () => { epoch.current++; stop(); };
-  }, [run, session, project, service, cursor]);
+  }, [run, session, project, service, cursor, engine]);
 
   const load = async () => {
     if (busy || disabled) return;
@@ -52,7 +53,8 @@ export function CodexRecoveryInput({ run, session, project, service, cursor, dis
     <p>仅供审阅，可能包含敏感信息；不会自动加入交接或发送。</p>
     {notice && <p role="status" className="break-words text-status-warning">{notice}</p>}
     {value && <>
-      <p>原任务包含 {value.image_count} 张图片；此处仅处理文字，图片不会随恢复自动发送。</p>
+      {engine === "codex" && <p>原任务包含 {value.image_count} 张图片；此处仅处理文字，图片不会随恢复自动发送。</p>}
+      {engine === "native" && <p>恢复将按原流程使用保存的任务输入；此处只为交接添加用户选择的文字。</p>}
       {(value.truncated || value.text.length > 4000) && <p>原文字较长，以下仅显示前 4000 字；请手动补充遗漏内容。</p>}
       <label className="block">编辑需要交接的原任务摘录
         <textarea aria-label="原任务文字摘录" className="mt-1 block w-full rounded border border-line bg-surface-1 p-2" rows={5}
@@ -62,7 +64,7 @@ export function CodexRecoveryInput({ run, session, project, service, cursor, dis
         const state = useSessionStore.getState(), record = state.sessions.find((item) => item.id === session);
         if (ipc.agentBaseUrl !== loadedHost.current || state.currentSessionId !== session ||
             (state.currentProjectId ?? "inbox") !== (project ?? "inbox") ||
-            (record?.project_id ?? null) !== project || record?.engine !== "codex") {
+            (record?.project_id ?? null) !== project || (record?.engine ?? "native") !== engine) {
           setNotice("服务、会话或项目已变化，未加入交接。"); return;
         }
         setNotice(onAdd(excerpt));
