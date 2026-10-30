@@ -732,6 +732,10 @@ class HostServiceStatusParams(HostServiceStartParams):
     """Same explicit host and service binding as service start."""
 
 
+class HostServiceLogsParams(HostServiceStartParams):
+    """Explicit service binding for a bounded, user-requested journal read."""
+
+
 class HostTransferStatusParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     host_id: str = Field(min_length=1)

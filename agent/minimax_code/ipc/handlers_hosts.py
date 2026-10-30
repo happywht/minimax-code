@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re
 import shlex
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -19,8 +20,8 @@ from ..hosts.ssh import fetch_file, probe_host, push_file, run_ssh, upload_actio
 from ..hosts.tunnel import HostTunnelManager, build_tunnel_args
 from ..storage.dao.hosts import HostsDAO
 from .handler_utils import HandlerError, check_params
-from .protocol import (INTERNAL_ERROR, INVALID_PARAMS, HostPushParams, HostServiceStartParams,
-                       HostServiceStatusParams, HostTransferStatusParams)
+from .protocol import (INTERNAL_ERROR, INVALID_PARAMS, HostPushParams, HostServiceLogsParams,
+                       HostServiceStartParams, HostServiceStatusParams, HostTransferStatusParams)
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -356,6 +357,33 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             logger.exception("host.service_status failed")
             await ctx.reply_error(INTERNAL_ERROR, "host.service_status unavailable")
 
+    async def handle_host_service_logs(params: Any, ctx: Context) -> None:
+        """Return only an explicitly requested, bounded user-service journal excerpt."""
+        try:
+            request = HostServiceLogsParams.model_validate(params)
+            async with lifecycle_lock:
+                host = await _bound_service_host(request)
+                command = ("LC_ALL=C SYSTEMD_COLORS=0 journalctl --user --no-pager "
+                           "--output=short-iso --lines=100 "
+                           f"--unit={shlex.quote(request.unit)} 2>/dev/null | head -c 16385")
+                result = await run_ssh(host, command, timeout=20, runner=runner, strict_host_key=True)
+            if result.timed_out or not result.ok or not result.stdout:
+                await ctx.reply({"ok": False, "reason": "timeout" if result.timed_out
+                                 else "unavailable_or_empty", "text": None, "truncated": False})
+                return
+            raw = result.stdout.encode("utf-8")
+            truncated = len(raw) > 16384
+            excerpt = raw[:16384].decode("utf-8", errors="ignore")
+            # Eliminate terminal control and directional formatting; this is not credential redaction.
+            excerpt = "".join(c for c in excerpt if c in "\n\t" or
+                              (unicodedata.category(c) not in {"Cc", "Cf", "Cs"}))
+            await ctx.reply({"ok": True, "reason": None, "text": excerpt, "truncated": truncated})
+        except (ValidationError, HandlerError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.service_logs failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.service_logs unavailable")
+
     async def handle_host_service_start(params: Any, ctx: Context) -> None:
         """Explicitly start one already installed user unit; never install or restart it."""
         from ..execution import require_write_access
@@ -411,6 +439,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
 
+    server.register("host.service_logs", handle_host_service_logs)
     server.register("host.service_status", handle_host_service_status)
     server.register("host.service_start", handle_host_service_start)
     server.register("host.connect", handle_host_connect)

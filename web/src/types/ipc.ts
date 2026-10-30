@@ -183,6 +183,10 @@ export type HostServiceStatusResult =
   | { ok: true; reason: null; status: HostServiceStatus }
   | { ok: false; reason: "timeout" | "unavailable"; status: null };
 
+export type HostServiceLogsResult =
+  | { ok: true; reason: null; text: string; truncated: boolean }
+  | { ok: false; reason: "timeout" | "unavailable_or_empty"; text: null; truncated: false };
+
 export interface HostPushParams {
   host_id: string;
   local_path: string;

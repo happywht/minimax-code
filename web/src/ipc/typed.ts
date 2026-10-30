@@ -161,6 +161,7 @@ export interface TypedIPC {
   connectHost(params: { host_id: string; remote_port?: number; local_port?: number }): Promise<{ connection: import("../types/ipc").HostConnection }>;
   disconnectHost(hostId: string): Promise<{ connection: import("../types/ipc").HostConnection }>;
   getHostConnection(hostId: string): Promise<{ connection: import("../types/ipc").HostConnection }>;
+  getHostServiceLogs(params: import("../types/ipc").HostServiceStartParams): Promise<import("../types/ipc").HostServiceLogsResult>;
   getHostServiceStatus(params: import("../types/ipc").HostServiceStartParams): Promise<import("../types/ipc").HostServiceStatusResult>;
   startHostService(params: import("../types/ipc").HostServiceStartParams): Promise<{ ok: boolean; exit_code: number | null; stderr: string; timed_out: boolean }>;
   execHost(params: { host_id: string; command: string; timeout_s?: number }): Promise<import("../types/ipc").HostExecResult>;
@@ -679,6 +680,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     connectHost: (params) => client.request("host.connect", params),
     disconnectHost: (hostId) => client.request("host.disconnect", { host_id: hostId }),
     getHostConnection: (hostId) => client.request("host.connection", { host_id: hostId }),
+    getHostServiceLogs: (params) => client.request("host.service_logs", params),
     getHostServiceStatus: (params) => client.request("host.service_status", params),
     startHostService: (params) => client.request("host.service_start", params),
     execHost: (params) => client.request("host.exec", params),
