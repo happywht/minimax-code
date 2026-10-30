@@ -54,6 +54,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
     (useSessionStore.getState().currentProjectId ?? "inbox") === (project ?? "inbox");
   const recoveryStep = [...(review?.snapshot.steps ?? [])].reverse().find((step) => typeof step.payload?.recovered_at === "string");
   const budgetPaused = run.status === "budget_paused" || (run.status === "interrupted" && recoveryStep?.payload?.previous_status === "budget_paused");
+  const canChangeBudget = !run.metadata?.schedule || (budgetPaused && !scheduledContinuation);
   const validBudget = /^[1-9]\d*$/.test(budgetTokens) && Number.isSafeInteger(Number(budgetTokens));
   const loadReview = async () => {
     if (!resumable || !session || session !== run.session_id || !sameProject || loading || pending) return;
@@ -98,10 +99,10 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
       finally { inFlight.current = false; setPending(false); }
       return;
     }
-    if (!review || !reviewed || !session || session !== run.session_id || !sameProject || (budgetPaused && changeBudget && !attempt && !validBudget)) return;
+    if (!review || !reviewed || !session || session !== run.session_id || !sameProject || (canChangeBudget && changeBudget && !attempt && !validBudget)) return;
     if (attempt && attempt.cursor !== review.snapshot.cursor) { setError("原运行记录已变化；请检查是否已有接续运行，不能直接重试旧请求。"); return; }
     const payload: Attempt = attempt ?? { key: crypto.randomUUID(), run: run.id, session, project, service: review.service,
-      host, cursor: review.snapshot.cursor, budget: budgetPaused && changeBudget ? Number(budgetTokens) : null, handoff, reviewed: true };
+      host, cursor: review.snapshot.cursor, budget: canChangeBudget && changeBudget ? Number(budgetTokens) : null, handoff, reviewed: true };
     try { localStorage.setItem(retryStorage(payload), JSON.stringify(payload)); }
     catch { setError("浏览器存储不可用，无法保留重试身份；未发送恢复请求。"); return; }
     const ticket = ++epoch.current; setAttempt(payload); inFlight.current = true; setPending(true); setError(null);
@@ -149,7 +150,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   return <div className="mt-2 space-y-2 text-xs text-ink-1" data-testid="run-recovery-actions">
     {resumable ? <>
       <p>恢复会创建关联的新运行，不会自动重放工具步骤，也不是从精确执行位置继续。请先核对记录、当前文件和可能的外部副作用。</p>
-      {continuation && !scheduledContinuation && <p>此运行达到迭代上限后尚未完成；核对后可在原累计预算下继续剩余工作。</p>}
+      {continuation && !scheduledContinuation && <p>此运行达到迭代上限后尚未完成；核对后可在累计预算下继续剩余工作。</p>}
       {scheduledContinuation && <p>此定时运行达到迭代上限后未完成。核对后可在原发生记录和原预算下继续；后续定时触发仍需按任务状态处理。</p>}
       <Button type="button" size="sm" variant="secondary" disabled={loading || pending || !sameProject || session !== run.session_id} loading={loading} onClick={() => void loadReview()}>读取中断记录并核对</Button>
       {!sameProject && <p>请切换到运行所属项目后核对。</p>}
@@ -184,15 +185,15 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
           <textarea aria-label="恢复交接" className="mt-1 block w-full rounded border border-line bg-surface-1 p-2" maxLength={4000} value={handoff} disabled={pending || !!attempt} onChange={(event) => setHandoff(event.target.value)} />
         </label>
         <p>交接内容会随恢复请求保存并发送给模型；不要填写不应发送的秘密。</p>
-        {budgetPaused && <div className="space-y-1">
+        {canChangeBudget && <div className="space-y-1">
           <label className="flex items-center gap-2"><input type="checkbox" checked={changeBudget} disabled={pending || !!attempt} onChange={(event) => setChangeBudget(event.target.checked)} />修改累计 token 上限</label>
-          <p>默认保留原运行的累计上限（包括未设置上限），不清除已用额度或未知责任。日额度及账本检查仍然生效；如家族额度已变化，请先核对最新运行。</p>
+          <p>默认保留原运行的累计上限（包括未设置上限）。可保留或提高已有上限；不清除已用额度或未知责任。日额度及账本检查仍然生效；请先核对上方共享预算账本。</p>
           {changeBudget && <label className="block">恢复 token 上限（累计含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} disabled={pending || !!attempt} onChange={(event) => setBudgetTokens(event.target.value)} /></label>}
         </div>}
         {attempt && <p>存在待确认恢复请求；重试保留原请求 ID 和预算，不会创建新的重试身份。请先核对时间线。</p>}
         {foundRun && <p role="status" className="break-all">已找到该请求接收的关联运行 {foundRun.id}，当前记录状态：{foundRun.status}。请在时间线查看其结果。</p>}
         {attempt && attempt.cursor !== review.snapshot.cursor && <p role="status">原记录版本已变化，不能直接重试；请先核对是否已创建接续运行。</p>}
-        <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" onClick={() => void act()} disabled={pending || resumed || !reviewed || (budgetPaused && changeBudget && !attempt && !validBudget) || (!!attempt && attempt.cursor !== review.snapshot.cursor)}>
+        <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" onClick={() => void act()} disabled={pending || resumed || !reviewed || (canChangeBudget && changeBudget && !attempt && !validBudget) || (!!attempt && attempt.cursor !== review.snapshot.cursor)}>
           {pending ? "处理中…" : resumed ? "已创建接续运行" : attempt ? "重试同一恢复请求" : "确认恢复为新运行"}</Button>
           {attempt && <Button type="button" size="sm" variant="secondary" disabled={pending} onClick={() => void findAccepted()}>查找已接收的接续运行</Button>}
           {attempt && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={forget}>移除本地待确认记录</Button>}</div>

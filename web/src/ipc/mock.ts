@@ -827,7 +827,8 @@ function mockHandle(
       return { ok: true, requested: true, run: structuredClone(entry.run) };
     }
     case "run.resume": {
-      const p = params as { run_id: string; idempotency_key: string; reviewed?: boolean; handoff?: string };
+      const p = params as { run_id: string; idempotency_key: string; reviewed?: boolean; handoff?: string; budget_tokens?: number };
+      if (p.budget_tokens !== undefined) throw new Error("模拟模式没有实际预算账本，不能修改累计预算");
       if (p.handoff !== undefined && (typeof p.handoff !== "string" || p.handoff.length > 4000)) throw new Error("Invalid recovery handoff");
       const entry = mockRuns.get(p.run_id);
       const original = mockRunRequests.get(p.run_id);
