@@ -13,6 +13,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 from .hosts.ssh import build_ssh_args, _stop_transfer_process, ssh_environment
+from .execution import _finish_owned
+from .budget_ledger import owned_cleanup
 
 LIMIT = 10 * 1024 * 1024
 SLOTS = asyncio.Semaphore(2)
@@ -63,9 +65,21 @@ async def _read(host, path, *, strict_host_key=False):
     argv = build_ssh_args(hostname=host['hostname'], username=host['username'],
                           port=int(host['port']), identity_file=host.get('identity_file') or None,
                           remote_command=command, strict_host_key=strict_host_key)
-    proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.DEVNULL,
-                                                env=ssh_environment())
+    starting = asyncio.create_task(asyncio.create_subprocess_exec(
+        *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, env=ssh_environment()))
+    try:
+        proc = await asyncio.shield(starting)
+    except asyncio.CancelledError:
+        # Spawn may have succeeded even though its handle has not returned.
+        # Recover and reap it before releasing the download slot.
+        try:
+            abandoned = await _finish_owned(starting)
+        except Exception:
+            pass
+        else:
+            await _finish_owned(asyncio.create_task(_stop_transfer_process(abandoned)))
+        raise
     try:
         async with asyncio.timeout(120):
             header = await proc.stdout.readline()
@@ -80,7 +94,7 @@ async def _read(host, path, *, strict_host_key=False):
                 raise ValueError('Remote download checksum mismatch')
             return data, digest
     finally:
-        await _stop_transfer_process(proc)
+        await owned_cleanup(_stop_transfer_process(proc))
 
 
 def register_host_download_routes(app):
