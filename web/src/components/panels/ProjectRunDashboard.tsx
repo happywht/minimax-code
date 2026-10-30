@@ -8,6 +8,7 @@ import { VerificationDetails } from "../chat/VerificationDetails";
 import { RunAttachments } from "../right-panel/RunAttachments";
 import { RunTextArtifacts } from "../right-panel/RunTextArtifacts";
 import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
+import { RunRecoveryActions } from "../right-panel/RunRecoveryActions";
 
 type Group = "attention" | "active" | "recent";
 const groupLabels: Record<Group, string> = { attention: "等待处理", active: "运行与排队", recent: "最近结果" };
@@ -27,10 +28,11 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
   const [query, setQuery] = useState(""), [appliedQuery, setAppliedQuery] = useState("");
   const [history, setHistory] = useState<ProjectRunSummaryResult["history"]>(undefined);
   const generation = useRef(0), actionEpoch = useRef(0), actionLock = useRef(false), timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preserveDetailForSession = useRef<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null), [stopNotice, setStopNotice] = useState("");
   const [requested, setRequested] = useState<Set<string>>(() => new Set());
-  useEffect(() => { generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setQuery(""); setAppliedQuery(""); setError(""); setBusy(false); }, [project, host]);
-  useEffect(() => { generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setDetail(undefined); setSnapshot(null); setBusy(false); }, [activeSession]);
+  useEffect(() => { preserveDetailForSession.current = null; generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setQuery(""); setAppliedQuery(""); setError(""); setBusy(false); }, [project, host]);
+  useEffect(() => { generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); if (preserveDetailForSession.current !== activeSession) { preserveDetailForSession.current = null; setDetail(undefined); setSnapshot(null); } setBusy(false); }, [activeSession]);
   const refresh = useCallback(async () => {
     if (!project) return;
     const ticket = ++generation.current;
@@ -44,7 +46,10 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
       if (!current()) return;
       if (result.project_id !== project || result.service_id !== scope.service_id || !result.groups ||
           Object.values(result.groups).some((part) => !part || !Array.isArray(part.items) || part.items.length > 25)) throw new Error("运行摘要关联不匹配");
-      setService(scope.service_id); setGroups(result.groups); setDetail(undefined); setSnapshot(null); setHistory(undefined);
+      setService(scope.service_id); setGroups(result.groups);
+      if (preserveDetailForSession.current === activeSession && service === scope.service_id) preserveDetailForSession.current = null;
+      else { preserveDetailForSession.current = null; setDetail(undefined); setSnapshot(null); }
+      setHistory(undefined);
     } catch (e) { if (current()) { setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setError(e instanceof Error ? e.message : String(e)); } }
     finally { if (current()) setBusy(false); }
   }, [project, host, activeSession]);
@@ -196,6 +201,24 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
         <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: detail.session_id, projectId: project!, serviceId: service }} />
         <RunTextArtifacts key={`${service}:${detail.id}:${detail.session_id}`} runId={detail.id} sessionId={detail.session_id} projectId={project!} serviceId={service} review />
         <FollowupRunDraft key={`${service}:${detail.id}:${activeSession}`} run={snapshot.run} allowOtherSession />
+        {(["interrupted", "failed", "cancelled", "budget_paused"].includes(snapshot.run.status) ||
+          (snapshot.run.status === "completed" && snapshot.run.metadata?.truncated === true && !!snapshot.run.metadata?.schedule)) &&
+          <div className="mt-2 rounded border border-line p-2" aria-label="历史运行接续">
+            <p className="text-sm font-medium">核对并接续此运行</p>
+            {activeSession !== detail.session_id ? <Button type="button" size="sm" variant="secondary" onClick={() => {
+              preserveDetailForSession.current = detail.session_id;
+              if (!useSessionStore.getState().setCurrent(detail.session_id)) preserveDetailForSession.current = null;
+            }}>切换到所属会话并核对</Button> : <RunRecoveryActions run={snapshot.run} refresh={async () => {
+              const before = await typedIPC.getServiceIdentity();
+              const next = await typedIPC.getRunSteps(detail.id);
+              const after = await typedIPC.getServiceIdentity();
+              if (ipc.agentBaseUrl !== host || useSessionStore.getState().currentSessionId !== detail.session_id ||
+                  useSessionStore.getState().currentProjectId !== project || before.service_id !== service || after.service_id !== service ||
+                  next.run.id !== detail.id || next.run.session_id !== detail.session_id || next.run.metadata?.project_id !== project ||
+                  next.steps.some((step) => step.run_id !== detail.id || step.session_id !== detail.session_id)) throw new Error("运行、项目或服务身份已变化，请重新读取");
+              setSnapshot(next);
+            }} />}
+          </div>}
         {!snapshot.steps.some((step) => step.status === "completed" && step.payload?.source === "run_attachment_v1" &&
           step.payload?.project_id === project && step.payload?.service_id === service && typeof step.payload?.attachment_id === "string" &&
           typeof step.payload?.sha256 === "string") && <p>没有可确认的运行关联附件；未关联或较早的项目成果不在此显示。</p>}
