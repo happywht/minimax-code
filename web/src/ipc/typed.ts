@@ -179,6 +179,9 @@ export interface TypedIPC {
     reuse_empty_session_id?: string;
     expected_service_id?: string;
     handoff_source_session_id?: string;
+    handoff_source_workspace_mode?: "local" | "worktree";
+    handoff_source_workspace_path?: string;
+    handoff_target_project_root?: string;
     model_id?: string;
     project_id?: string;
     workspace_mode?: "local" | "worktree";

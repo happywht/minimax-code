@@ -338,6 +338,9 @@ function mockHandle(
         reuse_empty_session_id?: string;
         expected_service_id?: string;
         handoff_source_session_id?: string;
+        handoff_source_workspace_mode?: "local" | "worktree";
+        handoff_source_workspace_path?: string;
+        handoff_target_project_root?: string;
         project_id?: string;
         workspace_mode?: "local" | "worktree";
         workspace_path?: string;
@@ -346,9 +349,13 @@ function mockHandle(
       } | undefined;
       if (p?.handoff_source_session_id) {
         const source = mockSessions.get(p.handoff_source_session_id);
+        const custom = source && ((source.workspace_mode ?? "local") !== "local" || !!source.workspace_path);
+        const project = mockProjects.get(p.project_id ?? "inbox");
         if (p.expected_service_id !== "mock" || !source || source.archived ||
             (source.project_id ?? "inbox") !== (p.project_id ?? "inbox") || (source.engine ?? "native") === (p.engine ?? "native") ||
-            (source.workspace_mode ?? "local") !== "local" || source.workspace_path || p.reuse_empty_session_id) throw new Error("Handoff source or service mismatch");
+            p.reuse_empty_session_id || (p.workspace_mode && p.workspace_mode !== "local") || p.workspace_path || p.worktree_branch || p.base_branch ||
+            (custom && (!source.workspace_path || p.handoff_source_workspace_mode !== (source.workspace_mode ?? "local") ||
+              p.handoff_source_workspace_path !== source.workspace_path || !project?.root_path || p.handoff_target_project_root !== project.root_path))) throw new Error("Handoff source, project or workspace mismatch");
       }
       const reusable = p?.reuse_empty_session_id
         ? mockSessions.get(p.reuse_empty_session_id)

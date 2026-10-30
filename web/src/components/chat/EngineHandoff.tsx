@@ -6,7 +6,7 @@ import { Button, Modal, Textarea } from "../../ui";
 import { allowScopeChange } from "../../lib/scopeChangeGuard";
 
 type Engine = "native" | "codex";
-type Snapshot = { source: Session; messages: PersistedMessage[]; runs: AgentRun[]; service: string; fingerprint: string };
+type Snapshot = { source: Session; messages: PersistedMessage[]; runs: AgentRun[]; service: string; fingerprint: string; targetRoot: string | null };
 const active = new Set(["queued", "planning", "running", "awaiting_approval", "waiting_input"]);
 const DRAFT_PREFIX = "minimax-code:draft:";
 
@@ -34,17 +34,20 @@ export function EngineHandoff({ sessionId, target, onClose }: { sessionId: strin
   const read = async (ticket: number): Promise<Snapshot> => {
     const identity = await typedIPC.getServiceIdentity();
     if (!current(ticket) || !identity.service_id) throw new Error("服务或当前会话已变化");
-    const [saved, recent, running] = await Promise.all([
-      typedIPC.getSession(sessionId), typedIPC.listMessages(sessionId, { limit: 12 }), typedIPC.listRuns({ session_id: sessionId, limit: 20 }),
+    const [saved, recent, running, projects] = await Promise.all([
+      typedIPC.getSession(sessionId), typedIPC.listMessages(sessionId, { limit: 12 }), typedIPC.listRuns({ session_id: sessionId, limit: 20 }), typedIPC.listProjects(),
     ]);
     const after = await typedIPC.getServiceIdentity();
+    const custom = saved.session.workspace_mode === "worktree" || !!saved.session.workspace_path;
+    const targetRoot = projects.projects.find((project) => project.id === (saved.session.project_id ?? "inbox"))?.root_path || null;
     if (!current(ticket) || after.service_id !== identity.service_id || saved.session.id !== sessionId ||
         (saved.session.project_id ?? "inbox") !== (originProject.current ?? "inbox") || saved.session.archived ||
-        (saved.session.engine ?? "native") === target || saved.session.workspace_mode === "worktree" || saved.session.workspace_path ||
+        (saved.session.engine ?? "native") === target ||
         running.runs.some((item) => item.session_id !== sessionId)) throw new Error("会话、项目、服务或工作区不再符合交接条件");
+    if (custom && (!saved.session.workspace_path || !targetRoot)) throw new Error("来源工作区路径或项目根目录未配置；请先核对来源会话并为项目设置明确根目录。");
     const fingerprint = JSON.stringify([saved.session.id, saved.session.project_id, saved.session.engine, saved.session.workspace_mode,
-      saved.session.workspace_path, recent.messages, running.runs.map((run) => [run.id, run.status])]);
-    return { source: saved.session, messages: recent.messages, runs: running.runs, service: identity.service_id, fingerprint };
+      saved.session.workspace_path, targetRoot, recent.messages, running.runs.map((run) => [run.id, run.status])]);
+    return { source: saved.session, messages: recent.messages, runs: running.runs, service: identity.service_id, fingerprint, targetRoot };
   };
   const prepare = async () => {
     if (busy || uncertain || created) return;
@@ -79,8 +82,10 @@ export function EngineHandoff({ sessionId, target, onClose }: { sessionId: strin
       if (fresh.service !== snapshot.service || fresh.fingerprint !== snapshot.fingerprint) throw new Error("原会话记录或运行状态已变化；请重新准备并审阅，当前编辑仍保留。");
       if (!engines.engines.some((engine) => engine.id === target && engine.available)) throw new Error("目标引擎当前不可用，未创建会话。");
       dispatched = true; creating.current = true;
+      const custom = fresh.source.workspace_mode === "worktree" || !!fresh.source.workspace_path;
       const result = await typedIPC.createSession({ title: `交接 · ${fresh.source.title}`.slice(0, 100), project_id: originProject.current ?? "inbox",
-        engine: target, expected_service_id: fresh.service, handoff_source_session_id: sessionId });
+        engine: target, expected_service_id: fresh.service, handoff_source_session_id: sessionId,
+        ...(custom ? { handoff_source_workspace_mode: fresh.source.workspace_mode ?? "local", handoff_source_workspace_path: fresh.source.workspace_path!, handoff_target_project_root: fresh.targetRoot! } : {}) });
       creating.current = false;
       if (!current(ticket)) { if (live.current) { setUncertain(true); setNotice("创建结果可能已保存，但当前上下文变化；请核对会话列表，交接文本仍在本窗口。"); } return; }
       const newSession = result.session;
@@ -110,9 +115,10 @@ export function EngineHandoff({ sessionId, target, onClose }: { sessionId: strin
   };
   return <Modal title={`切换到 ${target === "codex" ? "Codex" : "Native"} 并交接`} onClose={close} widthClass="max-w-2xl" testId="engine-handoff">
     <div className="space-y-3 text-sm">
-      <p>创建同项目的新会话；不会修改原会话，不迁移工具状态、权限、预算或 Codex 线程，也不自动发送。新会话使用项目默认目录；独立工作区和自定义会话目录暂不支持此入口。</p>
+      <p>创建同项目的新会话；不会修改原会话，不迁移工具状态、权限、预算或 Codex 线程，也不自动发送。新会话使用项目默认目录。</p>
       <p>这里只展示有界历史摘录，不是自动验证的总结。可能包含密码、隐私或其他敏感内容；请删除不应带入的内容并补充约束。</p>
       {snapshot && <p className="break-all text-xs text-ink-2">项目：{originProject.current ?? "inbox"} · 服务：{snapshot.service} · 地址：{originHost.current} · 来源：{sessionId}</p>}
+      {snapshot && (snapshot.source.workspace_mode === "worktree" || !!snapshot.source.workspace_path) && <p className="break-all text-status-warning">来源工作区：{snapshot.source.workspace_path}（{snapshot.source.workspace_mode === "worktree" ? "独立工作区" : "自定义目录"}）；新会话项目目录：{snapshot.targetRoot}。不会复制或合并文件；两个目录可能不同，请先核对文件与原运行。</p>}
       {snapshot && (snapshot.runs.some((run) => active.has(run.status)) || snapshot.messages.some((item) => item.streaming)) && <p role="status" className="text-status-warning">原会话仍有运行或未完成消息；交接仅是读取时快照，不会停止原任务。</p>}
       {snapshot && <p className="text-xs text-ink-2">只检查最近 20 条运行及 12 条消息，更早记录未检查。</p>}
       {snapshot && <Textarea aria-label="可编辑的引擎交接内容" rows={12} maxLength={8000} disabled={busy} value={text} onChange={(event) => { setText(event.target.value); setAcknowledged(false); }} />}

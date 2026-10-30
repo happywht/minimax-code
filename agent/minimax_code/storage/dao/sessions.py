@@ -76,6 +76,9 @@ class SessionsDAO:
         engine: str = "native",
         handoff_source_session_id: str | None = None,
         expected_service_id: str | None = None,
+        handoff_source_workspace_mode: str | None = None,
+        handoff_source_workspace_path: str | None = None,
+        handoff_target_project_root: str | None = None,
     ) -> dict[str, Any]:
         """Insert a new session row; returns the persisted dict.
 
@@ -114,9 +117,18 @@ class SessionsDAO:
                 service = await cursor.fetchone()
                 if (not source or not service or service[0] != expected_service_id or source[2]
                         or (source[0] or "inbox") != (project_id or "inbox") or source[1] == engine
-                        or (source[3] or "local") != "local" or source[4]
                         or workspace_mode != "local" or workspace_path):
                     raise ValueError("Handoff source, service or project changed during creation")
+                if ((source[3] or "local") != "local" or source[4]
+                        or handoff_source_workspace_mode is not None
+                        or handoff_source_workspace_path is not None
+                        or handoff_target_project_root is not None):
+                    cursor = await conn.execute("SELECT root_path FROM projects WHERE id=?", (project_id or "inbox",))
+                    project = await cursor.fetchone()
+                    if (not source[4] or (source[3] or "local") != handoff_source_workspace_mode
+                            or source[4] != handoff_source_workspace_path or not project or not project[0]
+                            or project[0] != handoff_target_project_root):
+                        raise ValueError("Handoff workspace or target project root changed during creation")
             await conn.execute(sql, params)
         row = await self._db.fetchone(
             "SELECT * FROM sessions WHERE id = ?", (id,)
