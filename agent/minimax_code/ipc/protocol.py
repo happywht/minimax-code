@@ -732,6 +732,12 @@ class HostServiceStatusParams(HostServiceStartParams):
     """Same explicit host and service binding as service start."""
 
 
+class HostServiceAutostartParams(HostServiceStartParams):
+    """Set enablement without starting or stopping the service."""
+
+    enabled: bool
+
+
 class HostServiceLogsParams(HostServiceStartParams):
     """Explicit service binding for a bounded, user-requested journal read."""
 

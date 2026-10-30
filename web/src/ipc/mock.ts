@@ -272,6 +272,11 @@ function mockHandle(
       requireMockHost(host_id);
       return { connection: { host_id, state: method === "host.connect" ? "failed" : "disconnected", local_url: null, remote_port: null, error: method === "host.connect" ? "SSH is unavailable in mock mode" : null } };
     }
+    case "host.service_autostart": {
+      const p = params as { host_id: string };
+      if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");
+      return { ok: false, timed_out: false };
+    }
     case "host.service_logs": {
       const p = params as { host_id: string };
       if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");

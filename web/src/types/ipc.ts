@@ -177,7 +177,7 @@ export interface HostServiceStartParams {
 
 export interface HostServiceStatus {
   LoadState: string; ActiveState: string; SubState: string; Result: string;
-  ExecMainStatus: string; MainPID: string;
+  ExecMainStatus: string; MainPID: string; UnitFileState?: string;
 }
 export type HostServiceStatusResult =
   | { ok: true; reason: null; status: HostServiceStatus }

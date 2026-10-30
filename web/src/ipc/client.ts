@@ -234,6 +234,7 @@ const LONG_RUNNING_METHODS: Record<string, number> = {
   "host.service_start": 40_000,
   "host.service_status": 30_000,
   "host.service_logs": 30_000,
+  "host.service_autostart": 40_000,
   "skill.invoke": 120_000,       // 2 min — skill execution
 };
 
