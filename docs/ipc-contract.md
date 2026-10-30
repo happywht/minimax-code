@@ -859,7 +859,11 @@ The `engine` parameter of `run.start` is optional and must match the session's p
 `agent.send_message` rejects Codex sessions. Empty-session reuse requires the same engine.
 Session responses include `engine`, nullable `engine_thread_id`, and versioned `engine_state`;
 generic `session.update` cannot write these fields. Codex supports text input, persistent
-same-thread turns and reviewed recovery; steering remains disabled. Native model/permission
+same-thread turns, reviewed recovery and in-flight steering (see `run.steer`). The chat
+composer can insert a local text file's contents into the editable draft; the resulting
+string is sent as `content`, not as a file attachment. Codex does not accept image parts;
+`@` and `#` are ordinary text in its composer and do not invoke Native mention features.
+Native model/permission
 controls do not configure Codex, whose actual returned model/provider/effort are saved and
 pinned on resume. The original reply endpoint
 still waits for completion; transport loss never cancels an admitted request.

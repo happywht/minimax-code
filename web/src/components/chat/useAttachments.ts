@@ -6,10 +6,12 @@
  * Also owns the drag-and-drop state and the hidden <input type=file>
  * refs + change handlers.
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "../layout/ErrorBoundary";
 import { strings } from "../../ui/strings";
 import type { ContentPartImage } from "../../types/ipc";
+import { ipc } from "../../ipc";
+import { useSessionStore } from "../../stores/sessionStore";
 import {
   ACCEPTED_EXTS,
   MAX_ATTACHMENTS,
@@ -44,6 +46,19 @@ export function useAttachments(
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [attachedImages, setAttachedImages] = useState<ContentPartImage[]>([]);
   const [dragging, setDragging] = useState(false);
+  const generation = useRef(0);
+
+  useEffect(() => {
+    let { currentSessionId: session, currentProjectId: project } = useSessionStore.getState();
+    const reset = () => { generation.current += 1; setAttachedFiles([]); setAttachedImages([]); };
+    const unsubscribe = useSessionStore.subscribe((state) => {
+      if (state.currentSessionId !== session || state.currentProjectId !== project) {
+        session = state.currentSessionId; project = state.currentProjectId; reset();
+      }
+    });
+    const stopSidecar = ipc.onSideCar(reset);
+    return () => { generation.current += 1; unsubscribe(); stopSidecar(); };
+  }, []);
 
   /** Read one or more files and inject code blocks into the textarea. */
   const processFiles = useCallback(
@@ -54,12 +69,26 @@ export function useAttachments(
         return;
       }
       const batch = files.slice(0, remaining);
+      const origin = useSessionStore.getState();
+      const session = origin.currentSessionId, project = origin.currentProjectId, host = ipc.agentBaseUrl;
+      const currentGeneration = generation.current;
+      let invalidated = false, pending = batch.length;
+      const unsubscribe = useSessionStore.subscribe((state) => {
+        if (state.currentSessionId !== session || state.currentProjectId !== project) invalidated = true;
+      });
+      const stopSidecar = ipc.onSideCar(() => { invalidated = true; });
+      const finish = () => { if (--pending === 0) { unsubscribe(); stopSidecar(); } };
       if (files.length > remaining) {
         toast.info("文件数量上限", `仅附加前 ${remaining} 个文件（上限 ${MAX_ATTACHMENTS}）`);
       }
       for (const file of batch) {
         const reader = new FileReader();
         reader.onload = () => {
+          finish();
+          if (invalidated || generation.current !== currentGeneration || ipc.agentBaseUrl !== host) {
+            toast.info("文件未插入", "读取期间会话、项目或连接发生变化，或草稿已提交；请重新选择文件。");
+            return;
+          }
           const raw = reader.result as string;
           const truncated = raw.length > MAX_FILE_CHARS;
           const snippet = truncated ? raw.slice(0, MAX_FILE_CHARS) + "\n… (truncated)" : raw;
@@ -72,7 +101,8 @@ export function useAttachments(
           setValue((v) => v + block);
           textareaRef.current?.focus();
         };
-        reader.onerror = () => toast.error(strings.chat.toast.fileReadFailed, file.name);
+        reader.onerror = () => { finish(); toast.error(strings.chat.toast.fileReadFailed, file.name); };
+        reader.onabort = finish;
         reader.readAsText(file);
       }
     },
@@ -89,8 +119,13 @@ export function useAttachments(
       const batch = files.slice(0, remaining);
       for (const file of batch) {
         if (!file.type.startsWith("image/")) continue;
+        const currentGeneration = generation.current;
         const reader = new FileReader();
         reader.onload = () => {
+          if (generation.current !== currentGeneration) {
+            toast.info("图片未插入", "读取期间会话、项目或连接发生变化，或草稿已提交；请重新选择图片。");
+            return;
+          }
           const dataUrl = reader.result as string;
           // dataUrl is "data:<media>;base64,<data>" — extract base64 part
           const base64 = dataUrl.split(",")[1] || "";
@@ -135,6 +170,7 @@ export function useAttachments(
   }, []);
 
   const clearAll = useCallback(() => {
+    generation.current += 1;
     setAttachedFiles([]);
     setAttachedImages([]);
   }, []);

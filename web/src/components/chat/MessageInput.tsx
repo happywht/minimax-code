@@ -107,7 +107,7 @@ export function MessageInput({
     const next = e.target.value;
     draft.setValue(next);
     const caret = e.target.selectionStart ?? next.length;
-    mention.updateForInput(next, caret);
+    if (!codex) mention.updateForInput(next, caret);
   };
 
   const handleSubmit = async (e?: React.FormEvent | React.KeyboardEvent) => {
@@ -122,11 +122,12 @@ export function MessageInput({
     if (!hasText && !hasImages) return;
 
     if (codex) {
-      if (hasImages || attachments.attachedFiles.length || /(^|\s)(@|#file)/.test(rawText)) {
-        useChat.setState({ error: "Codex 当前仅支持纯文本，不支持附件或 Native 的 @agent/@repo/#file 功能。" });
+      if (hasImages) {
+        useChat.setState({ error: "Codex 当前仅支持纯文本，不能发送图片。" });
         return;
       }
       draft.clear();
+      attachments.clearAll();
       mention.closePicker();
       await send(rawText, budgetNumber);
       return;
@@ -191,7 +192,7 @@ export function MessageInput({
     if (e.key === "?") {
       e.stopPropagation();
     }
-    if (mention.handleKeyDown(e)) return;
+    if (!codex && mention.handleKeyDown(e)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void handleSubmit(e);
@@ -272,7 +273,6 @@ export function MessageInput({
           <IconButton
             aria-label={strings.chat.input.attachFile}
             data-testid="message-attach-btn"
-            disabled={codex}
             onClick={() => attachments.fileInputRef.current?.click()}
             title={strings.chat.input.attachTextFile}
             className="h-8 w-8"
@@ -306,7 +306,6 @@ export function MessageInput({
             accept={ACCEPTED_EXTS}
             className="hidden"
             data-testid="message-file-input"
-            disabled={codex}
             onChange={attachments.handleFileSelect}
           />
           <textarea
@@ -371,12 +370,13 @@ export function MessageInput({
             </>
           )}
         </div>
-        <MentionPickerDropdown
+        {codex && <p className="px-2.5 text-[11px] text-ink-2">文本文件内容会插入草稿并作为纯文本发送；移除文件标签不会删除已插入的文字。@ 和 # 按普通文本发送，不触发 Native 提及功能。图片不支持。</p>}
+        {!codex && <MentionPickerDropdown
           picker={mention.picker}
           filtered={mention.filtered}
           agentsError={mention.agentsError}
           onSelect={(option) => void mention.select(option)}
-        />
+        />}
         {streaming && <p role="status" className="mx-2 rounded bg-accent-subtle px-2 py-1.5 text-xs text-ink-1">
           {cancelling ? "正在请求停止，请稍候。" : "当前任务进行中。可停止任务，或在下方排队另一个新任务。"}
         </p>}
