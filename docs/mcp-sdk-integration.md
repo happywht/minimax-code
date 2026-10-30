@@ -113,6 +113,19 @@ otherwise an omission marker is returned. Tool errors remain failures. This
 projection does not give the model image or audio perception. Direct invocation
 continues to return the original content for inspection.
 
+An optional per-server settings switch exposes `mcp__<server>__minimax_resources`
+to the Agent when that server advertises resources. It is off by default. A call
+requires an explicit tool or network allow rule, or interactive approval; deny
+and ask rules take precedence, and planning/restricted dispatch stays blocked.
+The tool lists up to 50 resources or reads an exact URI in a fresh listing from
+the same live connection. It returns up to 16 matching content entries, each
+text bounded to 4096 UTF-8 bytes, and omits blobs. A changed or disabled
+connection is rejected before and after network operations. Resource templates,
+subscriptions, binary processing and URIs not listed by the server are not
+supported; returned content is untrusted. Name collisions prevent registration.
+The reserved opt-in state key is `$minimax.resources`; a server tool with that
+exact name also prevents resource-tool registration.
+
 Each operation has one 30-second total deadline including semaphore wait and all
 pages/retries, with at most eight active operations. Explicit tool/resource/prompt
 listings are capped at 100 pages, 1000 items and 8 MiB of serialized listing data.

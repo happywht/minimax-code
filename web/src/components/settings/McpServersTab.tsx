@@ -273,6 +273,13 @@ function McpServersTab(): JSX.Element {
 
               {expandedId === server.id && (
                 <div className="mt-3 border-t border-line pt-3">
+                  <label className="mb-3 flex items-start gap-2 text-[11px] text-ink-2">
+                    <Checkbox
+                      checked={server.tool_states?.["$minimax.resources"] === true}
+                      onChange={(e) => toggleTool(server, "$minimax.resources", e.target.checked)}
+                    />
+                    <span>允许 Agent 列出并读取此服务器列出的 MCP 资源（需权限规则或交互批准；二进制不送入模型）</span>
+                  </label>
                   {toolsLoading[server.id] ? (
                     <div className="flex items-center gap-2 text-xs text-ink-2">
                       <Spinner size={12} /> {strings.settings.mcp.loadingTools}

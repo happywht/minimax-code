@@ -185,6 +185,10 @@ class SDKMCPClient:
     def server_info(self):
         return self._sdk.server_info if self.is_initialized and self._sdk else None
 
+    @property
+    def server_capabilities(self):
+        return self._sdk.server_capabilities if self.is_initialized and self._sdk else None
+
     async def initialize(self) -> None:
         if self._closing:
             raise MCPClientError("MCP client closed")

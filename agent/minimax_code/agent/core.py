@@ -1530,6 +1530,18 @@ class AgentCore:
 
         # 1. Permission check (configurable, default-allow).
         action = _check_rule(self._permission_store, name)
+        from ..mcp.registry import MCPResourcesTool
+        try:
+            is_mcp_resource = type(self.registry.get(name)) is MCPResourcesTool
+        except KeyError:
+            is_mcp_resource = False
+        if is_mcp_resource:
+            network_action = _check_rule(self._permission_store, "network")
+            actions = {action, network_action}
+            action = ("deny" if "deny" in actions else "ask" if "ask" in actions
+                      else "allow" if "allow" in actions else "ask")
+            if action == "ask" and self._permission_gater is None:
+                action = "deny"
         if name == "append_file":
             # Appending can also create or modify files. A more specific
             # append rule must not bypass the existing write restriction.
