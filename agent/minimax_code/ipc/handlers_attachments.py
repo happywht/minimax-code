@@ -31,6 +31,9 @@ def register_attachment_handlers(server):
                 service = await get_attachment_service()
                 if operation.startswith("generate_"):
                     source_ids = values.pop("page_source_ids")
+                    excerpt_ranges = values.pop("page_excerpt_ranges")
+                    if excerpt_ranges and not source_ids:
+                        raise ValueError("Excerpt ranges require page source IDs")
                     session_id = values.pop("session_id")
                     if source_ids:
                         if not session_id:
@@ -41,7 +44,7 @@ def register_attachment_handlers(server):
                         research = ResearchSources(service.dao.db, session_id, values["project_id"])
                         if await research._binding() != values["expected_service_id"]:
                             raise ValueError("Research service identity changed")
-                        values["sources"] = await research.resolve_pages(source_ids, values["sources"])
+                        values["sources"] = await research.resolve_pages(source_ids, values["sources"], excerpt_ranges)
                         if await research._binding() != values["expected_service_id"]:
                             raise ValueError("Research service or project binding changed")
                         await require_host_session(session_id)

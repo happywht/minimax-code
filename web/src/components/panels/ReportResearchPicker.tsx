@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
-import type { ResearchSource } from "../../types/ipc";
+import type { PageExcerptRange, ResearchSource } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 
-export function ReportResearchPicker({ project, session, service, selected, onChange, manualCount, onInsertExcerpt }:
+export function ReportResearchPicker({ project, session, service, selected, onChange, manualCount, onInsertExcerpt, ranges, onRangeChange }:
   { project: string | null; session: string | null; service: string | null; selected: ResearchSource[];
     onChange: (items: ResearchSource[]) => void; manualCount: number;
-    onInsertExcerpt?: (source: ResearchSource, number: number) => void }): JSX.Element {
+    onInsertExcerpt?: (source: ResearchSource, number: number, range?: PageExcerptRange) => void;
+    ranges: PageExcerptRange[]; onRangeChange: (ranges: PageExcerptRange[]) => void }): JSX.Element {
   const [query, setQuery] = useState("");
+  const [detail, setDetail] = useState<ResearchSource | null>(null);
+  const [passage, setPassage] = useState<PageExcerptRange | null>(null);
   const [rows, setRows] = useState<ResearchSource[]>([]);
   const [offset, setOffset] = useState(0);
   const [applied, setApplied] = useState("");
@@ -16,13 +19,13 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
   const [error, setError] = useState("");
   const epoch = useRef(0);
   const host = ipc.agentBaseUrl;
-  const selection = useRef({ service, manualCount, ids: "", onInsertExcerpt });
-  selection.current = { service, manualCount, ids: selected.map((item) => item.page_source_id).join("\n"), onInsertExcerpt };
+  const selection = useRef({ service, manualCount, ids: "", rangeKey: "", onInsertExcerpt });
+  selection.current = { service, manualCount, ids: selected.map((item) => item.page_source_id).join("\n"), rangeKey: JSON.stringify(ranges), onInsertExcerpt };
   useEffect(() => {
-    const off = ipc.onSideCar(() => { epoch.current++; setRows([]); setBusy(false); setError("连接变化，请重新搜索来源。"); });
+    const off = ipc.onSideCar(() => { epoch.current++; setRows([]); setDetail(null); setPassage(null); setBusy(false); setError("连接变化，请重新搜索来源。"); });
     return () => { epoch.current++; off(); };
   }, []);
-  useEffect(() => { epoch.current++; setRows([]); setQuery(""); setApplied(""); setOffset(0); setError(""); setBusy(false); }, [project, session, host, service]);
+  useEffect(() => { epoch.current++; setRows([]); setQuery(""); setApplied(""); setOffset(0); setError(""); setBusy(false); setDetail(null); setPassage(null); }, [project, session, host, service]);
   const search = async (term: string, start: number) => {
     if (!project || !session || !service) return;
     const ticket = ++epoch.current;
@@ -44,7 +47,7 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
     const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
       useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === session &&
       selection.current.service === expected.service && selection.current.manualCount === expected.manualCount &&
-      selection.current.ids === expected.ids && selection.current.onInsertExcerpt === expected.onInsertExcerpt;
+      selection.current.ids === expected.ids && selection.current.rangeKey === expected.rangeKey && selection.current.onInsertExcerpt === expected.onInsertExcerpt;
     setBusy(true); setError("");
     try {
       const result = await typedIPC.getResearchSource({ project_id: project, session_id: session,
@@ -53,8 +56,25 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
       if (result.project_id !== project || result.session_id !== session || result.service_id !== service ||
           result.source.page_source_id !== row.page_source_id) throw new Error("来源归属已变化，请重新选择");
       if (!result.source.excerpt?.trim()) throw new Error("此来源没有可用摘录");
-      onInsertExcerpt(result.source, manualCount + index + 1);
+      const range = ranges.find((item) => item.page_source_id === row.page_source_id);
+      if (range && range.end > Array.from(result.source.excerpt).length) throw new Error("保存的摘录已变化，请重新选择选段");
+      onInsertExcerpt(result.source, manualCount + index + 1, range);
     } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
+  const openDetail = async (row: ResearchSource) => {
+    if (!project || !session || !service || busy) return;
+    const ticket = ++epoch.current;
+    setBusy(true); setError(""); setDetail(null); setPassage(null);
+    try {
+      const result = await typedIPC.getResearchSource({ project_id: project, session_id: session,
+        expected_service_id: service, page_source_id: row.page_source_id });
+      if (ticket !== epoch.current || ipc.agentBaseUrl !== host ||
+          useSessionStore.getState().currentProjectId !== project || useSessionStore.getState().currentSessionId !== session) return;
+      if (result.project_id !== project || result.session_id !== session || result.service_id !== service ||
+          result.source.page_source_id !== row.page_source_id) throw new Error("来源归属已变化，请重新选择");
+      setDetail(result.source);
+    } catch (reason) { if (ticket === epoch.current) setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2">
@@ -77,10 +97,22 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
       <p>[{manualCount + i + 1}] {row.title || "（页面未提供标题）"} · {row.accessed_at}</p><p className="break-all">{row.url}</p>
       <p className="whitespace-pre-wrap break-words">{row.excerpt || "（无摘录）"}</p>
       {(row.title_truncated || row.excerpt_truncated || row.truncated) && <p>标题或摘录已截断。</p>}
+      <p>报告参考摘录：{ranges.find((range) => range.page_source_id === row.page_source_id)
+        ? `已选字符 ${ranges.find((range) => range.page_source_id === row.page_source_id)!.start}–${ranges.find((range) => range.page_source_id === row.page_source_id)!.end}` : "默认使用开头最多 1000 字"}</p>
+      <Button type="button" variant="secondary" disabled={busy || !service} onClick={() => void openDetail(row)}>选择报告参考摘录</Button>
+      {ranges.some((range) => range.page_source_id === row.page_source_id) && <Button type="button" variant="secondary" disabled={busy} onClick={() => onRangeChange(ranges.filter((range) => range.page_source_id !== row.page_source_id))}>恢复默认摘录</Button>}
+      {detail?.page_source_id === row.page_source_id && <div>
+        <label>保存的摘录（选择原文，最多 1000 个 Unicode 字符）<textarea readOnly rows={8} value={detail.excerpt ?? ""} className="w-full rounded border border-line bg-surface-1 p-2"
+          onSelect={(event) => { const input = event.currentTarget; const start = Array.from(input.value.slice(0, input.selectionStart)).length;
+            const end = Array.from(input.value.slice(0, input.selectionEnd)).length;
+            setPassage(start < end ? { page_source_id: row.page_source_id, start, end } : null); }} /></label>
+        <Button type="button" variant="secondary" disabled={!passage || passage.page_source_id !== row.page_source_id || passage.end - passage.start > 1000}
+          onClick={() => { if (passage) { onRangeChange([...ranges.filter((range) => range.page_source_id !== row.page_source_id), passage]); setDetail(null); setPassage(null); } }}>使用选中原文作为参考摘录</Button>
+      </div>}
       {onInsertExcerpt && <Button type="button" variant="secondary" disabled={busy || !service || !row.excerpt?.trim()} onClick={() => void insertExcerpt(row, i)}>追加摘录及编号到正文</Button>}
       <div className="flex gap-2"><Button type="button" variant="secondary" disabled={busy || i === 0} onClick={() => { const copy = [...selected]; [copy[i - 1], copy[i]] = [copy[i], copy[i - 1]]; onChange(copy); }}>上移</Button>
         <Button type="button" variant="secondary" disabled={busy || i === selected.length - 1} onClick={() => { const copy = [...selected]; [copy[i + 1], copy[i]] = [copy[i], copy[i + 1]]; onChange(copy); }}>下移</Button>
-        <Button type="button" variant="secondary" disabled={busy} onClick={() => onChange(selected.filter((_, index) => index !== i))}>移除来源</Button></div>
+        <Button type="button" variant="secondary" disabled={busy} onClick={() => { onRangeChange(ranges.filter((range) => range.page_source_id !== row.page_source_id)); onChange(selected.filter((_, index) => index !== i)); setDetail(null); setPassage(null); }}>移除来源</Button></div>
     </div>)}
   </div>;
 }

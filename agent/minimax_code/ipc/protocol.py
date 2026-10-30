@@ -234,9 +234,17 @@ class AttachmentGenerateDocxParams(ArtifactListParams):
         return self
 
 
+class PageExcerptRange(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    page_source_id: str = Field(min_length=1, max_length=128)
+    start: int = Field(ge=0, le=8000)
+    end: int = Field(ge=1, le=8000)
+
+
 class AttachmentGenerateWithResearchParams(AttachmentGenerateDocxParams):
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
     page_source_ids: list[str] = Field(default_factory=list, max_length=30)
+    page_excerpt_ranges: list[PageExcerptRange] = Field(default_factory=list, max_length=30)
 
 
 class AttachmentGenerateReportPairParams(AttachmentGenerateDocxParams):
@@ -463,6 +471,7 @@ class RunOutputClearParams(BaseModel):
 class AttachmentGeneratePairWithResearchParams(AttachmentGenerateReportPairParams):
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
     page_source_ids: list[str] = Field(default_factory=list, max_length=30)
+    page_excerpt_ranges: list[PageExcerptRange] = Field(default_factory=list, max_length=30)
 
 
 class RuntimeWorkspaceCheckParams(BaseModel):

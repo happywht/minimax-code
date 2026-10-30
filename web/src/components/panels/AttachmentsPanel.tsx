@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input, Textarea } from "../../ui";
-import type { AttachmentParserStatus, DocxSection, ReportSource, ResearchSource, TextArtifact } from "../../types/ipc";
+import type { AttachmentParserStatus, DocxSection, PageExcerptRange, ReportSource, ResearchSource, TextArtifact } from "../../types/ipc";
 import { AttachmentImageOcr } from "./AttachmentImageOcr";
 import { AttachmentImagePreview } from "./AttachmentImagePreview";
 import { AttachmentDocumentReader } from "./AttachmentDocumentReader";
@@ -28,7 +28,7 @@ const labels: Record<AttachmentParserStatus, string> = {
   type_mismatch: "类型不匹配", parser_unavailable: "解析器不可用", ocr_not_attempted: "未尝试 OCR",
 };
 export type ReportDraft = { docName: string; title: string; body: string; format: "docx" | "pdf" | "both";
-  structured: boolean; sections: string; visualSections: boolean; sources: ReportSource[]; researchIds: string[] };
+  structured: boolean; sections: string; visualSections: boolean; sources: ReportSource[]; researchIds: string[]; researchRanges?: PageExcerptRange[] };
 function readReportDraft(value: unknown): ReportDraft {
   if (!value || typeof value !== "object") throw new Error("报告草稿格式无效");
   const data = value as Record<string, unknown>;
@@ -38,6 +38,10 @@ function readReportDraft(value: unknown): ReportDraft {
       data.researchIds.some((id) => typeof id !== "string" || id.length > 200) || new Set(data.researchIds).size !== data.researchIds.length ||
       data.sources.some((source) => !source || typeof source !== "object" || typeof source.title !== "string" || typeof source.url !== "string" ||
         (source.accessed_at !== undefined && typeof source.accessed_at !== "string"))) throw new Error("报告草稿字段无效");
+  if (data.researchRanges !== undefined && (!Array.isArray(data.researchRanges) || data.researchRanges.length > 30 ||
+      data.researchRanges.some((range) => !range || typeof range !== "object" || !(data.researchIds as string[]).includes(range.page_source_id) ||
+        !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.end <= range.start || range.end > 8000 || range.end - range.start > 1000) ||
+      new Set(data.researchRanges.map((range) => range.page_source_id)).size !== data.researchRanges.length)) throw new Error("报告草稿选段无效");
   if (data.visualSections && (!data.structured || !readEditableSections(data.sections as string))) throw new Error("可视章节无法恢复；请修正草稿内容");
   return data as ReportDraft;
 }
@@ -61,7 +65,7 @@ function reportMarkers(body: string, sections: string, structured: boolean): num
   return [...new Set(Array.from(text.matchAll(/\[([1-9][0-9]*)\]/g), (match) => Number(match[1])))].sort((a, b) => a - b);
 }
 
-export type RetainedReportDraft = Omit<ReportDraft, "researchIds"> & { researchNeedsReview: boolean; citationNeedsReview?: boolean; file: File | null };
+export type RetainedReportDraft = Omit<ReportDraft, "researchIds" | "researchRanges"> & { researchNeedsReview: boolean; citationNeedsReview?: boolean; file: File | null };
 
 export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, onTableApplied, artifactTransfer, onClearArtifactTransfer }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; onTableApplied?: () => void; artifactTransfer?: TextArtifact | null; onClearArtifactTransfer?: () => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
@@ -90,6 +94,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
   const [tableNotice, setTableNotice] = useState("");
   const [sources, setSources] = useState<ReportSource[]>(initialDraft?.sources ?? []);
   const [researchSources, setResearchSources] = useState<ResearchSource[]>([]);
+  const [researchRanges, setResearchRanges] = useState<PageExcerptRange[]>([]);
   const [researchNeedsReview, setResearchNeedsReview] = useState(initialDraft?.researchNeedsReview ?? false);
   const [citationNeedsReview, setCitationNeedsReview] = useState(initialDraft?.citationNeedsReview ?? false);
   const markers = reportMarkers(body, sections, structured);
@@ -154,14 +159,14 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     appendExcerpt([attribution, excerpt]);
   };
   const [submittedPair, setSubmittedPair] = useState<string | null>(null);
-  const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources, researchSources.map((item) => item.page_source_id), sessionId]);
+  const pairFingerprint = JSON.stringify([docName, title, structured, structured ? sections : body, sources, researchSources.map((item) => item.page_source_id), researchRanges, sessionId]);
   useEffect(() => {
     setQuery(""); setTypeFilter("all"); setFormError(null); setSubmittedPair(null); void useAttachmentStore.getState().activate(projectId);
     return () => useAttachmentStore.getState().clear();
   }, [projectId, host]);
   useEffect(() => {
     if (researchSources.length) setResearchNeedsReview(true);
-    setResearchSources([]);
+    setResearchSources([]); setResearchRanges([]);
   }, [projectId, sessionId, host, state.serviceId]);
   useEffect(() => {
     ++contextEpoch.current; setContextNotice(""); setContextAdded(false); setAddingContext(false); setExcerptNotice(""); setExcerptSection(""); setBodySection(""); setBodyTransferNotice("");
@@ -305,7 +310,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           title: source.title.trim(), url: source.url.trim(),
           ...(source.accessed_at?.trim() ? { accessed_at: source.accessed_at.trim() } : {}),
         })) } : {}),
-        ...(researchSources.length && sessionId ? { session_id: sessionId, page_source_ids: researchSources.map((item) => item.page_source_id) } : {}),
+        ...(researchSources.length && sessionId ? { session_id: sessionId, page_source_ids: researchSources.map((item) => item.page_source_id), ...(researchRanges.length ? { page_excerpt_ranges: researchRanges } : {}) } : {}),
       };
       if (!structured) {
         const content = { paragraphs: body.split(/\r?\n/), ...references };
@@ -324,7 +329,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <h3>生成报告</h3>
       <DraftFileControl<ReportDraft> kind="report" disabled={state.busy || state.loading}
         scope={scoped && projectId && state.serviceId ? { host, service: state.serviceId, project: projectId, session: sessionId } : null}
-        capture={() => ({ docName, title, body, format, structured, sections, visualSections, sources, researchIds: researchSources.map((item) => item.page_source_id) })}
+        capture={() => ({ docName, title, body, format, structured, sections, visualSections, sources, researchIds: researchSources.map((item) => item.page_source_id), researchRanges })}
         decode={async (value, scope) => {
           const draft = readReportDraft(value);
           if (draft.researchIds.length && !scope.session) throw new Error("研究来源需要原会话");
@@ -333,6 +338,8 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
             const result = await typedIPC.getResearchSource({ project_id: scope.project, session_id: scope.session!, expected_service_id: scope.service, page_source_id: id });
             if (result.project_id !== scope.project || result.session_id !== scope.session || result.service_id !== scope.service || result.source.page_source_id !== id)
               throw new Error("研究来源归属已变化，请重新选择");
+            const range = draft.researchRanges?.find((item) => item.page_source_id === id);
+            if (range && range.end > Array.from(result.source.excerpt ?? "").length) throw new Error("研究选段超出保存的摘录，请重新选择");
             resolved.push(result.source);
           }
           importedSources.current = resolved;
@@ -341,7 +348,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         apply={(draft) => {
           setExcerptSection(""); setBodySection(""); setBodyTransferNotice(""); setDocName(draft.docName); setTitle(draft.title); setBody(draft.body); setFormat(draft.format); setStructured(draft.structured);
           setSections(draft.sections); setVisualSections(draft.visualSections); setSources(draft.sources); setFormError(null);
-          setResearchSources(importedSources.current); setResearchNeedsReview(false);
+          setResearchSources(importedSources.current); setResearchRanges(draft.researchRanges ?? []); setResearchNeedsReview(false);
           const restoredMarkers = reportMarkers(draft.body, draft.sections, draft.structured);
           setCitationNeedsReview(restoredMarkers === null || restoredMarkers.length > 0);
         }} />
@@ -450,13 +457,15 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       </div>}
       <ReportResearchPicker project={projectId} session={sessionId} service={scoped ? state.serviceId : null}
         selected={researchSources} onChange={(items) => { noteSourceChange(); setResearchSources(items); }} manualCount={sources.length}
-        onInsertExcerpt={(source, number) => {
+        ranges={researchRanges} onRangeChange={(ranges) => { noteSourceChange(); setResearchRanges(ranges); }}
+        onInsertExcerpt={(source, number, range) => {
           const excerpt = Array.from(source.excerpt ?? "");
-          const clipped = excerpt.length > 600 || source.excerpt_truncated || source.truncated;
-          const text = excerpt.slice(0, 600).join("").replace(/\s+/g, " ").trim();
+          const chosen = range ? excerpt.slice(range.start, range.end) : excerpt.slice(0, 600);
+          const clipped = !!range || excerpt.length > 600 || source.excerpt_truncated || source.truncated;
+          const text = chosen.join("").replace(/\s+/g, " ").trim();
           if (appendExcerpt([`来源摘录（未经核验${clipped ? "，已截断" : ""}）：${text} [${number}]`])) setCitationNeedsReview(true);
         }} />
-      <p className="text-xs text-ink-2">可将已选来源的最多 600 字摘录及当前编号追加到正文；请核对摘录、引用和事实。</p>
+      <p className="text-xs text-ink-2">可将所选参考摘录（未选择时为开头最多 600 字）及当前编号追加到正文；请核对摘录、引用和事实。</p>
       <div className="space-y-2 rounded border border-line p-2" aria-label="正文来源编号对照">
         <p>正文编号对照：仅识别形如 [1] 的独立数字标记；其他引用写法无法检查。请自行核对每处对应关系与事实。</p>
         {markers === null ? <p role="status">章节 JSON 无法读取，不能检查编号；原草稿未更改。</p> : <>
