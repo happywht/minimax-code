@@ -16,7 +16,7 @@ from typing import Any
 
 from .handler_utils import HandlerError
 from .handlers_git import _GIT_ERROR, _run_git, _scoped_cwd, _validate_ref
-from .protocol import INVALID_PARAMS
+from .protocol import INVALID_PARAMS, PERMISSION_DENIED
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -360,11 +360,32 @@ def _find_file(parsed: dict[str, Any], *, file_path: str) -> dict[str, Any]:
     raise HandlerError(INVALID_PARAMS, "file_path was not found in the current diff")
 
 
+async def _authorize_patch(ctx: Context, operation: str) -> None:
+    from ..execution import ExecutionDeniedError, require_write_access
+    from .handlers_permissions import _ensure_permission_store
+
+    try:
+        require_write_access()
+    except ExecutionDeniedError as exc:
+        raise HandlerError(PERMISSION_DENIED, str(exc)) from exc
+    store = await _ensure_permission_store(ctx.server)
+    if store is None:
+        raise HandlerError(PERMISSION_DENIED, "Patch permission policy is unavailable")
+    actions = {str((store.lookup(name) or {}).get("action") or "").strip().lower()
+               for name in ("write_file", "exec_command", f"patch.{operation}")}
+    if "deny" in actions:
+        raise HandlerError(PERMISSION_DENIED, "Patch operation denied by permission policy")
+    if "ask" in actions:
+        raise HandlerError(PERMISSION_DENIED, "Patch operation requires approval; this endpoint has no interactive approval route")
+
+
 async def _apply_file_patch(
     patch: str,
     *,
     cwd: str | os.PathLike[str] | None,
     scope: str,
+    ctx: Context,
+    operation: str,
 ) -> None:
     """Run ``git apply --cached --check`` then ``git apply --cached``.
 
@@ -376,6 +397,7 @@ async def _apply_file_patch(
     check_args = ["apply", "--cached", "--check", "--whitespace=nowarn", "-"]
     apply_args = ["apply", "--cached", "--whitespace=nowarn", "-"]
     (await _run_git_with_input(check_args, cwd=cwd, stdin_text=patch))
+    await _authorize_patch(ctx, operation)
     (await _run_git_with_input(apply_args, cwd=cwd, stdin_text=patch))
 
 
@@ -444,6 +466,7 @@ def register_patch_handlers(server: Any) -> None:
             patch = _single_hunk_patch(file, hunk)
             args = ["apply", "--cached", "--check", "--whitespace=nowarn", "-"]
             (await _run_git_with_input(args, cwd=cwd, stdin_text=patch))
+            await _authorize_patch(ctx, "apply_hunk")
             (await _run_git_with_input(
                 ["apply", "--cached", "--whitespace=nowarn", "-"],
                 cwd=cwd,
@@ -486,6 +509,7 @@ def register_patch_handlers(server: Any) -> None:
                 args.insert(1, "--cached")
                 run_args.insert(1, "--cached")
             (await _run_git_with_input(args, cwd=cwd, stdin_text=patch))
+            await _authorize_patch(ctx, "revert_hunk")
             (await _run_git_with_input(run_args, cwd=cwd, stdin_text=patch))
             await ctx.reply(
                 _operation_result(
@@ -517,7 +541,7 @@ def register_patch_handlers(server: Any) -> None:
             diff_text = (await _run_git(_operation_diff_args(scope), cwd=cwd))
             file = _find_file(parse_unified_diff(diff_text), file_path=file_path)
             patch = _full_file_patch(file)
-            (await _apply_file_patch(patch, cwd=cwd, scope=scope))
+            (await _apply_file_patch(patch, cwd=cwd, scope=scope, ctx=ctx, operation="apply_file"))
             await ctx.reply(
                 {
                     "ok": True,
@@ -556,7 +580,7 @@ def register_patch_handlers(server: Any) -> None:
                     continue
                 try:
                     patch = _full_file_patch(file)
-                    (await _apply_file_patch(patch, cwd=cwd, scope=scope))
+                    (await _apply_file_patch(patch, cwd=cwd, scope=scope, ctx=ctx, operation="apply_all"))
                     applied.append(path)
                 except HandlerError as exc:
                     failed.append({"file_path": path, "error": exc.message})
@@ -597,6 +621,7 @@ def register_patch_handlers(server: Any) -> None:
                 check_args.insert(1, "--cached")
                 run_args.insert(1, "--cached")
             (await _run_git_with_input(check_args, cwd=cwd, stdin_text=patch))
+            await _authorize_patch(ctx, "revert_file")
             (await _run_git_with_input(run_args, cwd=cwd, stdin_text=patch))
             await ctx.reply(
                 {
@@ -648,6 +673,7 @@ def register_patch_handlers(server: Any) -> None:
                         check_args.insert(1, "--cached")
                         run_args.insert(1, "--cached")
                     (await _run_git_with_input(check_args, cwd=cwd, stdin_text=patch))
+                    await _authorize_patch(ctx, "revert_all")
                     (await _run_git_with_input(run_args, cwd=cwd, stdin_text=patch))
                     reverted.append(path)
                 except HandlerError as exc:
@@ -675,6 +701,7 @@ def register_patch_handlers(server: Any) -> None:
             if not status_text.strip():
                 await ctx.reply({"ok": True, "snapshot_ref": None, "clean": True})
                 return
+            await _authorize_patch(ctx, "save_snapshot")
             (await _run_git(
                 ["stash", "push", "-u", "-m", "MiniMax Code patch snapshot"],
                 cwd=cwd,
@@ -687,14 +714,24 @@ def register_patch_handlers(server: Any) -> None:
             logger.exception("patch.save_snapshot failed")
             await ctx.reply_error(_GIT_ERROR, "patch.save_snapshot failed")
 
+    def guarded(handler, operation):
+        async def invoke(params, ctx):
+            try:
+                await _authorize_patch(ctx, operation)
+            except HandlerError as exc:
+                await ctx.reply_error(exc.code, exc.message, exc.data)
+                return
+            await handler(params, ctx)
+        return invoke
+
     server.register("patch.preview", handle_patch_preview)
-    server.register("patch.apply_hunk", handle_apply_hunk)
-    server.register("patch.revert_hunk", handle_revert_hunk)
-    server.register("patch.apply_file", handle_apply_file)
-    server.register("patch.revert_file", handle_revert_file)
-    server.register("patch.apply_all", handle_apply_all)
-    server.register("patch.revert_all", handle_revert_all)
-    server.register("patch.save_snapshot", handle_save_snapshot)
+    server.register("patch.apply_hunk", guarded(handle_apply_hunk, "apply_hunk"))
+    server.register("patch.revert_hunk", guarded(handle_revert_hunk, "revert_hunk"))
+    server.register("patch.apply_file", guarded(handle_apply_file, "apply_file"))
+    server.register("patch.revert_file", guarded(handle_revert_file, "revert_file"))
+    server.register("patch.apply_all", guarded(handle_apply_all, "apply_all"))
+    server.register("patch.revert_all", guarded(handle_revert_all, "revert_all"))
+    server.register("patch.save_snapshot", guarded(handle_save_snapshot, "save_snapshot"))
 
 
 __all__ = ["parse_unified_diff", "register_patch_handlers"]

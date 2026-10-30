@@ -1148,6 +1148,13 @@ same raw diff plus a UI-friendly structure:
 These methods intentionally operate only on the current `working` or
 `staged` diff. `branch` / explicit `ref` previews are read-only.
 
+Patch apply, revert and snapshot operations check `write_file`, `exec_command`
+and their specific `patch.<operation>` rule before starting and again before
+each write. Deny takes precedence; ask is rejected because these RPCs do not
+have an interactive approval route. The existing default for absent rules is
+unchanged. A policy change after the final check cannot undo a Git operation
+already started; multi-file operations can have partial results.
+
 `patch.apply_hunk` stages a single hunk from the working-tree diff.
 `patch.revert_hunk` discards a hunk from the working-tree diff, or
 unstages a hunk from the staged diff.
