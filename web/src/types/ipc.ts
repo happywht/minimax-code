@@ -1565,6 +1565,7 @@ export interface WorkspaceCheckResult {
 
 export interface ChildWorkspaceReceipt {
   run_id: string; merged: Array<{ path: string; sha256: string }>; noop: string[];
+  remaining?: string[];
   conflicts: Array<{ path: string; reason?: string }>; complete: boolean; pruned: boolean; already_collected?: boolean;
 }
 

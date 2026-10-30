@@ -412,7 +412,8 @@ def restore_resolution_backup_copy(child: ChildWorkspace, attempt_id: str, desti
 
 
 def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
-                  expected_parent_identity: tuple[int, int] | None = None) -> dict[str, Any]:
+                  expected_parent_identity: tuple[int, int] | None = None,
+                  selected_path: str | None = None) -> dict[str, Any]:
     require_write_access()
     if expected_parent_identity is None:
         info = require_directory(child.parent).stat()
@@ -435,6 +436,8 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
         raise ValueError("Child file permissions changed after execution; preserve them for manual review")
     baseline = child.record["baseline"]
     changes = sorted(p for p in baseline.keys() | final.keys() if baseline.get(p) != final.get(p))
+    if selected_path is not None and selected_path not in changes:
+        raise ValueError("Selected file is not a recorded child change; review again")
     conflicts, pending, noop = [], [], []
     for relative in changes:
         target = _path(child.parent, relative)
@@ -453,9 +456,14 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
             conflicts.append({"path": relative, "reason": "deletion_requires_review"})
         else:
             pending.append((relative, current))
+    remaining = [path for path, _ in pending if selected_path is not None and path != selected_path]
+    if selected_path is not None:
+        pending = [(path, digest) for path, digest in pending if path == selected_path]
     report: dict[str, Any] = {"run_id": child.run_id, "merged": [], "noop": noop,
-                              "conflicts": conflicts, "complete": False, "pruned": False}
-    if conflicts and on_conflict == "fail":
+                              "conflicts": conflicts, "remaining": remaining,
+                              "complete": False, "pruned": False}
+    relevant_conflicts = [item for item in conflicts if selected_path is None or item["path"] == selected_path]
+    if relevant_conflicts and on_conflict == "fail":
         return report
     directory = _path(child.base, "collection-attempts")
     directory.mkdir(parents=True, exist_ok=True)
@@ -493,7 +501,7 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
             report["merged"].append({"path": relative, "sha256": final[relative]})
             attempt["pending_path"] = None
             save_attempt()
-        report["complete"] = not conflicts
+        report["complete"] = not conflicts and not remaining
         if report["complete"]:
             _check_parent_identity(child.parent, expected_parent_identity)
             child.record.update(state="collected", receipt=report)

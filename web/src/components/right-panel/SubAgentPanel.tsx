@@ -330,6 +330,7 @@ function SubAgentRow({
 
 function validReceipt(value: ChildWorkspaceReceipt | undefined, runId: string): value is ChildWorkspaceReceipt {
   return !!value && value.run_id === runId && typeof value.complete === "boolean" && typeof value.pruned === "boolean" &&
+    (value.remaining === undefined || (Array.isArray(value.remaining) && value.remaining.length <= 500 && value.remaining.every((path) => typeof path === "string"))) &&
     Array.isArray(value.merged) && value.merged.length <= 500 && value.merged.every((item) => item && typeof item.path === "string" && typeof item.sha256 === "string") &&
     Array.isArray(value.noop) && value.noop.length <= 500 && value.noop.every((item) => typeof item === "string") &&
     Array.isArray(value.conflicts) && value.conflicts.length <= 500 && value.conflicts.every((item) => item && typeof item.path === "string") &&
@@ -365,7 +366,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     }).catch(() => { /* History is optional; an absent result is not a pass. */ });
     return () => { cancelled = true; };
   }, [runId, sessionId, teamRunId, projectId]);
-  const invoke = async (collect: boolean, skipConflicts = false) => {
+  const invoke = async (collect: boolean, skipConflicts = false, selectedPath?: string) => {
     const ticket = ++generation.current, host = ipc.agentBaseUrl;
     const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
       useSessionStore.getState().currentSessionId === sessionId &&
@@ -373,6 +374,12 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     setBusy(true); setMessage("");
     try {
       if (collect && !review) return;
+      if (collect && selectedPath) {
+        const accepted = await requestConfirmation({ title: `收集文件 ${selectedPath}`,
+          description: "仅收集此文件；父文件变化会阻止覆盖。其他文件和冲突保留待审阅，异常时请核对实际文件。",
+          confirmLabel: "收集此文件" });
+        if (!accepted || !current()) return;
+      }
       const interruptedCollection = collect && !allowCollect;
       if (interruptedCollection) {
         if (!review?.team_collection?.eligible || !review.team_collection.step_id) throw new Error("缺少可收集的完成记录或停止证据");
@@ -384,6 +391,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       const result = await ipc.request<ReviewResult & { report?: ChildWorkspaceReceipt }>(
         "run.child_workspace", { run_id: runId, session_id: sessionId, action: collect ? "collect" : "preview",
           ...(teamRunId ? { team_run_id: teamRunId } : {}),
+          ...(collect && selectedPath ? { path: selectedPath } : {}),
           ...(interruptedCollection && review?.team_collection?.step_id ? { confirmed_team_stopped: true, expected_team_step_id: review.team_collection.step_id } : {}),
           ...(collect && review ? { revision: review.revision, expected_service_id: review.service_id, on_conflict: skipConflicts ? "skip" : "fail" } : {}) },
       );
@@ -394,7 +402,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         if (!validReceipt(result.report, runId)) throw new Error("收集回执无效，请重新查看并核对文件");
         setReceipt({ report: result.report, root: review!.root, service: result.service_id, kind: review!.kind });
         setReview(null);
-        setMessage(result.report.complete ? "收集已完成，尚未验证。子工作区及备份仍保留。" : "收集未完成；请核对冲突与已写入文件。");
+        setMessage(result.report.complete ? "收集已完成，尚未验证。子工作区及备份仍保留。" : "已处理所选变更；其他变更或冲突仍待审阅，请核对已写入文件。");
       } else {
         if (result.receipt && !validReceipt(result.receipt, runId)) throw new Error("已保存的收集回执无效");
         setMerge(null); setBackup(null); setReview(result);
@@ -566,6 +574,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       {!!receipt.report.merged.length && <details><summary>已复制文件</summary><ul>{receipt.report.merged.map((item) => <li key={item.path} className="break-all">{item.path}</li>)}</ul></details>}
       {!!receipt.report.noop.length && <details><summary>父目录原已相同的文件</summary><ul>{receipt.report.noop.map((path) => <li key={path} className="break-all">{path}</li>)}</ul></details>}
       {!!receipt.report.conflicts.length && <details open><summary>未处理冲突</summary><ul>{receipt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
+      {!!receipt.report.remaining?.length && <details open><summary>未选择的变更</summary><ul>{receipt.report.remaining.map((path) => <li key={path} className="break-all">{path}</li>)}</ul></details>}
       <p>回执记录当时结果，文件可能后来发生变化。请核对父目录并通过后续任务按权限执行需要的验证。</p>
       {receipt.report.complete && <button type="button" disabled={busy || !projectId} onClick={() => void addFollowup()}>将收集回执加入后续任务草稿</button>}
       {allowCollect && receipt.report.complete && <button type="button" disabled={busy || !projectId || !!validation} onClick={() => void startValidation()}>审阅并运行项目验证</button>}
@@ -610,6 +619,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       {review.files.length === 0 && <p>没有记录到文件变化。</p>}
       {review.files.map((file) => <details key={file.path}><summary>{file.path}{file.conflict ? ` · 冲突：${file.conflict}` : file.resolved ? " · 已手动合并" : ""}</summary>
         {file.owner_executable !== undefined && <p>新增文件：所有者{file.owner_executable ? "可执行" : "不可执行"}；收集不复制组或其他用户权限。</p>}
+        {(allowCollect || review.team_collection?.eligible) && !file.conflict && file.child_sha256 && file.parent_sha256 !== file.child_sha256 && <button type="button" disabled={busy || review.state === "collected"} onClick={() => void invoke(true, false, file.path)}>仅收集此文件</button>}
         {file.diff_unavailable ? <p>差异过大或非 UTF-8，请手动查看。</p> : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.diff || "（内容相同或无文本差异）"}</pre>}
         {file.diff_truncated && <p>差异已截断，请手动查看。</p>}
         {(allowCollect || review.team_collection?.eligible) && file.conflict === "parent_changed" && file.merge_parent_text !== undefined && <button type="button" disabled={busy} onClick={() => setMerge({ path: file.path, text: file.merge_parent_text! })}>编辑手动合并结果</button>}

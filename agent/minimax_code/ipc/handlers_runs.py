@@ -449,13 +449,15 @@ def register_run_handlers(server: Any) -> None:
                         await ctx.reply({"resolution": result, "session_id": req.session_id,
                                          "project_id": project_id, "service_id": identity})
                         return
-                    if req.on_conflict == "fail" and any(item["conflict"] for item in reviewed["files"]):
+                    if req.path is not None and not any(item["path"] == req.path for item in reviewed["files"]):
+                        raise ValueError("Selected file is not in this reviewed change set")
+                    if req.on_conflict == "fail" and any(item["conflict"] and (req.path is None or item["path"] == req.path) for item in reviewed["files"]):
                         raise ValueError("Conflicts must be resolved before collection")
                     # Cancellation must not leave an unobserved writer running.
                     def collect():
                         with execution_scope(ExecutionPolicy(workspace=root)):
                             return collect_child(child, on_conflict=req.on_conflict,
-                                expected_parent_identity=tuple(reviewed["parent_identity"]))
+                                expected_parent_identity=tuple(reviewed["parent_identity"]), selected_path=req.path)
                     task = asyncio.create_task(asyncio.to_thread(collect))
                     try:
                         report = await asyncio.shield(task)
