@@ -668,12 +668,10 @@ async def _drive_run_impl(
                 status=terminal_status,
                 metadata=completion_metadata,
             )
-            from ...run_ownership import owned_runtime
-            if owned_runtime.get() is not None and saved_run is None:
+            if run_metadata.get("budget_family_id") and saved_run is None:
                 raise RuntimeError("Sub-agent terminal record is missing")
         except Exception as exc:  # pragma: no cover — defensive
-            from ...run_ownership import owned_runtime
-            if owned_runtime.get() is not None:
+            if run_metadata.get("budget_family_id"):
                 from ...run_errors import RunPersistenceError
                 raise RunPersistenceError("Sub-agent completion could not be persisted; review its effects") from exc
             logger.debug("subagent run completion not persisted", exc_info=True)
@@ -1023,14 +1021,14 @@ class SpawnSubagentTool(Tool):
         }
         run_dao: Any = None
         from ...run_ownership import owned_runtime
-        durable_child = owned_runtime.get() is not None
+        from ...budget_ledger import current_handle
+        inherited_budget = current_handle()
+        durable_child = owned_runtime.get() is not None or inherited_budget is not None
         try:
             from ...app import get_db
             from ...storage.dao.runs import AgentRunsDAO
 
             if durable_child:
-                from ...budget_ledger import current_handle
-                inherited_budget = current_handle()
                 if inherited_budget is None:
                     raise RuntimeError("Sub-agent budget owner is unavailable")
                 # Keep the family in the admitted record and all later copied

@@ -848,9 +848,20 @@ class SubAgentRuntime:
                     raise RunPersistenceError("Owned sub-agent durable run/session/budget binding is unavailable")
             else:
                 inherited = current_handle()
-            # Standalone team children have no durable child run row. Keep
-            # their attempts on the durable team owner, not a workspace id.
-            budget_owner = durable_owner or (inherited.run_id if inherited else current_run_id())
+            # Direct team members have no run row and use the team owner.
+            # Spawned descendants do have a run row: require its family and
+            # session binding before attributing any attempts to that child.
+            budget_owner = durable_owner or (current_run_id() if inherited else None) or (inherited.run_id if inherited else None)
+            if inherited and budget_owner != inherited.run_id:
+                from ..app import get_db
+                from ..storage.dao.runs import AgentRunsDAO
+                db = get_db()
+                owner = await AgentRunsDAO(db).get_run(budget_owner) if db is not None else None
+                metadata = (owner or {}).get("metadata") or {}
+                if (owner is None or owner["session_id"] != session_id or owner["status"] != "running"
+                        or metadata.get("budget_family_id") != inherited.family_id
+                        or metadata.get("parent_run_id") != inherited.run_id):
+                    raise RunPersistenceError("Sub-agent run and inherited budget binding changed")
             descendant = inherited.descendant(budget_owner or inherited.run_id) if inherited else None
             from contextlib import ExitStack
             with ExitStack() as scopes:
