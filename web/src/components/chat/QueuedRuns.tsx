@@ -15,6 +15,39 @@ export function QueuedRuns({ session, host, runs, stale }: {
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setBusy(null); setNotice("连接已变化，请刷新后核对队列。"); }), []);
   if (!runs.length) return null;
 
+  const copyToDraft = async (run: RunTimelineEntry) => {
+    if (lock.current || stale) return;
+    const ticket = ++epoch.current;
+    const project = useSessionStore.getState().currentProjectId;
+    const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === session &&
+      useSessionStore.getState().currentProjectId === project;
+    lock.current = true; setBusy(run.id); setNotice("");
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      const snapshot = await typedIPC.getRunSteps(run.id);
+      const identityAfter = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (!identity.service_id || identityAfter.service_id !== identity.service_id ||
+          snapshot.run.id !== run.id || snapshot.run.session_id !== session ||
+          snapshot.run.status !== "queued" || snapshot.run.started_at ||
+          snapshot.steps.some((step) => step.run_id !== run.id || step.session_id !== session)) {
+        throw new Error("任务或服务状态已变化，请刷新队列");
+      }
+      const input = snapshot.queued_input;
+      if (!input || input.truncated || !input.text) throw new Error("无法取得完整的文本内容，请勿用预览替代原请求");
+      const detail: { host: string; project: string | null; session: string; text: string; result?: string } = {
+        host, project, session, text: input.text,
+      };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      setNotice(detail.result === "已添加到当前会话草稿，尚未发送。"
+        ? "内容已加入草稿，尚未发送。原任务仍在队列中，可能随时开始；如需替换，请单独取消并确认其状态。"
+        : detail.result ?? "聊天输入区未就绪，请稍后重试。");
+    } catch (error) {
+      if (current()) setNotice(`未取回内容：${error instanceof Error ? error.message : String(error)}`);
+    } finally { lock.current = false; if (current()) setBusy(null); }
+  };
+
   const cancel = async (run: RunTimelineEntry) => {
     if (lock.current || stale) return;
     const ticket = ++epoch.current;
@@ -53,8 +86,9 @@ export function QueuedRuns({ session, host, runs, stale }: {
     <ul className="space-y-2">{runs.map((run) => <li key={run.id} className="rounded bg-surface-2 p-2">
       <p className="break-all">{run.title || "未命名任务"} · {run.id}</p>
       {run.queuedInput && <details><summary>查看已接收内容</summary><pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all">{run.queuedInput.text}</pre>{run.queuedInput.truncated && <p>内容预览已截断。</p>}</details>}
+      {run.queuedInput && !run.queuedInput.truncated && !!run.queuedInput.text && <Button type="button" size="sm" variant="secondary" disabled={stale || !!busy} onClick={() => void copyToDraft(run)}>复制内容到草稿</Button>}
       {run.metadata?.cancel_requested === true ? <p>已请求取消，等待服务完成处理。</p> :
-        <Button type="button" size="sm" variant="secondary" disabled={stale || !!busy} onClick={() => void cancel(run)}>{busy === run.id ? "正在取消…" : "取消此排队任务"}</Button>}
+        <Button type="button" size="sm" variant="secondary" disabled={stale || !!busy} onClick={() => void cancel(run)}>{busy === run.id ? "处理中…" : "取消此排队任务"}</Button>}
     </li>)}</ul>
     {notice && <p role="status" className="break-words text-status-warning">{notice}</p>}
   </div>;
