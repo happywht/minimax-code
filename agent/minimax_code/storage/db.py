@@ -443,6 +443,21 @@ class AsyncDatabase:
     # -- transaction helpers ------------------------------------------------
 
     @asynccontextmanager
+    async def read_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Read a consistent SQLite snapshot while excluding shared-connection operations."""
+        await self.connect()
+        assert self._conn is not None
+        conn = self._conn
+        async with self._lock:
+            try:
+                await conn.execute("BEGIN")
+                yield conn
+                await _finish_cleanup(conn.commit())
+            except BaseException:
+                await _finish_cleanup(conn.rollback())
+                raise
+
+    @asynccontextmanager
     async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
         """Async context manager wrapping a single transaction."""
         await self.connect()

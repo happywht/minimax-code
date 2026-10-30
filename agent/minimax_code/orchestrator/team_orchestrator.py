@@ -169,13 +169,20 @@ class TeamOrchestrator:
 
     async def capture_team(self, team_name: str) -> None:
         """Capture the template and member rows for this in-process admission."""
-        team = await self._team_dao.get_by_name(team_name)
-        rows = {}
-        if team is not None and self._agent_dao is not None:
-            for name in team.get("agents", []):
-                rows[name] = copy.deepcopy(await self._agent_dao.get(name))
+        snapshot = getattr(self._team_dao, "snapshot_with_members", None)
+        if snapshot is not None:
+            if self._agent_dao is not None and self._agent_dao._db is not self._team_dao._db:
+                raise ValueError("Team and member configurations must use the same database")
+            team, rows = await snapshot(team_name, include_members=self._agent_dao is not None)
+        else:
+            # Compatibility for injected DAO implementations without SQLite.
+            team = await self._team_dao.get_by_name(team_name)
+            rows = {}
+            if team is not None and self._agent_dao is not None:
+                for name in team.get("agents", []):
+                    rows[name] = await self._agent_dao.get(name)
         self._accepted_team = copy.deepcopy(team)
-        self._accepted_agents = rows
+        self._accepted_agents = copy.deepcopy(rows)
 
     # -- public API ---------------------------------------------------------
 

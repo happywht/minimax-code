@@ -68,6 +68,26 @@ class AgentTeamDAO:
         )
         return _hydrate(row)
 
+    async def snapshot_with_members(
+        self, name: str, *, include_members: bool = True,
+    ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any] | None]]:
+        """Read the template and its named members from one SQLite snapshot."""
+        if not name or not isinstance(name, str):
+            raise ValueError(f"name must be a non-empty string, got {name!r}")
+        from .agents import _hydrate as hydrate_agent
+
+        members: dict[str, dict[str, Any] | None] = {}
+        async with self._db.read_transaction() as conn:
+            async with conn.execute("SELECT * FROM agent_teams WHERE name = ?", (name,)) as cur:
+                team = _hydrate(await cur.fetchone())
+            if team is not None and include_members:
+                for member_name in team.get("agents", []):
+                    if member_name in members:
+                        continue
+                    async with conn.execute("SELECT * FROM agents WHERE name = ?", (member_name,)) as cur:
+                        members[member_name] = hydrate_agent(await cur.fetchone())
+        return team, members
+
     # ---- write -----------------------------------------------------------
 
     async def create(
