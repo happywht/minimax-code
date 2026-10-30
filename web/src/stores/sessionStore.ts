@@ -121,6 +121,7 @@ export interface SessionState {
   moveSessionProject: (id: string, projectId: string) => Promise<void>;
   mergeSessions: (sessions: SessionMeta[]) => void;
   setCurrent: (id: string | null, loadMessages?: boolean) => boolean;
+  selectVerifiedScope: (session: Session, project: Project) => boolean;
   setFilter: (filter: SessionFilter) => void;
   setCurrentProject: (id: string | null) => boolean;
   toggleProjectExpanded: (id: string) => void;
@@ -397,6 +398,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sessions: Array.from(byId.values()).sort((a, b) => b.updated_at - a.updated_at),
       };
     });
+  },
+
+  selectVerifiedScope: (session, project) => {
+    const projectId = project.id;
+    if (!session.id || session.archived || project.archived || session.project_id !== projectId || !projectId) return false;
+    const previous = get();
+    if ((previous.currentSessionId !== session.id || previous.currentProjectId !== projectId) && !allowScopeChange()) return false;
+    ++refreshSeq;
+    set((state) => {
+      const sessions = new Map(state.sessions.map((item) => [item.id, item]));
+      for (const item of sanitizeSessions([session])) sessions.set(item.id, { ...sessions.get(item.id), ...item });
+      const projects = new Map(state.projects.map((item) => [item.id, item]));
+      projects.set(project.id, project);
+      return { sessions: Array.from(sessions.values()).sort((a, b) => b.updated_at - a.updated_at),
+        projects: Array.from(projects.values()), currentSessionId: session.id, currentProjectId: projectId,
+        expandedProjectIds: state.expandedProjectIds.includes(projectId) ? state.expandedProjectIds : [...state.expandedProjectIds, projectId] };
+    });
+    storeCurrentSessionId(session.id); storeCurrentProjectId(projectId); storeExpandedProjectIds(get().expandedProjectIds);
+    if (previous.currentSessionId !== session.id || previous.currentProjectId !== projectId) {
+      useChat.getState().reset();
+      void useChat.getState().loadMessages(session.id);
+    }
+    return true;
   },
 
   setCurrent: (id: string | null, loadMessages = true) => {

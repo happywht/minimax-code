@@ -4,8 +4,9 @@ import { useSessionStore } from "../../stores";
 import type { AgentRun, ProjectRunSummaryResult, RunStepsResult } from "../../types/ipc";
 import { Button, Textarea } from "../../ui";
 import { RunAttachments } from "./RunAttachments";
+import { requestConfirmation } from "../modals/ConfirmationDialog";
 
-type Reference = { version: 1; service_id: string; project_id: string; session_id: string; run_id: string };
+export type Reference = { version: 1; service_id: string; project_id: string; session_id: string; run_id: string };
 const id = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(value);
 function valid(value: unknown): value is Reference {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -53,7 +54,7 @@ export function RunReferenceExport({ run }: { run: AgentRun }): JSX.Element {
 }
 
 /** Read an existing run on the currently authenticated service, never resume it. */
-export function RunReferenceRecovery(): JSX.Element {
+export function RunReferenceRecovery({ onLocate }: { onLocate: (target: Reference & { host: string }) => void }): JSX.Element {
   const session = useSessionStore((s) => s.currentSessionId), project = useSessionStore((s) => s.currentProjectId);
   const base = ipc.agentBaseUrl, [input, setInput] = useState(""), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [result, setResult] = useState<{ ref: Reference; summary: ProjectRunSummaryResult; steps: RunStepsResult } | null>(null);
@@ -83,6 +84,45 @@ export function RunReferenceRecovery(): JSX.Element {
     } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : "无法读取运行"); }
     finally { running.current = false; setBusy(false); }
   };
+  const locate = async () => {
+    if (running.current || !result) return;
+    const selected = result.ref;
+    running.current = true; setBusy(true); setMessage("");
+    const ticket = epoch.current, origin = ipc.agentBaseUrl;
+    const current = () => ticket === epoch.current && origin === ipc.agentBaseUrl && useSessionStore.getState().currentSessionId === session && useSessionStore.getState().currentProjectId === project;
+    try {
+      const before = await typedIPC.getServiceIdentity();
+      if (!current() || before.service_id !== selected.service_id) throw new Error("服务身份已变化");
+      await summary(selected);
+      const [snapshot, targetSession] = await Promise.all([typedIPC.getRunSteps(selected.run_id), typedIPC.getSession(selected.session_id)]);
+      const again = await summary(selected);
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (after.service_id !== selected.service_id || targetSession.session.id !== selected.session_id || targetSession.session.archived ||
+          targetSession.session.project_id !== selected.project_id || again.detail?.session_id !== selected.session_id ||
+          snapshot.run.id !== selected.run_id || snapshot.run.session_id !== selected.session_id || snapshot.run.metadata?.project_id !== selected.project_id ||
+          snapshot.steps.some((step) => step.run_id !== selected.run_id || step.session_id !== selected.session_id)) throw new Error("服务、会话或运行归属已变化");
+      if (session !== selected.session_id || project !== selected.project_id) {
+        const accepted = await requestConfirmation({ title: "切换到原项目和会话？", description: "切换会离开当前输入内容并清除未发送的附件或正在读取的文件。请先保存需要保留的草稿；只打开已有运行，不会执行任务。", confirmLabel: "切换并查看" });
+        if (!accepted || !current()) return;
+        const identity = await typedIPC.getServiceIdentity();
+        if (!current() || identity.service_id !== selected.service_id) throw new Error("服务身份已变化");
+        await summary(selected);
+        if (!current()) return;
+      }
+      const [freshSession, projects] = await Promise.all([typedIPC.getSession(selected.session_id), typedIPC.listProjects()]);
+      const finalSummary = await summary(selected);
+      if (!current()) return;
+      if (freshSession.session.id !== selected.session_id || freshSession.session.archived ||
+          freshSession.session.project_id !== selected.project_id || finalSummary.detail?.session_id !== selected.session_id)
+        throw new Error("会话归属已变化");
+      const selectedProject = projects.projects.find((item) => item.id === selected.project_id && !item.archived);
+      if (!selectedProject) throw new Error("项目已归档或不可用");
+      if (!useSessionStore.getState().selectVerifiedScope(freshSession.session, selectedProject)) return;
+      onLocate({ ...selected, host: origin });
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : "无法打开原运行"); }
+    finally { running.current = false; setBusy(false); }
+  };
   return <details className="border-b border-line p-3 text-xs" onToggle={(event) => { if (!event.currentTarget.open) { epoch.current++; setResult(null); setMessage(""); } }}>
     <summary>用定位记录找回运行</summary>
     <p>先连接并登录原远端服务，再粘贴记录。只读取原运行，不重跑或迁移；服务身份可能随数据库克隆，请自行确认实际主机。</p>
@@ -90,6 +130,7 @@ export function RunReferenceRecovery(): JSX.Element {
     <Button size="sm" variant="secondary" disabled={busy || !input.trim()} onClick={() => void find()}>核对并读取运行</Button>
     {message && <p role="status" className="break-words">{message}</p>}
     {result && <div className="space-y-2"><p className="break-all">运行 {result.ref.run_id} · 会话 {result.ref.session_id} · 项目 {result.ref.project_id}</p>
+      <Button size="sm" variant="secondary" disabled={busy} onClick={() => void locate()}>进入原会话并定位运行</Button>
       <p>{result.summary.detail?.title || "未命名运行"} · 读取时状态 {result.summary.detail?.status}。状态和结果可能变化，连接成功不代表任务完成。</p>
       {result.summary.detail?.text && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{result.summary.detail.text}</pre>}
       {result.summary.detail?.text_truncated && <p>结果预览已截断。</p>}

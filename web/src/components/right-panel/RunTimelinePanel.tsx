@@ -31,7 +31,7 @@ import { OutputStorage } from "./OutputStorage";
 import { RunTimelineTextArtifacts } from "./RunTimelineTextArtifacts";
 import { CodexInputImages } from "./CodexInputImages";
 import { CodexInputDraft } from "./CodexInputDraft";
-import { RunReferenceExport, RunReferenceRecovery } from "./RunReferenceRecovery";
+import { RunReferenceExport, RunReferenceRecovery, type Reference } from "./RunReferenceRecovery";
 
 export type TimelineTarget = { host: string; service: string; project: string; session: string; run: string;
   job: string; occurrence: string; revision: number; workspace: string };
@@ -53,6 +53,10 @@ export function RunTimelinePanel({
   const order = useRunTimelineStore((s) => s.order);
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
   const currentProjectId = useSessionStore((s) => s.currentProjectId);
+  const [referenceTarget, setReferenceTarget] = useState<(Reference & { host: string }) | null>(null);
+  useEffect(() => {
+    if (referenceTarget && (referenceTarget.host !== ipc.agentBaseUrl || referenceTarget.project_id !== currentProjectId || referenceTarget.session_id !== currentSessionId)) setReferenceTarget(null);
+  }, [referenceTarget, currentProjectId, currentSessionId]);
   const pendingPermissions = usePermissionStore((s) => s.pending);
   const resolvePermission = usePermissionStore((s) => s.resolve);
 
@@ -138,11 +142,15 @@ export function RunTimelinePanel({
     return <TargetRunTimeline key={JSON.stringify(target)} target={target} onClear={onClearTarget} />;
   }
 
+  if (referenceTarget && referenceTarget.host === ipc.agentBaseUrl && referenceTarget.project_id === currentProjectId && referenceTarget.session_id === currentSessionId) {
+    return <ReferenceTargetTimeline key={JSON.stringify(referenceTarget)} target={referenceTarget} onClear={() => setReferenceTarget(null)} />;
+  }
+
   if (visibleRuns.length === 0 && pending.length === 0) {
     return (
       <div data-testid={testId} className="px-3 py-4 text-xs text-minimax-muted">
         <OutputStorage />
-        <RunReferenceRecovery />
+        <RunReferenceRecovery onLocate={setReferenceTarget} />
         {loading
           ? strings.rightPanel.timeline.loading
           : error
@@ -159,7 +167,7 @@ export function RunTimelinePanel({
         <OutputStorage />
       </div>
       {syncError}
-      <RunReferenceRecovery />
+      <RunReferenceRecovery onLocate={setReferenceTarget} />
       <div
         ref={scrollRef}
         data-testid="run-timeline-scroll"
@@ -270,6 +278,46 @@ export function RunTimelinePanel({
       )}
     </div>
   );
+}
+
+function ReferenceTargetTimeline({ target, onClear }: { target: Reference & { host: string }; onClear: () => void }): JSX.Element {
+  const [snapshot, setSnapshot] = useState<RunStepsResult | null>(null);
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const epoch = useRef(0);
+  const load = async () => {
+    const ticket = ++epoch.current;
+    const current = () => ticket === epoch.current && ipc.agentBaseUrl === target.host &&
+      useSessionStore.getState().currentProjectId === target.project_id && useSessionStore.getState().currentSessionId === target.session_id;
+    setSnapshot(null); setBusy(true); setError("");
+    try {
+      const check = async () => {
+        const info = await typedIPC.getProjectRunSummary({ project_id: target.project_id, expected_service_id: target.service_id, run_id: target.run_id });
+        if (info.service_id !== target.service_id || info.project_id !== target.project_id || info.detail?.id !== target.run_id || info.detail.session_id !== target.session_id) throw new Error("运行归属已变化");
+      };
+      await check();
+      const [result, session, projects] = await Promise.all([typedIPC.getRunSteps(target.run_id), typedIPC.getSession(target.session_id), typedIPC.listProjects()]);
+      await check();
+      if (!current()) return;
+      if (!projects.projects.some((project) => project.id === target.project_id && !project.archived) || session.session.id !== target.session_id || session.session.project_id !== target.project_id || session.session.archived ||
+          result.run.id !== target.run_id || result.run.session_id !== target.session_id || result.run.metadata?.project_id !== target.project_id ||
+          !Number.isSafeInteger(result.cursor) || result.cursor < 0 || result.steps.some((step) => step.run_id !== target.run_id || step.session_id !== target.session_id)) throw new Error("服务、会话或运行归属已变化");
+      setSnapshot(result);
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "无法读取目标运行"); }
+    finally { if (current()) setBusy(false); }
+  };
+  useEffect(() => { void load(); const off = ipc.onSideCar(() => { epoch.current++; setSnapshot(null); setBusy(false); setError("连接已变化，请重新读取目标运行。"); }); return () => { epoch.current++; off(); }; }, [target]);
+  return <div className="space-y-2 p-3 text-xs" data-testid="reference-run-timeline">
+    <h3 className="font-semibold">已定位的运行时间线</h3><p className="break-all">运行：{target.run_id} · 会话：{target.session_id}</p>
+    <div className="flex gap-2"><Button size="sm" variant="secondary" disabled={busy} onClick={() => void load()}>刷新此运行</Button><Button size="sm" variant="ghost" onClick={onClear}>返回近期时间线</Button></div>
+    {busy && <p role="status">正在核对并读取运行…</p>}{error && <p role="alert" className="break-words text-status-warning">{error}</p>}
+    {snapshot && <article className="space-y-2"><p>{snapshot.run.title || "未命名运行"} · 读取时状态 {snapshot.run.status}</p>
+      <p>此视图只读取记录；运行状态可能变化，不会自动执行或迁移任务。</p>
+      <ol className="space-y-1.5">{[...snapshot.steps].sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id)).map((step) => <TimelineStep key={step.id} step={step} runStatus={snapshot.run.status} />)}</ol>
+      {!snapshot.steps.length && <p>暂无已记录步骤。</p>}
+      <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: target.session_id, projectId: target.project_id, serviceId: target.service_id }} />
+      <RunTimelineTextArtifacts run={snapshot.run} />
+    </article>}
+  </div>;
 }
 
 function TargetRunTimeline({ target, onClear }: { target: TimelineTarget; onClear?: () => void }): JSX.Element {

@@ -2428,3 +2428,5 @@ publication, so the saved ID and remote path must be used to query
 `schedule.manual_receipt` 必须传入 `job_id`、`idempotency_key`、`expected_revision` 和 `expected_service_id`。服务端在同一数据库事务内核对服务身份，查找原 manual occurrence 并验证与版本对应的指纹，不调用调度器、不创建或重试任务。返回 `{found:false,receipt:null}` 或 `{found:true,receipt}`；匹配回执只包含原发生/任务/运行 ID 与读取时状态，`created:false`。界面显式查询找到后核对本地原请求、清除待确认记录并展示原发生编号；查不到或错误保留记录。结果只代表当前数据库快照，未找到不证明在途请求不会接单，也不能排除备份恢复或克隆导致的历史差异。
 
 工作台可从当前项目的运行生成仅含 `version`、`service_id`、`project_id`、`session_id` 和 `run_id` 的可复制定位记录；登录到原服务后显式粘贴，通过现有 `run.project_summary` 的服务和项目归属校验、`run.steps` 的会话/步骤核对读取快照及关联附件。只支持该摘要入口可见的非归档主运行及其权限边界；不自动恢复、迁移或重放任务。摘要服务身份可能随数据库克隆，记录不是主机身份凭证或签名；用户须核对实际远端主机。
+
+定位记录核对后，用户可选择进入原项目与会话并打开指定运行的独立时间线：再次检查服务身份、非归档项目/会话、运行与步骤归属；切换项目和会话以单次状态更新完成，并遵守现有切换守卫。跨会话/项目切换前明确提示保存草稿及未发送附件，须用户确认。目标视图只读取记录及显式选择的成果，不自动执行、恢复或迁移；连接变化后须重新读取。服务身份仍不能证明物理主机身份。
