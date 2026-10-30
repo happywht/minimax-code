@@ -28,6 +28,7 @@ import {
   useProviderStore,
   useSessionStore,
 } from "./stores";
+import type { HistoricalReportTransfer } from "./components/panels/DeliveryWorkspace";
 import type { SettingsTab } from "./components/settings/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
 import type { CommandPaletteHandle } from "./components/layout/CommandPalette";
@@ -93,6 +94,8 @@ export default function App() {
   const deliveryEdited = useRef(false);
   const officeEdited = useRef(false);
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
+  const [historicalTransfer, setHistoricalTransfer] = useState<HistoricalReportTransfer | null>(null);
+  useEffect(() => { if (overlayView !== "attachments") setHistoricalTransfer(null); }, [overlayView]);
   const [scheduleTarget, setScheduleTarget] = useState<{ jobId: string; occurrenceId?: string; host: string } | null>(null);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
@@ -416,9 +419,9 @@ export default function App() {
                   {overlayView === "task-dashboard" ? (
                     <ProjectRunDashboard onClose={() => setOverlayView(null)} onOpenSession={() => {
                       setOverlayView(null); setView("chat"); setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline"));
-                    }} />
+                    }} onPrepareReport={(transfer) => { setHistoricalTransfer(transfer); setOverlayView("attachments"); }} />
                   ) : overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
-                    <DeliveryWorkspace tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={(kind) => { if (kind === "table") officeEdited.current = true; else deliveryEdited.current = true; }} onClose={() => { if (leaveDelivery()) setOverlayView(null); }} />
+                    <DeliveryWorkspace tab={overlayView} historicalTransfer={historicalTransfer} onClearHistoricalTransfer={() => setHistoricalTransfer(null)} onSelect={(tab) => setOverlayView(tab)} onEdit={(kind) => { if (kind === "table") officeEdited.current = true; else deliveryEdited.current = true; }} onClose={() => { if (leaveDelivery()) setOverlayView(null); }} />
                   ) : overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks" ? (
                     <AutomationWorkspace scheduleTarget={scheduleTarget} tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onScheduledEdit={() => { scheduledDraftEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (!leaveAutomation()) return false; setOverlayView(null); setView("chat"); return true; }} />
                   ) : overlayView === "skills" ? (

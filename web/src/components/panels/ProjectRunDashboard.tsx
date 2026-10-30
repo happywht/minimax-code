@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
-import { StreamEvent, type ProjectRunSummaryItem, type ProjectRunSummaryResult, type RunStepsResult, type VerificationEvidence } from "../../types/ipc";
+import { StreamEvent, type ProjectRunSummaryItem, type ProjectRunSummaryResult, type RunStepsResult, type VerificationEvidence, type TextArtifact } from "../../types/ipc";
 import { Button } from "../../ui";
 import { VerificationBadge } from "../chat/VerificationBadge";
 import { VerificationDetails } from "../chat/VerificationDetails";
@@ -16,7 +16,7 @@ const cancellable = new Set(["queued", "planning", "running", "awaiting_approval
 const statusLabels: Record<string, string> = { queued: "排队中", planning: "规划中", running: "运行中", awaiting_approval: "等待授权",
   waiting_input: "等待输入", budget_paused: "预算暂停", interrupted: "中断待核对", completed: "执行结束", failed: "执行失败", cancelled: "已取消" };
 
-export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () => void; onOpenSession: () => void }): JSX.Element {
+export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }: { onClose: () => void; onOpenSession: () => void; onPrepareReport: (transfer: { host: string; service: string; project: string; session: string; row: TextArtifact }) => void }): JSX.Element {
   const project = useSessionStore((s) => s.currentProjectId), host = ipc.agentBaseUrl;
   const activeSession = useSessionStore((s) => s.currentSessionId);
   const name = useSessionStore((s) => s.projects.find((item) => item.id === project)?.name);
@@ -86,6 +86,32 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
         onOpenSession();
       } else { setDetail(result.detail); setSnapshot(steps); }
     } catch (e) { if (current()) setError(e instanceof Error ? e.message : String(e)); }
+    finally { if (current()) setBusy(false); }
+  };
+  const prepareHistoricalReport = async (row: TextArtifact) => {
+    if (!project || !service || !detail || busy) return;
+    const ticket = ++generation.current, expected = service, run = detail.id, session = detail.session_id;
+    const current = () => ticket === generation.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === activeSession;
+    setBusy(true); setError("");
+    try {
+      const [identity, result, target, artifact] = await Promise.all([
+        typedIPC.getServiceIdentity(), typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: expected, run_id: run }),
+        typedIPC.getSession(session), typedIPC.getArtifact(project, row.id),
+      ]);
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      const fresh = artifact.artifact;
+      if (identity.service_id !== expected || after.service_id !== expected || result.project_id !== project ||
+          result.service_id !== expected || result.detail?.id !== run || result.detail.session_id !== session ||
+          target.session.id !== session || target.session.project_id !== project || fresh.id !== row.id ||
+          fresh.project_id !== project || fresh.service_id !== expected || fresh.run_id !== run ||
+          fresh.sha256 !== row.sha256 || fresh.snapshot_id !== row.snapshot_id || fresh.version !== row.version ||
+          fresh.source_path !== row.source_path || fresh.size_bytes !== row.size_bytes || fresh.mime_type !== row.mime_type)
+        throw new Error("运行、会话或成果身份已变化，请重新选择。");
+      if (session !== activeSession && !useSessionStore.getState().setCurrent(session)) return;
+      onPrepareReport({ host, service: expected, project, session, row: fresh });
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { if (current()) setBusy(false); }
   };
   const searchHistory = async (term: string, offset: number) => {
@@ -199,7 +225,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession }: { onClose: () =>
           <p className="text-ink-2">步骤记录与配置命令的结果不证明交付质量；运行中的快照可能发生变化。</p>
         </div>
         <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: detail.session_id, projectId: project!, serviceId: service }} />
-        <RunTextArtifacts key={`${service}:${detail.id}:${detail.session_id}`} runId={detail.id} sessionId={detail.session_id} projectId={project!} serviceId={service} review />
+        <RunTextArtifacts key={`${service}:${detail.id}:${detail.session_id}`} runId={detail.id} sessionId={detail.session_id} projectId={project!} serviceId={service} review onPrepareReport={(row) => void prepareHistoricalReport(row)} />
         <FollowupRunDraft key={`${service}:${detail.id}:${activeSession}`} run={snapshot.run} allowOtherSession />
         {(["interrupted", "failed", "cancelled", "budget_paused"].includes(snapshot.run.status) ||
           (snapshot.run.status === "completed" && snapshot.run.metadata?.truncated === true && !!snapshot.run.metadata?.schedule)) &&
