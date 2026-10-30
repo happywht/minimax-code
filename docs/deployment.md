@@ -128,6 +128,19 @@ python scripts/copy-upgrade-backup.py --source-transaction "D:/minimax-backups/m
 
 完成后先审阅状态与排除项，再按适用流程手动决定升级。备份不含系统密钥环、环境变量、未登记工作区文件及其他 bundle 排除项；需分别保全。它不切换或启动服务、不迁移或删除数据、不自动回退，也不支持逆向 schema 迁移。版本包显式启动入口仍会拒绝 schema 不匹配的旧库；Linux systemd 的完整切换使用下文独立流程。此入口尚未做真实升级、备份恢复或跨机演练。
 
+### 从手动升级备份恢复到新目录
+
+确认服务、任务和所有外部写入者已停止，并独立核实备份来源后，可用当前版本提供的
+脚本恢复 `backup-ready` 手动升级事务或 `.COPY-COMPLETE` 的副本：
+
+```powershell
+python scripts/restore-upgrade-backup.py --source-transaction "D:/minimax-backups/minimax-upgrade-backup-example" --old-release "D:/apps/minimax-old" --old-python "D:/apps/minimax-old/agent/.venv/Scripts/python.exe" --new-data-dir "D:/restores/old-data" --confirm-stopped --confirm-trusted-source
+```
+
+Linux 同样使用该命令和本机绝对路径；新目录不能已存在，父目录须已存在，Linux 要求当前用户持有且权限为 0700，Windows 需自行限制 ACL。脚本核对原状态或副本回执、旧版清单中的版本和提交、文件 SHA-256，并复制到私有暂存后调用旧版本的 bundle verify 和 restore；目的目录不能与源备份、两个记录的版本路径或旧数据重叠。暂存文件上限 2 GiB，验证还受旧版 bundle 自身限制。记录的路径需为当前系统的绝对路径。清单和摘要不能认证发布者或证明旧程序未被修改，来源信任需独立确认。
+
+命令只恢复 data-only 包到新目录，不切换、停止或启动服务，不覆盖原目录，也不逆向迁移。工作区、密钥环、环境变量和包列明的其他排除项仍需另行恢复；新目录不可立即假定可用。中断或失败可能留下目标目录及已打印的暂存目录，应先检查并保留证据，勿直接重试或启动。目录、版本及备份应在操作期间由用户独占；工具不能锁住非协作进程。此功能尚未进行实际恢复或升级演练。
+
 ### Linux 用户服务配置生成（实验）
 
 在 Linux 上准备好固定版本、已安装依赖的虚拟环境和预构建前端后，可生成配置供审查：
