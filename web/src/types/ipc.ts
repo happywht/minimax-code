@@ -2387,6 +2387,7 @@ export interface CheckpointRestoreResult {
     restored: boolean;
     applied_stash: boolean;
     restored_untracked: string[];
+    restored_tracked?: string[];
     skipped_existing: string[];
     warnings: string[];
   };

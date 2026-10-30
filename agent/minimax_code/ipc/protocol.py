@@ -113,6 +113,8 @@ class CheckpointRestoreParams(_Base):
     cwd: str | None = None
     legacy_source_confirmed: bool | None = None
     untracked_file: str | None = Field(default=None, min_length=1)
+    tracked_file: str | None = Field(default=None, min_length=1)
+    expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class CheckpointUntrackedPreview(_Base):

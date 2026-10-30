@@ -225,7 +225,16 @@ def register_checkpoint_handlers(
             workdir = await _resolve_checkpoint_cwd(p, row)
             mgr = await manager_factory()
             checkpoint = _row_to_checkpoint(row)
-            if "untracked_file" in p:
+            if "tracked_file" in p:
+                if "untracked_file" in p or "expected_sha256" in p:
+                    raise HandlerError(INVALID_PARAMS, "tracked_file cannot be combined with untracked options")
+                if not row.get("source_root"):
+                    raise HandlerError(INVALID_PARAMS, "Tracked file recovery requires a recorded repository root")
+                try:
+                    result = await mgr.restore_tracked_file(workdir, checkpoint, _string_required(p, "tracked_file"))
+                except ValueError as exc:
+                    raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+            elif "untracked_file" in p:
                 relative = _string_required(p, "untracked_file")
                 expected = p.get("expected_sha256")
                 if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
@@ -491,6 +500,7 @@ def _result_to_dict(result: CheckpointRestoreResult) -> dict[str, Any]:
         "restored": result.restored,
         "applied_stash": result.applied_stash,
         "restored_untracked": result.restored_untracked,
+        "restored_tracked": result.restored_tracked,
         "skipped_existing": result.skipped_existing,
         "warnings": result.warnings,
     }

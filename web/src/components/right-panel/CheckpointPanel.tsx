@@ -168,6 +168,31 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     }
   };
 
+  const handleRestoreTrackedFile = async (ckpt: Checkpoint, path: string) => {
+    if (!ckpt.source_root || restoring) return;
+    const accepted = await requestConfirmation({
+      title: `恢复已跟踪文件 ${path}`,
+      description: "从检查点捕获的工作树版本创建此文件，仅当目标不存在且父目录已存在时进行；不恢复暂存状态或文件权限。快照可能不可用，文件上限为 16 MiB。",
+      confirmLabel: "恢复此文件",
+    });
+    if (!accepted) return;
+    setRestoring(true);
+    try {
+      const { result } = await typedIPC.restoreCheckpoint(ckpt.id, { tracked_file: path });
+      const details = [...result.warnings];
+      if (result.skipped_existing.length) details.push(`目标已存在，未覆盖：${result.skipped_existing.join(", ")}`);
+      if (!result.restored && !details.length) details.push("没有文件被恢复。");
+      setRestoreDetails((prev) => ({ ...prev, [ckpt.id]: details }));
+      if (details.length) toast.error("文件未恢复", details.join("；"));
+      else toast.success("文件已恢复", path);
+      setExpandedDiff(null);
+    } catch (err) {
+      toast.error("文件恢复失败", err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   const handleRebind = async (ckpt: Checkpoint) => {
     const cwd = (rebindPaths[ckpt.id] ?? "").trim();
     if (!cwd || !rebindTrusted[ckpt.id] || rebinding) return;
@@ -402,6 +427,17 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                         />
                         {previews[ckpt.id] && legacyReady(ckpt) && <CheckpointPatchReview checkpoint={ckpt} patch={diffs[ckpt.id] ?? ""} legacyCwd={ckpt.source_root ? undefined : (legacyPaths[ckpt.id] ?? "").trim()} />}
                         <Button size="sm" variant="secondary" disabled={restoring || !previews[ckpt.id]} data-testid={`${testId}-restore-${ckpt.id}`} onClick={() => void handleApplyCheckpoint(ckpt)}>应用检查点（非精确撤销）</Button>
+                        {ckpt.source_root && ckpt.git_stash_ref && ckpt.tracked_files.length > 0 && (
+                          <div className="mt-2 text-[11px]">
+                            <p>单独恢复检查点记录的已跟踪改动：仅创建缺失目标；父目录须已存在。删除的快照条目无法恢复。</p>
+                            {ckpt.tracked_files.map((path) => (
+                              <div key={path} className="flex items-center justify-between gap-2">
+                                <span className="break-all">{path}</span>
+                                <Button size="sm" variant="secondary" disabled={restoring} onClick={() => void handleRestoreTrackedFile(ckpt, path)}><RotateCcw size={10} />恢复此文件</Button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         <div className="mt-2 text-[11px]">
                           <p>未跟踪文件恢复预览（关闭后重新打开可刷新）：</p>
                           {previews[ckpt.id]?.map(({ path, status, sha256 }) => (

@@ -83,6 +83,7 @@ class CheckpointRestoreResult:
     restored_untracked: list[str] = field(default_factory=list)
     skipped_existing: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    restored_tracked: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

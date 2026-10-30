@@ -112,6 +112,12 @@ def atomic_write_text(target: Path, content: str, *, baseline_path: Path,
                     baseline_path=baseline_path, baseline_sha256=baseline_sha256)
 
 
+def atomic_create_bytes(target: Path, content: bytes) -> None:
+    """Publish bytes only if the destination is still absent."""
+    _atomic_replace(target, lambda stream: stream.write(content),
+                    baseline_path=target, baseline_sha256=None)
+
+
 def atomic_append_text(target: Path, content: str, *, baseline_path: Path,
                        baseline_sha256: str | None) -> None:
     def write(stream: BinaryIO) -> None:

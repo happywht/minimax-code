@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..execution import capture_output, require_write_access, spawn_exec
-from ..file_mutations import atomic_copy_file
+from ..file_mutations import atomic_copy_file, atomic_create_bytes
 from ..managed_paths import managed_child
 from ..workspace_ctx import require_directory
 from .types import Checkpoint, CheckpointDiff, CheckpointRestoreResult
@@ -288,6 +288,56 @@ class CheckpointManager:
         return CheckpointRestoreResult(
             checkpoint_id=checkpoint.id, restored=bool(restored), applied_stash=False,
             restored_untracked=restored, skipped_existing=skipped, warnings=warnings,
+        )
+
+    async def restore_tracked_file(
+        self, cwd: str | Path, checkpoint: Checkpoint, relative: str,
+    ) -> CheckpointRestoreResult:
+        """Create a missing regular file from the captured working-tree commit."""
+        require_write_access()
+        ref = checkpoint.git_stash_ref
+        if relative not in checkpoint.tracked_files or not ref or not re.fullmatch(
+            r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", ref
+        ):
+            raise ValueError("File is not recorded in this tracked checkpoint")
+        root = require_directory(cwd)
+        target = _checkpoint_file(root, relative)
+        warnings: list[str] = []
+        skipped: list[str] = []
+        restored: list[str] = []
+        try:
+            if target.exists() or target.is_symlink():
+                skipped.append(relative)
+            else:
+                # Literal pathspec plus exact returned name prevents directory and wildcard matches.
+                rc, out, _, err = await _run_git(
+                    str(root), "--literal-pathspecs", "ls-tree", "-r", "-z", "--full-tree",
+                    ref, "--", relative, timeout_s=self._timeout_s,
+                )
+                entries = [entry for entry in out.split("\0") if entry]
+                if err or rc != 0 or len(entries) != 1:
+                    raise ValueError("Snapshot file is unavailable")
+                metadata, name = entries[0].split("\t", 1)
+                mode, kind, oid = metadata.split(" ")
+                if name != relative or mode not in ("100644", "100755") or kind != "blob" or not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", oid):
+                    raise ValueError("Snapshot entry is not a regular file")
+                proc = await spawn_exec(
+                    "git", "--no-pager", "-c", "core.fsmonitor=false", "cat-file", "blob", oid,
+                    cwd=root, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                data, _ = await capture_output(proc, timeout=self._timeout_s, limit=16 * 1024 * 1024)
+                if proc.returncode != 0:
+                    raise ValueError("Snapshot blob is unavailable")
+                # Do not create parent directories: recheck the full existing path before publish.
+                if _checkpoint_file(root, relative) != target or not target.parent.is_dir():
+                    raise ValueError("Destination parent is unavailable")
+                await asyncio.to_thread(atomic_create_bytes, target, data)
+                restored.append(relative)
+        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+            warnings.append(f"restore {relative}: {exc}")
+        return CheckpointRestoreResult(
+            checkpoint_id=checkpoint.id, restored=bool(restored), applied_stash=False,
+            restored_tracked=restored, skipped_existing=skipped, warnings=warnings,
         )
 
     # ------------------------------------------------------------------
