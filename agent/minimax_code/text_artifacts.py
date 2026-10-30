@@ -197,12 +197,23 @@ class ArtifactService:
         root = Path(project["root_path"])
         if not root.is_absolute() or root != root.absolute() or ".." in root.parts:
             raise ValueError("Project root must be canonical and absolute")
-        data = await asyncio.to_thread(_read, root / source_path)
-        await asyncio.to_thread(_parse, data, source_path)
-        snapshot = uuid.uuid4().hex
         service_id = await self.dao.service_id()
         if expected_service_id is not None and service_id != expected_service_id:
             raise ValueError("Service identity changed")
+        if request_id is not None:
+            existing = await self.dao.existing_request({
+                "id": f"art_{request_id}", "project_id": project_id, "run_id": run_id,
+                "service_id": service_id, "source_path": source_path,
+            }, expected_root=project["root_path"], expected_service_id=expected_service_id,
+                expected_session_id=expected_session_id)
+            if existing is not None:
+                # Return only a still-readable, verified snapshot. The source may
+                # have changed or disappeared since the original registration.
+                row, _ = await self.content(project_id, existing["id"])
+                return row
+        data = await asyncio.to_thread(_read, root / source_path)
+        await asyncio.to_thread(_parse, data, source_path)
+        snapshot = uuid.uuid4().hex
         await asyncio.to_thread(self._publish, data, snapshot)
         # Orphaned snapshots on DB failure are retained for explicit recovery.
         return await self.dao.insert({

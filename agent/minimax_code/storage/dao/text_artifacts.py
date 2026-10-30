@@ -40,28 +40,49 @@ class ArtifactDAO:
                 "WHERE r.id=?", (run_id,))
             self._run_binding(row, project_id, expected_root)
 
+    async def _check_binding(self, conn, fields, expected_root, expected_service_id,
+                             expected_session_id):
+        cursor = await conn.execute("SELECT root_path FROM projects WHERE id=?",
+                                    (fields["project_id"],))
+        project = await cursor.fetchone()
+        if project is None or project[0] != expected_root:
+            raise ValueError("Project binding changed during registration")
+        if expected_service_id is not None:
+            cursor = await conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1")
+            service = await cursor.fetchone()
+            if service is None or service[0] != expected_service_id:
+                raise ValueError("Service identity changed during registration")
+        if fields["run_id"] is not None:
+            cursor = await conn.execute(
+                "SELECT s.project_id,s.workspace_path,s.id AS session_id FROM agent_runs r "
+                "JOIN sessions s ON s.id=r.session_id "
+                "WHERE r.id=?", (fields["run_id"],))
+            run = await cursor.fetchone()
+            self._run_binding(run, fields["project_id"], expected_root)
+            if expected_session_id is not None and run["session_id"] != expected_session_id:
+                raise ValueError("Run session changed during registration")
+
+    async def existing_request(self, fields, *, expected_root, expected_service_id,
+                               expected_session_id):
+        """Resolve a retry without consulting the mutable source file."""
+        async with self.db.transaction() as conn:
+            await self._check_binding(conn, fields, expected_root, expected_service_id,
+                                      expected_session_id)
+            cursor = await conn.execute("SELECT * FROM text_artifacts WHERE id=?", (fields["id"],))
+            existing = await cursor.fetchone()
+            if existing is None:
+                return None
+            row = dict(existing)
+            keys = ("project_id", "run_id", "service_id", "source_path")
+            if any(row[key] != fields[key] for key in keys):
+                raise ValueError("Registration request already used for different scope or source")
+            return row
+
     async def insert(self, fields, *, expected_root, expected_service_id=None,
                      expected_session_id=None, idempotent=False):
         async with self.db.transaction() as conn:
-            cursor = await conn.execute("SELECT root_path FROM projects WHERE id=?",
-                                        (fields["project_id"],))
-            project = await cursor.fetchone()
-            if project is None or project[0] != expected_root:
-                raise ValueError("Project binding changed during registration")
-            if expected_service_id is not None:
-                cursor = await conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1")
-                service = await cursor.fetchone()
-                if service is None or service[0] != expected_service_id:
-                    raise ValueError("Service identity changed during registration")
-            if fields["run_id"] is not None:
-                cursor = await conn.execute(
-                    "SELECT s.project_id,s.workspace_path,s.id AS session_id FROM agent_runs r "
-                    "JOIN sessions s ON s.id=r.session_id "
-                    "WHERE r.id=?", (fields["run_id"],))
-                run = await cursor.fetchone()
-                self._run_binding(run, fields["project_id"], expected_root)
-                if expected_session_id is not None and run["session_id"] != expected_session_id:
-                    raise ValueError("Run session changed during registration")
+            await self._check_binding(conn, fields, expected_root, expected_service_id,
+                                      expected_session_id)
             if idempotent:
                 cursor = await conn.execute("SELECT * FROM text_artifacts WHERE id=?", (fields["id"],))
                 existing = await cursor.fetchone()
