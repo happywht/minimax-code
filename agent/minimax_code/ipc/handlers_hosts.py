@@ -7,6 +7,7 @@ verified file transfer and queryable upload publication journals.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import tempfile
@@ -28,6 +29,7 @@ from .protocol import (
     PERMISSION_DENIED,
     HostBindingParams,
     HostBoundTransferStatusParams,
+    HostDirectoryListParams,
     HostFetchPreviewParams,
     HostPushParams,
     HostServiceAutostartParams,
@@ -365,6 +367,45 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             raise HandlerError(INVALID_PARAMS, "invalid service unit")
         return await _bound_host(request)
 
+    async def handle_host_directory_list(params: Any, ctx: Context) -> None:
+        """Read a page of a bound host directory without following links."""
+        from ..hosts.directory import directory_command
+
+        try:
+            request = HostDirectoryListParams.model_validate(params)
+            path = request.remote_path
+            if (not path.startswith("/") or any(unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in path) or
+                    (path != "/" and any(part in {"", ".", ".."} for part in path.split("/")[1:]))):
+                raise HandlerError(INVALID_PARAMS, "invalid remote directory")
+            async with lifecycle_lock:
+                host = await _bound_host(request)
+                result = await run_ssh(host, directory_command(path, request.offset), timeout=15,
+                                       runner=runner, strict_host_key=True)
+            if not result.ok or len(result.stdout) > 20000:
+                raise ValueError("Remote directory unavailable")
+            data = json.loads(result.stdout)
+            if (not isinstance(data, dict) or set(data) != {"path", "entries", "offset", "next_offset", "limited"}
+                    or data["path"] != path or type(data["offset"]) is not int or data["offset"] != request.offset
+                    or type(data["limited"]) is not bool or not isinstance(data["entries"], list)
+                    or len(data["entries"]) > 200):
+                raise ValueError("Invalid remote directory reply")
+            next_offset = data["next_offset"]
+            if next_offset is not None and (type(next_offset) is not int or not request.offset < next_offset <= 10000):
+                raise ValueError("Invalid directory cursor")
+            for entry in data["entries"]:
+                if (not isinstance(entry, dict) or set(entry) != {"name", "kind"}
+                        or not isinstance(entry["name"], str) or not entry["name"] or len(entry["name"]) > 4096
+                        or entry["name"] in {".", ".."} or "/" in entry["name"]
+                        or any(unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in entry["name"])
+                        or entry["kind"] not in {"directory", "file"}):
+                    raise ValueError("Invalid directory entry")
+            await ctx.reply(data)
+        except (ValidationError, HandlerError, ValueError, UnicodeError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.directory_list failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Remote directory unavailable")
+
     async def handle_host_fetch_preview(params: Any, ctx: Context) -> None:
         """Publish only the exact previewed remote bytes to an unused local path."""
         from ..execution import require_write_access
@@ -611,6 +652,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
 
+    server.register("host.directory_list", handle_host_directory_list)
     server.register("host.fetch_preview", handle_host_fetch_preview)
     server.register("host.reconnect_bound", handle_host_reconnect_bound)
     server.register("host.transfer_status_bound", handle_host_transfer_status_bound)

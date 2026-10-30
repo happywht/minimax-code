@@ -20,6 +20,8 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
   const [local, setLocal] = useState(""), [remote, setRemote] = useState("");
   const [transferOpen, setTransferOpen] = useState(false);
   const [browserFile, setBrowserFile] = useState<File | null>(null);
+  const browserInput = useRef<HTMLInputElement | null>(null);
+  const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<UploadReceipt | null>(null), [status, setStatus] = useState<HostTransferResult | null>(null);
   const [manualId, setManualId] = useState(""), [manualRemote, setManualRemote] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
@@ -28,7 +30,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
   const epoch = useRef(0), browserDownload = useRef<AbortController | null>(null), base = ipc.agentBaseUrl, hostSignature = signature(host);
   const storageKey = `minimax:host-transfer:${base}:${host.id}`;
   useEffect(() => {
-    epoch.current++; browserDownload.current?.abort(); setBrowserFile(null); setBusy(false); setMessage(""); setStatus(null); setReceipt(null); setManualId(""); setManualRemote(""); setRecoveryInput(""); setRecoveryService(null);
+    epoch.current++; browserDownload.current?.abort(); setBrowserFile(null); setSelectedDirectory(null); setRemote(""); setLocal(""); if (browserInput.current) browserInput.current.value = ""; setBusy(false); setMessage(""); setStatus(null); setReceipt(null); setManualId(""); setManualRemote(""); setRecoveryInput(""); setRecoveryService(null);
     try { const saved = JSON.parse(sessionStorage.getItem(storageKey) || "null") as UploadReceipt | null;
       const oldSignature = JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file]);
       if (saved && (saved.hostSignature === hostSignature || saved.hostSignature === oldSignature) && /^[0-9a-f]{32}$/.test(saved.transferId) && isRemoteAbsolute(saved.remotePath)) {
@@ -38,7 +40,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     } catch { /* Storage can be unavailable; no saved receipt is claimed. */ }
     return () => { epoch.current++; browserDownload.current?.abort(); };
   }, [storageKey, hostSignature, host.enabled]);
-  useEffect(() => ipc.onSideCar(() => { epoch.current++; browserDownload.current?.abort(); setBusy(false); setStatus(null); setRecoveryService(null); setManualId(""); setManualRemote(""); setMessage("连接已变化；请重新选择文件，或使用保存的恢复记录重新填入查询信息。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { epoch.current++; browserDownload.current?.abort(); setBrowserFile(null); setSelectedDirectory(null); setRemote(""); setLocal(""); if (browserInput.current) browserInput.current.value = ""; setBusy(false); setStatus(null); setRecoveryService(null); setManualId(""); setManualRemote(""); setMessage("连接已变化；请重新选择文件，或使用保存的恢复记录重新填入查询信息。"); }), []);
   const valid = (ticket: number) => epoch.current === ticket && ipc.agentBaseUrl === base;
   const recoveryRecord = receipt ? JSON.stringify({
     version: receipt.serviceId && receipt.hostFingerprint ? 2 : 1,
@@ -177,8 +179,18 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     <p className="text-xs text-ink-2">本机路径指运行当前服务的机器，不是浏览器选中的文件；远端路径指此主机的 Linux 绝对路径。仅单文件、显式操作，不自动同步。传输使用独立 SSH/SFTP，服务隧道状态不代表传输可用。</p>
     <label className="block text-xs">本机文件绝对路径<Input aria-label={`${host.name} 本机传输路径`} value={local} disabled={busy} onChange={(e) => setLocal(e.target.value)} placeholder="C:\\资料\\报告.pdf" /></label>
     <label className="block text-xs">远端文件绝对路径<Input aria-label={`${host.name} 远端传输路径`} value={remote} disabled={busy} onChange={(e) => setRemote(e.target.value)} placeholder="/home/user/report.pdf" /></label>
-    <label className="block text-xs">选择浏览器文件（最大 10 MiB）<input type="file" aria-label={`${host.name} 浏览器上传文件`} disabled={busy} onChange={(e) => setBrowserFile(e.target.files?.[0] ?? null)} /></label>
-    <HostFileBrowser host={host} onSelect={(path) => { if (!busy) setRemote(path); }} />
+    <label className="block text-xs">选择浏览器文件（最大 10 MiB）<input ref={browserInput} type="file" aria-label={`${host.name} 浏览器上传文件`} disabled={busy} onChange={(e) => setBrowserFile(e.target.files?.[0] ?? null)} /></label>
+    <HostFileBrowser host={host} onSelect={(path) => { if (!busy) setRemote(path); }} onSelectDirectory={(path) => { if (!busy) { setSelectedDirectory(path); setMessage("目录已选择；请选择浏览器文件并显式填入目标路径。"); } }} />
+    {selectedDirectory && <div className="space-y-1 text-xs"><p className="break-all">已选择上传目录：{selectedDirectory}</p>
+      <Button type="button" size="sm" variant="secondary" disabled={busy || !browserFile} onClick={() => {
+        if (!browserFile) return;
+        const name = browserFile.name;
+        if (!name || name === "." || name === ".." || /[\/\\]|\p{Cc}|\p{Cf}|\p{Cs}/u.test(name)) { setMessage("文件名不适合作为远端单个文件名，请手动输入并核对路径。"); return; }
+        const target = `${selectedDirectory === "/" ? "" : selectedDirectory}/${name}`;
+        if (target.length > 4096 || !isRemoteAbsolute(target)) { setMessage("目标路径无效或超过 4096 字符。"); return; }
+        setRemote(target); setMessage("已填入目标路径；请核对后确认上传。若目标存在，上传会在校验后替换并保留备份。");
+      }}>用所选目录和文件名填入目标</Button>
+      <p>仅填入路径，上传仍需单独确认；同名目标可能被替换并保留备份。</p></div>}
     <HostTextPreview host={host} path={remote.trim()} active={transferOpen} />
     <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void transfer("upload")}>上传到此主机</Button>
       <Button type="button" size="sm" disabled={busy || !host.enabled || !browserFile} onClick={() => void browserUpload()}>上传浏览器文件</Button>

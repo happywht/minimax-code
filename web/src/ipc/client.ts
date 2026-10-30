@@ -234,6 +234,7 @@ const LONG_RUNNING_METHODS: Record<string, number> = {
   "host.transfer_status_bound": 45_000,
   "host.reconnect_bound": 45_000,
   "host.fetch_preview": 135_000,
+  "host.directory_list": 25_000,
   "host.service_start": 40_000,
   "host.service_stop": 100_000,
   "host.service_status": 30_000,

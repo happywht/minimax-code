@@ -178,6 +178,12 @@ export interface HostBindingParams {
   port: number; identity_file: string; remote_port: number;
 }
 
+export interface HostDirectoryListParams extends HostBindingParams { remote_path: string; offset: number }
+export interface HostDirectoryListing {
+  path: string; entries: { name: string; kind: "directory" | "file" }[];
+  offset: number; next_offset: number | null; limited: boolean;
+}
+
 export interface HostFetchPreviewParams extends HostBindingParams {
   remote_path: string; local_path: string; expected_sha256: string;
 }

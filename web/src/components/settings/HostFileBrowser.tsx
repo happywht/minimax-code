@@ -6,45 +6,12 @@ import { Button, Input } from "../../ui";
 type Entry = { name: string; kind: "directory" | "file" };
 type Listing = { path: string; entries: Entry[]; offset: number; nextOffset: number | null; limited: boolean };
 
-// Both the program and the path are encoded as data; neither enters shell syntax.
-const PROGRAM = `import base64,itertools,json,os,sys
-p=os.fsdecode(base64.b64decode(sys.argv[1],validate=True))
-if not p.startswith('/') or '\\x00' in p: raise ValueError('absolute path required')
-p=os.path.normpath(p)
-offset=int(sys.argv[2])
-if offset < 0 or offset > 10000: raise ValueError('invalid offset')
-with os.scandir(p) as scan:
-    items=list(itertools.islice(scan,offset,offset+201))
-entries=[]
-consumed=0
-for item in items[:200]:
-    try:
-        if item.is_dir(follow_symlinks=False): kind='directory'
-        elif item.is_file(follow_symlinks=False): kind='file'
-        else:
-            consumed+=1
-            continue
-        entry={'name':item.name,'kind':kind}
-        candidate=json.dumps({'path':p,'entries':entries+[entry],'offset':offset,'next_offset':10000,'limited':True},ensure_ascii=True)
-        if len(candidate)>18000:
-            if not consumed: raise ValueError('directory entry too long to return')
-            break
-        entries.append(entry)
-    except OSError: pass
-    consumed+=1
-more=consumed<len(items)
-next_offset=offset+consumed if more and offset+consumed<=10000 else None
-limited=more and next_offset is None
-print(json.dumps({'path':p,'entries':entries,'offset':offset,'next_offset':next_offset,'limited':limited},ensure_ascii=True))`;
-const encode = (text: string) => btoa(Array.from(new TextEncoder().encode(text), (b) => String.fromCharCode(b)).join(""));
-const command = (path: string, offset: number) => `python3 -c "import base64;exec(base64.b64decode('${encode(PROGRAM)}'))" '${encode(path)}' ${offset}`;
-
-export function HostFileBrowser({ host, onSelect }: { host: RemoteHost; onSelect: (path: string) => void }): JSX.Element {
+export function HostFileBrowser({ host, onSelect, onSelectDirectory }: { host: RemoteHost; onSelect: (path: string) => void; onSelectDirectory: (path: string) => void }): JSX.Element {
   const [path, setPath] = useState("/"), [listing, setListing] = useState<Listing | null>(null);
   const [history, setHistory] = useState<number[]>([]);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const epoch = useRef(0), base = ipc.agentBaseUrl;
-  const identity = JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file, host.enabled]);
+  const identity = JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file, host.remote_port, host.enabled]);
   useEffect(() => {
     epoch.current++; setPath("/"); setListing(null); setHistory([]); setBusy(false); setError("");
     return () => { epoch.current++; };
@@ -58,15 +25,18 @@ export function HostFileBrowser({ host, onSelect }: { host: RemoteHost; onSelect
     }
     const ticket = ++epoch.current; setBusy(true); setError(""); setListing(null);
     try {
-      const result = await typedIPC.execHost({ host_id: host.id, command: command(directory, offset), timeout_s: 15 });
+      const identity = await typedIPC.getServiceIdentity();
       if (ticket !== epoch.current || ipc.agentBaseUrl !== base) return;
-      if (!result.ok) throw new Error(result.timed_out ? "读取超时" : result.stderr || "目录读取失败");
-      const data: unknown = JSON.parse(result.stdout);
-      if (!data || typeof data !== "object") throw new Error("目录响应无效");
-      const row = data as Record<string, unknown>;
-      if (typeof row.path !== "string" || !row.path.startsWith("/") || !Array.isArray(row.entries) || row.entries.length > 200 || row.offset !== offset || typeof row.limited !== "boolean" ||
-          !(row.next_offset === null || (typeof row.next_offset === "number" && Number.isInteger(row.next_offset) && row.next_offset > offset && row.next_offset <= 10000)) ||
-          !row.entries.every((entry: unknown) => !!entry && typeof entry === "object" && typeof (entry as Entry).name === "string" && (entry as Entry).name !== "." && (entry as Entry).name !== ".." && !(entry as Entry).name.includes("/") && ((entry as Entry).kind === "file" || (entry as Entry).kind === "directory"))) throw new Error("目录响应无效");
+      const row = await typedIPC.listHostDirectory({ host_id: host.id, expected_service_id: identity.service_id,
+        hostname: host.hostname, username: host.username, port: host.port, identity_file: host.identity_file,
+        remote_port: host.remote_port, remote_path: directory, offset });
+      if (ticket !== epoch.current || ipc.agentBaseUrl !== base) return;
+      const after = await typedIPC.getServiceIdentity();
+      if (ticket !== epoch.current || ipc.agentBaseUrl !== base) return;
+      if (after.service_id !== identity.service_id || row.path !== directory || row.offset !== offset ||
+          !Array.isArray(row.entries) || row.entries.length > 200 || typeof row.limited !== "boolean" ||
+          !(row.next_offset === null || (Number.isInteger(row.next_offset) && row.next_offset > offset && row.next_offset <= 10000)) ||
+          !row.entries.every((entry) => !!entry && typeof entry.name === "string" && entry.name !== "." && entry.name !== ".." && !entry.name.includes("/") && (entry.kind === "file" || entry.kind === "directory"))) throw new Error("服务身份或目录响应不匹配");
       setPath(row.path); setHistory(previous); setListing({ path: row.path, entries: row.entries as Entry[], offset, nextOffset: row.next_offset as number | null, limited: row.limited as boolean });
     } catch (err) { if (ticket === epoch.current && ipc.agentBaseUrl === base) setError(err instanceof Error ? err.message : String(err)); }
     finally { if (ticket === epoch.current && ipc.agentBaseUrl === base) setBusy(false); }
@@ -79,7 +49,7 @@ export function HostFileBrowser({ host, onSelect }: { host: RemoteHost; onSelect
       <Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void browse(path)}>读取目录</Button></div>
     {busy && <p role="status" className="text-xs">正在读取目录…</p>}
     {error && <p role="alert" className="break-words text-xs text-status-error">{error}</p>}
-    {listing && <div className="text-xs"><Button type="button" size="sm" variant="secondary" disabled={busy || listing.path === "/"} onClick={() => void browse(parent)}>上一级</Button>
+    {listing && <div className="text-xs"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => onSelectDirectory(listing.path)}>选择当前目录作为上传位置</Button><Button type="button" size="sm" variant="secondary" disabled={busy || listing.path === "/"} onClick={() => void browse(parent)}>上一级</Button>
       <div className="flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy || !history.length} onClick={() => void browse(listing.path, history[history.length - 1], history.slice(0, -1))}>上一页</Button>
         <Button type="button" size="sm" variant="secondary" disabled={busy || listing.nextOffset === null} onClick={() => { if (listing.nextOffset !== null) void browse(listing.path, listing.nextOffset, [...history, listing.offset]); }}>下一页</Button></div>
       {listing.limited && <p>已达到扫描上限；请直接输入更具体的目录或文件路径。</p>}
@@ -88,6 +58,6 @@ export function HostFileBrowser({ host, onSelect }: { host: RemoteHost; onSelect
         <span>{entry.kind === "directory" ? "目录" : "文件"}：{entry.name}</span></li>)}</ul>
       {!listing.entries.length && <p>没有可显示的普通文件或目录。</p>}
     </div>}
-    <p className="text-xs text-ink-2">通过独立 SSH 读取，不显示符号链接或特殊文件；选择文件只填入路径，不会传输。按目录原有顺序分批读取；目录变化可能导致翻页重复或遗漏，请在确认传输前核对。</p>
+    <p className="text-xs text-ink-2">通过受信 SSH 读取，不跟随路径中的符号链接，不显示特殊文件。选择目录或文件不会传输。按目录原有顺序分批读取；目录变化可能导致翻页重复或遗漏，请在确认传输前核对。</p>
   </div>;
 }
