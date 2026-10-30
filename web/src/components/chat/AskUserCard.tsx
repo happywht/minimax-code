@@ -61,10 +61,10 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
   const requestKey = askUser ? JSON.stringify([ipc.agentBaseUrl, askUser.session_id, askUser.run_id, askUser.request_id]) : null;
   const questionCount = askUser?.questions.length ?? 0;
   useEffect(() => {
-    if (!requestKey) return;
+    if (!requestKey) { setSelections([]); setOthers([]); return; }
     const draft = drafts.get(requestKey);
     setSelections(draft?.selections ?? Array.from({ length: questionCount }, () => []));
-    setOthers(draft?.others ?? Array.from({ length: questionCount }, () => null));
+    setOthers(draft?.others ?? askUser!.questions.map((q) => askUser!.engine === "codex" && q.options.length === 0 ? "" : null));
     setSubmitting(false);
   }, [requestKey, questionCount]);
 
@@ -81,14 +81,15 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
   }, [askUser]);
 
   const saveDraft = (nextSelections: string[][], nextOthers: Array<string | null>) => {
-    if (!requestKey) return;
+    if (!requestKey || askUser?.questions.some((q) => q.isSecret)) return;
     drafts.delete(requestKey);
     drafts.set(requestKey, { selections: nextSelections, others: nextOthers });
     if (drafts.size > 50) drafts.delete(drafts.keys().next().value!);
   };
 
   const visible = askUser !== null && askUser.session_id === sessionId;
-  const otherText = (qi: number) => (others[qi] ?? "").trim();
+  const otherText = (qi: number) => askUser?.questions[qi]?.isSecret
+    ? (others[qi] ?? "") : (others[qi] ?? "").trim();
   const otherOpen = (qi: number) => others[qi] != null;
   const answered = useMemo(
     () =>
@@ -130,7 +131,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
         if (other) values.push(`other: ${other}`);
         return values.length > 0 ? values : ["(no answer)"];
       }
-      if (other) return `other: ${other}`;
+      if (other) return askUser.engine === "codex" ? other : `other: ${other}`;
       return chosen[0] ?? "(no answer)";
     });
 
@@ -231,7 +232,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
                   </button>
                 );
               })}
-              <button
+              {(askUser.engine !== "codex" || (q.isOther && q.options.length > 0)) && <button
                 type="button"
                 data-testid={`${testId}-other-${qi}`}
                 aria-pressed={isOtherActive(qi)}
@@ -252,11 +253,12 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
                 }
               >
                 {strings.chat.askUser.other}
-              </button>
+              </button>}
             </div>
             {otherOpen(qi) && (
               <input
-                type="text"
+                type={q.isSecret ? "password" : "text"}
+                autoComplete={q.isSecret ? "off" : undefined}
                 data-testid={`${testId}-other-input-${qi}`}
                 className="mt-2 w-full rounded-md border border-line bg-surface-1 px-2.5 py-1.5 text-xs text-ink-0 placeholder:text-ink-2/70 focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/30"
                 placeholder={strings.chat.askUser.otherPlaceholder}
@@ -291,7 +293,7 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
             onClick={() => void handleSkip()}
             disabled={submitting}
           >
-            {strings.chat.askUser.skip}
+            {askUser.engine === "codex" ? "取消提问" : strings.chat.askUser.skip}
           </Button>
           <Button
             variant="primary"

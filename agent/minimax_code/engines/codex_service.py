@@ -171,7 +171,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         try:
             result = await drive_codex_run(job, emit=emit, prompt=request.content,
                 resume_thread_id=conversation.thread_id, conversation=conversation,
-                approval_gate=gate, mode=request.mode, post_turn=validate)
+                approval_gate=gate, mode=request.mode, post_turn=validate, input_server=ctx.server)
             job.result = result
         finally:
             unregister_gater(ctx.server, job.session_id)

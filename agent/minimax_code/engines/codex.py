@@ -52,6 +52,17 @@ class UnsupportedServerRequest:
     """Signal that a server request has no implemented response mapping."""
 
 
+class ServerRequestError:
+    """Return a protocol error rather than inventing a successful response."""
+
+    def __init__(self, code: int, message: str) -> None:
+        self.code, self.message = code, message
+
+
+class ServerRequestResolved:
+    """The server has already resolved this request; do not reply again."""
+
+
 def _codex_environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """Build a child environment from trusted service configuration only.
 
@@ -254,15 +265,21 @@ class AppServerConnection:
                 self._send_error(obj["id"], -32601, "Server request is not supported")
                 return
             if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
-                async def _settle(awaitable: Any, req_id: Any) -> None:
+                async def _settle(awaitable: Any, req_id: Any, request_method: str) -> None:
                     try:
                         params = await awaitable
                     except Exception:
                         logger.exception("server request handler failed; replying denied")
-                        params = {}
-                    self._send_response(req_id, params or {})
+                        params = (ServerRequestError(-32603, "Input request failed")
+                                  if request_method == "item/tool/requestUserInput" else {})
+                    if isinstance(params, ServerRequestResolved):
+                        return
+                    if isinstance(params, ServerRequestError):
+                        self._send_error(req_id, params.code, params.message)
+                    else:
+                        self._send_response(req_id, params or {})
 
-                task = asyncio.create_task(_settle(result, obj["id"]))
+                task = asyncio.create_task(_settle(result, obj["id"], obj["method"]))
                 self._bg.add(task)
                 task.add_done_callback(self._bg.discard)
             else:
@@ -311,6 +328,7 @@ class AppServerConnection:
                          client_version: str = "1.0") -> Any:
         result = await self.request("initialize", {
             "clientInfo": {"name": client_name, "version": client_version},
+            "capabilities": {"experimentalApi": True},
         }, timeout=30.0)
         self.notify("initialized", {})
         return result

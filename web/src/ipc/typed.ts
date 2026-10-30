@@ -279,6 +279,8 @@ export interface TypedIPC {
   answerUser(
     requestId: string,
     answers: Array<string | string[]>,
+    cancel?: boolean,
+    binding?: { session_id: string; run_id: string },
   ): Promise<AnswerUserResult>;
 
   // agent CRUD
@@ -820,10 +822,12 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         "agent.continue_run",
         { session_id: sid, ...(runId ? { run_id: runId } : {}) } satisfies import("../types/ipc").ContinueRunParams,
       ),
-    answerUser: (requestId, answers) =>
+    answerUser: (requestId, answers, cancel, binding) =>
       client.request<AnswerUserResult>("agent.answer_user", {
         request_id: requestId,
         answers,
+        ...(cancel ? { cancel: true } : {}),
+        ...(binding ?? {}),
       }),
 
     // Agent CRUD

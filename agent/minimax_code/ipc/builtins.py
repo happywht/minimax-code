@@ -2157,6 +2157,18 @@ async def handle_agent_answer_user(params: Any, ctx: Context) -> None:
         await ctx.reply_error(-32602, "request_id is required")
         return
     answers = params.get("answers")
+    codex_request = getattr(ctx.server, "_codex_ask_routes", {}).get(request_id)
+    if codex_request is not None:
+        if params.get("session_id") != codex_request.session_id or params.get("run_id") != codex_request.run_id:
+            await ctx.reply({"ok": False, "error": "Request binding does not match"})
+            return
+        if params.get("cancel") is True:
+            resolved = codex_request.resolve_ask_user(request_id, None)
+        else:
+            resolved = codex_request.resolve_ask_user(request_id, answers)
+        await ctx.reply({"ok": resolved, "request_id": request_id,
+                         **({} if resolved else {"error": "Invalid answer or expired request"})})
+        return
     if not isinstance(answers, list) or not answers:
         await ctx.reply_error(-32602, "answers must be a non-empty array")
         return

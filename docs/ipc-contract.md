@@ -206,6 +206,11 @@ on the next `readline() == ""`.
 | `agent.cancel`             | req/res   | Request cancellation of active and queued native work for a session; acknowledgement does not imply cleanup has finished. |
 | `agent.continue_run`       | req/res   | Continue a truncated block (params: `session_id`, optional `run_id`). A pinned source has one durable continuation; retries join its worker or replay its receipt. Admission atomically marks the source `continued` and links the child. Omitting `run_id` selects the latest run for legacy clients. Invalid params use `-32602`; unavailable storage/non-truncated source returns `{"ok":false}`. |
 | `agent.answer_user`        | req/res   | v1.1.1 Answer a pending `ask_user` request (params: `request_id`, `answers` — a non-empty array position-aligned with the questions; each entry is a label string or a list of label strings). Resolves the future the suspended tool call awaits; `{"ok":false}` on unknown/expired ids. |
+
+For Codex input, `agent.answer_user` also requires `session_id` and `run_id`;
+each answer is a string aligned to the questions. `cancel: true` cancels the
+live request without supplying answers. The endpoint rejects a mismatched
+binding or an expired request.
 | `run.list`                 | req/res   | List persisted agent runs for a session. v1.4.0 accepts an optional `mode` filter (`chat` / `plan` / `execute` / `team` / `subagent`) — `mode: "subagent"` returns runs spawned via the `spawn_subagent` tool path. |
 | `run.steps`                | req/res   | Load one run, ordered steps and a consistent durable `cursor`. |
 | `run.events`               | req/res   | Read persisted changes after a run-scoped sequence, independent of WS replay. |
@@ -561,7 +566,7 @@ It is cleared after the run starts; non-text inputs do not get this projection.
 This permits recovery of accepted queued text after reconnect without treating
 it as an in-flight instruction. Startup recovery may mark queued runs as
 interrupted; it does not automatically execute them.
-It also returns `pending_ask_users`, all Native questions whose owning
+It also returns `pending_ask_users`, all Native and Codex questions whose owning
 in-process future is still pending for that run and session. This optional live
 projection is not part of the database transaction or a restartable wait. Its
 `remaining_ms` is sampled by the server; clients treat it as an estimate and
@@ -576,10 +581,19 @@ session and still-live connection. A new internal request ID is bound to each
 external request; the original JSON-RPC response retains its original ID.
 Closing, cancellation, timeout and process loss invalidate the wait. Recovering
 a request never auto-approves it; neither projection survives a process restart.
-The pinned App Server's `item/tool/requestUserInput` is not yet supported by
-this adapter. Unsupported server requests receive a JSON-RPC method-not-found
-error instead of an empty successful result; no answer is supplied. This does
-not provide an interactive question or guarantee how Codex handles the error.
+The adapter opts into the pinned App Server's experimental API to receive
+`item/tool/requestUserInput`; other unsupported requests still receive an error.
+The request uses the same live question
+projection and answer endpoint. Each request is bound to its service instance,
+session, run, external thread and turn. Blocking requests set `waiting_input`;
+non-blocking requests remain available without changing the run state. Multiple
+requests can coexist. The local wait expires after 600 seconds; cancellation,
+expiration and invalid requests return a JSON-RPC error rather than an invented
+answer. `serverRequest/resolved`, turn termination, process exit and service
+restart invalidate the wait. Secret input is held in the current browser card
+and the live response only, not in the shared draft or local message history.
+This does not control what the external engine does with a submitted answer.
+Unsupported server requests receive a JSON-RPC method-not-found error.
 For `codex:item/fileChange/requestApproval`, `args.grantRoot` carries the
 requested extra write root when supplied. `args.file_change_preview` contains
 bounded `changes` entries (`path`, `diff`) matched to the same thread, turn,
@@ -1634,7 +1648,7 @@ so the frontend can route them by name without a regex.
 
 Codex maps App Server `commandExecution` and `fileChange` items for the active thread and turn to these events and durable run steps. Command output and file diffs are bounded previews; a missing completion is reported as an unknown outcome, and non-success item statuses or nonzero command exit codes are errors. Codex `mcpToolCall` items are also recorded with bounded server/tool names, argument and result JSON previews, and the reported status/error. The preview may be truncated; a missing result is not invented. A completed item only reports the engine status, not independent verification of its effects. Missing completion is unknown. MCP execution and any access controls remain managed by Codex and its MCP server; this projection grants no permissions. Other Codex item types are not represented as tools.
 | `agent.ask_user`        | `{request_id, session_id, run_id, questions[], timeout_s, remaining_ms?, agent_name?}` — the model paused with structured clarification questions; `agent_name` identifies a child agent when present. The UI answers via `agent.answer_user`. Concurrent questions are surfaced one at a time from live run snapshots. Requests are valid only while their original in-process wait is alive; a service restart invalidates them. |
-| `agent.ask_user_closed` | `{request_id, session_id, run_id}` — a Native question wait ended, timed out or was cancelled; late snapshots must not revive it. |
+| `agent.ask_user_closed` | `{request_id, session_id, run_id}` — a question wait ended, timed out or was cancelled; late snapshots must not revive it. |
 | `permission.closed` | `{request_id, session_id, run_id}` — a Native or Codex consent wait ended, timed out or was cancelled; late snapshots must not revive it. |
 | `agent.status`          | `{session_id, status, detail?}`                     |
 | `task.progress`         | `{task_id, progress, message?}`                     |

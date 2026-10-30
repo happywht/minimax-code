@@ -64,6 +64,7 @@ export function ChatPanel({
   const removeSession = useSessionStore((s) => s.remove);
   const status = useChat((s) => s.status);
   const error = useChat((s) => s.error);
+  const questionKey = useChat((s) => s.askUser?.request_id ?? "none");
   const [newEngine, setNewEngine] = useState<"native" | "codex">("native");
   const [handoff, setHandoff] = useState<{ source: string; target: "native" | "codex" } | null>(null);
   const [engines, setEngines] = useState<EngineInfo[]>([]);
@@ -381,7 +382,7 @@ export function ChatPanel({
       {current?.engine === "codex" && <p className="px-4 text-xs text-ink-2">Codex 会话使用独立模型配置，仅支持文本。历史与外部线程绑定；如需修改历史，请新建会话并交接上下文。</p>}
       {handoff && <EngineHandoff sessionId={handoff.source} target={handoff.target} onClose={() => setHandoff(null)} />}
       {/* Inline questionnaire while the agent is suspended in ask_user */}
-      <AskUserCard />
+      <AskUserCard key={`${currentId}:${questionKey}`} />
       {current?.engine !== "codex" && <WorkspaceDiagnostic />}
       {current?.engine !== "codex" && <ProviderReadinessBanner
         onOpenProviders={onOpenProviderSettings}

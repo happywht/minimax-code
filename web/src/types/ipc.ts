@@ -846,6 +846,9 @@ export interface AskUserQuestion {
   header: string;
   options: AskUserOption[];
   multiSelect: boolean;
+  id?: string;
+  isOther?: boolean;
+  isSecret?: boolean;
 }
 
 /** Wire shape of one `agent.ask_user` event — the agent is suspended until answered. */
@@ -859,6 +862,8 @@ export interface AskUserData extends RunStreamContext {
   tool_call_id?: string | null;
   /** Name of the child agent asking on behalf of the owning run. */
   agent_name?: string;
+  engine?: "codex";
+  is_blocking?: boolean;
 }
 
 /** Result shape for `agent.answer_user`. */

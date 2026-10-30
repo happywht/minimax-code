@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Any
 
 from ..budget import BudgetExhausted, BudgetState
-from .codex import AppServerConnection, UnsupportedServerRequest
+from .codex import AppServerConnection, ServerRequestError, ServerRequestResolved, UnsupportedServerRequest
+from .codex_input import CodexInputRequest, parse_questions
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ class CodexApprovalGate:
 async def drive_codex_run(
     job: Any, *, emit: Any, prompt: str, resume_thread_id: str | None = None,
     codex_cmd: list[str] | None = None, approval_gate: CodexApprovalGate | None = None,
-    mode: str = "chat", conversation: Any = None, post_turn: Any = None,
+    mode: str = "chat", conversation: Any = None, post_turn: Any = None, input_server: Any = None,
 ) -> dict[str, Any]:
     """One ordered turn. Persist each event before display and drain on every exit."""
     import os
@@ -168,6 +169,9 @@ async def drive_codex_run(
     # Retain bounded previews keyed by the full external identity, so an
     # approval can never display changes from another thread or turn.
     file_previews: dict[tuple[str, str, str], dict[str, Any]] = {}
+    input_requests: dict[str, CodexInputRequest] = {}
+    resolved_requests: set[tuple[str, Any]] = set()
+    resolved_overflow = False
     # Only items belonging to this turn are exposed. Map external IDs to
     # run-scoped IDs so reconnects and concurrent sessions cannot collide.
     tool_items: dict[str, dict[str, Any]] = {}
@@ -296,6 +300,8 @@ async def drive_codex_run(
         for request_id in gate.close_all():
             spawn_notify(emit("permission.closed", {"request_id": request_id,
                          "session_id": job.session_id, "run_id": job.run_id}))
+        for request in input_requests.values():
+            request.close()
 
     async def process(n: dict[str, Any]) -> None:
         nonlocal uncertain, watermark, ledger_exceeded, budget_interrupt_requested
@@ -398,6 +404,19 @@ async def drive_codex_run(
                 queue.task_done()
 
     def receive_notification(n: dict[str, Any]) -> None:
+        nonlocal resolved_overflow
+        if n.get("method") == "serverRequest/resolved":
+            params = n.get("params")
+            if isinstance(params, dict):
+                tid, rid = params.get("threadId"), params.get("requestId")
+                if isinstance(tid, str) and isinstance(rid, (str, int)):
+                    if len(resolved_requests) >= 1000:
+                        resolved_overflow = True
+                    else:
+                        resolved_requests.add((tid, rid))
+                for request in input_requests.values():
+                    if params.get("threadId") == request.thread_id and params.get("requestId") == request.external_id:
+                        request.close(remote=True)
         if n.get("method") in {"item/started", "item/completed"}:
             params = n.get("params")
             if isinstance(params, dict):
@@ -428,6 +447,59 @@ async def drive_codex_run(
 
     def on_server_request(req: dict[str, Any]) -> Any:
         method = req.get("method", "")
+        if method == "item/tool/requestUserInput":
+            async def _await_input() -> Any:
+                await turn_ready.wait()
+                params = req.get("params")
+                questions = parse_questions(params)
+                if (input_server is None or questions is None or closing or cancelled or gate.closed
+                        or turn_done.done() or params["threadId"] != thread_id or params["turnId"] != turn_id):
+                    return ServerRequestError(-32602, "Input request unavailable or invalid")
+                if (thread_id, req["id"]) in resolved_requests:
+                    return ServerRequestResolved()
+                if resolved_overflow:
+                    return ServerRequestError(-32000, "Input request state unavailable")
+                loop = asyncio.get_running_loop()
+                request_id = f"codex-input:{uuid.uuid4().hex}"
+                deadline = loop.time() + 600.0
+                future = loop.create_future()
+                request = CodexInputRequest(questions, future, deadline, req["id"], thread_id,
+                                            params["isBlocking"], job.session_id, job.run_id)
+                input_requests[request_id] = request
+                routes = getattr(input_server, "_codex_ask_routes", None)
+                if routes is None:
+                    routes = input_server._codex_ask_routes = {}
+                registry = getattr(input_server, "_live_ask_users", None)
+                if registry is None:
+                    registry = input_server._live_ask_users = {}
+                event = {"request_id": request_id, "session_id": job.session_id, "run_id": job.run_id,
+                         "questions": questions, "timeout_s": 600, "remaining_ms": 600000,
+                         "engine": "codex", "is_blocking": params["isBlocking"]}
+                routes[request_id] = request
+                registry[request_id] = (event, future, deadline)
+                try:
+                    await emit("agent.ask_user", event)
+                    if request.blocking and not gate._pending:
+                        queue.put_nowait({"method": "runtime/status", "params": {"status": "waiting_input"}})
+                    answer = await asyncio.wait_for(future, timeout=max(0, deadline - loop.time()))
+                except TimeoutError:
+                    answer = None
+                finally:
+                    routes.pop(request_id, None)
+                    registry.pop(request_id, None)
+                    input_requests.pop(request_id, None)
+                    await emit("agent.ask_user_closed", {"request_id": request_id,
+                               "session_id": job.session_id, "run_id": job.run_id})
+                    if not turn_done.done() and not gate.closed:
+                        status = ("awaiting_approval" if gate._pending else "waiting_input"
+                                  if any(r.blocking for r in input_requests.values()) else "running")
+                        queue.put_nowait({"method": "runtime/status", "params": {"status": status}})
+                if request.resolved_remotely:
+                    return ServerRequestResolved()
+                if answer is None or closing or cancelled or gate.closed or turn_done.done():
+                    return ServerRequestError(-32000, "Input request expired or cancelled")
+                return answer
+            return _await_input()
         if method not in _APPROVAL_METHODS:
             return UnsupportedServerRequest()
         params = req.get("params") or {}
@@ -474,7 +546,8 @@ async def drive_codex_run(
                 await emit("permission.closed", {"request_id": request_id,
                            "session_id": job.session_id, "run_id": job.run_id})
                 if not turn_done.done() and not gate.closed and not gate._pending:
-                    queue.put_nowait({"method": "runtime/status", "params": {"status": "running"}})
+                    status = "waiting_input" if any(r.blocking for r in input_requests.values()) else "running"
+                    queue.put_nowait({"method": "runtime/status", "params": {"status": status}})
             if closing or cancelled or gate.closed or turn_done.done():
                 allowed = False
             if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:

@@ -1136,7 +1136,8 @@ export const useChat = create<ChatState>((set, get) => ({
     const current = get().askUser;
     if (!current) return;
     try {
-      const result = await typedIPC.answerUser(current.request_id, answers);
+      const result = await typedIPC.answerUser(current.request_id, answers, false,
+        current.engine === "codex" && current.run_id ? { session_id: current.session_id, run_id: current.run_id } : undefined);
       if (!result.ok) {
         // The backend explicitly rejected the answer (unknown/expired
         // request_id) — the card is dead weight, drop it.
@@ -1156,6 +1157,17 @@ export const useChat = create<ChatState>((set, get) => ({
   skipAskUser: async () => {
     const current = get().askUser;
     if (!current) return;
+    if (current.engine === "codex") {
+      try {
+        const result = await typedIPC.answerUser(current.request_id, [], true,
+          current.run_id ? { session_id: current.session_id, run_id: current.run_id } : undefined);
+        if (!result.ok) toast.error(strings.toasts.askUserSubmitFailed, result.error);
+        if (get().askUser?.request_id === current.request_id) { ++askVersion; closedAskIds.add(current.request_id); setLiveQuestion(null); }
+      } catch (err) {
+        toast.error(strings.toasts.askUserSubmitFailed, err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
     await get().submitAskUser(current.questions.map(() => "(skipped by user)"));
   },
 
