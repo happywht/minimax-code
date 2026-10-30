@@ -246,6 +246,23 @@ async def handle_workflow_disable(params: dict[str, Any], ctx: Context) -> dict[
 async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[str, Any]:
     """Manually trigger a workflow run."""
     dao = await _ensure_dao(ctx)
+    listing = params.get("skill_list")
+    if listing is not None:
+        required = {"session_id", "expected_service_id", "expected_project_id", "offset"}
+        if not isinstance(listing, dict) or set(listing) != required or type(listing["offset"]) is not int or listing["offset"] < 0:
+            raise HandlerError(-32602, "Explicit chain scope and non-negative offset are required")
+        db = dao._db
+        await _chain_scope(db, listing["session_id"], listing["expected_service_id"], listing["expected_project_id"])
+        rows = await db.fetchall("SELECT * FROM workflow_skill_chains WHERE session_id=? AND service_id=? AND project_id IS ? ORDER BY created_at DESC, workflow_id, trigger_key LIMIT 21 OFFSET ?", (listing["session_id"], listing["expected_service_id"], listing["expected_project_id"], listing["offset"]))
+        chains = []
+        for row in rows[:20]:
+            workflow = await dao.get(row["workflow_id"])
+            snapshot = json.dumps(workflow.get("steps") or [], sort_keys=True, ensure_ascii=False, separators=(",", ":")) if workflow else None
+            chains.append({"workflow_id": row["workflow_id"], "trigger_key": row["trigger_key"],
+                           "created_at": row["created_at"], "workflow": workflow,
+                           "definition_matches": snapshot == row["steps_json"],
+                           "steps": await _chain_status(db, row["workflow_id"], row["trigger_key"], listing["session_id"])})
+        return {"chains": chains, "next_offset": listing["offset"] + 20 if len(rows) > 20 else None}
     wid = params.get("id")
     if not wid:
         raise HandlerError(-32001, "Missing 'id'")

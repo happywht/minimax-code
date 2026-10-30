@@ -2184,6 +2184,12 @@ the authorized skill execution boundary; non-push or empty-commit events are ski
 `run.get` 查看。技能步骤不计入 `steps_completed`，其他旧工作流按原路径执行。旧版单技能
 运行在链账本建立前没有快照；若其键用于新的多步链，会拒绝并要求先检查旧运行。
 
+`workflow.trigger` 的只读 `skill_list` 参数包含 `session_id`、`expected_service_id`、
+`expected_project_id` 和非负整数 `offset`，按当前绑定分页返回持久链、原始触发键、
+步骤运行状态、现存工作流和 `definition_matches`；`next_offset` 为下一页或 null。
+它不执行步骤。已删除或定义已变更的链可查看历史，不可继续。链账本出现前的旧运行
+不会被推断成链，应在原会话查看。
+
 
 ## 固定上下文调度契约（2026-10-26，Schema036）
 

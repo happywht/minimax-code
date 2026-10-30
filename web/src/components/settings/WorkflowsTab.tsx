@@ -13,6 +13,7 @@ import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ErrorBanner, Field, Select, TabHeader } from "./fields";
 import { StepEditor } from "./workflows/StepEditor";
 import { SkillWorkflowRun } from "./workflows/SkillWorkflowRun";
+import { SkillChainRecovery } from "./workflows/SkillChainRecovery";
 
 export { WorkflowsTab };
 
@@ -64,6 +65,8 @@ function WorkflowsTab(): JSX.Element {
       />
 
       {error && <ErrorBanner message={error} />}
+
+      <SkillChainRecovery />
 
       {/* Create form */}
       {showCreate && (

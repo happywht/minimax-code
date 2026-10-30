@@ -487,6 +487,7 @@ export interface TypedIPC {
   disableWorkflow(id: string): Promise<WorkflowEntry>;
   triggerWorkflow(id: string, context?: Record<string, unknown>, skillExecution?: { skill_id: string; session_id: string; request: string; budget_tokens: number; idempotency_key: string; expected_service_id: string; expected_project_id: string | null; step_index?: number }): Promise<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[]; skill_admission?: import("../types/ipc").RunAdmissionResult }>;
   getWorkflowSkillChain(id: string, scope: { idempotency_key: string; session_id: string; expected_service_id: string; expected_project_id: string | null }): Promise<{ definition_matches: boolean; skill_chain: { index: number; skill_id: string; run: AgentRun | null; continuation_blocked_reason: string | null }[] }>;
+  listWorkflowSkillChains(scope: { session_id: string; expected_service_id: string; expected_project_id: string | null; offset: number }): Promise<{ chains: { workflow_id: string; trigger_key: string; created_at: string; workflow: import("../types/ipc").WorkflowEntry | null; definition_matches: boolean; steps: { index: number; skill_id: string; run: AgentRun | null; continuation_blocked_reason: string | null }[] }[]; next_offset: number | null }>;
 
   // team (v0.8.0) — drive the Settings page's Teams tab.
   listTeams(): Promise<ListTeamsResult>;
@@ -1047,6 +1048,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     triggerWorkflow: (id, context, skillExecution) =>
       client.request<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[]; skill_admission?: RunAdmissionResult }>("workflow.trigger", { id, context, ...(skillExecution ? { skill_execution: skillExecution } : {}) }),
     getWorkflowSkillChain: (id, scope) => client.request("workflow.trigger", { id, skill_status: scope }),
+    listWorkflowSkillChains: (scope) => client.request("workflow.trigger", { skill_list: scope }),
 
     // team (v0.8.0)
     listTeams: () => client.request<ListTeamsResult>("team.list", {}),

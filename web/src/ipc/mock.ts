@@ -2032,6 +2032,8 @@ function mockHandle(
     }
 
     case "workflow.trigger":
+      if (input?.skill_list) return { chains: [], next_offset: null };
+      if (input?.skill_status || input?.skill_execution) throw new Error("Mock mode does not support durable skill workflows");
       return { ok: true, steps_completed: 0, steps_failed: 0 };
 
     // ── team.* mock (v0.8.0) ──────────────────────────────────────────

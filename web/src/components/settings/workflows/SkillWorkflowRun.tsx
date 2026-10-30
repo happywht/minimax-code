@@ -11,13 +11,16 @@ type Intent = {
 };
 type Pending = { host: string; workflow: string; intent: Intent };
 
-export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntry; onClose: () => void }): JSX.Element {
+export function SkillWorkflowRun({ workflow, onClose, recovery }: { workflow: WorkflowEntry; onClose: () => void; recovery?: { key: string; index: number; session: string; project: string | null; service: string; host: string } }): JSX.Element {
+  const draftKey = recovery ? `minimax:workflow-draft:${encodeURIComponent(JSON.stringify([recovery.host, recovery.service, recovery.session, recovery.project, workflow.id, recovery.key]))}` : null;
   const sessionId = useSessionStore((s) => s.currentSessionId);
   const session = useSessionStore((s) => s.sessions.find((s) => s.id === s.currentSessionId));
   const project = useSessionStore((s) => s.currentProjectId);
   const mode = useChat((s) => s.executionMode);
   const [service, setService] = useState<string | null>(null);
-  const [request, setRequest] = useState("");
+  const [request, setRequest] = useState(() => {
+    try { return draftKey ? sessionStorage.getItem(draftKey) ?? "" : ""; } catch { return ""; }
+  });
   const [budget, setBudget] = useState("");
   const [key, setKey] = useState(() => crypto.randomUUID());
   const [index, setIndex] = useState(0);
@@ -40,6 +43,7 @@ export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntr
   currentViewScope.current = viewScope;
 
   useEffect(() => { setPreview(null); setChain([]); }, [viewScope]);
+  useEffect(() => { if (draftKey) { try { sessionStorage.setItem(draftKey, request); } catch { /* keep the in-memory draft */ } } }, [draftKey, request]);
 
   useEffect(() => {
     let live = true;
@@ -60,6 +64,22 @@ export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntr
     } catch { setMessage("无法读取待确认请求，请先查看运行记录。"); }
     return () => { live = false; };
   }, [storageKey, sessionId, projectId]);
+  useEffect(() => {
+    if (!recovery || !service) return;
+    if (recovery.host !== ipc.agentBaseUrl || recovery.service !== service || recovery.session !== sessionId || recovery.project !== projectId || !matches) {
+      setMessage("恢复链的服务、会话或项目已变化，请重新查询。");
+      return;
+    }
+    try {
+      if (sessionStorage.getItem(storageKey)) {
+        setMessage("存在待确认请求，已保留原请求；处理后请重新选择要恢复的链。");
+        return;
+      }
+      setKey(recovery.key);
+      setIndex(recovery.index);
+      setMessage("已选择持久链。请查询步骤状态并核对输入；不会自动执行。");
+    } catch { setMessage("无法读取待确认请求；请检查运行记录后再恢复。"); }
+  }, [recovery?.key, recovery?.index, recovery?.host, recovery?.service, recovery?.session, recovery?.project, service, sessionId, projectId, matches, storageKey]);
   useEffect(() => ipc.onSideCar(() => { setService(null); setRun(null); setPreview(null); setChain([]); setMessage("服务连接已变化，请关闭并重新打开运行入口，先检查原运行记录。"); }), []);
 
   const sameScope = (value: Pending) => value.workflow === workflow.id && value.host === ipc.agentBaseUrl &&
@@ -186,7 +206,7 @@ export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntr
     {!supported ? <p>仅支持线性技能步骤；混合步骤不会执行。</p> : <>
       <p>当前会话：{sessionId ?? "未选择"}。每步需手动提交；仅前面所有步骤均已完成时可继续。</p>
       {!matches || mode !== "execute" || !service ? <p>请选择所属项目中的 Native 会话、切换到执行模式，并确认服务可用。</p> : <>
-        <label className="block">步骤<select value={index} disabled={busy || !!pending} onChange={(e) => { setIndex(Number(e.target.value)); setRequest(""); }}>
+        <label className="block">步骤<select value={index} disabled={busy || !!pending} onChange={(e) => setIndex(Number(e.target.value))}>
           {workflow.steps.map((s, i) => <option key={i} value={i}>#{i} · {String(s.config?.skill_id ?? "未指定")}</option>)}
         </select></label>
         <label className="block">请求<textarea className="w-full rounded border border-line bg-surface-0 p-2" value={request} disabled={busy || !!pending} onChange={(e) => setRequest(e.target.value)} /></label>
