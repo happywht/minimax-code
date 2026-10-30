@@ -270,7 +270,7 @@ def register_task_handlers(server: Any, *, tracker: Any = None) -> None:
             if not existing.get("run_id"):
                 raise HandlerError(INVALID_PARAMS, "This task has no cancellable run; cancellation is unavailable")
             from ..runs import get_run_service
-            requested = get_run_service(ctx.server).cancel_run(existing["run_id"])
+            requested = await get_run_service(ctx.server).cancel_run_durable(existing["run_id"])
             if not requested:
                 raise HandlerError(INVALID_PARAMS, "Task run is not active in this service; refresh its state")
             # Terminal status is published by the execution owner after cleanup.

@@ -324,7 +324,9 @@ Queries and replay return that same receipt, including after restart.
 
 `agent.cancel_subagent` takes the durable `run_id` and returns request acknowledgement
 (`cancel_requested`/compatibility `cancelled`) plus observed `run_status`; acknowledgement does
-not certify cleanup finished. Read the run's actual terminal state. Reviewed `run.resume` and
+not certify cleanup finished. For a queued public root, acknowledgement follows persistence of
+the cancellation fence, so startup recovery can retain the cancellation if the process exits
+before terminal cleanup. Read the run's actual terminal state. Reviewed `run.resume` and
 `agent.continue_run` retain saved profile, prepared copy and cumulative family. Pending or
 unconfirmed preparation cannot be rebuilt automatically. See [agent-execution.md](agent-execution.md)
 for supported models, revocations, recovery and evidence boundaries.
@@ -2251,6 +2253,7 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 passed 只证明配置的命令通过，不证明全部交付要求通过。
 
 `task.cancel` 仅对本进程可取消的关联运行发出真实 RunService 取消，返回 `{ok:true,requested:true,task}`。
+排队运行的成功回执在取消栅栏持久化之后返回；持久化失败时不返回成功。
 确认请求时任务仍可显示 running；持久终态在 writer 清理完成后发布。未关联的活动任务拒绝取消，
 UI 依据 `cancel_supported` 禁用动作，不能只改任务账本制造已停止假象。
 

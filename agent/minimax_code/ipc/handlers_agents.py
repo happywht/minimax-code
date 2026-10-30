@@ -357,7 +357,7 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
                              "run_id": params["run_id"], "note": "No matching durable agent run"})
             return
         if "agent_execution" in (run.get("metadata") or {}):
-            requested = get_run_service(ctx.server).cancel_run(run["id"])
+            requested = await get_run_service(ctx.server).cancel_run_durable(run["id"])
         elif (run.get("metadata") or {}).get("source") == "tool":
             # Internal children retain their owner's existing lifetime. This
             # compatibility signal never declares teardown or terminal state.
