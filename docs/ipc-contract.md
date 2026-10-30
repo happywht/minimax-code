@@ -1472,6 +1472,8 @@ permission rule. A denial blocks execution; an ask waits for an explicit one-tim
 decision. They recheck policy and session binding before spawning. Runner version
 probes have no interactive approval channel and run only when these rules permit
 them without asking; otherwise the external runner is shown as unavailable.
+For `runner.start`, version probes run under the resolved workspace execution
+policy; a missing or replaced workspace prevents the probe from starting.
 When `cwd` is omitted, runners use the same workspace-root default as
 `terminal.start`.
 

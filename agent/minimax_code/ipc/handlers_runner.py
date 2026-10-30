@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ..execution import capture_output, spawn_exec, spawn_shell
+from ..execution import ExecutionPolicy, capture_output, execution_scope, spawn_exec, spawn_shell
 from .handler_utils import HandlerError
 from .handlers_terminal import _cwd_and_root_from_params, start_terminal_command, terminal_permission_action
 from .host_session_gate import require_host_session
@@ -274,8 +274,11 @@ def register_runner_handlers(server: Any) -> None:
                 runner = await _runner_entry(id="native", label="Native shell", command_name=None,
                                              version_args=None, supports_prompt=False)
             else:
-                runner = next(item for item in await _runner_catalog(chat_session_id=chat_session_id, permission_server=ctx.server)
-                              if item["id"] == runner_id)
+                # Version probes are processes too. Pin them to the validated
+                # workspace and recheck its identity when each process starts.
+                with execution_scope(ExecutionPolicy(workspace=Path(workspace_root or cwd))):
+                    runner = next(item for item in await _runner_catalog(chat_session_id=chat_session_id, permission_server=ctx.server)
+                                  if item["id"] == runner_id)
             if runner_id != "native" and not runner["available"]:
                 raise HandlerError(
                     _RUNNER_ERROR,

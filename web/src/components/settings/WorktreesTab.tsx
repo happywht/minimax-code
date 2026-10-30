@@ -21,6 +21,15 @@ import { toast } from "../layout/ErrorBoundary";
 
 export { WorktreesTab };
 
+type MergeResult = Awaited<ReturnType<typeof typedIPC.mergeReviewedWorktree>>;
+const mergeReasons: Record<string, string> = {
+  already_merged: "目标分支已包含这些提交。",
+  validation_failed: "项目验证命令未通过，尚未合并。",
+  worktree_changed: "工作树在合并前发生变化，请重新审阅。",
+  main_checkout_changed: "目标分支在合并前发生变化，请重新审阅。",
+  conflicts: "合并产生冲突，合并状态已保留；请在目标目录处理冲突或中止合并。",
+};
+
 function WorktreesTab(): JSX.Element {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -163,10 +172,10 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
   const [value, setValue] = useState<{ working: string; staged: string; untracked: string[]; excluded: number; service: string } | null>(null);
   const [file, setFile] = useState<{ path: string; content: string; end: number } | null>(null);
   const [committed, setCommitted] = useState<WorktreeCommittedReview | null>(null);
-  const [mergeResult, setMergeResult] = useState<string>("");
+  const [mergeResult, setMergeResult] = useState<MergeResult | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const epoch = useRef(0);
-  useEffect(() => { const stop = ipc.onSideCar(() => { ++epoch.current; setValue(null); setFile(null); setCommitted(null); setBusy(false); setError("连接变化，请重新读取。"); }); return () => { ++epoch.current; stop(); }; }, []);
+  useEffect(() => { const stop = ipc.onSideCar(() => { ++epoch.current; setValue(null); setFile(null); setCommitted(null); setMergeResult(null); setBusy(false); setError("连接变化，请重新读取。"); }); return () => { ++epoch.current; stop(); }; }, []);
   const load = async () => {
     if (busy || !session.workspace_path) return;
     const ticket = ++epoch.current, host = ipc.agentBaseUrl;
@@ -214,7 +223,7 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
   const readCommits = async () => {
     if (busy || !session.project_id || !session.workspace_path) return;
     const ticket = ++epoch.current, host = ipc.agentBaseUrl;
-    setBusy(true); setCommitted(null); setError("");
+    setBusy(true); setCommitted(null); setMergeResult(null); setError("");
     try {
       const identity = await typedIPC.getServiceIdentity();
       const result = await typedIPC.reviewWorktreeCommits({ session_id: session.id, project_id: session.project_id, expected_service_id: identity.service_id });
@@ -231,10 +240,11 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
   const mergeReviewed = async () => {
     if (!committed || !session.project_id || busy) return;
     const snapshot = committed, host = ipc.agentBaseUrl;
-    if (!window.confirm(`将已审阅的提交合并到 ${snapshot.target_branch}？\n目标：${snapshot.target}\n工作树：${snapshot.source_head}\n目标 HEAD：${snapshot.target_head}\n如项目配置了验证命令，将先运行该命令。`)) return;
     const ticket = ++epoch.current;
-    setBusy(true); setError(""); setMergeResult("");
+    setBusy(true); setError(""); setMergeResult(null);
     try {
+      const accepted = await requestConfirmation({ title: "合并已审阅提交", description: `将 ${snapshot.source_head} 合并到 ${snapshot.target} 的 ${snapshot.target_branch} 分支（当前 HEAD ${snapshot.target_head}）。如项目配置了验证命令，将先运行该命令。`, confirmLabel: "确认合并" });
+      if (!accepted || ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
       const identity = await typedIPC.getServiceIdentity();
       if (ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
       if (identity.service_id !== snapshot.service_id) throw new Error("服务已变化，请重新比较。");
@@ -244,7 +254,7 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
       });
       if (ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
       setCommitted(null);
-      setMergeResult(JSON.stringify(result, null, 2));
+      setMergeResult(result);
     } catch (failure) { if (ticket === epoch.current) setError(`合并请求未确认，请先查看仓库状态：${failure instanceof Error ? failure.message : String(failure)}`); }
     finally { if (ticket === epoch.current) setBusy(false); }
   };
@@ -254,14 +264,20 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
     <Button size="sm" disabled={busy} onClick={() => void load()}>读取／刷新差异</Button>{" "}
     <Button size="sm" disabled={busy || !session.project_id} onClick={() => void readCommits()}>比较已提交变更</Button>{" "}
     <Button size="sm" variant="ghost" disabled={busy} onClick={onClose}>关闭</Button>
-    {error && <p role="alert">读取失败：{error}</p>}
+    {error && <p role="alert">{error}</p>}
     {committed && <div className="space-y-1 rounded border border-line p-2"><p className="break-all">目标：{committed.target} · 分支 {committed.target_branch} · HEAD {committed.target_head}</p>
       <p className="break-all">工作树 HEAD：{committed.source_head} · 共同祖先：{committed.merge_base}</p>
       <p>这是共同祖先到工作树 HEAD 的提交差异，目标分支可能也有自己的提交；不包含未提交文件，不预测冲突，也不是验证通过。</p>
       <details><summary>提交摘要（{committed.commits.length}{committed.commits_truncated ? "，已截断" : ""}）</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{committed.commits.join("\n") || "无独有提交"}</pre></details>
       <details open><summary>已提交差异</summary><div className="max-h-80 overflow-auto"><DiffLines text={committed.diff} emptyText="无已提交差异" /></div></details>
       <Button size="sm" disabled={busy} onClick={() => void mergeReviewed()}>合并已审阅提交</Button><p>工作树有未提交内容时不会合并；如发生冲突，Git 合并状态会保留供处理。</p></div>}
-    {mergeResult && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{mergeResult}</pre>}
+    {mergeResult && <div role="status" className="space-y-1 rounded border border-line p-2">
+      <p>{mergeResult.merged ? "合并完成。" : mergeReasons[mergeResult.reason ?? ""] ?? `未合并：${mergeResult.reason ?? "原因未知"}`}</p>
+      {mergeResult.merge_commit && <p className="break-all">合并提交：{mergeResult.merge_commit}</p>}
+      {mergeResult.conflicts && mergeResult.conflicts.length > 0 && <p className="break-all">冲突文件：{mergeResult.conflicts.join("、")}</p>}
+      <p>{mergeResult.validation ? "已返回项目验证记录。" : "未返回项目验证记录，不能据此判断检查是否通过。"}</p>
+      <details><summary>查看完整结果</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(mergeResult, null, 2)}</pre></details>
+    </div>}
     {value && <><details open><summary>未暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.working} emptyText="无已跟踪文件差异" /></div></details>
       <details><summary>已暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.staged} emptyText="无已暂存差异" /></div></details>
       <details><summary>未跟踪文件（{value.untracked.length}，另排除 {value.excluded}）</summary><p>按需读取前 100 行；敏感或排除路径、超限、空文件和非 UTF-8 文件不可预览，读取需要 read_file 允许规则。</p>
