@@ -209,8 +209,12 @@ async def _maybe_open_db() -> Any:
                 )
                 try:
                     await _MCP_REGISTRY.add_server(cfg)
-                except Exception:  # noqa: BLE001 — fail-open
-                    logger.exception("failed to attach persisted MCP server %s", cfg_row["name"])
+                except Exception as exc:  # noqa: BLE001 — fail-open
+                    # Exceptions can contain endpoint queries or credentials.
+                    logger.warning(
+                        "failed to attach persisted MCP server %s (%s)",
+                        cfg_row["name"], type(exc).__name__,
+                    )
         except Exception:  # noqa: BLE001
             logger.exception("failed to load persisted MCP servers")
         # Codebase RAG indexer (v0.11.0 Milestone 2, per-root in v1.3.0).

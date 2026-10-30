@@ -11,12 +11,14 @@ const pages: Record<WorkbenchView, string> = {
   "task-dashboard": "任务状态与结果", artifacts: "文本成果", attachments: "附件与报告", office: "办公表格",
   research: "研究来源", "run-artifacts": "当前会话成果", scheduled: "定时任务", workflows: "工作流", webhooks: "Webhook",
 };
+const areaPages: Record<Area, WorkbenchView[]> = {
+  projects: ["task-dashboard"],
+  work: ["chat", "preview", "skills", "agents"],
+  deliveries: ["run-artifacts", "artifacts", "attachments", "office", "research"],
+  automation: ["scheduled", "workflows", "webhooks"],
+};
 function areaFor(view: WorkbenchView): Area | null {
-  if (view === "task-dashboard") return "projects";
-  if (["chat", "preview", "skills", "agents"].includes(view)) return "work";
-  if (["artifacts", "attachments", "office", "research", "run-artifacts"].includes(view)) return "deliveries";
-  if (["scheduled", "workflows", "webhooks"].includes(view)) return "automation";
-  return null;
+  return (Object.keys(areaPages) as Area[]).find((area) => areaPages[area].includes(view)) ?? null;
 }
 
 export function WorkbenchNavigator({ view, connection, onNavigate }: {
@@ -43,6 +45,12 @@ export function WorkbenchNavigator({ view, connection, onNavigate }: {
         className={`rounded-md px-2 py-1 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${area === item ? "bg-accent-subtle text-ink-0" : "text-ink-1 hover:bg-surface-3"}`}>
         {labels[item]}</button>)}
     </nav>
+    {area === "work" && <nav aria-label={`${labels[area]}页面`} className="mt-1 flex gap-1 overflow-x-auto whitespace-nowrap">
+      {areaPages[area].map((page) => <button key={page} type="button" aria-current={view === page ? "page" : undefined}
+        onClick={() => { if (view !== page) onNavigate(page); }}
+        className={`rounded px-2 py-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${view === page ? "bg-surface-3 text-ink-0" : "text-ink-2 hover:bg-surface-3"}`}>
+        {pages[page]}</button>)}
+    </nav>}
     <div className="mt-1 flex items-center gap-3 overflow-x-auto whitespace-nowrap text-ink-2">
       <span>位置：{area ? `${labels[area]} / ` : ""}{pages[view]}</span>
       <span className="max-w-48 shrink-0 truncate" title={project?.name ?? projectId ?? "未选择"}>项目：{project?.name ?? projectId ?? "未选择"}</span>

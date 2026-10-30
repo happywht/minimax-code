@@ -78,6 +78,9 @@ operation/leaf exception type/HTTP status, so an HTTP 401 remains distinguishabl
 without its response body or URL. The shared HTTP hook also records fixed HTTP
 status numbers when the Streamable HTTP connector translates them into RPC
 errors, without recording remote text. The project's separate httpx logging is unaffected.
+If attachment raises outside the SDK boundary during startup or settings changes,
+the corresponding warning records the server name and exception class only;
+it does not format the exception or traceback, which may contain credentials.
 
 No sampling, elicitation or roots callbacks are registered or advertised. Legacy
 unsolicited requests receive SDK errors, and unknown methods are refused. Modern

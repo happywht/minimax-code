@@ -195,7 +195,7 @@ async def handle_mcp_add_server(params: Any, ctx: Context) -> None:
             try:
                 await registry.add_server(cfg)
             except Exception as exc:  # noqa: BLE001 — fail-open, still persisted
-                logger.warning("failed to attach MCP server %s at add time: %s", name, exc)
+                logger.warning("failed to attach MCP server %s at add time (%s)", name, type(exc).__name__)
 
         await ctx.reply({"server": _server_row_with_status(row, _registry())})
     except HandlerError as exc:
@@ -302,7 +302,10 @@ async def handle_mcp_update_server(params: Any, ctx: Context) -> None:
             try:
                 await registry.add_server(cfg)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("failed to re-attach MCP server %s after update: %s", row["name"], exc)
+                logger.warning(
+                    "failed to re-attach MCP server %s after update (%s)",
+                    row["name"], type(exc).__name__,
+                )
 
         await ctx.reply({"server": _server_row_with_status(row, _registry())})
     except HandlerError as exc:
