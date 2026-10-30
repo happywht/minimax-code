@@ -78,8 +78,21 @@ def env_or_cwd_root() -> Path:
 
 
 def current_root() -> Path | None:
-    """The session-scoped root, or ``None`` if the default applies."""
-    return _current_root.get()
+    """Return the bound root only while it still resolves to the same directory.
+
+    Direct team runs can have a session root without an execution policy.
+    Revalidate that root on each use so a deleted directory or a replacement
+    symlink cannot silently redirect later file or process operations.
+    """
+    root = _current_root.get()
+    if root is None:
+        return None
+    resolved = require_directory(root)
+    if resolved != root:
+        raise WorkspaceUnavailableError(
+            "Session workspace has changed; rebind before continuing."
+        )
+    return resolved
 
 
 def set_current_root(root: Path) -> Token[Path | None]:
