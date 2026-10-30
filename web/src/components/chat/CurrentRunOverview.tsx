@@ -14,6 +14,7 @@ type Connection = "connecting" | "connected" | "disconnected" | "error";
 export function CurrentRunOverview({ connection, onOpenTimeline }: { connection: Connection; onOpenTimeline: () => void }): JSX.Element | null {
   const session = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.currentProjectId);
+  const sessionProject = useSessionStore((state) => state.sessions.find((item) => item.id === session)?.project_id);
   const runs = useRunTimelineStore((state) => state.runs), order = useRunTimelineStore((state) => state.order);
   const loading = useRunTimelineStore((state) => state.loading), error = useRunTimelineStore((state) => state.error);
   const loadRuns = useRunTimelineStore((state) => state.loadForSession);
@@ -24,10 +25,20 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
   const run = ordered.find((item) => active.has(item.status)) ?? ordered.find((item) => item.status === "queued") ?? ordered[0];
   const [budget, setBudget] = useState<{ scope: string; value: BudgetStateResult | null; error?: string } | null>(null);
   const [planDraftMessage, setPlanDraftMessage] = useState("");
+  const [deliveryBusy, setDeliveryBusy] = useState(false), [deliveryError, setDeliveryError] = useState("");
+  const deliveryEpoch = useRef(0), connectionRef = useRef(connection);
+  connectionRef.current = connection;
   const generation = useRef(0), runRef = useRef<string | null>(null);
   runRef.current = run?.id ?? null;
   const host = ipc.agentBaseUrl, scope = JSON.stringify([host, session, run?.id]);
   useEffect(() => { void loadRuns(session); }, [session, project, loadRuns]);
+  useEffect(() => {
+    deliveryEpoch.current++; setDeliveryBusy(false); setDeliveryError("");
+    return () => { deliveryEpoch.current++; };
+  }, [host, project, session, sessionProject, run?.id, connection]);
+  useEffect(() => ipc.onSideCar(() => {
+    deliveryEpoch.current++; setDeliveryBusy(false); setDeliveryError("连接已变化，请重试。");
+  }), []);
   const refreshBudget = useCallback(async () => {
     if (!run || !session || connection !== "connected") return;
     const ticket = ++generation.current, id = run.id;
@@ -67,6 +78,28 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       if (!current || current.request_id !== requestId || current.session_id !== session || current.run_id !== run.id) return;
       window.dispatchEvent(new CustomEvent("minimax:open-run-question", { detail: { host, session, run: run.id, request: requestId } }));
     }
+  };
+  const openDeliveries = async () => {
+    if (!run || !session || !project || stale || connection !== "connected") return;
+    const ticket = ++deliveryEpoch.current, runId = run.id;
+    const current = () => {
+      const sessions = useSessionStore.getState(), timeline = useRunTimelineStore.getState();
+      const selected = timeline.runs[runId];
+      return ticket === deliveryEpoch.current && connectionRef.current === "connected" && ipc.agentBaseUrl === host && runRef.current === runId &&
+        sessions.currentSessionId === session && sessions.currentProjectId === project &&
+        sessions.sessions.find((item) => item.id === session)?.project_id === project &&
+        !timeline.loading && !timeline.error && selected?.session_id === session && selected.metadata?.project_id === project;
+    };
+    setDeliveryBusy(true); setDeliveryError("");
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (!identity.service_id) throw new Error("无法确认服务身份");
+      window.dispatchEvent(new CustomEvent("minimax:open-run-deliveries", {
+        detail: { host, service: identity.service_id, project, session, run: runId },
+      }));
+    } catch (reason) { if (current()) setDeliveryError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (ticket === deliveryEpoch.current) setDeliveryBusy(false); }
   };
   const prepareStructuredPlan = () => {
     const sessions = useSessionStore.getState();
@@ -128,7 +161,9 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       <p>预算快照：{stale ? "状态待刷新" : data ? `累计已知${data.usage_complete === true ? "" : "至少 "}${data.known_tokens} · 预留/责任 ${data.reserved_tokens} · 上限 ${data.limit_tokens ?? "未设置"} · 剩余估算 ${data.remaining_estimate ?? "未知"}` : budget?.scope === scope && budget.error ? "读取失败" : record ? "该运行没有预算记录" : "读取中或未知"}</p>
       {data && data.unknown_attempts > 0 && <p>存在 {data.unknown_attempts} 个结果不明的请求，需在预算账本核对。</p>}
       <div className="flex flex-wrap gap-2 pt-1"><Button type="button" size="sm" variant="secondary" onClick={onOpenTimeline}>查看时间线与可用操作</Button>
+        {project && sessionProject === project && run.metadata?.project_id === project && <Button type="button" size="sm" variant="secondary" disabled={stale || deliveryBusy} onClick={() => void openDeliveries()}>{deliveryBusy ? "正在确认服务…" : "查看此任务的交付物"}</Button>}
         <Button type="button" size="sm" variant="ghost" disabled={connection !== "connected"} onClick={() => void refreshBudget()}>刷新预算</Button></div>
+      {deliveryError && <p role="alert" className="text-status-warning">无法打开任务成果：{deliveryError}</p>}
       <p className="text-ink-2">预算为读取时快照；时间线保留审批、结果、取消及恢复的原有条件。</p>
     </div>}
     <QueuedRuns session={session} host={host} runs={ordered.filter((item) => item.status === "queued")} stale={stale} />
