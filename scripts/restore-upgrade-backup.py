@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore a manual-upgrade backup into a new directory with the old release.
+"""Restore a manual or Linux user-service upgrade backup with the old release.
 
 Never switches, stops or starts a service and never overwrites a data directory.
 The operator must independently confirm the source and that writers are stopped.
@@ -60,36 +60,78 @@ def restore(args: argparse.Namespace) -> Path:
         info = parent.stat()
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
             raise ValueError("Destination parent must be owned by the current user and mode 0700")
-    if (source / ".COPY-COMPLETE").is_file() and not (source / ".COPY-COMPLETE").is_symlink():
-        if (source / ".COPY-INCOMPLETE").exists() or (source / ".COPY-INCOMPLETE").is_symlink():
-            raise ValueError("Copy has an incomplete marker")
-        receipt = _json_file(source / "receipt.json")
-        state = _json_file(source / "source-state.json")
-        if (receipt.get("format") != "minimax-upgrade-backup-copy-v1" or receipt.get("scope") != "data-only"
-                or receipt.get("backup_sha256") != state.get("backup_sha256")):
-            raise ValueError("Backup copy receipt does not match its source state")
-    else:
-        if (source / ".COPY-INCOMPLETE").exists() or (source / ".COPY-INCOMPLETE").is_symlink():
-            raise ValueError("Incomplete copies cannot be restored")
+    if getattr(args, "linux_service_transaction", False):
+        if sys.platform != "linux":
+            raise ValueError("Linux service transactions must be restored on Linux")
+        if not getattr(args, "confirm_old_unit", False):
+            raise ValueError("Review old.service and explicitly supply --confirm-old-unit")
+        if not isinstance(getattr(args, "expected_sha256", None), str) or not re.fullmatch(r"[0-9a-f]{64}", args.expected_sha256):
+            raise ValueError("An independently recorded --expected-sha256 is required")
         state = _json_file(source / "state.json")
-    expected = state.get("backup_sha256")
-    if (state.get("status") != "backup-ready" or not isinstance(expected, str)
-            or not re.fullmatch(r"[0-9a-f]{64}", expected)):
-        raise ValueError("A completed manual upgrade backup with a digest is required")
-    recorded = state.get("old_release")
-    actual = prepare.identity(release)
-    if (not isinstance(recorded, dict) or recorded.get("commit") != actual["commit"]
-            or recorded.get("version_label") != actual["version_label"]):
-        raise ValueError("Old release identity does not match the backup record")
-    original_data = Path(state.get("data_dir", ""))
-    if not original_data.is_absolute():
-        raise ValueError("Recorded original data path is not absolute on this platform")
-    recorded_new = state.get("new_release")
-    if not isinstance(recorded_new, dict) or not isinstance(recorded_new.get("path"), str):
-        raise ValueError("Recorded new release path is missing")
-    new_release = Path(recorded_new["path"])
-    if not new_release.is_absolute():
-        raise ValueError("Recorded new release path is not absolute on this platform")
+        # Earlier service transactions contain neither a backup digest nor a
+        # release manifest identity. Refuse early phases and require the operator
+        # to identify and trust the exact backup and old unit independently.
+        if state.get("state") not in {"stopped", "backup-verified", "switching-unit", "unit-switched",
+                                      "starting", "healthy", "failed-before-switch", "failed-during-or-after-switch"}:
+            raise ValueError("The transaction did not reach a potentially usable stopped backup")
+        unit, unit_info = copy.open_regular(source / "old.service")
+        with unit:
+            unit_bytes = unit.read(65537)
+            unit_after = os.fstat(unit.fileno())
+        if (not unit_bytes or len(unit_bytes) > 65536 or len(unit_bytes) != unit_info.st_size
+                or (unit_info.st_dev, unit_info.st_ino, unit_info.st_size, unit_info.st_mtime_ns) !=
+                   (unit_after.st_dev, unit_after.st_ino, unit_after.st_size, unit_after.st_mtime_ns)):
+            raise ValueError("Recorded old unit is missing, oversized or changed")
+        recorded_old = state.get("old_release")
+        if not isinstance(recorded_old, str) or not Path(recorded_old).is_absolute() or Path(recorded_old) != release:
+            raise ValueError("Old release path differs from the Linux transaction")
+        expected = args.expected_sha256
+        data_value = state.get("data")
+        if not isinstance(data_value, str):
+            raise ValueError("Recorded original data path is missing")
+        original_data = Path(data_value)
+        new_value = state.get("new_release")
+        if not isinstance(new_value, str):
+            raise ValueError("Recorded new release path is missing")
+        new_release = Path(new_value)
+        expected_schema, expected_format = None, None
+    else:
+        if getattr(args, "expected_sha256", None) is not None or getattr(args, "confirm_old_unit", False):
+            raise ValueError("Linux transaction flags require --linux-service-transaction")
+        if (source / ".COPY-COMPLETE").is_file() and not (source / ".COPY-COMPLETE").is_symlink():
+            if (source / ".COPY-INCOMPLETE").exists() or (source / ".COPY-INCOMPLETE").is_symlink():
+                raise ValueError("Copy has an incomplete marker")
+            receipt = _json_file(source / "receipt.json")
+            state = _json_file(source / "source-state.json")
+            if (receipt.get("format") != "minimax-upgrade-backup-copy-v1" or receipt.get("scope") != "data-only"
+                    or receipt.get("backup_sha256") != state.get("backup_sha256")):
+                raise ValueError("Backup copy receipt does not match its source state")
+        else:
+            if (source / ".COPY-INCOMPLETE").exists() or (source / ".COPY-INCOMPLETE").is_symlink():
+                raise ValueError("Incomplete copies cannot be restored")
+            state = _json_file(source / "state.json")
+        expected = state.get("backup_sha256")
+        if (state.get("status") != "backup-ready" or not isinstance(expected, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+            raise ValueError("A completed manual upgrade backup with a digest is required")
+        recorded = state.get("old_release")
+        actual = prepare.identity(release)
+        if (not isinstance(recorded, dict) or recorded.get("commit") != actual["commit"]
+                or recorded.get("version_label") != actual["version_label"]):
+            raise ValueError("Old release identity does not match the backup record")
+        data_value = state.get("data_dir")
+        if not isinstance(data_value, str):
+            raise ValueError("Recorded original data path is missing")
+        original_data = Path(data_value)
+        recorded_new = state.get("new_release")
+        if not isinstance(recorded_new, dict) or not isinstance(recorded_new.get("path"), str):
+            raise ValueError("Recorded new release path is missing")
+        new_release = Path(recorded_new["path"])
+        expected_schema, expected_format = state.get("schema_version"), state.get("format_version")
+        if type(expected_schema) is not int or type(expected_format) is not int:
+            raise ValueError("Backup schema and format must be recorded")
+    if not original_data.is_absolute() or not new_release.is_absolute():
+        raise ValueError("Recorded data and new release paths must be absolute on this platform")
     for protected in (source, release, original_data.resolve(), new_release.resolve()):
         if prepare.overlapping(destination, protected):
             raise ValueError("New data directory must not overlap backup, old release or original data")
@@ -126,14 +168,15 @@ def restore(args: argparse.Namespace) -> Path:
                 or size != before.st_size or digest.hexdigest() != expected):
             raise ValueError("Backup changed or does not match the recorded digest")
         verified = prepare.bundle_command(python, release / "agent", "verify", "--bundle", str(staged))
-        if (verified.get("schema_version") != state.get("schema_version") or
-                verified.get("format_version") != state.get("format_version") or
-                prepare.file_sha256(staged) != expected):
+        if (type(verified.get("schema_version")) is not int or type(verified.get("format_version")) is not int
+                or (expected_schema is not None and verified["schema_version"] != expected_schema)
+                or (expected_format is not None and verified["format_version"] != expected_format)
+                or prepare.file_sha256(staged) != expected):
             raise ValueError("Verified backup differs from the recorded format, schema or digest")
         restored = prepare.bundle_command(python, release / "agent", "restore", "--bundle", str(staged),
                                           "--new-data-dir", str(destination))
-        if (restored.get("schema_version") != state.get("schema_version") or
-                restored.get("format_version") != state.get("format_version") or
+        if (restored.get("schema_version") != verified["schema_version"] or
+                restored.get("format_version") != verified["format_version"] or
                 prepare.file_sha256(staged) != expected):
             raise RuntimeError("Restore receipt or staged backup changed; inspect destination before use")
         # Remove only the exact staging file and directory that this invocation owns.
@@ -157,6 +200,9 @@ def main() -> int:
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--confirm-stopped", action="store_true")
     parser.add_argument("--confirm-trusted-source", action="store_true")
+    parser.add_argument("--linux-service-transaction", action="store_true", help="restore a Linux user-service upgrade transaction")
+    parser.add_argument("--expected-sha256", help="independently recorded data-vault.zip SHA-256 for a Linux transaction")
+    parser.add_argument("--confirm-old-unit", action="store_true", help="operator reviewed old.service and selected its matching old release and Python")
     args = parser.parse_args()
     try:
         target = restore(args)

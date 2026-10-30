@@ -122,7 +122,7 @@ python scripts/prepare-release-upgrade.py --old-release "D:/apps/minimax-old" --
 python scripts/copy-upgrade-backup.py --source-transaction "D:/minimax-backups/minimax-upgrade-backup-example" --destination-parent "D:/minimax-backup-copies"
 ```
 
-目标父目录须预先存在，与源事务互不包含；Linux 要求当前用户持有且权限为 `0700`，Windows 需自行限制 ACL。命令创建独立目录，复制数据包及源状态，并在复制时与原事务的 SHA-256 比对，写入回执；不会覆盖或删除原件。中断或失败的目录保留为 `.COPY-INCOMPLETE`，不可用于恢复。成功目录有 `.COPY-COMPLETE`、`receipt.json` 和 `source-state.json`；复制完成后仍须用原版本的 bundle 工具校验并按恢复流程检查。摘要不能认证来源，数据包仍有原来的排除项，必须另行保全工作区、凭据和其他独立文件。此命令只支持手工升级准备工具的事务，不支持 Linux 用户服务升级事务，也不自动清理任何副本。
+目标父目录须预先存在，与源事务互不包含；Linux 要求当前用户持有且权限为 `0700`，Windows 需自行限制 ACL。命令创建独立目录，复制数据包及源状态，并在复制时与原事务的 SHA-256 比对，写入回执；不会覆盖或删除原件。中断或失败的目录保留为 `.COPY-INCOMPLETE`，不可用于恢复。成功目录有 `.COPY-COMPLETE`、`receipt.json` 和 `source-state.json`；复制完成后仍须用原版本的 bundle 工具校验并按恢复流程检查。摘要不能认证来源，数据包仍有原来的排除项，必须另行保全工作区、凭据和其他独立文件。此复制命令只支持手工升级准备工具的事务，不支持复制 Linux 用户服务升级事务，也不自动清理任何副本。
 
 脚本使用旧版本的 bundle 命令创建和校验离线数据包；bundle 自身的数据目录租约会拒绝仍持有租约的服务。每次在备份目录新建独立事务子目录，保留 ZIP 和 `state.json`：完成时记录旧/新清单身份、schema、包哈希与排除范围；失败或中断时保留不完整状态，不覆盖任何已有包。清单身份和包哈希不证明发布者可信，也不证明恢复可行。
 
@@ -140,6 +140,22 @@ python scripts/restore-upgrade-backup.py --source-transaction "D:/minimax-backup
 Linux 同样使用该命令和本机绝对路径；新目录不能已存在，父目录须已存在，Linux 要求当前用户持有且权限为 0700，Windows 需自行限制 ACL。脚本核对原状态或副本回执、旧版清单中的版本和提交、文件 SHA-256，并复制到私有暂存后调用旧版本的 bundle verify 和 restore；目的目录不能与源备份、两个记录的版本路径或旧数据重叠。暂存文件上限 2 GiB，验证还受旧版 bundle 自身限制。记录的路径需为当前系统的绝对路径。清单和摘要不能认证发布者或证明旧程序未被修改，来源信任需独立确认。
 
 命令只恢复 data-only 包到新目录，不切换、停止或启动服务，不覆盖原目录，也不逆向迁移。工作区、密钥环、环境变量和包列明的其他排除项仍需另行恢复；新目录不可立即假定可用。中断或失败可能留下目标目录及已打印的暂存目录，应先检查并保留证据，勿直接重试或启动。目录、版本及备份应在操作期间由用户独占；工具不能锁住非协作进程。此功能尚未进行实际恢复或升级演练。
+
+#### Linux 用户服务升级事务的恢复
+
+Linux 服务升级工具留下的 `upgrade-*` 事务与手工升级备份格式不同：它包含 `state.json`、`old.service` 和（在备份创建后）`data-vault.zip`，但**没有持久记录备份摘要或旧版本清单身份**。先停止相关服务和其他写入者，独立确认该事务、数据包和旧版本来源；查看 `old.service`，核对旧版目录和该版环境中的 Python。只有另行保留了可信的 `data-vault.zip` SHA-256，才能使用下列命令：
+
+```bash
+python3 scripts/restore-upgrade-backup.py \
+  --source-transaction /absolute/backups/upgrade-example \
+  --old-release /absolute/releases/old \
+  --old-python /absolute/releases/old/agent/.venv/bin/python \
+  --new-data-dir /absolute/restores/old-data \
+  --linux-service-transaction --expected-sha256 "<独立记录的64位小写摘要>" \
+  --confirm-stopped --confirm-trusted-source --confirm-old-unit
+```
+
+命令只在 Linux 接受此事务；核对记录的旧版本路径、保存的旧 unit 文件存在且稳定，拒绝尚未到达停止阶段的记录，然后比较操作者提供的摘要，用选定旧版的 bundle 工具校验和恢复到不存在的新目录。`failed-before-switch` 或 `stopped` 不代表备份已完成；即使接受这些阶段，也必须通过完整包验证。没有独立摘要、无法核对旧 unit 或不确定旧版来源时，不应使用此自动入口。自行对现有文件计算摘要只能记录当前字节，不能证明它是当时验证过的备份或证明来源。脚本不能从 `old.service` 自动证明 Python/包与当时执行的代码一致；操作者需核对，尤其该升级工具当时调用已安装环境中的模块。摘要、路径和 unit 都不是签名。其余私有父目录、排除项、保留暂存和不自动切换服务的限制与上节相同。尚未运行真实恢复或跨机演练。
 
 ### Linux 用户服务配置生成（实验）
 
