@@ -1591,6 +1591,8 @@ An MCP server is external code, not an operating-system sandbox.
 | `codebase.summarize` | `{path, project_id?, session_id?}` | `{path, kind, language, total_lines, symbols, snippet, file_count, symbols_truncated}` | Returns a structured summary for a file or directory prefix. File symbols are flattened across indexed chunks, deduplicated and capped at 100; `symbols_truncated` signals additional symbols. The index snapshot may be stale. |
 | `codebase.read_current` | `{session_id, project_id, expected_service_id, path, start_line, end_line}` | `{path, start_line, end_line, content}` | Reads current UTF-8 workspace content for an inclusive range of up to 100 lines and 6000 characters, from a regular file of at most 64 KiB. Requires an explicit `read_file` allow rule; ask, deny and unmatched rules do not authorize this endpoint. Rejects links and sensitive paths. Service, project, session and directory identity are rechecked; this is a point-in-time read, not a file lock or a guarantee against concurrent changes. |
 
+The run file-sampling view can invoke `codebase.read_current` for a selected recorded path, checking the run's current workspace binding with `git.diff` before and after reading. It displays current source only, not attribution or verification; missing, oversized or disallowed files remain unavailable.
+
 When `session_id` is supplied to search or summarize, `project_id` must match
 the live session; the index is selected from that session's resolved workspace,
 including an independent worktree. The binding is checked again before reply.

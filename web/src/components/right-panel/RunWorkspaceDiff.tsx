@@ -61,6 +61,7 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   const [comparison, setComparison] = useState<Record<string, unknown> | null>(null);
   const [search, setSearch] = useState("");
   const [preview, setPreview] = useState<{ path: string; text: string } | null>(null);
+  const [source, setSource] = useState<{ path: string; content: string; end: number } | null>(null);
   const [selected, setSelected] = useState<DiffChoice | null>(null);
   const [handoff, setHandoff] = useState<DiffChoice[]>([]);
   const [handoffNote, setHandoffNote] = useState("");
@@ -72,11 +73,11 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
 
   useEffect(() => {
     const revision = version;
-    ++revision.current; setResult(null); setComparison(null); setPreview(null); setUntrackedNote(""); setError(null); setLoading(false); setSearch(""); setSelected(null); setReviewNote(""); setHandoff([]); setHandoffNote(""); setDraftMessage("");
+    ++revision.current; setResult(null); setComparison(null); setPreview(null); setSource(null); setUntrackedNote(""); setError(null); setLoading(false); setSearch(""); setSelected(null); setReviewNote(""); setHandoff([]); setHandoffNote(""); setDraftMessage("");
     return () => { ++revision.current; };
   }, [run.id, sessionId, projectId]);
   useEffect(() => ipc.onSideCar(() => {
-    ++version.current; setResult(null); setComparison(null); setPreview(null); setUntrackedNote(""); setSelected(null); setReviewNote(""); setHandoff([]); setHandoffNote(""); setDraftMessage(""); setError(null); setLoading(false);
+    ++version.current; setResult(null); setComparison(null); setPreview(null); setSource(null); setUntrackedNote(""); setSelected(null); setReviewNote(""); setHandoff([]); setHandoffNote(""); setDraftMessage(""); setError(null); setLoading(false);
   }), []);
 
   const load = async () => {
@@ -262,6 +263,32 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
     if (!result) void load();
   };
 
+  const readCurrentSource = async (path: string) => {
+    if (!available || !sessionId || !runProject || loading) return;
+    const request = ++version.current, host = ipc.agentBaseUrl;
+    const current = () => request === version.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === sessionId &&
+      (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
+    setLoading(true); setError(null); setSource(null);
+    try {
+      const before = await typedIPC.gitRunWorkspaceDiff(run.id, sessionId);
+      if (!current()) return;
+      if (before.run_id !== run.id || before.session_id !== sessionId || before.project_id !== runProject ||
+          before.workspace !== workspace || before.scope !== "current_workspace" || !before.service_id)
+        throw new Error("任务工作区绑定无法确认。");
+      const file = await typedIPC.readCurrentCodebase({ session_id: sessionId, project_id: runProject,
+        expected_service_id: before.service_id, path, start_line: 1, end_line: 100 });
+      const after = await typedIPC.gitRunWorkspaceDiff(run.id, sessionId);
+      if (!current()) return;
+      if (file.path !== path || file.start_line !== 1 || after.run_id !== run.id || after.session_id !== sessionId ||
+          after.project_id !== runProject || after.workspace !== workspace || after.scope !== "current_workspace" ||
+          after.service_id !== before.service_id || after.workspace_identity !== before.workspace_identity)
+        throw new Error("任务工作区或服务已变化，请重新读取。");
+      setSource({ path, content: file.content, end: file.end_line });
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (current()) setLoading(false); }
+  };
+
   return <div className="mt-2 text-xs" data-testid={`run-workspace-diff-${run.id}`}>
     <div className="flex flex-wrap gap-1">
     <Button variant="secondary" size="sm" disabled={!available || loading} loading={loading} onClick={() => void load()}>查看工作区当前差异</Button>
@@ -276,9 +303,11 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
           <details key={key}><summary>{label}（{Array.isArray(comparison[key]) ? comparison[key].length : 0}）</summary>
             <ul className="max-h-40 overflow-auto">
               {Array.isArray(comparison[key]) && (comparison[key] as unknown[]).map((path, index) => typeof path === "string" &&
-                <li key={`${index}-${path}`}><button type="button" disabled={loading} onClick={() => reviewPath(path)}
-                  className="w-full break-all py-1 text-left text-accent underline disabled:opacity-50">{path}</button></li>)}
+                <li key={`${index}-${path}`} className="break-all py-1"><button type="button" disabled={loading} onClick={() => reviewPath(path)}
+                  className="text-left text-accent underline disabled:opacity-50">{path}</button>{" "}
+                  <button type="button" disabled={loading} onClick={() => void readCurrentSource(path)} className="underline disabled:opacity-50">查看当前源码前 100 行</button></li>)}
             </ul></details>)}
+        {source && <div className="rounded border border-line p-2"><p className="break-all">当前源码：{source.path} · 第 1–{source.end} 行。仅为读取时的工作区状态，不代表任务修改或验证结果。</p><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{source.content || "（空内容）"}</pre><button type="button" onClick={() => setSource(null)}>关闭源码</button></div>}
       </> : <p>未采集、尚未完成，或采样失败／超过限制；无法给出变化结论。</p>}
     </div>}
     {result && <div className="mt-2 space-y-2">
