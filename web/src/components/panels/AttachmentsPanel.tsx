@@ -289,9 +289,18 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         if (/\[[1-9][0-9]*\]/.test(text)) setCitationNeedsReview(true);
       }} />
       <ReportDocumentReuse key={`document-reuse:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host}
-        draftVersion={JSON.stringify([body, structured, sections, title, sources, researchSources])} onApply={(text) => {
+        draftVersion={JSON.stringify([body, structured, sections, title, sources, researchSources, researchRanges, documentCitations, excerptSection, format, docName])} onApply={(text, sameName) => {
           setBody(text); setStructured(false); setVisualSections(false); setExcerptSection(""); setFormError(null);
+          if (sameName) { setDocName(state.selected!.original_name); setFormat("docx"); }
           setCitationNeedsReview(true);
+          if (/\[资料[1-9][0-9]*\]/.test(text)) setDocumentReview(true);
+        }} onAppend={(text) => {
+          const selected = state.selected!;
+          const applied = appendExcerpt([`资料可读取文字（未经核验，不代表完整原件）：${selected.original_name} · v${selected.version} · ${selected.id} · SHA-256 ${selected.sha256}`,
+            ...text.split("\n")]);
+          if (applied && /\[[1-9][0-9]*\]/.test(text)) setCitationNeedsReview(true);
+          if (applied && /\[资料[1-9][0-9]*\]/.test(text)) setDocumentReview(true);
+          return applied;
         }} />
       <AttachmentImagePreview key={`image:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
       <AttachmentImageOcr key={`ocr:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onInsertReport={insertAttachmentExcerpt} />
