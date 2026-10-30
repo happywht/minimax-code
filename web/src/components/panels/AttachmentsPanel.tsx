@@ -405,6 +405,8 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         }} />
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
       {researchTransfer && onClearResearchTransfer && <ReportResearchTransfer ids={researchTransfer} project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host}
+        selected={researchSources} manualCount={sources.length} ranges={researchRanges}
+        draftVersion={JSON.stringify([docName, title, body, format, structured, sections, visualSections, excerptSection, sources, researchSources, researchRanges, documentCitations, researchNeedsReview, citationNeedsReview, documentReview])}
         onClear={onClearResearchTransfer} onApply={(items) => {
           const existing = new Set(researchSources.map((item) => item.page_source_id));
           const added = items.filter((item) => !existing.has(item.page_source_id));
@@ -412,6 +414,20 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           if (added.length) { noteSourceChange(); setResearchSources([...researchSources, ...added]); }
           setExcerptNotice(`已加入 ${added.length} 条研究来源，跳过 ${items.length - added.length} 条重复来源。请核对正文编号和事实。`);
           return null;
+        }} onDraft={(items) => {
+          const existing = new Set(researchSources.map((item) => item.page_source_id));
+          const added = items.map((item) => item.source).filter((item) => !existing.has(item.page_source_id));
+          if (sources.length + researchSources.length + added.length > 30) return "加入后来源超过 30 条，请先移除部分来源。";
+          const paragraphs = ["研究目的与范围（待填写）", "本初稿仅整理所选来源的保存摘录，内容与事实未经核验；请补充研究范围、判断与结论。", "资料摘录（待核对）",
+            ...items.flatMap((item) => {
+              const name = Array.from(item.source.title || "（页面未提供标题）").slice(0, 200).join("").replace(/\s+/g, " ").trim();
+              const text = item.excerpt.replace(/\s+/g, " ").trim();
+              return [`来源 [${item.number}]：${name}${item.source.title_truncated ? "（标题已截断）" : ""}`,
+                text ? `原文摘录（空白已合并${item.truncated ? "，已截断" : ""}）：${text} [${item.number}]` : `此来源没有保存的可用摘录，需另行核对。 [${item.number}]`];
+            }), "待核对问题与资料不足（待填写）", "分析与结论（待填写；请区分来源事实、推断与不确定性）"];
+          if (!appendExcerpt(paragraphs)) return "请检查目标章节、摘录字符及报告长度限制。";
+          if (added.length) setResearchSources([...researchSources, ...added]);
+          setCitationNeedsReview(true); return null;
         }} />}
       <div className="space-y-2 rounded border border-line p-2"><p>资料引用（最多 10 条）：在上方读取 PDF、DOCX、UTF-8 TXT 或 CSV，选中原文后加入。正文可使用 [资料1] 等编号；生成时从原件重新读取并附上位置和摘录。CSV 为原始文本，不解析表格或执行公式；扫描件、OCR 和其他格式不支持此手工选择；事实与编号需自行核对。</p>
         {documentCitations.map((item, index) => <div key={`${item.ref.attachment_id}:${item.ref.unit}:${item.ref.start}:${index}`} className="break-all">[资料{index + 1}] {item.label} · {item.ref.attachment_id} · SHA-256 {item.ref.expected_sha256}
