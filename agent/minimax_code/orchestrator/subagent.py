@@ -315,6 +315,37 @@ _team_permissions: ContextVar[Any | None] = ContextVar("team_permissions", defau
 _run_children: ContextVar[Any | None] = ContextVar("run_background_children", default=None)
 
 
+class _ParentPermissionGater:
+    """Route child approvals through the owning conversation's live gater."""
+
+    def __init__(self, gater, parent_session_id):
+        self.gater = gater
+        self.parent_session_id = parent_session_id
+
+    async def request_consent(self, *, tool, args, session_id=None, timeout=None):
+        from ..workspace_ctx import current_root
+
+        root = current_root()
+        return await self.gater.request_consent(
+            tool=tool,
+            args={**args, "_subagent_session": session_id,
+                  "_child_workspace": str(root) if root is not None else "unknown",
+                  "_execution_boundary": "working copy; host processes are not OS-sandboxed"},
+            session_id=self.parent_session_id, timeout=timeout,
+        )
+
+
+@contextmanager
+def subagent_permission_scope(store, gater, session_id):
+    """Inherit the parent's frozen/current rules and route approvals to it."""
+    token = _team_permissions.set({"store": store,
+        "gater": _ParentPermissionGater(gater, session_id)})
+    try:
+        yield
+    finally:
+        _team_permissions.reset(token)
+
+
 @contextmanager
 def run_children_scope(children):
     """Bind background descendants to this run without changing its permissions."""

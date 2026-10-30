@@ -1735,9 +1735,11 @@ async def _handle_agent_send_message(
         # the budget keeps truncating. Stays inside this try so the core
         # remains registered in ``_ACTIVE_RUNS`` (user cancel works
         # between blocks) and session_end fires exactly once at the end.
-        result, blocks = await _run_with_auto_continue(
-            core, session_id=session_id, content=content
-        )
+        from ..orchestrator.subagent import subagent_permission_scope
+        with subagent_permission_scope(perm_store, gater, session_id):
+            result, blocks = await _run_with_auto_continue(
+                core, session_id=session_id, content=content
+            )
         if children is not None and children.tasks:
             from ..verification import verification_evidence
             pending_proof = verification_evidence(status="running", base={
