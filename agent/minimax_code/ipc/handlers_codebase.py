@@ -7,7 +7,7 @@ from typing import Any
 
 from ..app import ensure_codebase_indexer, get_codebase_indexer
 from ..codebase import CodebaseIndexer, CodebaseRetriever
-from ..workspace_ctx import resolve_root_for_project_id
+from ..workspace_ctx import resolve_root_for_project_id, resolve_root_for_session
 from .handler_utils import HandlerError
 from .protocol import INTERNAL_ERROR, INVALID_PARAMS
 from .server import Context
@@ -25,7 +25,21 @@ async def _indexer_for(params: Any) -> CodebaseIndexer:
     """
     p = params if isinstance(params, dict) else {}
     project_id = p.get("project_id")
-    if isinstance(project_id, str) and project_id:
+    session_id = p.get("session_id")
+    if session_id is not None:
+        if not isinstance(session_id, str) or not session_id:
+            raise HandlerError(INVALID_PARAMS, "Invalid session_id")
+        from ..app import get_sessions_dao
+        from .host_session_gate import require_chat_session
+
+        await require_chat_session(session_id)
+        dao = get_sessions_dao()
+        session = await dao.get(session_id) if dao is not None else None
+        if not session or session.get("archived") or session.get("project_id") != project_id:
+            raise HandlerError(INVALID_PARAMS, "Session or project binding changed")
+        root = await resolve_root_for_session(session_id)
+        indexer = ensure_codebase_indexer(root)
+    elif isinstance(project_id, str) and project_id:
         root = await resolve_root_for_project_id(project_id)
         indexer = ensure_codebase_indexer(root)
     else:
@@ -101,6 +115,8 @@ async def handle_codebase_search(params: Any, ctx: Context) -> None:
             limit=limit,
             offset=offset,
         )
+        if p.get("session_id") is not None and await _indexer_for(p) is not indexer:
+            raise HandlerError(INVALID_PARAMS, "Session workspace changed during search")
         await ctx.reply(result)
     except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message, exc.data)
@@ -119,6 +135,8 @@ async def handle_codebase_summarize(params: Any, ctx: Context) -> None:
         indexer = await _indexer_for(p)
         retriever = _retriever(indexer)
         result = await retriever.summarize(path)
+        if p.get("session_id") is not None and await _indexer_for(p) is not indexer:
+            raise HandlerError(INVALID_PARAMS, "Session workspace changed during summary")
         await ctx.reply(result)
     except HandlerError as exc:
         await ctx.reply_error(exc.code, exc.message, exc.data)

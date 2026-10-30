@@ -1573,8 +1573,15 @@ An MCP server is external code, not an operating-system sandbox.
 |--------|--------|--------|-------|
 | `codebase.status` | `{project_id?}` | `{status, processed, total, percent, message, error, stats: {total_chunks, total_files, latest_updated_at}}` | Returns the current lifecycle status of the indexer plus aggregate stats. With `project_id` (v1.3.0), reports the index keyed at that project's root. |
 | `codebase.build_index` | `{force?, project_id?}` | `{status, processed, total, percent, message, error, stats}` | Starts a full index build in the background. If already indexing, returns the current progress. `force=true` clears the existing index first. Indexes are keyed per project root — building project A never touches project B's chunks. |
-| `codebase.search` | `{query, file_pattern?, limit?, offset?, project_id?}` | `{query, file_pattern, total, results: [{chunk_id, file_path, start_line, end_line, snippet, language, rank, symbols}]}` | Keyword search over indexed file contents and paths. `file_pattern` is a SQL `LIKE` pattern. With `project_id` (v1.3.0), searches only that project's index. |
-| `codebase.summarize` | `{path, project_id?}` | `{path, kind, language, total_lines, symbols, snippet, file_count, symbols_truncated}` | Returns a structured summary for a file or directory prefix. File symbols are flattened across indexed chunks, deduplicated and capped at 100; `symbols_truncated` signals additional symbols. The index snapshot may be stale. `path` resolves against the project root when `project_id` is given. |
+| `codebase.search` | `{query, file_pattern?, limit?, offset?, project_id?, session_id?}` | `{query, file_pattern, total, results: [{chunk_id, file_path, start_line, end_line, match_line, snippet, language, rank, symbols}]}` | Keyword search over indexed file contents and paths. `file_pattern` is a SQL `LIKE` pattern. `match_line` is the first literal query-term match in that indexed chunk, or null when none is found. |
+| `codebase.summarize` | `{path, project_id?, session_id?}` | `{path, kind, language, total_lines, symbols, snippet, file_count, symbols_truncated}` | Returns a structured summary for a file or directory prefix. File symbols are flattened across indexed chunks, deduplicated and capped at 100; `symbols_truncated` signals additional symbols. The index snapshot may be stale. |
+
+When `session_id` is supplied to search or summarize, `project_id` must match
+the live session; the index is selected from that session's resolved workspace,
+including an independent worktree. The binding is checked again before reply.
+Chat `@repo` and `#file` use this scope and discard results when the selected
+session, project or service connection changes. Indexed content and locations
+can be stale; the default hash-vector reranking is lexical, not semantic.
 
 ### `memory.*` — long-term memory (v0.11.0 Milestone 3)
 

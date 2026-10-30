@@ -2227,6 +2227,7 @@ export interface CodebaseSearchResult {
   file_path: string;
   start_line: number;
   end_line: number;
+  match_line?: number | null;
   snippet: string;
   language: string | null;
   rank: number;

@@ -34,7 +34,7 @@ function ResultRow({
       >
         <span className="font-medium text-minimax-300">{r.file_path}</span>
         <span className="shrink-0 text-ink-2">
-          {r.language} L{r.start_line}-{r.end_line}
+          {r.language} {r.match_line != null ? `命中 L${r.match_line} · ` : ""}L{r.start_line}-{r.end_line}
         </span>
       </button>
       <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-surface-2 p-1.5 text-ink-1">

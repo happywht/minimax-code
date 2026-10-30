@@ -259,8 +259,8 @@ export interface TypedIPC {
   // codebase
   getCodebaseStatus(opts?: { project_id?: string }): Promise<CodebaseStatusResult>;
   buildCodebaseIndex(opts?: { force?: boolean; project_id?: string }): Promise<CodebaseStatusResult>;
-  searchCodebase(query: string, opts?: { file_pattern?: string; limit?: number; offset?: number; project_id?: string }): Promise<CodebaseSearchResultShape>;
-  summarizeCodebasePath(path: string, opts?: { project_id?: string }): Promise<CodebaseSummarizeResult>;
+  searchCodebase(query: string, opts?: { file_pattern?: string; limit?: number; offset?: number; project_id?: string; session_id?: string }): Promise<CodebaseSearchResultShape>;
+  summarizeCodebasePath(path: string, opts?: { project_id?: string; session_id?: string }): Promise<CodebaseSummarizeResult>;
 
   getProjectRunSummary(params: { project_id: string; expected_service_id: string; run_id?: string; history_query?: string; history_offset?: number }): Promise<import("../types/ipc").ProjectRunSummaryResult>;
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number; include_active?: boolean; recovery_lookup?: RunRecoveryLookup }): Promise<ListRunsResult>;
@@ -801,11 +801,13 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         limit: opts?.limit,
         offset: opts?.offset,
         project_id: opts?.project_id,
+        session_id: opts?.session_id,
       }),
     summarizeCodebasePath: (path, opts) =>
       client.request<CodebaseSummarizeResult>("codebase.summarize", {
         path,
         project_id: opts?.project_id,
+        session_id: opts?.session_id,
       }),
 
     getProjectRunSummary: (params) => client.request("run.project_summary", params),

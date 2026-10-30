@@ -29,6 +29,7 @@ class SearchResult:
     language: str
     rank: float
     symbols: list[dict[str, Any]]
+    match_line: int | None = None
 
 
 @dataclass
@@ -158,6 +159,7 @@ class CodebaseRetriever:
             metadata = row.get("metadata") or {}
             content = row.get("content") or ""
             snippet = _build_snippet(content, query)
+            position = _first_match_position(content, query)
             results.append(
                 SearchResult(
                     chunk_id=row["id"],
@@ -168,6 +170,7 @@ class CodebaseRetriever:
                     language=metadata.get("language"),
                     rank=row.get("rank", 0.0),
                     symbols=metadata.get("symbols") or [],
+                    match_line=row["start_line"] + content.count("\n", 0, position) if position is not None else None,
                 )
             )
         return {
@@ -268,16 +271,8 @@ def _build_snippet(content: str, query: str, radius: int = _DEFAULT_SNIPPET_RADI
     """Extract a short snippet around the first query term match."""
     if not content:
         return ""
-    lowered = content.lower()
-    terms = [t.lower() for t in re.split(r"\W+", query) if t.strip()]
-    if not terms:
-        return content[: radius * 2]
-    pos = -1
-    for term in terms:
-        pos = lowered.find(term)
-        if pos != -1:
-            break
-    if pos == -1:
+    pos = _first_match_position(content, query)
+    if pos is None:
         return content[: radius * 2]
     start = max(0, pos - radius)
     end = min(len(content), pos + radius)
@@ -287,3 +282,12 @@ def _build_snippet(content: str, query: str, radius: int = _DEFAULT_SNIPPET_RADI
     if end < len(content):
         snippet = snippet + "…"
     return snippet
+
+
+def _first_match_position(content: str, query: str) -> int | None:
+    """Locate the first query term literally; FTS matches may have no literal hit."""
+    for term in (t for t in re.split(r"\W+", query) if t.strip()):
+        match = re.search(re.escape(term), content, re.IGNORECASE)
+        if match is not None:
+            return match.start()
+    return None
