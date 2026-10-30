@@ -233,16 +233,21 @@ def register_run_handlers(server: Any) -> None:
             await ctx.reply_error(INTERNAL_ERROR, "Could not clear captured output")
 
     async def handle_output_page(params: Any, ctx: Context) -> None:
-        from ..tool_outputs import read
+        from ..tool_outputs import read, search
         from .host_session_gate import require_host_session
 
         try:
             req = RunOutputPageParams.model_validate(params)
             await require_host_session(req.session_id)
             dao = await _get_read_control_dao(ctx)
-            page = await read(dao._db, run_id=req.run_id, session_id=req.session_id,
-                ref=req.output_ref, service_id=req.expected_service_id, offset=req.offset, limit=req.limit)
+            args = {"run_id": req.run_id, "session_id": req.session_id, "ref": req.output_ref,
+                    "service_id": req.expected_service_id, "offset": req.offset, "limit": req.limit}
+            page = (await search(dao._db, query=req.query, **args) if req.query is not None
+                    else await read(dao._db, **args))
             await require_host_session(req.session_id)
+            if req.query is not None:
+                page = {**page, "run_id": req.run_id, "session_id": req.session_id,
+                        "service_id": req.expected_service_id, "query": req.query}
             await ctx.reply(page)
         except (ValidationError, ValueError, HandlerError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))

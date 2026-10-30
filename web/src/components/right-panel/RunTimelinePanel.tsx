@@ -479,30 +479,34 @@ interface OutputPage { id: string; service_id: string; run_id: string; session_i
 function CapturedToolOutput({ step }: { step: AgentRunStep }): JSX.Element | null {
   const session = useSessionStore((s) => s.currentSessionId);
   const project = useSessionStore((s) => s.sessions.find((item) => item.id === session)?.project_id ?? null);
+  const selectedProject = useSessionStore((s) => s.currentProjectId);
   const [page, setPage] = useState<OutputPage | null>(null);
   const [error, setError] = useState("");
   const [cleared, setCleared] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
+  const [match, setMatch] = useState<{ query: string; offset: number; next: number; text: string } | null>(null);
   const epoch = useRef(0);
   const meta = step.payload?.metadata as Record<string, unknown> | undefined;
   const ref = meta?.tool_output as OutputReference | undefined;
   useEffect(() => {
-    setPage(null); setError(""); setBusy(false); setCleared(false);
+    setPage(null); setMatch(null); setQuery(""); setError(""); setBusy(false); setCleared(false);
     const version = epoch;
     return () => { version.current++; };
-  }, [session, project, step.id]);
+  }, [session, project, selectedProject, step.id]);
   useEffect(() => {
     if (!ref?.output_ref) return;
-    return ipc.onSideCar(() => { epoch.current++; setPage(null); setBusy(false); setError("连接变化，请重新读取输出。"); });
+    return ipc.onSideCar(() => { epoch.current++; setPage(null); setMatch(null); setBusy(false); setError("连接变化，请重新读取输出。"); });
   }, [ref?.output_ref]);
   useEffect(() => ipc.on<{ run_id: string; session_id: string; output_ref: string; service_id: string }>(StreamEvent.RunOutputCleared, (event) => {
     const item = event.data;
     if (item && ref && item.output_ref === ref.output_ref && item.run_id === ref.run_id &&
         item.session_id === ref.session_id && item.service_id === ref.service_id) {
-      epoch.current++; setPage(null); setBusy(false); setCleared(true); setError("");
+      epoch.current++; setPage(null); setMatch(null); setBusy(false); setCleared(true); setError("");
     }
   }), [ref]);
-  if (!ref || typeof ref.output_ref !== "string" || ref.run_id !== step.run_id || ref.session_id !== session || ref.project_id !== project) return null;
+  if (!ref || typeof ref.output_ref !== "string" || ref.run_id !== step.run_id || ref.session_id !== session || ref.project_id !== project ||
+      (selectedProject !== project && !(project === null && selectedProject === "inbox"))) return null;
   const load = async (offset: number) => {
     const ticket = ++epoch.current, host = ipc.agentBaseUrl;
     setBusy(true); setError("");
@@ -511,11 +515,31 @@ function CapturedToolOutput({ step }: { step: AgentRunStep }): JSX.Element | nul
         output_ref: ref.output_ref, expected_service_id: ref.service_id, offset, limit: 4000 });
       const state = useSessionStore.getState();
       if (ticket !== epoch.current || host !== ipc.agentBaseUrl || state.currentSessionId !== session ||
-          (state.sessions.find((item) => item.id === session)?.project_id ?? null) !== project) return;
+          (state.sessions.find((item) => item.id === session)?.project_id ?? null) !== project || state.currentProjectId !== selectedProject) return;
       if (data.id !== ref.output_ref || data.run_id !== ref.run_id || data.session_id !== ref.session_id ||
           data.project_id !== ref.project_id || data.service_id !== ref.service_id || data.offset !== offset) throw new Error("输出归属已变化");
       setPage(data);
     } catch (failure) { if (ticket === epoch.current) { setPage(null); if (String(failure).includes("explicitly cleared")) { setCleared(true); setError(""); } else setError(String(failure)); } }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
+  const find = async (offset: number) => {
+    if (!query || query.length > 256) return;
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl, term = query;
+    setBusy(true); setError(""); setMatch(null);
+    try {
+      const result = await ipc.request<{ id: string; run_id: string; session_id: string; service_id: string; query: string;
+        found: boolean; offset: number; match_offset?: number; next_search_offset?: number; page?: string }>("run.output_page", {
+        run_id: ref.run_id, session_id: ref.session_id, output_ref: ref.output_ref,
+        expected_service_id: ref.service_id, offset, limit: 4000, query: term });
+      const state = useSessionStore.getState();
+      if (ticket !== epoch.current || host !== ipc.agentBaseUrl || state.currentSessionId !== session ||
+          (state.sessions.find((item) => item.id === session)?.project_id ?? null) !== project || state.currentProjectId !== selectedProject) return;
+      if (result.id !== ref.output_ref || result.run_id !== ref.run_id || result.session_id !== ref.session_id ||
+          result.service_id !== ref.service_id || result.query !== term) throw new Error("输出归属已变化");
+      if (!result.found) { setError("此位置之后没有匹配内容。"); return; }
+      if (typeof result.page !== "string" || !Number.isSafeInteger(result.match_offset) || !Number.isSafeInteger(result.next_search_offset)) throw new Error("搜索结果不可用");
+      setMatch({ query: term, offset: result.match_offset!, next: result.next_search_offset!, text: result.page });
+    } catch (failure) { if (ticket === epoch.current) setError(String(failure)); }
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <div className="mt-1 text-[11px] text-minimax-muted">
@@ -523,6 +547,10 @@ function CapturedToolOutput({ step }: { step: AgentRunStep }): JSX.Element | nul
     {Number.isSafeInteger(ref.chars) && ref.chars >= 0 && <>{" "}<button type="button" disabled={busy || cleared} onClick={() => void load(Math.max(0, ref.chars - 4000))}>查看末尾</button></>}
     {cleared && <p>已清理，无法再读取。</p>}
     <p>仅包含工具实际捕获内容；{meta?.truncated_stdout === true || meta?.truncated_stderr === true ? "命令输出在捕获时已截断。" : "请核对原始截断标记。"}</p>
+    <label>查找区分大小写的原文<input aria-label="查找工具输出" value={query} maxLength={256} disabled={busy || cleared} onChange={(event) => { setQuery(event.target.value); setMatch(null); }} className="ml-1 rounded border border-line bg-surface-0 px-1" /></label>{" "}
+    <button type="button" disabled={busy || cleared || !query} onClick={() => void find(0)}>查找</button>{" "}
+    {match && match.query === query && <button type="button" disabled={busy || cleared} onClick={() => void find(match.next)}>查找下一处</button>}
+    {match && <div><p>匹配字符位置 {match.offset}；以下为附近摘录。</p><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{match.text}</pre></div>}
     {error && <p role="alert">{error}</p>}
     {page && <><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{page.page}</pre>
       <div>{page.offset}–{page.next_offset} / {page.chars} 字符</div>

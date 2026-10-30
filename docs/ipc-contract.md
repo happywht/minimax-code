@@ -1968,6 +1968,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 `run.output_page({run_id,session_id,output_ref,expected_service_id,offset?,limit?})` 按字符分页读取该运行的捕获输出 JSON；最多 8000 字符，返回当前/下一偏移、总字符数和绑定标识。输出仅包含工具捕获到的内容，命令捕获上限和截断标记仍然适用；引用不跨项目、会话或服务使用。
 
+该方法可选 `query`（1–256 字符）执行区分大小写的字面查找，`offset` 是起始字符位置；返回 `found` 及绑定标识，命中时返回位置、有界摘录和 `next_search_offset`，未命中不表示捕获之前被截断的内容不存在。省略 `query` 保持原分页响应。
+
 `run.input_image({run_id,session_id,project_id,expected_service_id,index})` 按需读取原 Codex 任务请求的一张图片，返回相同绑定、零基 `index`、图片总数、`media_type` 与 base64 `data`。运行和当前会话项目必须匹配接单时项目，且输入须符合 Codex 的五张、总计 4 MiB 和格式校验。旧记录或无图片时返回错误；数据不进入事件，接口不发送或修改草稿。项目、服务或会话变动时客户端丢弃在途结果和预览。
 
 `run.input_text({run_id,session_id,project_id,expected_service_id,expected_cursor})` 按需返回相同绑定、运行记录游标、原 Codex 或 Native 文本输入前 8000 个字符、截断标记和图片数量，不返回图片数据。Native 多模态输入暂不支持预览；请查看原会话。绑定或记录游标变化、原请求缺失或无效时拒绝。恢复面板允许用户编辑最多 4000 字的摘录并明确加入恢复交接；该操作不发送，后续恢复仍需重新确认并遵守原有预算、审批与游标校验。Native 恢复按原有流程使用保存的原任务输入，摘录是附加交接，不替换它。

@@ -556,6 +556,7 @@ class RunOutputPageParams(BaseModel):
     expected_service_id: str = Field(min_length=1, max_length=128)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=4000, ge=1, le=8000)
+    query: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class RunOutputInventoryParams(BaseModel):
