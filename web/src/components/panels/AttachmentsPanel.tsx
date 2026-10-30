@@ -6,6 +6,7 @@ import type { AttachmentParserStatus, DocxSection, DocumentExcerptRef, PageExcer
 import { AttachmentImageOcr } from "./AttachmentImageOcr";
 import { AttachmentImagePreview } from "./AttachmentImagePreview";
 import { AttachmentDocumentReader } from "./AttachmentDocumentReader";
+import { AttachmentBatchToReport } from "./AttachmentBatchToReport";
 import { AttachmentVersions } from "./AttachmentVersions";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
@@ -271,6 +272,22 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       </button>
     </li>)}</ul>
     {scoped && state.nextCursor && <Button type="button" variant="secondary" disabled={state.paging} onClick={() => void state.loadMore()}>{state.paging ? "正在加载…" : "加载更早附件"}</Button>}
+    {scoped && <AttachmentBatchToReport project={projectId} session={sessionId} service={state.serviceId} host={host} items={state.attachments}
+      draftVersion={JSON.stringify([docName, title, body, format, structured, sections, visualSections, excerptSection, sources, researchSources, researchRanges, documentCitations, researchNeedsReview, citationNeedsReview, documentReview])}
+      onApply={(items) => {
+        const count = documentCitations.length + items.length;
+        if (count > 10) { setExcerptNotice("报告最多 10 条资料引用，请先移除部分引用。"); return false; }
+        const editable = structured ? readEditableSections(sections) : null;
+        const existingBlocks = structured ? editable?.reduce((sum, section) => sum + section.blocks.length, 0) : body ? body.split(/\r?\n/).length : 0;
+        if (existingBlocks === undefined || (structured && (!editable || editable.length >= 50)) || existingBlocks + items.length + 1 + 4 * count > 100) {
+          setExcerptNotice("正文和资料引用附录将超过报告内容块或章节限制；请先精简。"); return false;
+        }
+        const paragraphs = items.map((item, index) => `资料首段摘录（未经核验，空白已合并，不代表全文）：${item.text.replace(/\s+/g, " ").trim()} [资料${documentCitations.length + index + 1}]`);
+        if (!appendExcerpt(paragraphs)) return false;
+        setDocumentCitations([...documentCitations, ...items.map(({ ref, label }) => ({ ref, label }))]);
+        setDocumentReview(true);
+        return true;
+      }} />}
     {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
       <h3 className="font-medium">已选附件 · {state.selected.original_name}</h3>
       <p className="break-all text-xs text-ink-1">声明类型: {state.selected.declared_type} · 识别候选: {state.selected.recognized_type} · {labels[state.selected.parser_status]} · 未验证</p>
