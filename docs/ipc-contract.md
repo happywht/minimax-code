@@ -2249,3 +2249,17 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 ### 浏览器下载远端文件（HTTP）
 
 `POST /hosts/download` 受应用 Host、Origin 和会话认证边界保护。请求 JSON 包含 `host_id`、`hostname`、`username`、`port`、`identity_file`、`remote_path` 和 `service_id`，均须匹配当前启用主机及服务身份。此入口只在用户显式确认后使用独立 SSH 执行远端 Python 只读程序，按路径逐级拒绝符号链接，仅读取最大 10 MiB 的普通文件；同一文件描述符的读取前后元数据须一致，并校验 SHA-256。服务端和浏览器分别限制与校验字节，不创建服务端临时文件；取消、连接切换或客户端断开会中止传输并终止本地 SSH 进程（不能证明远端进程立即退出）。响应不缓存；浏览器决定保存位置及同名文件处理。此入口不改变 `host.fetch`。
+
+`POST /hosts/upload` accepts an authenticated raw browser file body (maximum 10 MiB)
+with a base64-encoded UTF-8 JSON `X-Host-Upload-Metadata` header containing
+`host_id`, `hostname`, `username`, `port`, `identity_file`, `remote_path`,
+`service_id`, and a pre-recorded `transfer_id`. The current enabled host and
+service must match before and after receipt of the bounded body. An explicit
+browser confirmation precedes the single dispatch; the client does not retry
+writes, including authentication failures. The body is staged in a temporary
+local directory and then passed to the existing M5 upload journal, with the
+same target conflict detection, backup and publication receipt as `host.push`.
+The local temporary directory is removed on completion, error, or cancellation;
+remote cleanup is best effort. Cancellation or a lost response can coincide with
+publication, so the saved ID and remote path must be used to query
+`host.transfer_status` before a new attempt. This does not change `host.push`.

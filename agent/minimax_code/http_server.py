@@ -72,7 +72,7 @@ CORS_ALLOW_ORIGINS: list[str] = [
     "http://127.0.0.1:5173",
 ]
 CORS_ALLOW_METHODS: list[str] = ["GET", "POST"]
-CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization", "X-Minimax-Client", "X-Attachment-Service-Id"]
+CORS_ALLOW_HEADERS: list[str] = ["Content-Type", "Authorization", "X-Minimax-Client", "X-Attachment-Service-Id", "X-Host-Upload-Metadata"]
 
 # Maximum request body size for POST /rpc (10 MB).
 # Prevents OOM from oversized payloads.
@@ -807,6 +807,8 @@ def build_app(
     register_attachment_routes(app)
     from .host_download_http import register_host_download_routes
     register_host_download_routes(app)
+    from .host_upload_http import register_host_upload_routes
+    register_host_upload_routes(app)
 
     from .preview.server import register_preview_routes
 

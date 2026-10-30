@@ -5,6 +5,7 @@ import { Button, Input, Textarea } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileBrowser } from "./HostFileBrowser";
 import { downloadHostFile } from "../../ipc/hostDownload";
+import { uploadHostFile } from "../../ipc/hostUpload";
 
 type UploadReceipt = { hostSignature: string; remotePath: string; transferId: string };
 const signature = (host: RemoteHost) => JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file]);
@@ -13,6 +14,7 @@ const isRemoteAbsolute = (path: string) => path.startsWith("/") && path !== "/" 
 
 export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
   const [local, setLocal] = useState(""), [remote, setRemote] = useState("");
+  const [browserFile, setBrowserFile] = useState<File | null>(null);
   const [receipt, setReceipt] = useState<UploadReceipt | null>(null), [status, setStatus] = useState<HostTransferResult | null>(null);
   const [manualId, setManualId] = useState(""), [manualRemote, setManualRemote] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
@@ -20,7 +22,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
   const epoch = useRef(0), browserDownload = useRef<AbortController | null>(null), base = ipc.agentBaseUrl, hostSignature = signature(host);
   const storageKey = `minimax:host-transfer:${base}:${host.id}`;
   useEffect(() => {
-    epoch.current++; browserDownload.current?.abort(); setBusy(false); setMessage(""); setStatus(null); setReceipt(null); setManualId(""); setManualRemote(""); setRecoveryInput("");
+    epoch.current++; browserDownload.current?.abort(); setBrowserFile(null); setBusy(false); setMessage(""); setStatus(null); setReceipt(null); setManualId(""); setManualRemote(""); setRecoveryInput("");
     try { const saved = JSON.parse(sessionStorage.getItem(storageKey) || "null") as UploadReceipt | null;
       if (saved?.hostSignature === hostSignature && /^[0-9a-f]{32}$/.test(saved.transferId) && isRemoteAbsolute(saved.remotePath)) {
         setReceipt(saved); setManualId(saved.transferId); setManualRemote(saved.remotePath);
@@ -106,6 +108,31 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     } catch (e) { if (valid(ticket) && !controller.signal.aborted) setMessage(e instanceof Error ? e.message : String(e)); }
     finally { if (browserDownload.current === controller) browserDownload.current = null; if (valid(ticket)) setBusy(false); }
   };
+  const browserUpload = async () => {
+    const path = remote.trim(), file = browserFile;
+    if (!host.enabled || busy || !file) return;
+    if (receipt && !(status?.transfer_id === receipt.transferId && ["published", "aborted", "not_published"].includes(status.publication_state ?? ""))) {
+      setMessage("上一笔上传尚未确认终态；请先查询状态并保存编号。"); return;
+    }
+    if (!isRemoteAbsolute(path) || path.length > 4096 || path.includes("\0") || file.size > 10 * 1024 * 1024) {
+      setMessage("请输入有效远端绝对路径并选择不超过 10 MiB 的文件。"); return;
+    }
+    const ticket = ++epoch.current; setBusy(true); setMessage(""); setStatus(null);
+    const controller = new AbortController(); browserDownload.current = controller;
+    try {
+      const confirmed = await requestConfirmation({ title: "确认上传浏览器文件？", description: `将 ${file.name} (${file.size} 字节) 上传到 ${host.name} (${host.username}@${host.hostname}) 的 ${path}。若目标存在，将在校验和未变化确认后替换并保留远端备份。`, confirmLabel: "确认上传" });
+      if (!confirmed || !valid(ticket) || controller.signal.aborted) return;
+      const id = crypto.randomUUID().replace(/-/g, "");
+      const next = { hostSignature, remotePath: path, transferId: id };
+      try { sessionStorage.setItem(storageKey, JSON.stringify(next)); }
+      catch { throw new Error("无法保存传输编号，未开始上传；请允许本标签页的会话存储。"); }
+      setReceipt(next); setManualId(id); setManualRemote(path);
+      const result = await uploadHostFile(host, path, id, file, base, controller.signal);
+      if (!valid(ticket)) return;
+      setStatus(result); setMessage(result.ok && result.publication_state === "published" ? "上传已确认发布并校验。" : "上传未确认完成；请先查询状态，避免重复上传。");
+    } catch (e) { if (valid(ticket)) setMessage(`${e instanceof Error ? e.message : String(e)}；结果可能不明，请先查询传输状态。`); }
+    finally { if (browserDownload.current === controller) browserDownload.current = null; if (valid(ticket)) setBusy(false); }
+  };
   const inspect = async () => {
     if (!host.enabled || !isRemoteAbsolute(manualRemote.trim()) || !/^[0-9a-f]{32}$/.test(manualId)) { setMessage("请输入远端绝对路径和 32 位小写十六进制传输编号。"); return; }
     const ticket = ++epoch.current; setBusy(true); setMessage(""); setStatus(null);
@@ -120,11 +147,13 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     <p className="text-xs text-ink-2">本机路径指运行当前服务的机器，不是浏览器选中的文件；远端路径指此主机的 Linux 绝对路径。仅单文件、显式操作，不自动同步。传输使用独立 SSH/SFTP，服务隧道状态不代表传输可用。</p>
     <label className="block text-xs">本机文件绝对路径<Input aria-label={`${host.name} 本机传输路径`} value={local} disabled={busy} onChange={(e) => setLocal(e.target.value)} placeholder="C:\\资料\\报告.pdf" /></label>
     <label className="block text-xs">远端文件绝对路径<Input aria-label={`${host.name} 远端传输路径`} value={remote} disabled={busy} onChange={(e) => setRemote(e.target.value)} placeholder="/home/user/report.pdf" /></label>
+    <label className="block text-xs">选择浏览器文件（最大 10 MiB）<input type="file" aria-label={`${host.name} 浏览器上传文件`} disabled={busy} onChange={(e) => setBrowserFile(e.target.files?.[0] ?? null)} /></label>
     <HostFileBrowser host={host} onSelect={(path) => { if (!busy) setRemote(path); }} />
     <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void transfer("upload")}>上传到此主机</Button>
+      <Button type="button" size="sm" disabled={busy || !host.enabled || !browserFile} onClick={() => void browserUpload()}>上传浏览器文件</Button>
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void transfer("download")}>下载到服务端路径</Button>
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void browserTransfer()}>下载到当前浏览器</Button>
-      {busy && browserDownload.current && <Button type="button" size="sm" variant="secondary" onClick={() => browserDownload.current?.abort()}>取消浏览器下载</Button>}</div>
+      {busy && browserDownload.current && <Button type="button" size="sm" variant="secondary" onClick={() => browserDownload.current?.abort()}>取消浏览器传输</Button>}</div>
     <p className="text-xs text-ink-2">浏览器下载通过 SSH 执行远端只读命令，仅支持不经过符号链接的普通文件，最大 10 MiB；不写入服务端文件。</p>
     <p className="text-xs text-ink-2">上传备份位于远端传输记录目录；服务端路径下载只创建新文件，不覆盖已有文件。浏览器下载的保存位置和同名处理由浏览器决定。校验不能证明业务内容正确；响应中断时先核对，不自动重试。</p>
     <label className="block text-xs">上传传输编号<Input aria-label={`${host.name} 上传传输编号`} value={manualId} maxLength={32} disabled={busy} onChange={(e) => setManualId(e.target.value)} /></label>

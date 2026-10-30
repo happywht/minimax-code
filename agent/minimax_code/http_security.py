@@ -102,7 +102,7 @@ class ApplicationBoundary:
         path = scope.get("path", "/")
         grant = (self.auth.preview_grant(path)
                  if scope["type"] == "http" and scope.get("method") in {"GET", "HEAD"} else None)
-        protected = path.startswith(("/rpc", "/ws", "/preview", "/complete", "/hooks", "/artifacts", "/attachments", "/hosts/download"))
+        protected = path.startswith(("/rpc", "/ws", "/preview", "/complete", "/hooks", "/artifacts", "/attachments", "/hosts/download", "/hosts/upload"))
         status, detail = 0, ""
         if not self.auth.host_allowed(headers):
             status, detail = 400, "Untrusted Host"
