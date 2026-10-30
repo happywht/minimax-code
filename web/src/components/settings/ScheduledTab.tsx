@@ -16,7 +16,7 @@ import { strings } from "../../ui/strings";
 import { useScheduleStore } from "../../stores";
 import { useSessionStore } from "../../stores/sessionStore";
 import { toast } from "../layout/ErrorBoundary";
-import type { ScheduledJob, ScheduleContext, ScheduleDefinition } from "../../types/ipc";
+import type { ScheduledJob, ScheduleContext, ScheduleDefinition, ScheduleOccurrence } from "../../types/ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { InlineCode, TabHeader } from "./fields";
 import { emptyScheduleContext, validScheduleContext, ScheduleContextFields, ScheduleSnapshot, ScheduleHistory } from "./ScheduleContextFields";
@@ -86,7 +86,11 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
   const createInFlight = useRef(false), copyEpoch = useRef(0);
   const draftSignature = JSON.stringify([draftName, draftCron, draftPrompt, draftContext, draftEnabled]);
   const draftSignatureRef = useRef(draftSignature); draftSignatureRef.current = draftSignature;
+  const scopeSignature = JSON.stringify([ipc.agentBaseUrl, serviceId, active]);
+  const scopeSignatureRef = useRef(scopeSignature); scopeSignatureRef.current = scopeSignature;
   useEffect(() => () => { copyEpoch.current++; }, []);
+  useEffect(() => { copyEpoch.current++; }, [scopeSignature]);
+  useEffect(() => ipc.onSideCar(() => { copyEpoch.current++; }), []);
   useEffect(() => { setPendingCreate(readPendingCreate(createScope)); }, [createScope]);
 
   useEffect(() => {
@@ -144,6 +148,43 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
       timezone: source.timezone, restart_missed_policy: source.restart_missed_policy } : emptyScheduleContext());
     setDraftEnabled(false); onDraftEdit?.();
     document.getElementById("scheduled-job-name")?.focus();
+  };
+
+  const followupToDraft = async (job: ScheduledJob, occurrence: ScheduleOccurrence, originalText: string, status: string) => {
+    const source = occurrence.context, runId = occurrence.run_id;
+    if (!serviceId || !active || creating || pendingCreate || !job.revision || !runId || !source?.project_id || !source.workspace || source.host !== "local" || source.engine !== "native" || !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(status)) return;
+    const ticket = ++copyEpoch.current, host = ipc.agentBaseUrl, signature = draftSignature, scope = scopeSignature;
+    const current = () => ticket === copyEpoch.current && scopeSignatureRef.current === scope && ipc.agentBaseUrl === host && !createInFlight.current;
+    const excerpt = Array.from(originalText.slice(0, 4000)).slice(0, 2000).join("");
+    const accepted = await requestConfirmation({ title: "用本次结果准备后续计划草稿？", description: `将运行 ${runId} 的结果前 2000 字符放入新建计划草稿。内容可能含敏感信息；${draftName || draftCron || draftPrompt || validScheduleContext(draftContext) ? "现有新建草稿会被替换。" : ""}计划默认停用，不会自动创建或运行；请编辑并核对配置。`, confirmLabel: "准备草稿" });
+    if (!accepted || !current()) return;
+    try {
+      const [identity, snapshot, receipt, session, projectList, jobList] = await Promise.all([typedIPC.getServiceIdentity(), typedIPC.getRunSteps(runId), typedIPC.getRun(runId), typedIPC.getSession(occurrence.session_id), typedIPC.listProjects(), typedIPC.listJobs()]);
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      const sameRun = (run: typeof snapshot.run) => {
+        const schedule = run.metadata?.schedule as { job_id?: string; occurrence_id?: string; revision?: number } | undefined;
+        return run.id === runId && run.session_id === occurrence.session_id && run.metadata?.project_id === source.project_id &&
+          run.metadata?.workspace_snapshot === source.workspace && run.metadata?.model_snapshot?.engine === "native" &&
+          schedule?.job_id === job.id && schedule.occurrence_id === occurrence.id && schedule.revision === occurrence.revision && run.status === status;
+      };
+      const result = receipt.result;
+      const latest = jobList.jobs.find((item) => item.id === job.id);
+      if (identity.service_id !== serviceId || after.service_id !== serviceId || !sameRun(snapshot.run) || !sameRun(receipt.run) ||
+          snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== occurrence.session_id) ||
+          session.session.id !== occurrence.session_id || session.session.project_id !== source.project_id ||
+          !projectList.projects.some((project) => project.id === source.project_id && !project.archived && project.root_path === source.workspace) ||
+          !result || !("text" in result) || result.run_id !== runId || result.session_id !== occurrence.session_id || result.text !== originalText ||
+          !latest || latest.revision !== job.revision || latest.cron !== job.cron || latest.name !== job.name ||
+          signature !== draftSignatureRef.current || readPendingCreate(createScope)) throw new Error("来源、服务或草稿已变化，请重新读取并核对。");
+      setDraftName(`${job.name}（后续）`); setDraftCron(job.cron);
+      setDraftPrompt(`请先核对下列历史运行结果和可能的副作用，再根据需要执行后续工作。\n来源：计划 ${job.id}，发生 ${occurrence.id}，运行 ${runId}，状态 ${status}。\n结果摘录${excerpt.length < originalText.length ? "（仅前 2000 字符）" : ""}：\n${excerpt}`);
+      setDraftContext({ project_id: source.project_id, provider_id: source.provider_id, model: source.model,
+        reasoning_effort: source.reasoning_effort, mode: source.mode, budget_tokens: source.budget_tokens,
+        timezone: source.timezone, restart_missed_policy: source.restart_missed_policy });
+      setDraftEnabled(false); onDraftEdit?.(); document.getElementById("scheduled-job-name")?.focus();
+      toast.success("已准备后续计划草稿", "请编辑并核对项目、配置、预算和权限；尚未创建或运行计划。");
+    } catch (failure) { if (current()) toast.error("无法准备后续草稿", failure instanceof Error ? failure.message : String(failure)); }
   };
 
   return (
@@ -280,6 +321,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
               if (accepted) await remove(j.id);
             }}
             onCopy={() => void copyToDraft(j)}
+            onFollowup={(occurrence, text, status) => void followupToDraft(j, occurrence, text, status)}
             onUpdate={async (revision, name, cron, prompt, context, expectedService) => {
               const result = await update(j.id, revision, { name, cron, prompt, context }, expectedService);
               if (result.job) toast.success(strings.settings.scheduled.updatedToast, result.job.name);
@@ -292,13 +334,14 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onCopy, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId, hidden }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onCopy, onFollowup, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId, hidden }: {
   hidden?: boolean;
   targetJob?: boolean; targetOccurrenceId?: string;
   onOpenSession?: () => boolean | void;
   job: ScheduledJob; serviceId?: string; draftKey?: string; onToggle: (enabled: boolean) => void;
   onDelete: () => void;
   onCopy: () => void;
+  onFollowup: (occurrence: ScheduleOccurrence, text: string, status: string) => void;
   onUpdate: (revision: number, name: string, cron: string, prompt: string, context: ScheduleContext, expectedService: string) => Promise<{ job: ScheduledJob | null; error?: string }>;
 }): JSX.Element {
   const [restored] = useState(() => draftKey ? editDrafts.get(draftKey) : undefined);
@@ -496,7 +539,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onCopy, onUpdate, onOpenSess
         </div>
       )}
       <div data-testid={expanded ? `settings-job-tasks-${job.id}` : undefined} className={expanded ? "border-t border-line py-2" : ""}>
-        <ScheduleHistory job={job} expanded={expanded} targetOccurrenceId={targetOccurrenceId} serviceId={serviceId} onOpenSession={onOpenSession} />
+        <ScheduleHistory job={job} expanded={expanded} targetOccurrenceId={targetOccurrenceId} serviceId={serviceId} onOpenSession={onOpenSession} onFollowup={onFollowup} />
       </div>
     </li>
   );

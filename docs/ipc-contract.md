@@ -2190,6 +2190,8 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 
 ### schedule.* — 定时任务
 
+定时历史结果可由用户选择摘录后准备新建计划草稿，复用 `runtime.service_identity`、`run.get`、`run.steps`、`session.get` 和 `project.list`，不新增 RPC。填入草稿前复核服务、计划、发生记录、运行、会话与项目绑定、结果文本及未保存草稿；仅复制结果前 2000 个字符，默认停用，不自动创建或运行。新计划创建仍执行现有上下文捕获和权限、预算准入，不继承历史权限快照。
+
 | 方法 | 说明 |
 |------|------|
 | `schedule.create` / `schedule.list` / `schedule.delete` | 固定上下文提示词任务创建/列表/软删除 |

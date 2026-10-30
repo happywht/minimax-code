@@ -16,13 +16,15 @@ const labels: Record<string, string> = { queued: "排队中", planning: "规划�
   waiting_input: "等待输入", completed: "执行结束", failed: "执行失败", cancelled: "已取消", interrupted: "运行中断", budget_paused: "预算暂停" };
 const cancellable = ["queued", "planning", "running", "awaiting_approval", "waiting_input"];
 
-export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, serviceId, activeJobRevision }: { occurrence: ScheduleOccurrence;
+export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, onFollowup, serviceId, activeJobRevision }: { occurrence: ScheduleOccurrence;
   onOpenSession?: () => boolean | void; serviceId?: string;
+  onFollowup?: (occurrence: ScheduleOccurrence, text: string, status: string) => void;
   activeJobRevision?: number;
   onVerified?: (value: { serviceId: string; status: string } | null) => void }): JSX.Element {
   const activeSession = useSessionStore((state) => state.currentSessionId);
   const activeProject = useSessionStore((state) => state.currentProjectId);
   const [open, setOpen] = useState(false), [detail, setDetail] = useState<Detail | null>(null);
+  const [includeResult, setIncludeResult] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [cancelling, setCancelling] = useState(false), [cancelMessage, setCancelMessage] = useState("");
   const cancelInFlight = useRef(false);
@@ -36,17 +38,17 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
     occurrence.context?.workspace, occurrence.context?.host, occurrence.context?.engine, project, host, activeSession, activeProject]);
   const eligible = !!occurrence.run_id && !!project && occurrence.context?.host === "local" && occurrence.context?.engine === "native" && !!occurrence.context?.workspace;
   useEffect(() => {
-    setOpen(false); setDetail(null); setError(""); setBusy(false); setTimelineBusy(false); setCancelling(false); setCancelMessage(""); onVerified?.(null);
+    setOpen(false); setDetail(null); setError(""); setBusy(false); setTimelineBusy(false); setCancelling(false); setCancelMessage(""); setIncludeResult(false); onVerified?.(null);
     const version = epoch;
     return () => { version.current++; };
   }, [scopeKey]);
-  useEffect(() => ipc.onSideCar(() => { epoch.current++; setDetail(null); setBusy(false); onVerified?.(null); setError("连接变化，请重新读取本次运行。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { epoch.current++; setDetail(null); setIncludeResult(false); setBusy(false); onVerified?.(null); setError("连接变化，请重新读取本次运行。"); }), []);
   const load = async () => {
     if (!eligible || !occurrence.run_id || !project) return;
     const ticket = ++epoch.current, runId = occurrence.run_id;
     const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
       useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === activeProject;
-    setBusy(true); setError(""); setDetail(null); onVerified?.(null);
+    setBusy(true); setError(""); setDetail(null); setIncludeResult(false); onVerified?.(null);
     try {
       const [snapshot, receipt, attachments] = await Promise.all([
         typedIPC.getRunSteps(runId), typedIPC.getRun(runId), typedIPC.listAttachments(project),
@@ -242,6 +244,11 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
           {activeProject !== project || !activeSession ? <p>请先选择该计划所属项目的目标会话，再返回这里准备草稿。</p> :
             <FollowupRunDraft run={run} allowOtherSession scheduleScope={{ serviceId: view.serviceId, jobId: occurrence.job_id,
               occurrenceId: occurrence.id, revision: occurrence.revision, workspace: occurrence.context.workspace! }} />}
+        </div>}
+        {sameStatus && text && onFollowup && serviceId === view.serviceId && ["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(run.status) && <div className="mt-2 space-y-1 rounded border border-line p-2">
+          <p>可将结果前 2000 字符用于新的定时计划草稿。内容可能含凭据或敏感信息；先核对。计划默认停用，不会自动创建或运行；创建时重新核对项目、配置、预算和权限。</p>
+          <label className="flex items-start gap-2"><input type="checkbox" checked={includeResult} onChange={(event) => setIncludeResult(event.target.checked)} />选择上述结果摘录用于后续计划草稿</label>
+          <Button type="button" size="sm" variant="secondary" disabled={!includeResult} onClick={() => onFollowup(occurrence, text, run.status)}>准备后续定时计划草稿</Button>
         </div>}
         {sameStatus && cancellable.includes(run.status) && <Button type="button" size="sm" variant="danger" disabled={busy || cancelling} loading={cancelling} onClick={() => void cancel()}>停止本次运行</Button>}
         {sameStatus && cancellable.includes(run.status) && activeJobRevision && serviceId === view.serviceId && <Button type="button" size="sm" variant="danger" disabled={busy || cancelling} loading={cancelling} onClick={() => void pauseAndCancel()}>停用计划并请求停止本次运行</Button>}
