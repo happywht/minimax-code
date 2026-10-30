@@ -20,7 +20,7 @@ from ..hosts.tunnel import HostTunnelManager, build_tunnel_args
 from ..storage.dao.hosts import HostsDAO
 from .handler_utils import HandlerError, check_params
 from .protocol import (INTERNAL_ERROR, INVALID_PARAMS, HostPushParams, HostServiceStartParams,
-                       HostTransferStatusParams)
+                       HostServiceStatusParams, HostTransferStatusParams)
 from .server import Context
 
 logger = logging.getLogger(__name__)
@@ -304,33 +304,72 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             logger.exception("host.fetch failed")
             await ctx.reply_error(INTERNAL_ERROR, "host.fetch failed")
 
+    async def _bound_service_host(request: HostServiceStartParams) -> dict[str, Any]:
+        # Caller holds lifecycle_lock while checking and using this host snapshot.
+        from ..app import ensure_db
+        from ..storage.dao.text_artifacts import ArtifactDAO
+
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service", request.unit):
+            raise HandlerError(INVALID_PARAMS, "invalid service unit")
+        host = await _require_host(request.host_id)
+        if not host.get("enabled"):
+            raise HandlerError(INVALID_PARAMS, "host is disabled")
+        db = await ensure_db()
+        if db is None or await ArtifactDAO(db).service_id() != request.expected_service_id:
+            raise HandlerError(INVALID_PARAMS, "service identity changed or unavailable")
+        for key in ("hostname", "username", "port", "identity_file", "remote_port"):
+            if host.get(key) != getattr(request, key):
+                raise HandlerError(INVALID_PARAMS, "host configuration changed; review again")
+        build_tunnel_args(host, 1, request.remote_port)
+        return host
+
+    async def handle_host_service_status(params: Any, ctx: Context) -> None:
+        """Read bounded systemd fields, without returning logs or SSH diagnostics."""
+        try:
+            request = HostServiceStatusParams.model_validate(params)
+            async with lifecycle_lock:
+                host = await _bound_service_host(request)
+                # Cap remote output and discard diagnostics: they may contain paths or secrets.
+                command = ("LC_ALL=C systemctl --user show --no-pager "
+                           "--property=LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID "
+                           f"-- {shlex.quote(request.unit)} 2>/dev/null | head -c 4097")
+                result = await run_ssh(host, command, timeout=20, runner=runner, strict_host_key=True)
+            fields = {}
+            expected = {"LoadState", "ActiveState", "SubState", "Result", "ExecMainStatus", "MainPID"}
+            if result.ok and len(result.stdout) <= 4096:
+                for line in result.stdout.splitlines():
+                    key, separator, value = line.partition("=")
+                    if (not separator or key not in expected or key in fields
+                            or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value)):
+                        fields = {}
+                        break
+                    fields[key] = value
+            if (set(fields) != expected or not fields.get("ExecMainStatus", "").isdigit()
+                    or not fields.get("MainPID", "").isdigit()):
+                await ctx.reply({"ok": False, "reason": "timeout" if result.timed_out
+                                 else "unavailable", "status": None})
+                return
+            await ctx.reply({"ok": True, "reason": None, "status": fields})
+        except (ValidationError, HandlerError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.service_status failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.service_status unavailable")
+
     async def handle_host_service_start(params: Any, ctx: Context) -> None:
         """Explicitly start one already installed user unit; never install or restart it."""
-        from ..app import ensure_db
         from ..execution import require_write_access
-        from ..storage.dao.text_artifacts import ArtifactDAO
 
         try:
             request = HostServiceStartParams.model_validate(params)
             require_write_access()
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service", request.unit):
-                raise HandlerError(INVALID_PARAMS, "invalid service unit")
             async with lifecycle_lock:
-                host = await _require_host(request.host_id)
-                if not host.get("enabled"):
-                    raise HandlerError(INVALID_PARAMS, "host is disabled")
-                db = await ensure_db()
-                if db is None or await ArtifactDAO(db).service_id() != request.expected_service_id:
-                    raise HandlerError(INVALID_PARAMS, "service identity changed or unavailable")
-                for key in ("hostname", "username", "port", "identity_file", "remote_port"):
-                    if host.get(key) != getattr(request, key):
-                        raise HandlerError(INVALID_PARAMS, "host configuration changed; review again")
-                # Validate destination as for the tunnel and require an existing host key.
-                build_tunnel_args(host, 1, request.remote_port)
+                host = await _bound_service_host(request)
                 result = await run_ssh(host, f"systemctl --user start -- {shlex.quote(request.unit)}",
                                        timeout=30, runner=runner, strict_host_key=True)
             await ctx.reply({"ok": result.ok, "exit_code": result.exit_code,
-                             "stderr": result.stderr[-2000:], "timed_out": result.timed_out})
+                             "stderr": "" if result.ok else "Remote service start was not confirmed",
+                             "timed_out": result.timed_out})
         except (ValidationError, HandlerError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception:
@@ -372,6 +411,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
 
+    server.register("host.service_status", handle_host_service_status)
     server.register("host.service_start", handle_host_service_start)
     server.register("host.connect", handle_host_connect)
     server.register("host.disconnect", handle_host_disconnect)

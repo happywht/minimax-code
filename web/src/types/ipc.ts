@@ -175,6 +175,14 @@ export interface HostServiceStartParams {
   port: number; identity_file: string; remote_port: number; unit: string;
 }
 
+export interface HostServiceStatus {
+  LoadState: string; ActiveState: string; SubState: string; Result: string;
+  ExecMainStatus: string; MainPID: string;
+}
+export type HostServiceStatusResult =
+  | { ok: true; reason: null; status: HostServiceStatus }
+  | { ok: false; reason: "timeout" | "unavailable"; status: null };
+
 export interface HostPushParams {
   host_id: string;
   local_path: string;

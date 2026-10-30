@@ -261,6 +261,7 @@ binding or an expired request.
 | `engine.status` | req/res | M4 — one engine's card by id. Unavailable engines carry `unavailable_reason` so the UI can disable them explicitly. |
 | `host.create` | req/res | M5 — register a remote Linux run host (name/hostname/username/SSH port/remote_port/identity_file reference — credentials are never stored). Duplicate names and missing identity files fail fast. |
 | `host.list` | req/res | M5 — list hosts, optional `enabled` filter. |
+| `host.service_status` | req/res | Explicit read-only systemd user-service snapshot using the same host and service binding as `host.service_start`. Returns only bounded LoadState, ActiveState, SubState, Result, ExecMainStatus and MainPID fields, or an unavailable/timeout reason; no logs or SSH diagnostics are returned. |
 | `host.service_start` | req/res | Explicitly start an existing Linux systemd user service using SSH with a previously trusted host key. Requires `host_id`, `expected_service_id`, exact saved hostname, username, port, identity_file and remote_port, and a restricted `unit` ending in `.service`. Disabled or changed hosts and changed service identity are rejected. Does not install, enable, restart or guarantee health; timeout or lost response leaves outcome unknown. |
 | `host.connect` | req/res | Start an owned loopback SSH forward to an existing remote agent using its saved `remote_port` (default 8765); an optional `remote_port` overrides it for this connection only. Returns connection status. |
 | `host.disconnect` | req/res | Close and reap the host's SSH forward. |
@@ -2310,3 +2311,5 @@ publication, so the saved ID and remote path must be used to query
 
 
 `host.service_start` runs `systemctl --user start` only after an explicit user action. A successful command is not proof of sustained health, task completion, linger, or restart recovery. The browser must reconnect and inspect the target service; errors and timeouts can leave the command outcome unknown. Host configuration updates through this service are serialized with the request; external changes are not locked.
+
+`host.service_status` executes `systemctl --user show` via a separate strict-host-key SSH connection, caps remote output and returns only validated fields. It does not use the service tunnel or include logs. Missing fields, unreachable SSH, or unavailable systemd are reported as unavailable; timeouts are distinct. A snapshot can become stale immediately and an active service does not establish task success or continued health. Host configuration updates through this service are serialized with the request; external changes are not locked.
