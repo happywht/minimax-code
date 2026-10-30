@@ -169,13 +169,13 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **224 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **225 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
 | `agent.*` | 12 | 消息发送、子 agent 管理 | `builtins.py`, `handlers_agents.py` |
 | `audit.*` | 3 | 审计日志查询 | `handlers_audit.py` |
-| `artifact.*` | 3 | 项目文本成果登记、列表与预览 | `handlers_artifacts.py` |
+| `artifact.*` | 4 | 项目文本成果登记、列表与预览 | `handlers_artifacts.py` |
 | `attachment.*` | 10 | 项目附件原件列表与有界预览；字节走认证 HTTP | `handlers_attachments.py` |
 | `budget.*` | 2 | 共享预算账本与责任核定 | `handlers_budget.py` |
 | `checkpoint.*` | 6 | 上下文检查点 | `handlers_checkpoint.py` |

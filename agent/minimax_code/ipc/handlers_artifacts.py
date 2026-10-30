@@ -6,9 +6,11 @@ import logging
 from pydantic import ValidationError
 
 from ..text_artifacts import get_artifact_service
+from .handler_utils import HandlerError
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
+    ArtifactCandidatesParams,
     ArtifactGetParams,
     ArtifactScopedListParams,
     ArtifactRegisterParams,
@@ -25,6 +27,8 @@ def register_artifact_handlers(server):
                 service = await get_artifact_service()
                 result = await getattr(service, operation)(**values)
                 await ctx.reply({"artifact": result} if operation == "register" else result)
+            except HandlerError as exc:
+                await ctx.reply_error(exc.code, exc.message, exc.data)
             except ValidationError:
                 await ctx.reply_error(INVALID_PARAMS, "Invalid artifact parameters")
             except (ValueError, OSError) as exc:
@@ -34,6 +38,7 @@ def register_artifact_handlers(server):
                 await ctx.reply_error(INTERNAL_ERROR, "Artifact storage operation failed")
         return handle
 
+    server.register("artifact.candidates", handler(ArtifactCandidatesParams, "candidates"))
     server.register("artifact.register", handler(ArtifactRegisterParams, "register"))
     server.register("artifact.list", handler(ArtifactScopedListParams, "list"))
     server.register("artifact.get", handler(ArtifactGetParams, "get"))

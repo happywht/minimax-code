@@ -213,6 +213,57 @@ class ArtifactService:
         }, expected_root=project["root_path"], expected_service_id=expected_service_id,
             expected_session_id=expected_session_id, idempotent=request_id is not None)
 
+    async def candidates(self, project_id, run_id, expected_session_id, expected_service_id):
+        """Bounded path hints from successful native write calls; never read source files."""
+        from .ipc.host_session_gate import require_host_session
+
+        await require_host_session(expected_session_id)
+        project = await self.dao.project(project_id)
+        await self.dao.check_run(project_id, run_id, project["root_path"])
+        owner = await self.dao.db.fetchone(
+            "SELECT session_id, json_extract(metadata, '$.workspace_snapshot') AS workspace "
+            "FROM agent_runs WHERE id=? AND json_valid(metadata)", (run_id,))
+        if (not owner or owner["session_id"] != expected_session_id
+                or owner["workspace"] != project["root_path"]
+                or await self.dao.service_id() != expected_service_id):
+            raise ValueError("Run or service identity changed")
+        rows = await self.dao.db.fetchall(
+            "SELECT substr(json_extract(payload, '$.args.path'),1,1025) AS path "
+            "FROM agent_run_steps WHERE run_id=? AND session_id=? AND kind='tool_call' "
+            "AND tool_name='write_file' AND status='completed' AND json_valid(payload) "
+            "ORDER BY ordinal DESC LIMIT 201", (run_id, expected_session_id))
+        root = Path(project["root_path"])
+        paths = []
+        for row in rows[:200]:
+            raw = row["path"]
+            if not isinstance(raw, str) or len(raw) > 1024:
+                continue
+            candidate = Path(raw)
+            if candidate.is_absolute():
+                try:
+                    candidate = candidate.relative_to(root)
+                except ValueError:
+                    continue
+            try:
+                value = relative_source(candidate.as_posix())
+            except ValueError:
+                continue
+            if candidate.suffix.lower() in {".md", ".txt"} and value not in paths:
+                paths.append(value)
+        await require_host_session(expected_session_id)
+        await self.dao.check_run(project_id, run_id, project["root_path"])
+        current = await self.dao.project(project_id)
+        owner_after = await self.dao.db.fetchone(
+            "SELECT session_id, json_extract(metadata, '$.workspace_snapshot') AS workspace "
+            "FROM agent_runs WHERE id=? AND json_valid(metadata)", (run_id,))
+        if (current["root_path"] != project["root_path"] or not owner_after
+                or owner_after["session_id"] != expected_session_id
+                or owner_after["workspace"] != project["root_path"]
+                or await self.dao.service_id() != expected_service_id):
+            raise ValueError("Project or service identity changed")
+        return {"project_id": project_id, "run_id": run_id, "session_id": expected_session_id,
+                "service_id": expected_service_id, "paths": paths, "truncated": len(rows) > 200}
+
     async def list(self, project_id, run_id=None, cursor=None, query=None):
         from .artifact_cursor import decode_cursor, encode_cursor
         await self.dao.project(project_id)

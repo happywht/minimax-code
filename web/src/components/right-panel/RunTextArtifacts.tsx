@@ -13,19 +13,20 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [path, setPath] = useState("");
+  const [candidates, setCandidates] = useState<string[] | null>(null);
   const key = `run-text-registration:${JSON.stringify([host, serviceId, projectId, sessionId, runId])}`;
   const [pending, setPending] = useState<{ path: string; requestId: string } | null>(null);
   const epoch = useRef(0), download = useRef<AbortController | null>(null);
   useEffect(() => {
     ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setMessage(""); setBusy(false);
-    setPath("");
+    setPath(""); setCandidates(null);
     try {
       const saved = JSON.parse(sessionStorage.getItem(key) || "null");
       setPending(saved && typeof saved.path === "string" && /^[0-9a-f]{32}$/.test(saved.requestId) ? saved : null);
     } catch { setPending(null); }
     return () => { ++epoch.current; download.current?.abort(); };
   }, [runId, sessionId, projectId, serviceId, review, activeSession, host, key]);
-  useEffect(() => ipc.onSideCar(() => { ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setBusy(false); setMessage("连接变化，请重新读取成果。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; download.current?.abort(); setItems(null); setSelected(null); setCandidates(null); setBusy(false); setMessage("连接变化，请重新读取成果。"); }), []);
   const current = (ticket: number, host: string) => ticket === epoch.current && host === ipc.agentBaseUrl &&
     useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === projectId &&
     (review || (activeSession === sessionId && useSessionStore.getState().sessions.find((s) => s.id === sessionId)?.project_id === projectId));
@@ -49,6 +50,21 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
       if (result.artifacts.length >= 200) setMessage("此运行最多返回最近 200 项，可能还有更早的关联成果。");
     } catch (error) { if (current(ticket, host)) { setItems(null); setMessage(String(error)); } }
     finally { if (current(ticket, host)) setBusy(false); }
+  };
+  const discover = async () => {
+    const ticket = ++epoch.current, origin = ipc.agentBaseUrl; setBusy(true); setMessage(""); setCandidates(null);
+    try {
+      await verifyScope(ticket, origin);
+      const result = await typedIPC.getArtifactCandidates({ project_id: projectId, run_id: runId,
+        expected_session_id: sessionId, expected_service_id: serviceId });
+      await verifyScope(ticket, origin);
+      if (!current(ticket, origin)) return;
+      if (result.project_id !== projectId || result.run_id !== runId || result.session_id !== sessionId || result.service_id !== serviceId)
+        throw new Error("候选范围已变化，请刷新任务。");
+      setCandidates(result.paths);
+      setMessage(result.truncated ? "仅检查最近 200 条成功写入记录；更早路径可手工输入。" : "候选来自成功写入记录，请确认当前文件后登记。");
+    } catch (error) { if (current(ticket, origin)) setMessage(String(error)); }
+    finally { if (current(ticket, origin)) setBusy(false); }
   };
   const register = async () => {
     const ticket = ++epoch.current, origin = ipc.agentBaseUrl;
@@ -107,6 +123,9 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
   };
   return <div className="mt-2 space-y-1 text-xs"><button type="button" disabled={busy} onClick={() => void load()}>读取登记关联的文本成果</button>
     <p>仅显示登记时关联此运行的文本版本；关联不证明由该运行生成或内容已验证。</p>
+    <button type="button" disabled={busy || !!pending} onClick={() => void discover()}>查找任务写入的文本路径</button>
+    {candidates && (candidates.length ? <ul>{candidates.map((candidate) => <li key={candidate}><button type="button" disabled={busy || !!pending} onClick={() => setPath(candidate)}>{candidate}</button></li>)}</ul> : <p>未发现可用候选，可手工输入路径。</p>)}
+    <p>候选仅来自运行记录，文件可能已变化或不在项目中；登记快照及关联不代表来源或业务验收。</p>
     <label className="block">项目内文本路径（TXT / MD / CSV，UTF-8，最多 2 MiB）
       <input className="ml-2 rounded border border-line bg-surface-0 p-1" value={pending?.path ?? path} disabled={busy || !!pending} onChange={(event) => setPath(event.target.value)} />
     </label>

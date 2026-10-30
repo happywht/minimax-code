@@ -106,6 +106,12 @@ class ArtifactRegisterParams(ArtifactListParams):
     request_id: str | None = Field(default=None, min_length=32, max_length=32)
 
 
+class ArtifactCandidatesParams(ArtifactListParams):
+    run_id: str = Field(min_length=1, max_length=128)
+    expected_session_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+
+
 class ArtifactGetParams(ArtifactListParams):
     artifact_id: str = Field(pattern=r"^art_[0-9a-f]{32}$")
 

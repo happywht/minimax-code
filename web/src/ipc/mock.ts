@@ -517,6 +517,8 @@ function mockHandle(
       } satisfies SessionExportResult;
     }
 
+    case "artifact.candidates":
+      throw new Error("演示模式不提供任务文件候选，请连接真实后端。");
     case "artifact.register":
     case "artifact.list":
     case "artifact.get": {

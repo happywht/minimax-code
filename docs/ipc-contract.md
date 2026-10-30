@@ -1923,9 +1923,12 @@ attachment 沿用原附件类型、版本、SHA-256 与 v2/inert_text 预览，�
 
 | 方法 | 参数 | 返回 |
 |------|------|------|
+| `artifact.candidates` | `{project_id, run_id, expected_session_id, expected_service_id}` | `{project_id, run_id, session_id, service_id, paths, truncated}`，从最近 200 条成功 write_file 调用记录提取项目内 MD/TXT 路径候选，不读取文件 |
 | `artifact.register` | `{project_id, source_path, run_id?, expected_service_id?, expected_session_id?, request_id?}` | `{artifact}`，成功登记一个新的不可变版本 |
 | `artifact.list` | `{project_id, run_id?, cursor?, query?}` | `{artifacts, service_id, next_cursor}`，按项目及可选运行筛选，每页最多 200 项；可选 query（1–240 字符）按登记路径区分大小写作字面子串匹配，不读取或搜索原件。搜索游标绑定项目、服务、运行及 query；无 query 保持原游标行为 |
 | `artifact.get` | `{project_id, artifact_id}` | `{artifact, preview_text}`，经过 vault 大小/hash 核对的纯文本 |
+
+候选仅是记录中的路径，可能已变化、不可用或并非由该运行生成；用户选择后仍需显式登记，服务端复核项目、会话、服务及路径。候选不代表业务验收。此功能尚未运行验证。
 
 带运行登记可同时传入 `expected_service_id`、`expected_session_id` 和 32 位小写十六进制 `request_id`；三项必须一起提供，写入时在同一事务核对归属和请求去重。同一请求重试仅接受相同范围及字节，不证明运行生成了该文件。
 

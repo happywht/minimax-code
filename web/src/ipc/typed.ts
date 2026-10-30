@@ -131,6 +131,7 @@ import type { IPCClient } from "./client";
 
 export interface TypedIPC {
   ping(): Promise<boolean>;
+  getArtifactCandidates(params: { project_id: string; run_id: string; expected_session_id: string; expected_service_id: string }): Promise<{ project_id: string; run_id: string; session_id: string; service_id: string; paths: string[]; truncated: boolean }>;
   registerArtifact(params: import("../types/ipc").ArtifactRegisterParams): Promise<{ artifact: import("../types/ipc").TextArtifact }>;
   listArtifacts(projectId: string, runId?: string, cursor?: string, query?: string): Promise<import("../types/ipc").ArtifactListResult>;
   getArtifact(projectId: string, artifactId: string): Promise<import("../types/ipc").ArtifactGetResult>;
@@ -645,6 +646,7 @@ export function backendRuleToFrontend(r: BackendPermissionRule): PermissionRule 
 export function bindTypedIPC(client: IPCClient): TypedIPC {
   return {
     ping: () => client.ping(),
+    getArtifactCandidates: (params) => client.request("artifact.candidates", params),
     registerArtifact: (params) => client.request("artifact.register", params),
     listArtifacts: (projectId, runId, cursor, query) => client.request("artifact.list", { project_id: projectId, ...(runId === undefined ? {} : { run_id: runId }), ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) }),
     getArtifact: (projectId, artifactId) => client.request("artifact.get", { project_id: projectId, artifact_id: artifactId }),
