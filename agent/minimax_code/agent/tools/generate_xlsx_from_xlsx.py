@@ -42,11 +42,13 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Per-column trim removes surrounding Unicode whitespace; null_values maps exact markers to blank "
         "after trimming and before conversion. Optional fill_missing replaces blanks with explicit same-type constants before calculations and filters. Optional summaries "
         "are static values and charts use output column names. Optional typed filters use output column names; "
-        "all conditions must match. Optional calculated_column or calculated_columns (1–10 ordered, mutually exclusive) appends static add, subtract, multiply or divide results before filtering; later calculations can reference earlier results; division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors, while blank operands produce blank. Optional deduplicate_by keeps the first row for exact output-column "
+        "all conditions must match. Text supports case-sensitive contains, not_contains, starts_with and "
+        "ends_with with nonempty values; blank cells never match these operators. "
+        "Optional calculated_column or calculated_columns (1–10 ordered, mutually exclusive) appends static add, subtract, multiply or divide results before filtering; later calculations can reference earlier results; division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors, while blank operands produce blank. Optional deduplicate_by keeps the first row for exact output-column "
         "values, with blanks matching blanks, after filtering and before grouping. "
         "Optional sort_by orders up to three output columns after grouping, with stable ties and blanks last. "
         "Optional group_by produces static grouped values: blank keys form a group, count excludes blanks, "
-        "sum and average ignore blanks and are blank when all values are blank; average rounds half-up. "
+        "sum, average, min and max ignore blanks and are blank when all values are blank; average rounds half-up. "
         "Formula cells are never imported: "
         "replace formulas with independently verified values in a copy. Hidden rows/columns, merged cells, "
         "charts, filters, error cells, ambiguous date/number formats and zero-padded identifiers are rejected. "
@@ -184,7 +186,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                     result.output["group_by"] = group_by
                     result.output["group_count"] = len(spec["rows"])
                     result.output["group_notice"] = ("Equal key combinations, including blanks, form one group; row count includes all rows after filtering and optional deduplication. "
-                        "Count excludes blanks; sum and average ignore blanks and are blank if all values are blank. "
+                        "Count excludes blanks; sum, average, min and max ignore blanks and are blank if all values are blank. "
                         "Average rounds half-up to the requested decimals. Values are static and business quality is unverified.")
                 result.output["source_sheet"] = source_sheet
                 result.output["date_columns"] = extraction["date_columns"]
