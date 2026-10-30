@@ -68,11 +68,12 @@ def _sheet(value: object) -> bool:
 
 def _validate_join_processing(value: dict) -> None:
     _require(set(value) == ({"version", "operation", "sources", "keys", "counts", "join_mode"}
-                            if value.get("version") == 4 else
+                            if value.get("version") in (4, 5) else
                             {"version", "operation", "sources", "keys", "counts"})
-             and type(value["version"]) is int and value["version"] in {2, 3, 4}
+             and type(value["version"]) is int and value["version"] in {2, 3, 4, 5}
              and (value["version"] != 4 or (type(value["join_mode"]) is str
                   and value["join_mode"] in {"matched", "unmatched"}))
+             and (value["version"] != 5 or value["join_mode"] == "right_unmatched")
              and value["operation"] == "left_join", "Invalid join processing description")
     sources = value["sources"]
     _require(type(sources) is list and len(sources) == 2, "Invalid join sources")
@@ -108,10 +109,12 @@ def _validate_join_processing(value: dict) -> None:
                      for left, right in zip(keys["left"], keys["right"], strict=True)),
                  "Invalid join key columns")
     counts = value["counts"]
-    _require(type(counts) is dict and set(counts) == {"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys"}
+    _require(type(counts) is dict and set(counts) == ({"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys", "right_unmatched_rows"}
+             if value["version"] == 5 else {"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys"})
              and all(_integer(counts[k], 0, 1000) for k in counts)
              and counts["matched_rows"] + counts["unmatched_rows"] == counts["left_rows"]
-             and counts["right_blank_keys"] <= counts["right_rows"], "Invalid join counts")
+             and counts["right_blank_keys"] <= counts["right_rows"]
+             and (value["version"] != 5 or counts["right_blank_keys"] <= counts["right_unmatched_rows"] <= counts["right_rows"]), "Invalid join counts")
 
 
 def validate_report(value: object) -> dict:
@@ -128,7 +131,7 @@ def validate_report(value: object) -> dict:
                  and any(notes[key].strip() for key in notes), "Invalid operator notes")
     if "processing" in value:
         processing = value["processing"]
-        if type(processing) is dict and processing.get("version") in (2, 3, 4):
+        if type(processing) is dict and processing.get("version") in (2, 3, 4, 5):
             _validate_join_processing(processing)
         else:
             processing_keys = {

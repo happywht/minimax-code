@@ -27,7 +27,9 @@ class JoinSpreadsheetTool(Tool):
         "A key combination with any blank never matches; duplicate complete right combinations "
         "reject the request. Left rows and order are preserved; "
         "unmatched fields are blank. Optional join_mode selects all left rows, matched rows only, "
-        "or unmatched left rows only for reconciliation. CSV identifiers should be text to preserve leading zeros. "
+        "unmatched left rows only, or right_unmatched rows missing from the left for reconciliation. "
+        "In right_unmatched mode right keys populate the corresponding left key columns; "
+        "other left columns are blank. CSV identifiers should be text to preserve leading zeros. "
         "Per-column trim and null_values are explicit; no fuzzy matching or inferred values. "
         "XLSX requires an exact visible sheet and rejects formulas and complex sheets. "
         "Retry identical inputs with the same request_key; use a new key for changes. "
@@ -45,7 +47,7 @@ class JoinSpreadsheetTool(Tool):
     parameters = {"type": "object", "properties": {
         "left": _source, "right": _source, "filename": {"type": "string"},
         "request_key": {"type": "string"}, "sheet_name": {"type": "string"},
-        "join_mode": {"type": "string", "enum": ["left", "matched", "unmatched"],
+        "join_mode": {"type": "string", "enum": ["left", "matched", "unmatched", "right_unmatched"],
                       "description": "Rows to deliver; default left"},
     }, "required": ["left", "right", "filename", "request_key", "sheet_name"],
         "additionalProperties": False}
@@ -102,8 +104,8 @@ class JoinSpreadsheetTool(Tool):
                   sheet_name: str, join_mode: str = "left") -> ToolResult:
         try:
             require_write_access()
-            if not isinstance(join_mode, str) or join_mode not in {"left", "matched", "unmatched"}:
-                raise ValueError("join_mode must be left, matched or unmatched")
+            if not isinstance(join_mode, str) or join_mode not in {"left", "matched", "unmatched", "right_unmatched"}:
+                raise ValueError("join_mode must be left, matched, unmatched or right_unmatched")
             if not self.project_id:
                 raise ValueError("Current session has no project")
             if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_key):
@@ -140,12 +142,25 @@ class JoinSpreadsheetTool(Tool):
                 else:
                     lookup[key] = row
             rows, matched = [], 0
+            left_complete_keys = set()
             for row in left_spec["rows"]:
                 key = tuple(row[i] for i in li)
+                if all(value is not None for value in key):
+                    left_complete_keys.add(key)
                 hit = lookup.get(key) if all(value is not None for value in key) else None
                 matched += hit is not None
-                if join_mode == "left" or (join_mode == "matched") == (hit is not None):
+                if (join_mode == "left" or join_mode == "matched" and hit is not None
+                        or join_mode == "unmatched" and hit is None):
                     rows.append([*row, *([hit[i] for i in fields] if hit is not None else [None] * len(fields))])
+            if join_mode == "right_unmatched":
+                for row in right_spec["rows"]:
+                    key = tuple(row[i] for i in ri)
+                    if all(value is not None for value in key) and key in left_complete_keys:
+                        continue
+                    left_values = [None] * len(left_names)
+                    for left_index, value in zip(li, key, strict=True):
+                        left_values[left_index] = value
+                    rows.append([*left_values, *[row[i] for i in fields]])
             output = XlsxSpec.model_validate({"sheet_name": sheet_name,
                 "columns": [*left_spec["columns"], *[right_spec["columns"][i] for i in fields]],
                 "rows": rows}).model_dump()
@@ -158,17 +173,19 @@ class JoinSpreadsheetTool(Tool):
             processing = {"version": 2 if legacy else 3, "operation": "left_join",
                           "sources": [left_source, right_source], "keys": actual_keys, "counts": counts}
             if join_mode != "left":
-                processing = {"version": 4, "operation": "left_join",
+                processing = {"version": 5 if join_mode == "right_unmatched" else 4, "operation": "left_join",
                               "sources": [left_source, right_source],
                               "keys": {"left": left_keys, "right": right_keys},
                               "counts": counts, "join_mode": join_mode}
+                if join_mode == "right_unmatched":
+                    counts["right_unmatched_rows"] = len(rows)
             bound_key = "join_" + hashlib.sha256(canonical(request_key)).hexdigest()
             result = await self.generator.run(filename, bound_key, output, processing=processing)
             if result.success:
                 result.output.update({"request_key": request_key, "sources": [left_source, right_source],
                                       "join_keys": actual_keys, "join_counts": counts, "join_mode": join_mode,
                                       "output_rows": len(rows),
-                                      "source_notice": "Output retains left-side order; unmatched fields are blank. Originals were not modified; business quality is unverified."})
+                                      "source_notice": ("Right-unmatched output retains right-side order; right keys populate left key columns and other left fields are blank. " if join_mode == "right_unmatched" else "Output retains left-side order; unmatched fields are blank. ") + "Originals were not modified; business quality is unverified."})
             return result
         except (ValueError, OSError, ValidationError) as error:
             return ToolResult.fail(f"Spreadsheet join failed: {error}")
