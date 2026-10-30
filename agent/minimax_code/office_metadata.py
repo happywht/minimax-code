@@ -68,7 +68,7 @@ def _sheet(value: object) -> bool:
 
 def _validate_join_processing(value: dict) -> None:
     _require(set(value) == {"version", "operation", "sources", "keys", "counts"}
-             and type(value["version"]) is int and value["version"] == 2
+             and type(value["version"]) is int and value["version"] in {2, 3}
              and value["operation"] == "left_join", "Invalid join processing description")
     sources = value["sources"]
     _require(type(sources) is list and len(sources) == 2, "Invalid join sources")
@@ -89,8 +89,20 @@ def _validate_join_processing(value: dict) -> None:
                      and all(type(marker) is str and len(marker) <= 4096 for marker in column["null_values"])
                      and _integer(column["changed_cells"], 0, 1000), "Invalid join column")
     keys = value["keys"]
-    _require(type(keys) is dict and set(keys) == {"left", "right"}
-             and all(_text(keys[k], 80) for k in keys), "Invalid join keys")
+    _require(type(keys) is dict and set(keys) == {"left", "right"}, "Invalid join keys")
+    if value["version"] == 2:
+        _require(all(_text(keys[k], 80) for k in keys), "Invalid join keys")
+    else:
+        _require(all(type(keys[k]) is list and 1 <= len(keys[k]) <= 20
+                     and all(_text(name, 80) for name in keys[k])
+                     and len(set(keys[k])) == len(keys[k]) for k in keys)
+                 and len(keys["left"]) == len(keys["right"]), "Invalid join keys")
+        left_columns = {column["name"]: column["kind"] for column in sources[0]["columns"]}
+        right_columns = {column["name"]: column["kind"] for column in sources[1]["columns"]}
+        _require(all(left in left_columns and right in right_columns
+                     and left_columns[left] == right_columns[right]
+                     for left, right in zip(keys["left"], keys["right"], strict=True)),
+                 "Invalid join key columns")
     counts = value["counts"]
     _require(type(counts) is dict and set(counts) == {"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys"}
              and all(_integer(counts[k], 0, 1000) for k in counts)
@@ -106,7 +118,7 @@ def validate_report(value: object) -> dict:
     _require(set(value) in (keys, keys | {"processing"}), "Invalid Office report fields")
     if "processing" in value:
         processing = value["processing"]
-        if type(processing) is dict and processing.get("version") == 2:
+        if type(processing) is dict and processing.get("version") in (2, 3):
             _validate_join_processing(processing)
         else:
             processing_keys = {

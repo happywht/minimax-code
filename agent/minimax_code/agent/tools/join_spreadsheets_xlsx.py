@@ -22,9 +22,10 @@ class JoinSpreadsheetTool(Tool):
     name = "join_spreadsheets_xlsx"
     description = (
         "Create an XLSX by exact left joining two current-project CSV/XLSX attachments. "
-        "Select columns and specify one output column as each key; select right fields to append. "
-        "Keys must have the same type, text is case-sensitive, blank keys never match, and any "
-        "duplicate nonblank right key rejects the request. Left rows and order are preserved; "
+        "Select columns and specify key or an ordered keys array on each side; select right fields to append. "
+        "Key lists must have equal length and corresponding types; text is case-sensitive. "
+        "A key combination with any blank never matches; duplicate complete right combinations "
+        "reject the request. Left rows and order are preserved; "
         "unmatched fields are blank. CSV identifiers should be text to preserve leading zeros. "
         "Per-column trim and null_values are explicit; no fuzzy matching or inferred values. "
         "XLSX requires an exact visible sheet and rejects formulas and complex sheets. "
@@ -36,7 +37,10 @@ class JoinSpreadsheetTool(Tool):
         "source_sheet": {"type": "string", "description": "Required for XLSX; omit for CSV"},
         "columns": GenerateXlsxFromCsvTool.parameters["properties"]["columns"],
         "key": {"type": "string", "description": "Exact selected output column name"},
-    }, "required": ["attachment_id", "columns", "key"], "additionalProperties": False}
+        "keys": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": True,
+                 "items": {"type": "string"}, "description": "Ordered exact output column names; exclusive with key"},
+    }, "required": ["attachment_id", "columns"],
+        "oneOf": [{"required": ["key"]}, {"required": ["keys"]}], "additionalProperties": False}
     parameters = {"type": "object", "properties": {
         "left": _source, "right": _source, "filename": {"type": "string"},
         "request_key": {"type": "string"}, "sheet_name": {"type": "string"},
@@ -49,10 +53,15 @@ class JoinSpreadsheetTool(Tool):
         self.originals = self.generator.service.originals
 
     async def _source(self, config: dict, sheet_name: str) -> tuple[dict, dict]:
-        if (not isinstance(config, dict) or set(config) - {"attachment_id", "source_sheet", "columns", "key"}
-                or not {"attachment_id", "columns", "key"} <= set(config)
-                or not isinstance(config["key"], str)):
-            raise ValueError("Each source requires attachment_id, columns and key")
+        if (not isinstance(config, dict) or set(config) - {"attachment_id", "source_sheet", "columns", "key", "keys"}
+                or not {"attachment_id", "columns"} <= set(config)
+                or ("key" in config) == ("keys" in config)):
+            raise ValueError("Each source requires attachment_id, columns and exactly one of key or keys")
+        keys = [config["key"]] if "key" in config else config["keys"]
+        if (not isinstance(keys, list) or not 1 <= len(keys) <= 20
+                or any(not isinstance(key, str) or not key for key in keys)
+                or len(set(keys)) != len(keys)):
+            raise ValueError("Join keys must contain 1–20 unique column names")
         attachment_id = config["attachment_id"]
         metadata = await self.originals.dao.get(self.project_id, attachment_id)
         kind = metadata["declared_type"]
@@ -100,28 +109,34 @@ class JoinSpreadsheetTool(Tool):
             right_spec, right_source = await self._source(right, sheet_name)
             left_names = [c["name"] for c in left_spec["columns"]]
             right_names = [c["name"] for c in right_spec["columns"]]
-            if left["key"] not in left_names or right["key"] not in right_names:
+            left_keys = [left["key"]] if "key" in left else left["keys"]
+            right_keys = [right["key"]] if "key" in right else right["keys"]
+            if any(key not in left_names for key in left_keys) or any(key not in right_names for key in right_keys):
                 raise ValueError("Join keys must name selected output columns")
-            li, ri = left_names.index(left["key"]), right_names.index(right["key"])
-            if left_spec["columns"][li]["kind"] != right_spec["columns"][ri]["kind"]:
-                raise ValueError("Join key types must be identical")
-            fields = [i for i in range(len(right_names)) if i != ri]
+            if len(left_keys) != len(right_keys):
+                raise ValueError("Join key lists must have equal lengths")
+            li = [left_names.index(key) for key in left_keys]
+            ri = [right_names.index(key) for key in right_keys]
+            if any(left_spec["columns"][l]["kind"] != right_spec["columns"][r]["kind"]
+                   for l, r in zip(li, ri, strict=True)):
+                raise ValueError("Corresponding join key types must be identical")
+            fields = [i for i in range(len(right_names)) if i not in ri]
             if not fields:
                 raise ValueError("Select at least one right-side field besides the key")
             lookup = {}
             blank_keys = 0
             for row in right_spec["rows"]:
-                key = row[ri]
-                if key is None:
+                key = tuple(row[i] for i in ri)
+                if any(value is None for value in key):
                     blank_keys += 1
                 elif key in lookup:
-                    raise ValueError("Right source contains duplicate nonblank keys")
+                    raise ValueError("Right source contains duplicate complete key combinations")
                 else:
                     lookup[key] = row
             rows, matched = [], 0
             for row in left_spec["rows"]:
-                key = row[li]
-                hit = lookup.get(key) if key is not None else None
+                key = tuple(row[i] for i in li)
+                hit = lookup.get(key) if all(value is not None for value in key) else None
                 matched += hit is not None
                 rows.append([*row, *([hit[i] for i in fields] if hit is not None else [None] * len(fields))])
             output = XlsxSpec.model_validate({"sheet_name": sheet_name,
@@ -130,13 +145,16 @@ class JoinSpreadsheetTool(Tool):
             counts = {"left_rows": len(rows), "right_rows": len(right_spec["rows"]),
                       "matched_rows": matched, "unmatched_rows": len(rows) - matched,
                       "right_blank_keys": blank_keys}
-            processing = {"version": 2, "operation": "left_join", "sources": [left_source, right_source],
-                          "keys": {"left": left["key"], "right": right["key"]}, "counts": counts}
+            legacy = "key" in left and "key" in right
+            actual_keys = {"left": left["key"], "right": right["key"]} if legacy else {
+                "left": left_keys, "right": right_keys}
+            processing = {"version": 2 if legacy else 3, "operation": "left_join",
+                          "sources": [left_source, right_source], "keys": actual_keys, "counts": counts}
             bound_key = "join_" + hashlib.sha256(canonical(request_key)).hexdigest()
             result = await self.generator.run(filename, bound_key, output, processing=processing)
             if result.success:
                 result.output.update({"request_key": request_key, "sources": [left_source, right_source],
-                                      "join_counts": counts,
+                                      "join_keys": actual_keys, "join_counts": counts,
                                       "source_notice": "Left rows preserved; unmatched fields are blank. Originals were not modified; business quality is unverified."})
             return result
         except (ValueError, OSError, ValidationError) as error:
