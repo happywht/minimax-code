@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
-import type { AgentRun, PersistedMessage, Session } from "../../types/ipc";
+import type { AgentRun, PersistedMessage, Session, VerificationEvidence } from "../../types/ipc";
 import { Button, Modal, Textarea } from "../../ui";
 import { allowScopeChange } from "../../lib/scopeChangeGuard";
 
 type Engine = "native" | "codex";
 type Snapshot = { source: Session; messages: PersistedMessage[]; runs: AgentRun[]; service: string; fingerprint: string; targetRoot: string | null };
+type Evidence = { run: string; service: string; cursor: number; text: string };
 const active = new Set(["queued", "planning", "running", "awaiting_approval", "waiting_input"]);
+const terminal = new Set(["completed", "failed", "cancelled", "interrupted", "budget_paused"]);
 const DRAFT_PREFIX = "minimax-code:draft:";
 
 export function EngineHandoff({ sessionId, target, onClose }: { sessionId: string; target: Engine; onClose: () => void }): JSX.Element {
@@ -18,6 +20,7 @@ export function EngineHandoff({ sessionId, target, onClose }: { sessionId: strin
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const [uncertain, setUncertain] = useState(false), [created, setCreated] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [evidence, setEvidence] = useState<Evidence | null>(null), [included, setIncluded] = useState<Evidence | null>(null);
   const epoch = useRef(0), creating = useRef(false), live = useRef(true);
   const originProject = useRef(currentProject), originHost = useRef(host);
   const current = (ticket: number) => live.current && ticket === epoch.current && ipc.agentBaseUrl === originHost.current &&
@@ -65,10 +68,50 @@ export function EngineHandoff({ sessionId, target, onClose }: { sessionId: strin
       }
       if (!items.length) lines.push("（最近记录中没有用户或助手文本）");
       lines.push("仅取最近最多 12 条消息；工具结果、附件和引擎内部状态未迁移。请核对敏感信息、未完成内容及文件状态。");
-      setSnapshot(value); setText(lines.join("\n")); setAcknowledged(false);
+      setSnapshot(value); setText(lines.join("\n")); setEvidence(null); setIncluded(null); setAcknowledged(false);
       setNotice("请审阅摘录并补充目标、约束；删除不希望带入的信息。");
     } catch (error) { if (current(ticket)) setNotice(error instanceof Error ? error.message : String(error)); }
     finally { if (current(ticket)) setBusy(false); }
+  };
+  const readEvidence = async (runId: string, service: string, ticket: number): Promise<Evidence> => {
+    const [before, record] = await Promise.all([typedIPC.getServiceIdentity(), typedIPC.getRunSteps(runId)]);
+    const after = await typedIPC.getServiceIdentity();
+    const saved = record.run;
+    if (!current(ticket) || before.service_id !== service || after.service_id !== service ||
+        saved.id !== runId || saved.session_id !== sessionId || (saved.metadata?.project_id ?? "inbox") !== (originProject.current ?? "inbox") ||
+        !terminal.has(saved.status) || !Number.isSafeInteger(record.cursor) || record.cursor < 0 ||
+        record.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId)) throw new Error("运行、服务或项目已变化，请重新读取验证记录。");
+    const raw = saved.metadata?.verification as VerificationEvidence | undefined;
+    if (raw?.version !== 1) throw new Error("该运行没有可用的结构化验证记录。");
+    const validation = raw.validation;
+    const text = [
+      `来源运行 ${runId} · 状态 ${saved.status} · 验证记录 ${raw.verdict ?? "unknown"}`,
+      `命令：${validation?.command ? validation.command.slice(0, 400) : "未记录"}${validation?.command && validation.command.length > 400 ? "（截断）" : ""}`,
+      `退出码：${validation?.exit_code ?? "未知"} · 超时：${validation?.timed_out === true ? "是" : validation?.timed_out === false ? "否" : "未知"}`,
+      `输出截断：${validation?.stdout_truncated === true || validation?.stderr_truncated === true ? "是" : validation ? "见原记录" : "未知"}`,
+      "以上是原运行保存的验证记录，不证明当前文件未变化或业务验收通过；请查看原记录。",
+    ].join("\n");
+    return { run: runId, service, cursor: record.cursor, text };
+  };
+  const selectEvidence = async (runId: string) => {
+    if (!snapshot || busy || included) return;
+    const ticket = ++epoch.current; setBusy(true); setEvidence(null); setNotice("");
+    try { const item = await readEvidence(runId, snapshot.service, ticket); if (current(ticket)) setEvidence(item); }
+    catch (error) { if (current(ticket)) setNotice(error instanceof Error ? error.message : String(error)); }
+    finally { if (live.current) setBusy(false); }
+  };
+  const includeEvidence = async () => {
+    if (!evidence || busy || included) return;
+    const ticket = ++epoch.current; setBusy(true); setNotice("");
+    try {
+      const fresh = await readEvidence(evidence.run, evidence.service, ticket);
+      if (!current(ticket)) return;
+      if (JSON.stringify(fresh) !== JSON.stringify(evidence)) throw new Error("验证记录已变化，请重新选择。");
+      const addition = `\n\n用户选择的原运行验证记录：\n${fresh.text}`;
+      if (text.length + addition.length > 8000) throw new Error("交接内容超过 8000 字，请先精简。");
+      setText(text + addition); setIncluded(fresh); setEvidence(null); setAcknowledged(false);
+    } catch (error) { if (current(ticket)) setNotice(error instanceof Error ? error.message : String(error)); }
+    finally { if (live.current) setBusy(false); }
   };
   useEffect(() => { void prepare(); }, []); // Initial read is explicitly opened by the user.
   const start = async () => {
@@ -80,6 +123,8 @@ export function EngineHandoff({ sessionId, target, onClose }: { sessionId: strin
       const [fresh, engines] = await Promise.all([read(ticket), typedIPC.listEngines()]);
       if (!current(ticket)) return;
       if (fresh.service !== snapshot.service || fresh.fingerprint !== snapshot.fingerprint) throw new Error("原会话记录或运行状态已变化；请重新准备并审阅，当前编辑仍保留。");
+      if (included && JSON.stringify(await readEvidence(included.run, included.service, ticket)) !== JSON.stringify(included))
+        throw new Error("已加入的验证记录已变化；请重新准备并审阅，当前编辑仍保留。");
       if (!engines.engines.some((engine) => engine.id === target && engine.available)) throw new Error("目标引擎当前不可用，未创建会话。");
       dispatched = true; creating.current = true;
       const custom = fresh.source.workspace_mode === "worktree" || !!fresh.source.workspace_path;
@@ -121,6 +166,12 @@ export function EngineHandoff({ sessionId, target, onClose }: { sessionId: strin
       {snapshot && (snapshot.source.workspace_mode === "worktree" || !!snapshot.source.workspace_path) && <p className="break-all text-status-warning">来源工作区：{snapshot.source.workspace_path}（{snapshot.source.workspace_mode === "worktree" ? "独立工作区" : "自定义目录"}）；新会话项目目录：{snapshot.targetRoot}。不会复制或合并文件；两个目录可能不同，请先核对文件与原运行。</p>}
       {snapshot && (snapshot.runs.some((run) => active.has(run.status)) || snapshot.messages.some((item) => item.streaming)) && <p role="status" className="text-status-warning">原会话仍有运行或未完成消息；交接仅是读取时快照，不会停止原任务。</p>}
       {snapshot && <p className="text-xs text-ink-2">只检查最近 20 条运行及 12 条消息，更早记录未检查。</p>}
+      {snapshot && !included && <div className="space-y-1 rounded border border-line p-2 text-xs">
+        <p>可选择原会话的运行，读取并审阅其已保存验证记录；不会自动加入交接。</p>
+        <div className="flex flex-wrap gap-1">{snapshot.runs.filter((run) => terminal.has(run.status)).slice(0, 5).map((run) => <Button key={run.id} type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void selectEvidence(run.id)}>{run.title || run.id} · {run.status}</Button>)}</div>
+        {evidence && <><pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words">{evidence.text}</pre><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void includeEvidence()}>加入此验证记录</Button></>}
+      </div>}
+      {included && <p className="text-xs">已加入运行 {included.run} 的记录；可在下方编辑，创建前将重新核对来源。</p>}
       {snapshot && <Textarea aria-label="可编辑的引擎交接内容" rows={12} maxLength={8000} disabled={busy} value={text} onChange={(event) => { setText(event.target.value); setAcknowledged(false); }} />}
       {snapshot && <label className="flex items-start gap-2"><input type="checkbox" checked={acknowledged} disabled={busy} onChange={(event) => setAcknowledged(event.target.checked)} />我已审阅摘录、约束与敏感信息，理解内部状态不会迁移。</label>}
       {notice && <p role="status" className="break-words text-status-warning">{notice}</p>}

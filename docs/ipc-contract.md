@@ -2353,6 +2353,8 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 
 `session.create` 的引擎交接可选同时提供 `expected_service_id` 与 `handoff_source_session_id`：服务端核对原会话、项目、源/目标引擎，并要求目标为新建的本地默认工作区而非复用。来源如为独立工作区或自定义目录，还需提供已审阅的 `handoff_source_workspace_mode`、`handoff_source_workspace_path` 和 `handoff_target_project_root`；项目必须设置明确根目录，服务端在创建事务中比较来源绑定和目标根目录。只创建会话，不复制或合并文件、不迁移线程或自动发送消息。
 
+交接界面可从最近终态运行中选择一项结构化验证记录，预览后明确追加到可编辑草稿。追加时及创建新会话前重新核对服务、项目、会话、运行游标和记录内容；没有记录时不会推断验证结果。该摘录不包含输出全文，也不能证明当前文件状态或业务验收。
+
 `run.resume` 可附带完整的 `expected_service_id`、`expected_session_id`、`expected_project_id` 和 `expected_cursor`，服务在接单前对照持久运行快照；缺项或已变化时拒绝。调用者仍须审阅外部副作用，运行和文件可能在校验后继续变化；这不是 OS 沙盒或精确恢复。
 
 达到迭代上限的 Native 运行若记录为 `completed` 且 `truncated`，可在运行时间线核对记录和工作区后通过 `run.resume` 手动继续。此路径要求 `reviewed=true`，保留原模型、工作区、权限快照和累计预算，创建关联的新运行；不自动重放工具或未知结果的写操作。定时运行另沿用该发生的冻结上下文和租约，其状态由调度器根据新运行的持久终态进行协调。执行结束不等于验收通过。
