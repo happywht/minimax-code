@@ -10,6 +10,7 @@ import { CsvTableEditor } from "./CsvTableEditor";
 import { OfficeAnalysisControls, type OfficeAnalysisOptions } from "./OfficeAnalysisControls";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ProjectXlsxImport } from "./ProjectXlsxImport";
+import { ProjectCsvImport } from "./ProjectCsvImport";
 import { DraftFileControl } from "./DraftFileControl";
 import type { ReportTableTransfer } from "./DeliveryWorkspace";
 import { OfficeFollowupDraft } from "./OfficeFollowupDraft";
@@ -238,6 +239,9 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         csvRef.current = draft.csv; setCsv(draft.csv); setCsvTable(draft.csvTable); setOriginalCsvTable(draft.originalCsvTable);
         setTableDirty(draft.tableDirty); setKinds(draft.kinds); setCandidate(draft.candidate); setAnalysis(draft.analysis); setOperatorNotes(draft.operatorNotes ?? { source: "", method: "", limitations: "" }); edited();
       }} />
+    <ProjectCsvImport project={project} session={session} service={scoped ? state.serviceId : null} host={host} disabled={state.busy || filePending}
+      draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, filePending])}
+      onApply={(text, table) => { cancelFileRead(); applyCsv(text, table); }} />
     <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} onImport={(text, table) => {
       const scope = generationScope.current, expectedService = state.serviceId;
       void (async () => {
