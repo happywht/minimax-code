@@ -197,6 +197,7 @@ export interface TypedIPC {
   }): Promise<CreateSessionResult>;
   createWorktreeSession(opts?: { title?: string; base_ref?: string; project_id?: string }): Promise<CreateSessionResult>;
   listWorktreeSessions(): Promise<ListSessionsResult>;
+  reviewWorktreeCommits(params: { session_id: string; project_id: string; expected_service_id: string }): Promise<import("../types/ipc").WorktreeCommittedReview>;
   deleteWorktree(sessionId: string, forSessionDelete?: boolean): Promise<UpdateSessionResult>;
   archiveSession(sessionId: string): Promise<{ ok: true }>;
   unarchiveSession(sessionId: string): Promise<{ ok: true }>;
@@ -725,6 +726,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<CreateSessionResult>("workspace.create_worktree_session", opts ?? {}),
     listWorktreeSessions: () =>
       client.request<ListSessionsResult>("workspace.list_worktrees", {}),
+    reviewWorktreeCommits: (params) => client.request("workspace.review_commits", params),
     deleteWorktree: (sid, forSessionDelete) =>
       client.request<UpdateSessionResult>("workspace.delete_worktree", { session_id: sid, ...(forSessionDelete ? { for_session_delete: true } : {}) }),
     archiveSession: (sid) =>

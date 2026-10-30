@@ -433,6 +433,8 @@ function mockHandle(
       return { session_id: sid, session, worktree_path: session.workspace_path ?? undefined };
     }
 
+    case "workspace.review_commits":
+      throw new Error("模拟模式无法比较真实工作树提交");
     case "workspace.list_worktrees": {
       return {
         sessions: Array.from(mockSessions.values())

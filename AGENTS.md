@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (240 methods: 39 dotted namespaces + 3 standalone methods)
+  |- IPCServer (241 methods: 39 dotted namespaces + 3 standalone methods)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (built-in tools + skill/MCP bridges)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -169,7 +169,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **240 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **241 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -211,7 +211,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `terminal.*` | 4 | 终端命令执行 | `handlers_terminal.py` |
 | `webhook.*` | 5 | Webhook 管理 | `handlers_webhooks.py` |
 | `workflow.*` | 7 | 工作流编排 | `handlers_workflows.py` |
-| `workspace.*` | 4 | 工作区/worktree 管理（含 merge_worktree） | `handlers_workspace.py` |
+| `workspace.*` | 5 | 工作区/worktree 管理与提交审阅 | `handlers_workspace.py` |
 | `ping` / `status` / `shutdown` | 各 1 | built-in（无点号） | `builtins.py` |
 
 ## AI 使用指引

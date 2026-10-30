@@ -1657,6 +1657,11 @@ export interface GitDiffResult {
   ref?: string;
   diff: string;
 }
+export interface WorktreeCommittedReview {
+  session_id: string; project_id: string; service_id: string; workspace: string; target: string;
+  target_branch: string; target_head: string; source_head: string; merge_base: string;
+  diff: string; commits: string[]; commits_truncated: boolean;
+}
 
 export interface RunWorkspaceDiffResult {
   run_id: string;

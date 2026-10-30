@@ -183,6 +183,81 @@ def register_workspace_handlers(
             logger.exception("workspace.delete_worktree admission check failed")
             await ctx.reply_error(INTERNAL_ERROR, "Unable to confirm worktree is unused")
 
+    async def handle_review_commits(params: Any, ctx: Context) -> None:
+        """Read committed source changes relative to the current target merge base."""
+        try:
+            from ..app import ensure_db
+            from ..storage.dao.text_artifacts import ArtifactDAO
+            from .host_session_gate import require_host_session
+            from .protocol import WorkspaceReviewCommitsParams
+
+            req = WorkspaceReviewCommitsParams.model_validate(params)
+            db = await ensure_db()
+            dao = await dao_factory()
+
+            async def binding():
+                await require_host_session(req.session_id)
+                session = await dao.get(req.session_id)
+                from ..app import get_projects_dao
+                projects = get_projects_dao()
+                project = await projects.get(req.project_id) if projects is not None else None
+                if (not session or session.get("archived") or session.get("project_id") != req.project_id
+                        or session.get("workspace_mode") != "worktree" or not session.get("workspace_path")
+                        or not project or not project.get("root_path") or not Path(project["root_path"]).is_absolute()
+                        or await ArtifactDAO(db).service_id() != req.expected_service_id):
+                    raise HandlerError(INVALID_PARAMS, "Service, project or worktree session changed")
+                root = (configured_worktree_root or (ensure_data_dir() / "worktrees")).resolve()
+                source = Path(session["workspace_path"]).absolute()
+                if source != source.resolve() or source.parent != root or source.name != req.session_id or not source.is_dir():
+                    raise HandlerError(INVALID_PARAMS, "Managed worktree directory is unavailable or changed")
+                target = await _repository_for_project(req.project_id, configured_repo)
+                source_stat, target_stat = source.stat(), target.stat()
+                return source, target, (source_stat.st_dev, source_stat.st_ino), (target_stat.st_dev, target_stat.st_ino)
+
+            source, target, source_id, target_id = await binding()
+            common_source = (await _run_git(source, "rev-parse", "--path-format=absolute", "--git-common-dir")).strip()
+            common_target = (await _run_git(target, "rev-parse", "--path-format=absolute", "--git-common-dir")).strip()
+            if Path(common_source).resolve() != Path(common_target).resolve():
+                raise HandlerError(INVALID_PARAMS, "Worktree is not part of the target project's Git repository")
+            try:
+                branch = (await _run_git(target, "symbolic-ref", "--quiet", "--short", "HEAD")).strip()
+            except HandlerError as exc:
+                raise HandlerError(INVALID_PARAMS, "Target project HEAD is detached or its branch is unavailable") from exc
+            source_head = (await _run_git(source, "rev-parse", "--verify", "HEAD^{commit}")).strip()
+            target_head = (await _run_git(target, "rev-parse", "--verify", "HEAD^{commit}")).strip()
+            proc = await spawn_exec("git", "-C", str(target), "merge-base", target_head, source_head,
+                                    cwd=target, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, _ = await capture_output(proc, timeout=60)
+            if proc.returncode == 1:
+                raise HandlerError(INVALID_PARAMS, "No common Git ancestor exists between the worktree and target")
+            if proc.returncode != 0:
+                raise HandlerError(INVALID_PARAMS, "Could not determine the Git comparison base")
+            base = out.decode("ascii", errors="strict").strip()
+            if any(len(value) not in {40, 64} or any(ch not in "0123456789abcdef" for ch in value)
+                   for value in (base, source_head, target_head)):
+                raise HandlerError(INVALID_PARAMS, "Git returned an invalid comparison commit")
+            diff = await _run_git(target, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M", base, source_head, "--")
+            logs = (await _run_git(target, "log", "--no-decorate", "--max-count=101", "--format=%H%x09%s", f"{target_head}..{source_head}", "--")).splitlines()
+            current = await binding()
+            if (current != (source, target, source_id, target_id)
+                    or (await _run_git(source, "rev-parse", "--verify", "HEAD^{commit}")).strip() != source_head
+                    or (await _run_git(target, "rev-parse", "--verify", "HEAD^{commit}")).strip() != target_head
+                    or (await _run_git(target, "symbolic-ref", "--quiet", "--short", "HEAD")).strip() != branch):
+                raise HandlerError(INVALID_PARAMS, "Worktree or target changed during review; refresh")
+            await ctx.reply({"session_id": req.session_id, "project_id": req.project_id, "service_id": req.expected_service_id,
+                "workspace": str(source), "target": str(target), "target_branch": branch, "target_head": target_head,
+                "source_head": source_head, "merge_base": base, "diff": diff, "commits": logs[:100],
+                "commits_truncated": len(logs) > 100})
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except Exception as exc:
+            from pydantic import ValidationError
+            if isinstance(exc, (ValidationError, ValueError, OSError)):
+                await ctx.reply_error(INVALID_PARAMS, str(exc))
+            else:
+                logger.exception("workspace.review_commits failed")
+                await ctx.reply_error(INTERNAL_ERROR, "Could not review committed worktree changes")
+
     async def handle_merge_worktree(params: Any, ctx: Context) -> None:
         """``workspace.merge_worktree`` — commit, validate, then merge (M3).
 
@@ -340,6 +415,7 @@ def register_workspace_handlers(
 
     server.register("workspace.create_worktree_session", handle_create_worktree_session)
     server.register("workspace.list_worktrees", handle_list_worktrees)
+    server.register("workspace.review_commits", handle_review_commits)
     server.register("workspace.delete_worktree", handle_delete_worktree)
     server.register("workspace.merge_worktree", handle_merge_worktree)
 

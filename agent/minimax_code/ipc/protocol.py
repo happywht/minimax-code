@@ -54,6 +54,13 @@ class CodebaseReadCurrentResult(BaseModel):
 McpTransport = Literal["stdio", "sse", "streamable_http"]
 
 
+class WorkspaceReviewCommitsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+
+
 class McpResourcesParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     server_name: str = Field(min_length=1, max_length=256)
