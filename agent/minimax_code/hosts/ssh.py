@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ..execution import process_environment
+from ..execution import _finish_owned, communicate_bounded, process_environment, spawn_options, terminate_tree
 
 
 def ssh_environment() -> dict[str, str]:
@@ -104,31 +104,7 @@ async def run_ssh(
         return SshResult(ok=code == 0, exit_code=code,
                          stdout=out.decode("utf-8", errors="replace") if isinstance(out, bytes) else str(out),
                          stderr=err.decode("utf-8", errors="replace") if isinstance(err, bytes) else str(err))
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            env=ssh_environment(),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as exc:
-        return SshResult(ok=False, exit_code=None, stdout="",
-                         stderr=f"ssh client not available: {exc}")
-    try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        await _stop_transfer_process(proc)
-        return SshResult(ok=False, exit_code=None, stdout="", stderr="",
-                         timed_out=True)
-    except asyncio.CancelledError:
-        await _stop_transfer_process(proc)
-        raise
-    return SshResult(
-        ok=proc.returncode == 0,
-        exit_code=proc.returncode,
-        stdout=out_b.decode("utf-8", errors="replace"),
-        stderr=err_b.decode("utf-8", errors="replace"),
-    )
+    return await _run_transport(argv, timeout=timeout, program="ssh")
 
 
 async def push_file(
@@ -328,31 +304,37 @@ async def _run_scp(argv: list[str], *, timeout: float,
         to_text = lambda b: b.decode("utf-8", errors="replace") if isinstance(b, bytes) else str(b)  # noqa: E731
         return SshResult(ok=code == 0, exit_code=code,
                          stdout=to_text(out), stderr=to_text(err))
+    return await _run_transport(argv, timeout=timeout, program="scp")
+
+
+async def _run_transport(argv: list[str], *, timeout: float, program: str) -> SshResult:
+    """Own the transport even if cancellation arrives during process creation."""
+    starting = asyncio.create_task(asyncio.create_subprocess_exec(
+        *argv, env=ssh_environment(), stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **spawn_options()))
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            env=ssh_environment(),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await asyncio.shield(starting)
+    except asyncio.CancelledError:
+        try:
+            proc = await _finish_owned(starting)
+        except Exception:
+            pass
+        else:
+            await _finish_owned(asyncio.create_task(terminate_tree(proc)))
+        raise
     except FileNotFoundError as exc:
         return SshResult(ok=False, exit_code=None, stdout="",
-                         stderr=f"scp client not available: {exc}")
+                         stderr=f"{program} client not available: {exc}")
     try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        output = await communicate_bounded(proc, timeout=timeout, limit=5 * 1024 * 1024)
     except TimeoutError:
-        await _stop_transfer_process(proc)
-        return SshResult(ok=False, exit_code=None, stdout="", stderr="",
-                         timed_out=True)
-    except asyncio.CancelledError:
-        await _stop_transfer_process(proc)
-        raise
-    return SshResult(
-        ok=proc.returncode == 0,
-        exit_code=proc.returncode,
-        stdout=out_b.decode("utf-8", errors="replace"),
-        stderr=err_b.decode("utf-8", errors="replace"),
-    )
+        return SshResult(ok=False, exit_code=None, stdout="", stderr="", timed_out=True)
+    if output.stdout_truncated or output.stderr_truncated:
+        return SshResult(ok=False, exit_code=proc.returncode, stdout="",
+                         stderr=f"{program} output exceeded the limit; result is incomplete")
+    return SshResult(ok=proc.returncode == 0, exit_code=proc.returncode,
+                     stdout=output.stdout.decode("utf-8", errors="replace"),
+                     stderr=output.stderr.decode("utf-8", errors="replace"))
 
 
 async def _stop_transfer_process(proc: asyncio.subprocess.Process) -> None:
