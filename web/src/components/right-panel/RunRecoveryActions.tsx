@@ -4,6 +4,7 @@ import { useSessionStore } from "../../stores/sessionStore";
 import type { AgentRun, RunStepsResult } from "../../types/ipc";
 import { Button } from "../../ui";
 import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
+import { CodexRecoveryInput } from "./CodexRecoveryInput";
 
 type Review = { snapshot: RunStepsResult; service: string; host: string; project: string | null };
 type Attempt = { key: string; run: string; session: string; project: string | null; service: string; host: string; cursor: number; budget: number | null; handoff: string; reviewed: true };
@@ -180,6 +181,13 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
           })}
         </div>}
         <RunWorkspaceDiff run={review.snapshot.run} />
+        {codex && session && <CodexRecoveryInput run={run.id} session={session} project={project} service={review.service}
+          cursor={review.snapshot.cursor} disabled={pending || !!attempt} onAdd={(text) => {
+            const addition = `${handoff.trim() ? "\n\n" : ""}原任务文字摘录（请核对是否已被处理）：\n${text}`;
+            if (handoff.length + addition.length > 4000) return "交接超过 4000 字，请缩短摘录或已有交接。";
+            setHandoff(handoff + addition); setReviewed(false);
+            return "已加入恢复交接；请再次审阅并确认。";
+          }} />}
         <label className="flex items-start gap-2"><input type="checkbox" checked={reviewed} disabled={pending} onChange={(event) => setReviewed(event.target.checked)} />已核对记录、当前文件及可能的外部副作用。</label>
         <label className="block">恢复交接（可选）：记录已核实的操作、仍不确定的结果和剩余事项
           <textarea aria-label="恢复交接" className="mt-1 block w-full rounded border border-line bg-surface-1 p-2" maxLength={4000} value={handoff} disabled={pending || !!attempt} onChange={(event) => setHandoff(event.target.value)} />

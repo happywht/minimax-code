@@ -1189,6 +1189,17 @@ export interface RunInputImage {
   data: string;
 }
 
+export interface RunInputText {
+  run_id: string;
+  session_id: string;
+  project_id: string | null;
+  service_id: string;
+  cursor: number;
+  text: string;
+  truncated: boolean;
+  image_count: number;
+}
+
 export interface RunAdmissionResult { run: AgentRun; created: boolean }
 export interface RunGetResult {
   run: AgentRun;

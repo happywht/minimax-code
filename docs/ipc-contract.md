@@ -223,6 +223,7 @@ binding or an expired request.
 | `run.child_list` | req/res | Recover recent direct child runs scoped to the parent session, parent runs, project and service. |
 | `run.output_page` | req/res | Read a bounded page of captured tool output bound to a run, session, project and service. |
 | `run.input_image` | req/res | Read one saved Codex input image, bound to its run, session, project and service. |
+| `run.input_text` | req/res | Read a bounded Codex input text preview tied to the reviewed run cursor and scope. |
 | `run.output_inventory` | req/res | Inspect global usage and current-session captured-output records. |
 | `run.output_clear` | req/res | Explicitly clear one finished run's captured output, retaining a tombstone. |
 | `run.research_list` | req/res | List current project's recorded page sources with session and service binding. |
@@ -1903,6 +1904,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 `run.output_page({run_id,session_id,output_ref,expected_service_id,offset?,limit?})` 按字符分页读取该运行的捕获输出 JSON；最多 8000 字符，返回当前/下一偏移、总字符数和绑定标识。输出仅包含工具捕获到的内容，命令捕获上限和截断标记仍然适用；引用不跨项目、会话或服务使用。
 
 `run.input_image({run_id,session_id,project_id,expected_service_id,index})` 按需读取原 Codex 任务请求的一张图片，返回相同绑定、零基 `index`、图片总数、`media_type` 与 base64 `data`。运行和当前会话项目必须匹配接单时项目，且输入须符合 Codex 的五张、总计 4 MiB 和格式校验。旧记录或无图片时返回错误；数据不进入事件，接口不发送或修改草稿。项目、服务或会话变动时客户端丢弃在途结果和预览。
+
+`run.input_text({run_id,session_id,project_id,expected_service_id,expected_cursor})` 按需返回相同绑定、运行记录游标、原 Codex 输入文字前 8000 个字符、截断标记和图片数量，不返回图片数据。绑定或记录游标变化、原请求缺失或无效时拒绝。恢复面板允许用户编辑最多 4000 字的摘录并明确加入恢复交接；该操作不发送，后续恢复仍需重新确认并遵守原有预算、审批与游标校验。
 
 时间线可由用户选择预览中的单张图片并确认加入当前 Codex 草稿。客户端重新读取并比对图片及绑定，再检查草稿上下文、在途图片读取和总数/大小限制；不改变预算或自动发送。草稿中的图片仅在当前页面内存中，切换会话、项目、服务或刷新页面会清除；原任务保存的图片不受影响。
 
