@@ -69,7 +69,8 @@ class GenerateTableXlsxTool(Tool):
 
     async def run(self, filename: str, request_key: str, spec: dict[str, Any],
                   summaries: list[dict[str, Any]] | None = None, chart: dict[str, Any] | None = None,
-                  *, processing: dict[str, Any] | None = None) -> ToolResult:
+                  *, processing: dict[str, Any] | None = None,
+                  expected_service_id: str | None = None) -> ToolResult:
         try:
             require_write_access()
             if not isinstance(self.project_id, str) or not self.project_id:
@@ -84,6 +85,8 @@ class GenerateTableXlsxTool(Tool):
                 raise ValueError("summaries must be a list")
             materialized = materialize(original, [Summary.model_validate(item) for item in summaries or []])
             service_id = await self.service.originals.dao.service_id()
+            if expected_service_id is not None and service_id != expected_service_id:
+                raise ValueError("Office service identity changed; select the source again")
             analysis = None
             if chart is not None:
                 chart_config = Chart.model_validate(chart)

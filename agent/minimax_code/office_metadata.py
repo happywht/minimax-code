@@ -132,11 +132,13 @@ def validate_report(value: object) -> dict:
             source = processing["source"]
             _require(type(source) is dict and type(source.get("type")) is str
                      and type(source["type"]) is str and source["type"] in {"csv", "xlsx"}
-                     and set(source) == ({"type", "attachment_id", "sha256"} if source.get("type") == "csv"
+                     and set(source) - ({"delivery_id"} if source.get("type") == "xlsx" else set()) == ({"type", "attachment_id", "sha256"} if source.get("type") == "csv"
                                          else {"type", "attachment_id", "sha256", "sheet", "date_columns",
                                                "percentage_columns", "currency_columns"})
                      and type(source.get("attachment_id")) is str
-                     and _ATTACHMENT.fullmatch(source["attachment_id"]) and _hex(source.get("sha256")),
+                     and _ATTACHMENT.fullmatch(source["attachment_id"]) and _hex(source.get("sha256"))
+                     and ("delivery_id" not in source or (type(source["delivery_id"]) is str
+                          and re.fullmatch(r"off_[0-9a-f]{32}", source["delivery_id"]))),
                      "Invalid Office processing source")
             if source["type"] == "xlsx":
                 _require(_text(source["sheet"], 31) and all(

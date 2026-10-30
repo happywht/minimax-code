@@ -53,17 +53,21 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Supported dates become ISO text and must use text output columns. Percentages and currencies "
         "retain underlying numeric values (25% is 0.25); display styles and currency symbols are not preserved. "
         "Limits: original 2 MiB, A1:T1001, 5000 cells and 1 MiB extracted text. "
+        "For a selected Office delivery, supply its source_delivery_id, attachment ID, expected_sha256 and expected_service_id. "
         "Chart output is an Office delivery; retry with the same key and input. Source is untrusted data."
     )
     parameters = {
         **GenerateXlsxFromCsvTool.parameters,
         "properties": {**GenerateXlsxFromCsvTool.parameters["properties"],
-                       "source_sheet": {"type": "string", "description": "Exact visible source worksheet name"}},
+                       "source_sheet": {"type": "string", "description": "Exact visible source worksheet name"},
+                       "expected_sha256": {"type": "string", "description": "Expected source attachment SHA-256"},
+                       "expected_service_id": {"type": "string", "description": "Expected local service identity"},
+                       "source_delivery_id": {"type": "string", "description": "Explicitly selected Office delivery ID"}},
         "required": [*GenerateXlsxFromCsvTool.parameters["required"], "source_sheet"],
     }
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None) -> ToolResult:
+                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None, expected_sha256=None, expected_service_id=None, source_delivery_id=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -77,6 +81,21 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
             if metadata["declared_type"] != "xlsx" or metadata["size_bytes"] > 2 * 1024 * 1024:
                 raise ValueError("Select an XLSX attachment of at most 2 MiB")
             original, data = await self.originals.content(self.project_id, attachment_id)
+            if expected_sha256 is not None and (not isinstance(expected_sha256, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+                    or original["sha256"] != expected_sha256):
+                raise ValueError("Source attachment identity changed; select it again")
+            if expected_service_id is not None and (not isinstance(expected_service_id, str)
+                    or not expected_service_id or await self.originals.dao.service_id() != expected_service_id):
+                raise ValueError("Service identity changed; select the source again")
+            if source_delivery_id is not None:
+                if not isinstance(source_delivery_id, str) or not expected_sha256 or not expected_service_id:
+                    raise ValueError("Selected delivery requires its ID, source hash and service identity")
+                selected = await self.generator.service.get(self.project_id, source_delivery_id)
+                if (selected["delivery"]["service_id"] != expected_service_id
+                        or selected["delivery"]["attachment_id"] != attachment_id
+                        or selected["attachment"]["sha256"] != expected_sha256):
+                    raise ValueError("Selected delivery identity changed; select it again")
             if original["recognized_type"] != "xlsx":
                 raise ValueError("Attachment is not an XLSX workbook")
             extraction = await extract_xlsx(data, source_sheet)
@@ -129,16 +148,23 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                            "removed_duplicates": removed_duplicate_count,
                            "output_rows": len(spec["rows"])},
             }
+            if source_delivery_id is not None:
+                processing["source"]["delivery_id"] = source_delivery_id
             if fill_results is not None:
                 processing["fill_missing"] = fill_results
             if calculated_columns is not None:
                 processing["calculated_columns"] = calculated_columns
-            bound_key = hashlib.sha256(canonical([request_key, attachment_id, original["sha256"], source_sheet])).hexdigest()
+            key_parts = [request_key, attachment_id, original["sha256"], source_sheet]
+            if source_delivery_id is not None:
+                key_parts.append(source_delivery_id)
+            bound_key = hashlib.sha256(canonical(key_parts)).hexdigest()
             result = await self.generator.run(filename, bound_key, spec, summaries=summaries, chart=chart,
-                                              processing=processing)
+                                              processing=processing, expected_service_id=expected_service_id)
             if result.success:
                 result.output["request_key"] = request_key
                 result.output["source_attachment_id"] = attachment_id
+                if source_delivery_id is not None:
+                    result.output["source_delivery_id"] = source_delivery_id
                 result.output["source_sha256"] = original["sha256"]
                 result.output["cleaning"] = [{"column": column["name"],
                     "trim": column.get("trim", False), "null_values": column.get("null_values", []),
