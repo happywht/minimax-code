@@ -509,6 +509,7 @@ class RunInputTextParams(BaseModel):
     project_id: str | None
     expected_service_id: str = Field(min_length=1, max_length=128)
     expected_cursor: int = Field(ge=0, le=2**53 - 1)
+    offset: int | None = Field(default=None, ge=0, le=2**53 - 1)
 
 
 class ScheduledRunCancelScope(BaseModel):

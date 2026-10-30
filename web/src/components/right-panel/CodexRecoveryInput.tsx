@@ -20,8 +20,10 @@ export function CodexRecoveryInput({ run, session, project, service, cursor, dis
     return () => { epoch.current++; stop(); };
   }, [run, session, project, service, cursor, engine]);
 
-  const load = async () => {
+  const load = async (offset = 0) => {
     if (busy || disabled) return;
+    if (value && excerpt !== value.text.slice(0, 4000) &&
+        !window.confirm("切换文字段会丢弃当前摘录的修改。继续吗？")) return;
     const ticket = ++epoch.current, host = ipc.agentBaseUrl;
     let changed = false;
     const off = useSessionStore.subscribe((state) => {
@@ -35,14 +37,17 @@ export function CodexRecoveryInput({ run, session, project, service, cursor, dis
         (state.currentProjectId ?? "inbox") === (project ?? "inbox") &&
         (state.sessions.find((item) => item.id === session)?.project_id ?? null) === project;
     };
-    setBusy(true); setNotice(""); setValue(null); setExcerpt("");
+    setBusy(true); setNotice("");
     try {
       const result = await typedIPC.getRunInputText({ run_id: run, session_id: session, project_id: project,
-        expected_service_id: service, expected_cursor: cursor });
+        expected_service_id: service, expected_cursor: cursor, offset });
       if (!current()) return;
       if (result.run_id !== run || result.session_id !== session || result.project_id !== project || result.service_id !== service ||
           result.cursor !== cursor || typeof result.text !== "string" || result.text.length > 16000 ||
-          typeof result.truncated !== "boolean" || !Number.isInteger(result.image_count) || result.image_count < 0 || result.image_count > 5)
+          typeof result.truncated !== "boolean" || result.offset !== offset ||
+          (result.next_offset !== null && (!Number.isSafeInteger(result.next_offset) || result.next_offset <= offset)) ||
+          result.truncated !== (result.next_offset !== null) ||
+          !Number.isInteger(result.image_count) || result.image_count < 0 || result.image_count > 5)
         throw new Error("原任务输入或归属不一致");
       loadedHost.current = host; setValue(result); setExcerpt(result.text.slice(0, 4000));
     } catch (error) { if (current()) setNotice(error instanceof Error ? error.message : String(error)); }
@@ -55,7 +60,11 @@ export function CodexRecoveryInput({ run, session, project, service, cursor, dis
     {value && <>
       {engine === "codex" && <p>原任务包含 {value.image_count} 张图片；此处仅处理文字，图片不会随恢复自动发送。</p>}
       {engine === "native" && <p>恢复将按原流程使用保存的任务输入；此处只为交接添加用户选择的文字。</p>}
-      {(value.truncated || value.text.length > 4000) && <p>原文字较长，以下仅显示前 4000 字；请手动补充遗漏内容。</p>}
+      <p>当前文字段从字符位置 {value.offset} 开始；切换文字段不会自动加入交接。</p>
+      <div className="flex gap-1">
+        <Button type="button" size="sm" variant="secondary" disabled={busy || disabled || value.offset === 0} onClick={() => void load(Math.max(0, value.offset - 2000))}>上一段</Button>
+        <Button type="button" size="sm" variant="secondary" disabled={busy || disabled || value.next_offset === null} onClick={() => void load(value.next_offset ?? 0)}>下一段</Button>
+      </div>
       <label className="block">编辑需要交接的原任务摘录
         <textarea aria-label="原任务文字摘录" className="mt-1 block w-full rounded border border-line bg-surface-1 p-2" rows={5}
           value={excerpt} maxLength={4000} disabled={disabled} onChange={(event) => setExcerpt(event.target.value)} />

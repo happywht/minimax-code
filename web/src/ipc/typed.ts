@@ -274,7 +274,7 @@ export interface TypedIPC {
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number; include_active?: boolean; recovery_lookup?: RunRecoveryLookup }): Promise<ListRunsResult>;
   startRun(params: RunStartParams): Promise<RunAdmissionResult>;
   getRunInputImage(params: { run_id: string; session_id: string; project_id: string | null; expected_service_id: string; index: number }): Promise<import("../types/ipc").RunInputImage>;
-  getRunInputText(params: { run_id: string; session_id: string; project_id: string | null; expected_service_id: string; expected_cursor: number }): Promise<import("../types/ipc").RunInputText>;
+  getRunInputText(params: { run_id: string; session_id: string; project_id: string | null; expected_service_id: string; expected_cursor: number; offset?: number }): Promise<import("../types/ipc").RunInputText>;
   getRun(runId: string): Promise<RunGetResult>;
   cancelRun(runId: string, scheduleScope?: { service_id: string; job_id: string; occurrence_id: string; session_id: string; project_id: string; revision: number }, queued?: { session_id: string; service_id: string; project_id: string | null }): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
   resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number, scope?: { service: string; session: string; project: string | null; cursor: number }, handoff?: string): Promise<RunAdmissionResult>;

@@ -1235,6 +1235,8 @@ export interface RunInputText {
   text: string;
   truncated: boolean;
   image_count: number;
+  offset: number;
+  next_offset: number | null;
 }
 
 export interface RunAdmissionResult { run: AgentRun; created: boolean }

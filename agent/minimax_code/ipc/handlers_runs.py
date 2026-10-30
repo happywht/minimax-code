@@ -114,9 +114,14 @@ def register_run_handlers(server: Any) -> None:
                     if not isinstance(content, str):
                         raise ValueError("Native multimodal input preview is unavailable; inspect the original conversation")
                     text, count = content, 0
+                offset = req.offset if req.offset is not None else 0
+                if offset > len(text):
+                    raise ValueError("Input offset exceeds saved text")
+                end = min(offset + (2000 if req.offset is not None else 8000), len(text))
                 result = {"run_id": req.run_id, "session_id": req.session_id, "project_id": req.project_id,
-                          "service_id": identity[0], "cursor": row["cursor"], "text": text[:8000],
-                          "truncated": len(text) > 8000, "image_count": count}
+                          "service_id": identity[0], "cursor": row["cursor"], "text": text[offset:end],
+                          "truncated": end < len(text), "image_count": count,
+                          "offset": offset, "next_offset": end if end < len(text) else None}
             await require_chat_session(req.session_id)
             current = await dao._db.fetchone(
                 "SELECT r.session_id,s.project_id,s.engine, "
