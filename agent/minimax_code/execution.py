@@ -115,6 +115,41 @@ def require_tool_access(name: str) -> None:
         raise ExecutionDeniedError(f"Tool {name!r} is unavailable in read-only planning mode.")
 
 
+def require_planning_tool(tool: Any) -> None:
+    """Only reviewed implementations, not matching names, run in planning mode."""
+    if not is_read_only():
+        return
+    from .agent.tools.ask_user import AskUserTool
+    from .agent.tools.codebase_find_symbol import FindSymbolCodebaseTool
+    from .agent.tools.codebase_navigate import NavigateCodebaseTool
+    from .agent.tools.codebase_search import SearchCodebaseTool
+    from .agent.tools.codebase_summarize import SummarizeCodebaseTool
+    from .agent.tools.file_ops import ListDirectoryTool, ReadFileTool
+    from .agent.tools.project_attachments import (
+        ListProjectAttachmentsTool, ListProjectXlsxSheetsTool, OcrProjectAttachmentTool,
+        ReadProjectAttachmentTool, ReadProjectDocumentTool, ReadProjectXlsxSheetTool,
+        SearchProjectDocumentTool,
+    )
+    from .agent.tools.public_research import (
+        GetResearchSourceTool, ListResearchSourcesTool, ReadPublicPageTool, SearchPublicWebTool,
+    )
+    from .agent.tools.search import SearchFilesTool
+    from .agent.tools.subagents import CheckSubagentTool
+
+    allowed = (
+        AskUserTool, FindSymbolCodebaseTool, NavigateCodebaseTool, SearchCodebaseTool,
+        SummarizeCodebaseTool, ListDirectoryTool, ReadFileTool, ListProjectAttachmentsTool,
+        ListProjectXlsxSheetsTool, OcrProjectAttachmentTool, ReadProjectAttachmentTool,
+        ReadProjectDocumentTool, ReadProjectXlsxSheetTool, SearchProjectDocumentTool,
+        GetResearchSourceTool, ListResearchSourcesTool, ReadPublicPageTool, SearchPublicWebTool,
+        SearchFilesTool, CheckSubagentTool,
+    )
+    if type(tool) not in allowed or tool.name != type(tool).name:
+        raise ExecutionDeniedError(
+            f"Tool {tool.name!r} has no reviewed implementation for read-only planning mode."
+        )
+
+
 def process_cwd(cwd: str | Path | None) -> str:
     policy = _policy.get()
     if policy is not None and policy.restrict_network_tools:

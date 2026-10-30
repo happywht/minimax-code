@@ -233,9 +233,10 @@ class ToolRegistry:
         except ValueError as exc:
             return ToolResult.fail(f"invalid args for {name}: {exc}")
         try:
-            from ...execution import require_tool_access
+            from ...execution import require_planning_tool, require_tool_access
 
             require_tool_access(name)
+            require_planning_tool(tool)
             from ...execution import require_offline_tool
             require_offline_tool(tool)
             from ...run_ownership import require_live_owned_tool
