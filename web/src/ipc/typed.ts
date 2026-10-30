@@ -382,6 +382,9 @@ export interface TypedIPC {
   resolvePermission(opts: {
     request_id: string;
     decision: "allow" | "deny";
+    session_id?: string;
+    run_id?: string;
+    expected_service_id?: string;
   }): Promise<{ ok: boolean; request_id: string; decision?: string; reason?: string }>;
 
   // secrets (API key) — drive the Settings page's API Key tab.

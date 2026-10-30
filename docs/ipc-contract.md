@@ -594,6 +594,13 @@ projection, not persisted approval; `remaining_ms` is an estimate and
 `pending_codex_permissions` projects only Codex requests attached to this run,
 session and still-live connection. A new internal request ID is bound to each
 external request; the original JSON-RPC response retains its original ID.
+
+For a run-bound approval, current clients send `session_id`, `run_id` and
+`expected_service_id` together with the request ID and decision. The service
+checks its storage identity and the live gater's exact run/session/request
+binding before resolving. A late, expired, mismatched or already resolved
+request is rejected. Legacy clients may still resolve by request ID alone;
+that compatibility route does not provide the additional binding checks.
 Closing, cancellation, timeout and process loss invalidate the wait. Recovering
 a request never auto-approves it; neither projection survives a process restart.
 The adapter opts into the pinned App Server's experimental API to receive

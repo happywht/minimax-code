@@ -294,7 +294,8 @@ def unregister_gater(server: Any, session_id: str) -> None:
         pass
 
 
-def resolve_any_gater(server: Any, request_id: str, decision: bool) -> bool:
+def resolve_any_gater(server: Any, request_id: str, decision: bool, *,
+                      session_id: str | None = None, run_id: str | None = None) -> bool:
     """Try to resolve ``request_id`` against every live gater.
 
     Returns ``True`` the moment a gater claims the request (its
@@ -303,13 +304,25 @@ def resolve_any_gater(server: Any, request_id: str, decision: bool) -> bool:
     both the concurrent path and the old single-run path (plus tests
     that set ``server._permission_gater`` directly) keep working.
     """
+    def resolve(gater: Any) -> bool:
+        if not gater.has_pending(request_id):
+            return False
+        if session_id is not None or run_id is not None:
+            if not session_id or not run_id or getattr(gater, "run_id", None) != run_id:
+                return False
+            live = gater.live_requests(session_id, run_id)
+            if not any(item.get("request_id") == request_id and item.get("session_id") == session_id
+                       and item.get("run_id") == run_id for item in live):
+                return False
+        return gater.resolve(request_id, decision)
+
     registry = getattr(server, "_permission_gaters", None)
     if isinstance(registry, dict):
         for gater in list(registry.values()):
-            if gater.resolve(request_id, decision):
+            if resolve(gater):
                 return True
     legacy = getattr(server, "_permission_gater", None)
-    if legacy is not None and legacy.resolve(request_id, decision):
+    if legacy is not None and resolve(legacy):
         return True
     return False
 

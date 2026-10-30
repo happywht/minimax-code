@@ -267,7 +267,16 @@ def register_permission_handlers(
             # their own) — the first one that owns the request_id
             # claims it. The legacy single-slot gater is also covered
             # as a fallback inside resolve_any_gater.
-            ok = resolve_any_gater(ctx.server, request_id, decision)
+            session_id, run_id, expected_service = (params.get("session_id"), params.get("run_id"), params.get("expected_service_id"))
+            if any(value is not None for value in (session_id, run_id, expected_service)):
+                if not all(isinstance(value, str) and value for value in (session_id, run_id, expected_service)):
+                    raise HandlerError(INVALID_PARAMS, "session_id, run_id and expected_service_id must be supplied together")
+                from ..app import ensure_db
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                db = await ensure_db()
+                if db is None or await ArtifactDAO(db).service_id() != expected_service:
+                    raise HandlerError(INVALID_PARAMS, "Permission service changed; refresh the request")
+            ok = resolve_any_gater(ctx.server, request_id, decision, session_id=session_id, run_id=run_id)
             if not ok:
                 await ctx.reply(
                     {

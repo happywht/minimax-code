@@ -218,10 +218,20 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
 
   resolve: async (request_id, decision) => {
     if (get().resolving[request_id]) return;
-    bump(get().pending[request_id]?.session_id);
+    const request = get().pending[request_id];
+    if (!request) return;
+    const host = ipc.agentBaseUrl;
+    bump(request.session_id);
     set((s) => ({ resolving: { ...s.resolving, [request_id]: decision } }));
     try {
-      const result = await typedIPC.resolvePermission({ request_id, decision });
+      let scope: { session_id: string; run_id: string; expected_service_id: string } | undefined;
+      if (request.session_id && request.run_id) {
+        const identity = await typedIPC.getServiceIdentity();
+        if (!identity.service_id || ipc.agentBaseUrl !== host || get().pending[request_id] !== request)
+          throw new Error("授权请求或连接已变化，请重新核对。");
+        scope = { session_id: request.session_id, run_id: request.run_id, expected_service_id: identity.service_id };
+      }
+      const result = await typedIPC.resolvePermission({ request_id, decision, ...scope });
       retire(request_id);
       if (!result.ok) {
         toast.error(strings.toasts.permissionResolveFailed,
