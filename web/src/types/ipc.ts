@@ -65,7 +65,8 @@ export type DocxBlock = { kind: "paragraph"; text: string } | { kind: "table"; r
 export interface DocxSection { heading: string; blocks: DocxBlock[] }
 export interface ReportSource { title: string; url: string; accessed_at?: string; excerpt?: string | null; excerpt_truncated?: boolean; title_truncated?: boolean }
 export interface PageExcerptRange { page_source_id: string; start: number; end: number }
-export type DocxContent = ({ paragraphs: string[]; sections?: never } | { sections: DocxSection[]; paragraphs?: never }) & { sources?: ReportSource[]; session_id?: string; page_source_ids?: string[]; page_excerpt_ranges?: PageExcerptRange[] };
+export interface DocumentExcerptRef { attachment_id: string; expected_sha256: string; unit: number; start: number; end: number }
+export type DocxContent = ({ paragraphs: string[]; sections?: never } | { sections: DocxSection[]; paragraphs?: never }) & { sources?: ReportSource[]; session_id?: string; page_source_ids?: string[]; page_excerpt_ranges?: PageExcerptRange[]; document_excerpts?: DocumentExcerptRef[] };
 export type AttachmentGenerateDocxParams = {
   project_id: string; expected_service_id: string; filename: string; title: string;
 } & DocxContent;

@@ -247,10 +247,20 @@ class PageExcerptRange(BaseModel):
     end: int = Field(ge=1, le=8000)
 
 
+class DocumentExcerptRef(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    unit: int = Field(ge=1, le=10000)
+    start: int = Field(ge=0, le=10 * 1024 * 1024)
+    end: int = Field(ge=1, le=10 * 1024 * 1024)
+
+
 class AttachmentGenerateWithResearchParams(AttachmentGenerateDocxParams):
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
     page_source_ids: list[str] = Field(default_factory=list, max_length=30)
     page_excerpt_ranges: list[PageExcerptRange] = Field(default_factory=list, max_length=30)
+    document_excerpts: list[DocumentExcerptRef] = Field(default_factory=list, max_length=10)
 
 
 class AttachmentGenerateReportPairParams(AttachmentGenerateDocxParams):
@@ -480,6 +490,7 @@ class AttachmentGeneratePairWithResearchParams(AttachmentGenerateReportPairParam
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
     page_source_ids: list[str] = Field(default_factory=list, max_length=30)
     page_excerpt_ranges: list[PageExcerptRange] = Field(default_factory=list, max_length=30)
+    document_excerpts: list[DocumentExcerptRef] = Field(default_factory=list, max_length=10)
 
 
 class RuntimeWorkspaceCheckParams(BaseModel):

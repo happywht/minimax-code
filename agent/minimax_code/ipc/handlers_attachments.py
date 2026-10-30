@@ -32,9 +32,25 @@ def register_attachment_handlers(server):
                 if operation.startswith("generate_"):
                     source_ids = values.pop("page_source_ids")
                     excerpt_ranges = values.pop("page_excerpt_ranges")
+                    document_excerpts = values.pop("document_excerpts")
                     if excerpt_ranges and not source_ids:
                         raise ValueError("Excerpt ranges require page source IDs")
                     session_id = values.pop("session_id")
+                    if document_excerpts:
+                        if not session_id:
+                            raise ValueError("A project-bound session is required for document excerpts")
+                        from ..agent.tools.generate_report_docx import GenerateReportDocxTool
+                        from .host_session_gate import require_host_session
+                        await require_host_session(session_id)
+                        if await service.dao.service_id() != values["expected_service_id"]:
+                            raise ValueError("Attachment service identity changed")
+                        resolver = GenerateReportDocxTool(service.dao.db, session_id, values["project_id"])
+                        values["paragraphs"], values["sections"] = await resolver._document_excerpts(
+                            document_excerpts, values["paragraphs"], values["sections"])
+                        if await service.dao.service_id() != values["expected_service_id"]:
+                            raise ValueError("Attachment service identity changed")
+                        await require_host_session(session_id)
+                        values["expected_session"] = session_id
                     if source_ids:
                         if not session_id:
                             raise ValueError("A project-bound session is required for research sources")

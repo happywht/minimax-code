@@ -2,11 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
 import { Button, Input } from "../../ui";
-import type { AttachmentDocumentCursor, AttachmentDocumentResult, AttachmentOriginal } from "../../types/ipc";
+import type { AttachmentDocumentCursor, AttachmentDocumentResult, AttachmentOriginal, DocumentExcerptRef } from "../../types/ipc";
 
-export function AttachmentDocumentReader({ attachment, project, session, service, host, onInsertReport }: {
+// Textarea values normalize CRLF/CR to LF; server offsets count original Unicode characters.
+function originalOffset(text: string, textareaOffset: number): number {
+  let ui = 0, original = 0;
+  for (let i = 0; i < text.length && ui < textareaOffset;) {
+    const point = text.codePointAt(i)!;
+    if (point === 13 && text.charCodeAt(i + 1) === 10) { i += 2; original += 2; ui++; }
+    else { const width = point > 0xffff ? 2 : 1; i += width; original++; ui += width; }
+  }
+  return original;
+}
+
+export function AttachmentDocumentReader({ attachment, project, session, service, host, onInsertReport, onCite }: {
   attachment: AttachmentOriginal; project: string | null; session: string | null; service: string | null; host: string;
   onInsertReport?: (text: string, location: string) => void;
+  onCite?: (ref: DocumentExcerptRef, label: string) => void;
 }): JSX.Element | null {
   const [result, setResult] = useState<AttachmentDocumentResult | null>(null);
   const [unit, setUnit] = useState("1"), [busy, setBusy] = useState(false), [error, setError] = useState("");
@@ -14,6 +26,7 @@ export function AttachmentDocumentReader({ attachment, project, session, service
   const [searchCursor, setSearchCursor] = useState<(AttachmentDocumentCursor & { skipBefore?: boolean }) | null>(null);
   const [matches, setMatches] = useState<{ unit: number; location: string; start: number; end: number; snippet: string }[]>([]);
   const [searched, setSearched] = useState(false);
+  const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
   const epoch = useRef(0);
   const eligible = (attachment.recognized_type === "pdf" || attachment.recognized_type === "docx") &&
     attachment.declared_type === attachment.recognized_type;
@@ -32,7 +45,7 @@ export function AttachmentDocumentReader({ attachment, project, session, service
         sessions.currentSessionId === session && attachments.projectId === project && attachments.host === host &&
         attachments.serviceId === service && attachments.selected?.id === id && attachments.selected.sha256 === sha;
     };
-    setBusy(true); setError(""); setResult(null);
+    setBusy(true); setError(""); setResult(null); setSelection(null);
     try {
       const response = await typedIPC.readAttachmentDocument({ project_id: project, session_id: session,
         expected_service_id: service, attachment_id: id, expected_sha256: sha, ...cursor });
@@ -121,6 +134,14 @@ export function AttachmentDocumentReader({ attachment, project, session, service
     {result && <div><p className="text-xs text-ink-1">来源：{attachment.original_name} · {attachment.id} · SHA-256 {attachment.sha256} · 位置 {result.location} · 单元 {result.unit}/{result.unit_total} · 字符 {result.start}–{result.end} · {result.status === "empty" ? "未提取到文字" : "已提取文字"} · OCR 未尝试</p>
       {result.truncated && <p role="status">此位置的文字尚未读完，请读取下一片段。</p>}
       <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3">{result.text || "（此范围未提取到文字）"}</pre>
+      {onCite && result.text && <div><label>选择引用原文（最多 1000 字，按住鼠标选中）
+        <textarea aria-label="选择文档引用原文" readOnly value={result.text} rows={5} className="w-full rounded border border-line bg-surface-1 p-2"
+          onSelect={(event) => { const input = event.currentTarget; const start = result.start + originalOffset(result.text, input.selectionStart);
+            const end = result.start + originalOffset(result.text, input.selectionEnd);
+            setSelection(start < end ? { start, end } : null); }} /></label>
+        <Button type="button" variant="secondary" disabled={busy || !selection || selection.end - selection.start > 1000}
+          onClick={() => { if (selection) { onCite({ attachment_id: attachment.id, expected_sha256: attachment.sha256, unit: result.unit, ...selection }, `${attachment.original_name} · ${result.location} · 字符 ${selection.start}–${selection.end}`); setSelection(null); } }}>添加选中原文为报告资料引用</Button>
+      </div>}
       {onInsertReport && <Button type="button" variant="secondary" disabled={!result.text.trim() || busy} onClick={() => onInsertReport(result.text, `${result.location}，字符 ${result.start}–${result.end}${result.truncated ? "，此位置未读完" : ""}`)}>将此片段追加到报告正文</Button>}
       {!result.next_cursor && <p>已到可读取范围末尾；不代表覆盖原件全部内容。</p>}</div>}
   </div>;
