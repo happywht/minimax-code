@@ -10,6 +10,7 @@ import { RunTextArtifacts } from "../right-panel/RunTextArtifacts";
 import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 import { RunRecoveryActions } from "../right-panel/RunRecoveryActions";
 import { RunChangeEvidence } from "./RunChangeEvidence";
+import { ProjectRunBudget } from "./ProjectRunBudget";
 
 type Group = "attention" | "active" | "recent";
 const groupLabels: Record<Group, string> = { attention: "等待处理", active: "运行与排队", recent: "最近结果" };
@@ -225,6 +226,8 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
           {snapshot.steps.filter((step) => step.status === "failed").length > 25 && <p>仅显示前 25 项失败步骤，请打开所属会话查看全部记录。</p>}
           <p className="text-ink-2">步骤记录与配置命令的结果不证明交付质量；运行中的快照可能发生变化。</p>
         </div>
+        {snapshot.run.status === "budget_paused" && <ProjectRunBudget key={`${host}:${service}:${project}:${detail.session_id}:${detail.id}:${activeSession}`}
+          host={host} service={service} project={project!} session={detail.session_id} run={detail.id} />}
         <RunChangeEvidence key={`${service}:${detail.id}:${detail.session_id}`} steps={snapshot.steps}
           workspace={typeof snapshot.run.metadata?.workspace_snapshot === "string" ? snapshot.run.metadata.workspace_snapshot : null} />
         <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: detail.session_id, projectId: project!, serviceId: service }} />
@@ -234,6 +237,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
           (snapshot.run.status === "completed" && snapshot.run.metadata?.truncated === true && snapshot.run.metadata?.engine !== "codex")) &&
           <div className="mt-2 rounded border border-line p-2" aria-label="历史运行接续">
             <p className="text-sm font-medium">核对并接续此运行</p>
+            {snapshot.run.status === "budget_paused" && <p>先查看上方共享账本并核对未知责任，再进入原会话的受控恢复流程；不会自动恢复。</p>}
             {activeSession !== detail.session_id ? <Button type="button" size="sm" variant="secondary" onClick={() => {
               preserveDetailForSession.current = detail.session_id;
               if (!useSessionStore.getState().setCurrent(detail.session_id)) preserveDetailForSession.current = null;
