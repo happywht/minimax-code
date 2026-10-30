@@ -365,7 +365,11 @@ def register_agent_handlers(server: Any, *, dao: Any = None) -> None:
             entry = _ACTIVE_RUNS.get(run["id"])
             requested = bool(entry and entry.get("core"))
             if requested:
-                entry["core"].cancel()
+                cancel = entry.get("cancel")
+                if cancel is not None:
+                    cancel()
+                else:
+                    entry["core"].cancel()
         else:
             await ctx.reply_error(INVALID_PARAMS, "Unknown durable public agent run")
             return

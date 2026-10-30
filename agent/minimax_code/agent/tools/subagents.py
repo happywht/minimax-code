@@ -473,13 +473,29 @@ async def _drive_run_impl(
         **kw,
     )
 
+    inner: asyncio.Future[Any] | None = None
+    slot_wait: asyncio.Task[bool] | None = None
+    cancel_requested = False
+
+    def cancel_child() -> None:
+        nonlocal cancel_requested
+        cancel_requested = True
+        if handle.core is not None:
+            handle.core.cancel()
+        # These are child-owned tasks, not the caller's tool task. Cancelling
+        # the latter would also interrupt an unrelated parent turn.
+        if slot_wait is not None and not slot_wait.done():
+            slot_wait.cancel()
+        if inner is not None and not inner.done():
+            inner.cancel()
+
     # Register for IPC cancellation (agent.cancel_subagent) and
     # process-wide shutdown sweeps. Imported lazily: builtins pulls
     # in the whole agent stack, so a module-level import would loop.
     try:
         from ...ipc.builtins import _ACTIVE_RUNS
 
-        _ACTIVE_RUNS[run_id] = {"core": handle.core, "type": "subagent"}
+        _ACTIVE_RUNS[run_id] = {"core": handle.core, "type": "subagent", "cancel": cancel_child}
     except Exception:  # pragma: no cover — defensive
         logger.debug("subagent run not registered for cancellation", exc_info=True)
 
@@ -502,16 +518,22 @@ async def _drive_run_impl(
     handle.core.on_tool_call = _on_tool_call
     handle.core.on_tool_result = _on_tool_result
 
-    inner: asyncio.Future[Any] | None = None
     sem = _spawn_semaphore()
     slot_acquired = False
     try:
         await _emit_safe(emit, emit_event("started", 0.05, prompt[:80]))
 
         # M3 — wait for a concurrency slot before driving the agent loop.
-        if sem is not None:
-            await sem.acquire()
-            slot_acquired = True
+        if sem is not None and not cancel_requested:
+            slot_wait = asyncio.create_task(sem.acquire())
+            try:
+                await slot_wait
+                slot_acquired = True
+            except asyncio.CancelledError:
+                if slot_wait.done() and not slot_wait.cancelled():
+                    slot_acquired = slot_wait.result()
+                if not cancel_requested or asyncio.current_task().cancelling():
+                    raise
 
         # Wall-clock guard: shield the invoke so a timeout cancels the
         # core *cooperatively* (run() checkpoints return a partial
@@ -519,16 +541,23 @@ async def _drive_run_impl(
         # wind-down is bounded: an in-flight tool waits out its own
         # tool_timeout and an LLM stall its stall timeout. The clock
         # starts here — queueing for a slot does not burn the budget.
-        inner = asyncio.ensure_future(
-            runtime.invoke(handle, session_id=sub_session, request=prompt)
-        )
+        if not cancel_requested:
+            inner = asyncio.ensure_future(
+                runtime.invoke(handle, session_id=sub_session, request=prompt)
+            )
         wall = subagent_wall_clock_s()
         partial = False
         try:
-            if wall and wall > 0:
+            if inner is None:
+                result = {"text": "Cancelled before sub-agent execution.", "cancelled": True}
+            elif wall and wall > 0:
                 result = await asyncio.wait_for(asyncio.shield(inner), timeout=wall)
             else:
                 result = await inner
+        except asyncio.CancelledError:
+            if not cancel_requested or asyncio.current_task().cancelling():
+                raise
+            result = {"text": "Cancellation requested; inspect any effects already performed.", "cancelled": True}
         except TimeoutError:
             partial = True
             if handle.core is not None:
