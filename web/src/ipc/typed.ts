@@ -485,7 +485,7 @@ export interface TypedIPC {
   deleteWorkflow(id: string): Promise<{ deleted: boolean }>;
   enableWorkflow(id: string): Promise<WorkflowEntry>;
   disableWorkflow(id: string): Promise<WorkflowEntry>;
-  triggerWorkflow(id: string, context?: Record<string, unknown>): Promise<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[] }>;
+  triggerWorkflow(id: string, context?: Record<string, unknown>, skillExecution?: { skill_id: string; session_id: string; request: string; budget_tokens: number; idempotency_key: string; expected_service_id: string; expected_project_id: string | null }): Promise<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[]; skill_admission?: import("../types/ipc").RunAdmissionResult }>;
 
   // team (v0.8.0) — drive the Settings page's Teams tab.
   listTeams(): Promise<ListTeamsResult>;
@@ -1043,8 +1043,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<WorkflowEntry>("workflow.enable", { id }),
     disableWorkflow: (id) =>
       client.request<WorkflowEntry>("workflow.disable", { id }),
-    triggerWorkflow: (id, context) =>
-      client.request<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[] }>("workflow.trigger", { id, context }),
+    triggerWorkflow: (id, context, skillExecution) =>
+      client.request<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[]; skill_admission?: RunAdmissionResult }>("workflow.trigger", { id, context, ...(skillExecution ? { skill_execution: skillExecution } : {}) }),
 
     // team (v0.8.0)
     listTeams: () => client.request<ListTeamsResult>("team.list", {}),

@@ -12,6 +12,7 @@ import { formatDateTime } from "../../lib/time";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ErrorBanner, Field, Select, TabHeader } from "./fields";
 import { StepEditor } from "./workflows/StepEditor";
+import { SkillWorkflowRun } from "./workflows/SkillWorkflowRun";
 
 export { WorkflowsTab };
 
@@ -19,6 +20,7 @@ function WorkflowsTab(): JSX.Element {
   const { entries, total, loading, error, refresh, create, update, remove, enable, disable, trigger } = useWorkflowStore();
   const [showCreate, setShowCreate] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [skillRunId, setSkillRunId] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newTriggerType, setNewTriggerType] = useState<"webhook" | "schedule" | "agent_event">("webhook");
   const [newDescription, setNewDescription] = useState("");
@@ -172,7 +174,10 @@ function WorkflowsTab(): JSX.Element {
                     data-testid={`workflow-trigger-${wf.id}`}
                     aria-label={strings.settings.workflows.runAria(wf.name)}
                     title={strings.settings.workflows.runTitle}
-                    onClick={() => void trigger(wf.id)}
+                    onClick={() => {
+                      if (wf.steps.some((step) => step.type === "action" && step.action_type === "run-skill")) setSkillRunId(wf.id);
+                      else void trigger(wf.id);
+                    }}
                   >
                     <Play />
                   </IconButton>
@@ -201,6 +206,7 @@ function WorkflowsTab(): JSX.Element {
               {expandedId === wf.id && (
                 <StepEditor workflow={wf} onSave={(steps) => update(wf.id, { steps })} />
               )}
+              {skillRunId === wf.id && <SkillWorkflowRun key={wf.id} workflow={wf} onClose={() => setSkillRunId(null)} />}
             </div>
           ))}
         </div>

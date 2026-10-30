@@ -161,7 +161,7 @@ function ActionFields({
 
       {actionType === "run-skill" && (
         <>
-        <p className="text-[11px] text-status-error">工作流技能执行暂不可用；请直接运行技能。</p>
+        <p className="text-[11px] text-ink-2">手动执行仅支持包含一个技能步骤的工作流；运行时需指定会话、请求和预算。</p>
         <Field label={strings.settings.workflows.configSkillId} htmlFor={`step-${p}-skill`}>
           <Input
             id={`step-${p}-skill`}

@@ -2168,8 +2168,14 @@ the authorized skill execution boundary; non-push or empty-commit events are ski
 
 `workflow.trigger` 返回 `ok`、`steps_completed`、`steps_failed` 和 `errors`
 （失败步骤的零起始索引与消息）；只要有步骤失败，`ok` 为 `false`。
-工作流的 `run-skill` 步骤目前不可执行，会报告失败。直接调用 `skill.invoke`
-需要显式会话、请求和幂等键，并经过持久接单与工作区边界。
+手动技能运行仅支持恰好一个 `run-skill` 步骤，不执行混合步骤。请求需包含
+`skill_execution`：`skill_id`、`session_id`、`request`、正整数 `budget_tokens`、
+`idempotency_key`、`expected_service_id` 和 `expected_project_id`（可为 null）。
+服务端按工作流 ID 和触发键派生技能接单键，经 `skill.invoke` 的持久接单、
+工作区及权限边界处理。返回 `skill_admission: {run, created}`；接单不代表完成，
+应通过 `run.get` 查看状态和结果。同一会话中同键同请求可重试，变更请求会冲突；
+编辑或删除工作流、切换会话或服务后应先查看原运行，不能盲目重放。技能步骤
+不计入 `steps_completed`，该数不代表异步运行完成。其他旧工作流按原路径执行。
 
 
 ## 固定上下文调度契约（2026-10-26，Schema036）

@@ -16,6 +16,7 @@ workflow.trigger       Manually trigger a workflow run
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Any
@@ -193,6 +194,64 @@ async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[
     workflow = await dao.get(wid)
     if workflow is None:
         raise HandlerError(-32002, f"Workflow '{wid}' not found")
+
+    steps = workflow.get("steps") or []
+    skill_steps = [s for s in steps if s.get("type") == "action" and s.get("action_type") == "run-skill"]
+    if skill_steps or params.get("skill_execution") is not None:
+        if len(steps) != 1 or len(skill_steps) != 1:
+            raise HandlerError(-32602, "Skill workflows must contain exactly one run-skill step")
+        intent = params.get("skill_execution")
+        if not isinstance(intent, dict):
+            raise HandlerError(-32602, "Explicit skill execution inputs are required")
+        required = {"skill_id", "session_id", "request", "budget_tokens", "idempotency_key", "expected_service_id", "expected_project_id"}
+        if set(intent) != required:
+            raise HandlerError(-32602, "Skill execution inputs are incomplete or contain unknown fields")
+        skill_id = (skill_steps[0].get("config") or {}).get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip() or intent["skill_id"] != skill_id:
+            raise HandlerError(-32602, "Workflow skill changed or is missing; inspect the original run before retrying")
+        key = intent["idempotency_key"]
+        budget = intent["budget_tokens"]
+        if not isinstance(key, str) or not key.strip() or len(key) > 128:
+            raise HandlerError(-32602, "A non-empty idempotency key of at most 128 characters is required")
+        if type(budget) is not int or budget <= 0:
+            raise HandlerError(-32602, "A positive integer token budget is required")
+        if not isinstance(intent["expected_service_id"], str) or not intent["expected_service_id"].strip():
+            raise HandlerError(-32602, "Expected service identity is required")
+        if intent["expected_project_id"] is not None and not isinstance(intent["expected_project_id"], str):
+            raise HandlerError(-32602, "Expected project identity is invalid")
+
+        # Namespace a user's trigger key by workflow. Stable across retries;
+        # the skill admission layer rejects a changed request under that key.
+        digest = hashlib.sha256(json.dumps([wid, key], ensure_ascii=False).encode()).hexdigest()
+        skill_params = {**intent, "idempotency_key": f"workflow:{digest}", "admission_only": True}
+        handler = ctx.server._handlers.get("skill.invoke")
+        if handler is None:
+            raise HandlerError(-32004, "Skill admission is unavailable")
+
+        class CaptureContext:
+            server = ctx.server
+            request_id = ctx.request_id
+
+            async def reply(self, value: Any) -> None:
+                self.result = value
+
+            async def reply_error(self, code: int, message: str, data: Any = None) -> None:
+                self.error = (code, message, data)
+
+            async def emit(self, *args: Any, **kwargs: Any) -> None:
+                await ctx.emit(*args, **kwargs)
+
+            async def notify(self, *args: Any, **kwargs: Any) -> None:
+                await ctx.notify(*args, **kwargs)
+
+        capture = CaptureContext()
+        await handler(skill_params, capture)
+        if hasattr(capture, "error"):
+            raise HandlerError(*capture.error)
+        if not hasattr(capture, "result"):
+            raise HandlerError(-32603, "Skill admission result is unconfirmed; inspect the run before retrying")
+        return {"ok": True, "steps_completed": 0, "steps_failed": 0, "errors": [],
+                "skill_admission": capture.result}
 
     context = params.get("context") or {}
     engine = get_workflow_engine()
