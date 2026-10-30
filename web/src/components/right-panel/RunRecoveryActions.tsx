@@ -163,6 +163,21 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
           {step.error && <p>{step.error.slice(0, 500)}{step.error.length > 500 ? "…（截断）" : ""}</p>}
         </li>)}</ol>
         {review.snapshot.steps.length > 50 && <p>较早步骤未在此显示，请查看完整时间线。</p>}
+        {review.snapshot.steps.some((step) => step.payload?.source === "native_steer" && step.status !== "completed" && typeof step.payload.text === "string") && <div className="space-y-1 rounded border border-line p-2">
+          <p>以下运行中补充未确认生效；请先核对会话记录，避免重复。可将原文显式加入下方交接草稿，确认恢复前仍可编辑。</p>
+          {review.snapshot.steps.filter((step) => step.payload?.source === "native_steer" && step.status !== "completed" && typeof step.payload.text === "string").map((step) => {
+            const text = String(step.payload?.text ?? "");
+            return <div key={step.id} className="space-y-1 rounded bg-surface-1 p-2">
+              <p>状态：{step.status} · {step.summary || "未确认"}</p>
+              <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words">{text}</pre>
+              <Button type="button" size="sm" variant="secondary" disabled={pending || !!attempt} onClick={() => {
+                const addition = `${handoff.trim() ? "\n\n" : ""}待核对的运行中补充（是否生效未知）：\n${text}`;
+                if (handoff.length + addition.length > 4000) { setError("交接超过 4000 字，请手动摘录需要的内容。"); return; }
+                setHandoff(handoff + addition); setError(null);
+              }}>加入恢复交接草稿</Button>
+            </div>;
+          })}
+        </div>}
         <RunWorkspaceDiff run={review.snapshot.run} />
         <label className="flex items-start gap-2"><input type="checkbox" checked={reviewed} disabled={pending} onChange={(event) => setReviewed(event.target.checked)} />已核对记录、当前文件及可能的外部副作用。</label>
         <label className="block">恢复交接（可选）：记录已核实的操作、仍不确定的结果和剩余事项

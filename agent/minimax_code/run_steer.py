@@ -17,6 +17,7 @@ class SteerController:
         self.lock = asyncio.Lock()
         self.open = True
         self.pending = []
+        self.persisting = None
 
     async def accept(self, key: str, text: str):
         async with self.lock:
@@ -45,10 +46,12 @@ class SteerController:
                 message = {"role": "user", "content": format_interjection(step["payload"]["text"]),
                            "metadata": {"native_steer_step_id": step["id"]}}
                 messages.append(message)
+                self.persisting = step["id"]
                 await persist(self.job.session_id, message)
                 updated = await self.job.dao.complete_step(step["id"], status="completed",
                     summary="已加入后续模型上下文；不保证模型已处理")
                 self.pending.pop(0)
+                self.persisting = None
                 await self.emit("run.step.completed", {"run_id": self.job.run_id, "step": updated})
 
     async def close(self):
@@ -56,8 +59,14 @@ class SteerController:
             self.open = False
             while self.pending:
                 step = self.pending.pop(0)
+                uncertain = self.persisting == step["id"]
+                if uncertain:
+                    saved = await self.job.dao.get_step(step["id"])
+                    if saved and saved.get("status") == "completed":
+                        continue
                 updated = await self.job.dao.complete_step(step["id"], status="failed",
-                    summary="任务结束，未加入模型上下文", error="任务结束前没有可用的工具批次边界")
+                    summary="补充是否加入上下文未确认" if uncertain else "任务结束，未加入模型上下文",
+                    error="持久化期间中断，请核对会话记录" if uncertain else "任务结束前没有可用的工具批次边界")
                 await self.emit("run.step.completed", {"run_id": self.job.run_id, "step": updated})
 
 
