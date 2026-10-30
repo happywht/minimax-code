@@ -867,7 +867,32 @@ async def handle_agent_send_message(
         finally:
             try:
                 if children is not None:
-                    await children.drain(cancel=True)
+                    # The inner handler may fail or be cancelled before it
+                    # creates a preliminary receipt. Retain descendant evidence
+                    # for the service finalizer even on those early exits.
+                    interrupted = None
+                    try:
+                        descendants = await children.drain(cancel=True)
+                    except asyncio.CancelledError as exc:
+                        interrupted = exc
+                        # drain() has already waited for cleanup before raising;
+                        # retrieve its completed evidence without losing the
+                        # original cancellation.
+                        descendants = await children.drain(cancel=True)
+                    if descendants:
+                        early_exit = job.result is None
+                        if job.result is None:
+                            job.result = {"session_id": session_id, "message_id": job.message_id,
+                                          "run_id": job.run_id, "text": ""}
+                        verification = job.result.get("verification") or {}
+                        job.result["verification"] = {
+                            **verification,
+                            "children": descendants,
+                            "requires_review": early_exit or bool(verification.get("requires_review"))
+                            or any(child.get("requires_review") for child in descendants),
+                        }
+                    if interrupted is not None:
+                        raise interrupted
             finally:
                 process_scopes.close()
                 if schedule_token is not None:
