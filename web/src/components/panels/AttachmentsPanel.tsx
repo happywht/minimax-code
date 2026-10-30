@@ -6,6 +6,7 @@ import type { AttachmentParserStatus, DocxSection, DocumentExcerptRef, PageExcer
 import { AttachmentImageOcr } from "./AttachmentImageOcr";
 import { AttachmentImagePreview } from "./AttachmentImagePreview";
 import { AttachmentDocumentReader } from "./AttachmentDocumentReader";
+import { AttachmentVersions } from "./AttachmentVersions";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
 import { SearchableTextPreview } from "./SearchableTextPreview";
@@ -280,6 +281,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {state.selected.recognized_type === "xlsx" && state.selected.parser_status === "empty" && <p role="status">有界扫描未发现非空单元格；不等于文件没有其他内容。</p>}
       {state.selected.preview_truncated && <p role="status">{state.selected.recognized_type === "xlsx" ? "预览已达到单元格窗口、数量或 64 KiB / 2000 行展示上限，部分存储内容未显示；可下载完整原件。" : "预览已达到 64 KiB / 2000 行展示上限，后续内容未显示；可下载完整原件。"}</p>}
       <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
+      <AttachmentVersions key={`versions:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
       <label className="flex items-center gap-2 text-xs text-ink-1"><input type="checkbox" checked={includeExcerpt} disabled={addingContext} onChange={(event) => setIncludeExcerpt(event.target.checked)} />同时加入最多 1200 字解析摘录</label>
       <div className="flex flex-wrap gap-2"><Button type="button" disabled={state.busy || state.loading || addingContext || !sessionId || !state.serviceId} loading={addingContext} onClick={() => void addAttachmentContext()}>加入当前会话草稿</Button>
       <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
