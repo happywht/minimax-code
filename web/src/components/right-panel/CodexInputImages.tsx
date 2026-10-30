@@ -3,6 +3,7 @@ import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import type { AgentRun, RunInputImage } from "../../types/ipc";
 import { Button } from "../../ui";
+import { CODEX_IMAGE_HANDOFF, type CodexImageHandoff } from "../../lib/codexImageHandoff";
 
 /** Explicit, scoped read of one saved image; it never changes the composer. */
 export function CodexInputImages({ run }: { run: AgentRun }): JSX.Element | null {
@@ -13,6 +14,7 @@ export function CodexInputImages({ run }: { run: AgentRun }): JSX.Element | null
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const epoch = useRef(0);
+  const reusePending = useRef(false);
 
   useEffect(() => {
     const clear = () => { epoch.current++; setImage(null); setBusy(false); setNotice(""); };
@@ -33,7 +35,12 @@ export function CodexInputImages({ run }: { run: AgentRun }): JSX.Element | null
       if (state.currentSessionId !== session || state.currentProjectId !== project || bound !== project) changed = true;
     });
     const stop = ipc.onSideCar(() => { changed = true; });
-    const current = () => !changed && ticket === epoch.current && ipc.agentBaseUrl === host;
+    const current = () => {
+      const state = useSessionStore.getState();
+      return !changed && ticket === epoch.current && ipc.agentBaseUrl === host &&
+        state.currentSessionId === session && state.currentProjectId === project &&
+        (state.sessions.find((item) => item.id === session)?.project_id ?? null) === project;
+    };
     setBusy(true); setNotice(""); setImage(null);
     try {
       const identity = await typedIPC.getServiceIdentity();
@@ -56,10 +63,52 @@ export function CodexInputImages({ run }: { run: AgentRun }): JSX.Element | null
     }
   };
 
+  const addToDraft = async () => {
+    if (!image || busy || reusePending.current || !currentSession || currentSession !== run.session_id ||
+        currentProject !== boundProject || image.session_id !== currentSession || image.project_id !== boundProject) return;
+    if (!window.confirm(`将第 ${image.index + 1} 张已保存图片加入当前 Codex 草稿？图片不会自动发送，请随后核对图片及预算。`)) return;
+    reusePending.current = true;
+    const selected = image, session = currentSession, project = boundProject;
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl;
+    let changed = false;
+    const off = useSessionStore.subscribe((state) => {
+      const bound = state.sessions.find((item) => item.id === session)?.project_id ?? null;
+      if (state.currentSessionId !== session || state.currentProjectId !== project || bound !== project) changed = true;
+    });
+    const stop = ipc.onSideCar(() => { changed = true; });
+    const current = () => {
+      const state = useSessionStore.getState();
+      return !changed && ticket === epoch.current && ipc.agentBaseUrl === host &&
+        state.currentSessionId === session && state.currentProjectId === project &&
+        (state.sessions.find((item) => item.id === session)?.project_id ?? null) === project;
+    };
+    setBusy(true); setNotice("");
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current() || identity.service_id !== selected.service_id) throw new Error("服务或会话已变化，未加入图片。");
+      const fresh = await typedIPC.getRunInputImage({ run_id: run.id, session_id: session, project_id: project,
+        expected_service_id: selected.service_id, index: selected.index });
+      if (!current()) return;
+      if (fresh.run_id !== selected.run_id || fresh.session_id !== session || fresh.project_id !== project ||
+          fresh.service_id !== selected.service_id || fresh.index !== selected.index || fresh.count !== selected.count ||
+          fresh.media_type !== selected.media_type || fresh.data !== selected.data) throw new Error("原图片或绑定已变化，未加入草稿。");
+      const detail: CodexImageHandoff = { host, session, project,
+        image: { type: "image", media_type: fresh.media_type, data: fresh.data } };
+      window.dispatchEvent(new CustomEvent(CODEX_IMAGE_HANDOFF, { detail }));
+      setNotice(detail.result ?? "聊天输入区未就绪，图片未加入。");
+    } catch (error) {
+      if (current()) setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      off(); stop();
+      reusePending.current = false;
+      if (ticket === epoch.current) setBusy(false);
+    }
+  };
+
   return <div className="space-y-1 text-xs text-ink-2">
     <Button type="button" size="sm" variant="secondary" disabled={busy || currentSession !== run.session_id || currentProject !== boundProject || (run.metadata?.project_id ?? null) !== boundProject}
       onClick={() => void load(0)}>查看任务输入图片</Button>
-    <p>按需从当前服务读取原任务的图片，不会发送或加入草稿；旧记录或纯文本任务可能没有图片。</p>
+    <p>按需从当前服务读取原任务图片；可选择并确认加入当前草稿，不会自动发送。旧记录或纯文本任务可能没有图片。</p>
     {notice && <p role="status" className="break-words">{notice}</p>}
     {image && image.session_id === currentSession && image.project_id === currentProject && image.project_id === boundProject && <div className="space-y-1">
       <p>第 {image.index + 1} / {image.count} 张 · {image.media_type}</p>
@@ -67,7 +116,8 @@ export function CodexInputImages({ run }: { run: AgentRun }): JSX.Element | null
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" variant="secondary" disabled={busy || image.index === 0} onClick={() => void load(image.index - 1)}>上一张</Button>
         <Button type="button" size="sm" variant="secondary" disabled={busy || image.index + 1 >= image.count} onClick={() => void load(image.index + 1)}>下一张</Button>
-        <Button type="button" size="sm" variant="secondary" onClick={() => { epoch.current++; setImage(null); setNotice(""); }}>关闭图片</Button>
+        <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void addToDraft()}>加入当前草稿</Button>
+        <Button type="button" size="sm" variant="secondary" onClick={() => { epoch.current++; setImage(null); setBusy(false); setNotice(""); }}>关闭图片</Button>
       </div>
     </div>}
   </div>;

@@ -29,6 +29,7 @@ import { ResearchTaskTemplate } from "./ResearchTaskTemplate";
 import { QueuedTaskInput } from "./QueuedTaskInput";
 import { ProjectAttachmentImport } from "./ProjectAttachmentImport";
 import { strings } from "../../ui/strings";
+import { CODEX_IMAGE_HANDOFF, type CodexImageHandoff } from "../../lib/codexImageHandoff";
 
 function serviceLabel(value: string): string {
   try { return new URL(value).origin; } catch { return "未知"; }
@@ -89,6 +90,26 @@ export function MessageInput({
   const attachments = useAttachments(draft.ref, draft.setValue);
   const latestAttachments = useRef(attachments);
   latestAttachments.current = attachments;
+  const liveDraft = useRef(draft);
+  liveDraft.current = draft;
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const detail = (event as CustomEvent<CodexImageHandoff>).detail;
+      const state = useSessionStore.getState();
+      const current = state.sessions.find((item) => item.id === state.currentSessionId);
+      const status = useChat.getState().status;
+      if (!detail || ipc.agentBaseUrl !== detail.host || state.currentSessionId !== detail.session ||
+          state.currentProjectId !== detail.project || (current?.project_id ?? null) !== detail.project ||
+          current?.engine !== "codex" || liveDraft.current.getCurrent().id !== detail.session ||
+          status === "sending" || status === "streaming" || status === "cancelling") {
+        if (detail) detail.result = "当前服务、会话、项目或任务状态已变化，未加入图片。";
+        return;
+      }
+      detail.result = latestAttachments.current.addSavedImage(detail.image);
+    };
+    window.addEventListener(CODEX_IMAGE_HANDOFF, receive);
+    return () => window.removeEventListener(CODEX_IMAGE_HANDOFF, receive);
+  }, []);
   const voice = useVoiceInput(draft.setValue);
   const mention = useMentionPicker({
     loadAgents,

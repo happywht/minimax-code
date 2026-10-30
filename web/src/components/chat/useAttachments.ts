@@ -30,6 +30,7 @@ export interface ComposerAttachments {
   handleImageSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
   removeFile: (index: number) => void;
   removeImage: (index: number) => void;
+  addSavedImage: (image: ContentPartImage) => string;
   handleDragOver: (e: React.DragEvent) => void;
   handleDragLeave: (e: React.DragEvent) => void;
   handleDrop: (e: React.DragEvent) => void;
@@ -45,12 +46,14 @@ export function useAttachments(
   const imageInputRef = useRef<HTMLInputElement>(null);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [attachedImages, setAttachedImages] = useState<ContentPartImage[]>([]);
+  const imagesRef = useRef<ContentPartImage[]>([]);
+  const pendingImages = useRef(0);
   const [dragging, setDragging] = useState(false);
   const generation = useRef(0);
 
   useEffect(() => {
     let { currentSessionId: session, currentProjectId: project } = useSessionStore.getState();
-    const reset = () => { generation.current += 1; setAttachedFiles([]); setAttachedImages([]); };
+    const reset = () => { generation.current += 1; imagesRef.current = []; setAttachedFiles([]); setAttachedImages([]); };
     const unsubscribe = useSessionStore.subscribe((state) => {
       if (state.currentSessionId !== session || state.currentProjectId !== project) {
         session = state.currentSessionId; project = state.currentProjectId; reset();
@@ -111,17 +114,22 @@ export function useAttachments(
 
   const processImageFiles = useCallback(
     (files: File[]) => {
-      const remaining = MAX_IMAGES - attachedImages.length;
+      const remaining = MAX_IMAGES - imagesRef.current.length - pendingImages.current;
       if (remaining <= 0) {
         toast.info("图片数量上限", `最多同时附加 ${MAX_IMAGES} 张图片`);
         return;
       }
       const batch = files.slice(0, remaining);
+      if (files.length > remaining) {
+        toast.info("图片数量上限", `仅选择前 ${remaining} 张图片；其余图片未加入。`);
+      }
       for (const file of batch) {
         if (!file.type.startsWith("image/")) continue;
         const currentGeneration = generation.current;
         const reader = new FileReader();
+        pendingImages.current += 1;
         reader.onload = () => {
+          pendingImages.current -= 1;
           if (generation.current !== currentGeneration) {
             toast.info("图片未插入", "读取期间会话、项目或连接发生变化，或草稿已提交；请重新选择图片。");
             return;
@@ -130,16 +138,20 @@ export function useAttachments(
           // dataUrl is "data:<media>;base64,<data>" — extract base64 part
           const base64 = dataUrl.split(",")[1] || "";
           const mediaType = file.type || "image/png";
-          setAttachedImages((prev) => {
-            if (prev.length >= MAX_IMAGES) return prev;
-            return [...prev, { type: "image", media_type: mediaType, data: base64 }];
-          });
+          if (imagesRef.current.length >= MAX_IMAGES) {
+            toast.info("图片未插入", "图片数量已达上限，请移除后重新选择。");
+            return;
+          }
+          imagesRef.current = [...imagesRef.current, { type: "image", media_type: mediaType, data: base64 }];
+          setAttachedImages(imagesRef.current);
         };
-        reader.onerror = () => toast.error(strings.chat.toast.imageReadFailed, file.name);
-        reader.readAsDataURL(file);
+        reader.onerror = () => { pendingImages.current -= 1; toast.error(strings.chat.toast.imageReadFailed, file.name); };
+        reader.onabort = () => { pendingImages.current -= 1; };
+        try { reader.readAsDataURL(file); }
+        catch { pendingImages.current -= 1; toast.error(strings.chat.toast.imageReadFailed, file.name); }
       }
     },
-    [attachedImages.length],
+    [],
   );
 
   const handleFileSelect = useCallback(
@@ -166,12 +178,28 @@ export function useAttachments(
   }, []);
 
   const removeImage = useCallback((index: number) => {
-    setAttachedImages((prev) => prev.filter((_, i) => i !== index));
+    imagesRef.current = imagesRef.current.filter((_, i) => i !== index);
+    setAttachedImages(imagesRef.current);
+  }, []);
+
+  const addSavedImage = useCallback((image: ContentPartImage): string => {
+    if (pendingImages.current) return "本地图片仍在读取，请完成后重试。";
+    const images = imagesRef.current;
+    if (images.length >= MAX_IMAGES) return "草稿图片已达 5 张上限；请先移除一张。";
+    const bytes = (data: string) => Math.floor(data.length * 3 / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+    if ([...images, image].some((item) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(item.media_type)) ||
+        [...images, image].reduce((total, item) => total + bytes(item.data), 0) > 4 * 1024 * 1024) {
+      return "加入后图片格式或总大小超出 Codex 限制；请先调整草稿图片。";
+    }
+    imagesRef.current = [...images, image];
+    setAttachedImages(imagesRef.current);
+    return "已加入当前草稿，尚未发送；请核对图片和预算。";
   }, []);
 
   const clearAll = useCallback(() => {
     generation.current += 1;
     setAttachedFiles([]);
+    imagesRef.current = [];
     setAttachedImages([]);
   }, []);
 
@@ -212,6 +240,7 @@ export function useAttachments(
     handleImageSelect,
     removeFile,
     removeImage,
+    addSavedImage,
     handleDragOver,
     handleDragLeave,
     handleDrop,
