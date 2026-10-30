@@ -977,7 +977,9 @@ a new request with a recovery handoff and `resumed_from_id`; the original record
 stays intact. For Native runs, a source may have only one direct recovery or
 manual continuation child, including one created before this rule was introduced.
 Admission checks this in the same transaction as the child creation. A matching
-`run.resume` retry with the same idempotency key returns the existing admission;
+`run.resume` retry with the same idempotency key returns the existing admission only
+when its source and cumulative budget match the saved admission; a different or
+unverifiable recovery budget is rejected rather than silently reusing the key;
 a different key cannot create another branch from that source. `agent.continue_run`
 uses a source-specific key, so its matching retries likewise return the existing
 continuation. To continue after that child ends, select the child as the source,

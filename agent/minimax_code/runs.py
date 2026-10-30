@@ -40,6 +40,23 @@ def _workspace_overlaps(first: str, second: str) -> bool:
     return common == left or common == right
 
 
+def validate_recovery_retry(run: dict[str, Any], source_id: str | None,
+                            budget_tokens: int | None) -> None:
+    """An idempotent recovery must retain its source and admitted family cap."""
+    from .storage.dao.runs import RequestConflictError
+
+    saved_source = run.get("resumed_from_id")
+    if saved_source != source_id:
+        raise RequestConflictError("idempotency_key belongs to a different recovery source")
+    if source_id is not None:
+        metadata = run.get("metadata")
+        budget = metadata.get("budget") if isinstance(metadata, dict) else None
+        if not isinstance(budget, dict) or "limit_tokens" not in budget:
+            raise RequestConflictError("Existing recovery budget is unavailable; inspect the run")
+        if budget["limit_tokens"] != budget_tokens:
+            raise RequestConflictError("idempotency_key belongs to a different cumulative budget")
+
+
 @dataclass(eq=False)
 class RunJob:
     session_id: str
@@ -235,6 +252,7 @@ class RunService:
                         else:
                             existing = await dao.find_request(session_id, request_key, request)
                         if existing is not None:
+                            validate_recovery_retry(existing, resumed_from_id, budget_tokens)
                             return existing, self._by_run.get(existing["id"]), False
 
                     # Reservations cover queued jobs as well as execution and
@@ -253,6 +271,7 @@ class RunService:
                         request_key=request_key, resumed_from_id=resumed_from_id,
                         **({"continuation": True} if continuation else {}))
                     if not created:
+                        validate_recovery_retry(run, resumed_from_id, budget_tokens)
                         return run, self._by_run.get(run["id"]), False
                     job = RunJob(session_id, run_id=run["id"], dao=dao,
                                  message_id=run["assistant_message_id"], workspace=workspace,

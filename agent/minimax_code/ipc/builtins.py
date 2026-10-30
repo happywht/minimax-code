@@ -663,6 +663,12 @@ async def handle_agent_send_message(
         return
     try:
         existing = await dao.find_request(session_id, key, request) if key is not None else None
+        if existing is not None:
+            from ..runs import validate_recovery_retry
+
+            retry_budget = (internal_schedule["context"]["budget_tokens"]
+                            if internal_schedule is not None else params.get("budget_tokens"))
+            validate_recovery_retry(existing, resumed_from_id, retry_budget)
     except RequestConflictError as exc:
         await ctx.reply_error(-32602, str(exc))
         return
