@@ -9,11 +9,11 @@
  * to local mode — the task and its messages are kept, only the
  * directory is released.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, RefreshCw, Trash2 } from "lucide-react";
-import { Button, EmptyState, IconButton, Spinner } from "../../ui";
+import { Button, DiffLines, EmptyState, IconButton, Spinner } from "../../ui";
 import { strings } from "../../ui/strings";
-import { typedIPC } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import type { Session } from "../../types/ipc";
 import { TabHeader } from "./fields";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
@@ -26,6 +26,7 @@ function WorktreesTab(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cleaningId, setCleaningId] = useState<string | null>(null);
+  const [review, setReview] = useState<Session | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -146,11 +147,52 @@ function WorktreesTab(): JSX.Element {
                 >
                   {cleaningId === s.id ? <Spinner size={12} /> : <Trash2 />}
                 </IconButton>
+                <Button size="sm" variant="secondary" disabled={cleaningId !== null || s.engine !== "native"} onClick={() => setReview(s)}>审阅未提交差异</Button>
               </li>
             );
           })}
         </ul>
       )}
+      {review && <WorktreeChanges key={review.id} session={review} onClose={() => setReview(null)} />}
+      <p className="text-xs text-ink-2">未提交差异审阅支持 Native 工作树会话；其他引擎请使用对应会话的审阅入口。</p>
     </section>
   );
+}
+
+function WorktreeChanges({ session, onClose }: { session: Session; onClose: () => void }): JSX.Element {
+  const [value, setValue] = useState<{ working: string; staged: string } | null>(null);
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const epoch = useRef(0);
+  useEffect(() => { const stop = ipc.onSideCar(() => { ++epoch.current; setValue(null); setBusy(false); setError("连接变化，请重新读取。"); }); return () => { ++epoch.current; stop(); }; }, []);
+  const load = async () => {
+    if (busy || !session.workspace_path) return;
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl;
+    setBusy(true); setValue(null); setError("");
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      const before = await typedIPC.getSession(session.id);
+      const working = await typedIPC.gitDiff({ scope: "working", session_id: session.id });
+      const staged = await typedIPC.gitDiff({ scope: "staged", session_id: session.id });
+      const after = await typedIPC.getSession(session.id);
+      const identityAfter = await typedIPC.getServiceIdentity();
+      if (ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
+      const matches = (row: Session) => row.id === session.id && row.project_id === session.project_id && row.engine === "native" &&
+        row.workspace_mode === "worktree" && row.workspace_path === session.workspace_path && !row.archived;
+      if (!identity.service_id || identity.service_id !== identityAfter.service_id || !matches(before.session) || !matches(after.session) ||
+          working.session_id !== session.id || staged.session_id !== session.id || working.workspace !== session.workspace_path ||
+          staged.workspace !== session.workspace_path || working.scope !== "working" || staged.scope !== "staged")
+        throw new Error("服务或工作树会话绑定已变化，请刷新列表。");
+      setValue({ working: working.diff, staged: staged.diff });
+    } catch (failure) { if (ticket === epoch.current) setError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
+  return <div className="space-y-2 rounded border border-line p-3 text-xs" aria-label="工作树未提交差异">
+    <p className="break-all">工作树会话：{session.id} · {session.workspace_path}</p>
+    <p>仅显示读取时已跟踪文件的未暂存和已暂存差异；不包含未跟踪文件或已提交变更，不能作为完整合并预览。读取不会合并、提交或验证。</p>
+    <Button size="sm" disabled={busy} onClick={() => void load()}>读取／刷新差异</Button>{" "}
+    <Button size="sm" variant="ghost" disabled={busy} onClick={onClose}>关闭</Button>
+    {error && <p role="alert">读取失败：{error}</p>}
+    {value && <><details open><summary>未暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.working} emptyText="无已跟踪文件差异" /></div></details>
+      <details><summary>已暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.staged} emptyText="无已暂存差异" /></div></details></>}
+  </div>;
 }
