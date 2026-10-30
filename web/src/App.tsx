@@ -34,6 +34,7 @@ import type { SettingsTab } from "./components/settings/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
 import type { CommandPaletteHandle } from "./components/layout/CommandPalette";
 import { tunnelPage } from "./ipc/tunnelPage";
+import { WorkbenchNavigator } from "./components/layout/WorkbenchNavigator";
 
 const MobilePairingModal = lazy(() =>
   import("./components/modals/MobilePairingModal").then((module) => ({ default: module.MobilePairingModal })),
@@ -201,7 +202,7 @@ export default function App() {
     if (next === "skills" || next === "settings" || next === "scheduled" || next === "workflows" || next === "webhooks" || next === "agents" || next === "artifacts" || next === "attachments" || next === "office" || next === "research" || next === "run-artifacts" || next === "task-dashboard") {
       if (next === "run-artifacts") setDeliveryRunTarget(null);
       if (next === "settings") setSettingsInitialTab("models");
-      if (next === "scheduled" || next === "workflows" || next === "webhooks") setSettingsInitialTab(next);
+      if (next === "scheduled" || next === "workflows" || next === "webhooks") { setSettingsInitialTab(next); if (next === "scheduled") setScheduleTarget(null); }
       if (next === "agents") setSettingsInitialTab("agents");
       setOverlayView(next);
       return;
@@ -434,7 +435,9 @@ export default function App() {
               </div>
             </div>
           )}
-          <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+          <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            <WorkbenchNavigator view={overlayView ?? view} connection={connState} onNavigate={handleViewChange} />
+            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
             {view === "preview" ? (
               <Suspense fallback={<DeferredPanelFallback />}>
                 <PreviewPanel onClose={() => setView("chat")} />
@@ -474,6 +477,7 @@ export default function App() {
                 </Suspense>
               </WorkspaceOverlay>
             )}
+            </div>
           </main>
           <div className="hidden lg:block">
             <RightPanel timelineTarget={timelineTarget} onClearTimelineTarget={() => setTimelineTarget(null)} />

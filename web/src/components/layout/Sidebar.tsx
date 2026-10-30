@@ -98,7 +98,7 @@ export function Sidebar({
     if (view === "task-dashboard") setNavigationGroup("projects");
     else if (["artifacts", "attachments", "office", "research", "run-artifacts"].includes(view)) setNavigationGroup("deliveries");
     else if (["scheduled", "workflows", "webhooks"].includes(view)) setNavigationGroup("automation");
-    else if (["skills", "agents", "preview"].includes(view)) setNavigationGroup("work");
+    else if (["chat", "skills", "agents", "preview"].includes(view)) setNavigationGroup("work");
   }, [view]);
   const [historyQuery, setHistoryQuery] = useState("");
   const [batchMoveOpen, setBatchMoveOpen] = useState(false);
