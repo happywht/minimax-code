@@ -46,6 +46,9 @@ export function ScheduleContextFields({ value, onChange }: { value: ScheduleCont
     </select></label>
     <label>推理强度<Input aria-label="调度推理强度" value={value.reasoning_effort ?? ""} onChange={(event) => patch({ reasoning_effort: event.target.value || null })} /></label>
     <label>时区<Input aria-label="调度时区" value={value.timezone} onChange={(event) => patch({ timezone: event.target.value })} /></label>
+    <label className="col-span-2">服务重启时的未接单到期周期<select aria-label="重启后错过周期处理" className="block w-full bg-surface-2" value={value.restart_missed_policy ?? "coalesce"} onChange={(event) => patch({ restart_missed_policy: event.target.value as "coalesce" | "skip" })}>
+      <option value="coalesce">合并补跑一次（默认）</option><option value="skip">跳过并等待下一次到期</option>
+    </select><span className="text-ink-2">只处理重启时没有当前发生的计划；已接单或待处理的发生仍按原流程处理。服务运行中因任务占用错过的周期仍合并补跑。跳过不会生成发生记录。</span></label>
   </div>;
 }
 
@@ -53,8 +56,9 @@ export function ScheduleSnapshot({ job }: { job: ScheduledJob }): JSX.Element {
   const context = job.context;
   return <div className="px-3 text-[11px] text-ink-2" data-testid={`schedule-snapshot-${job.id}`}>
     <p>r{job.revision ?? 1} · {label(job.binding_state ?? "needs_rebind")} · {job.binding_reason}</p>
+    {context && <p>重启时未接单到期周期：{context.restart_missed_policy === "skip" ? "跳过" : "合并补跑一次"}（仅无当前发生时生效）</p>}
     <p>{job.enabled && job.binding_state === "ready" ? "持久到期游标" : "已保存的到期游标（当前不代表会运行）"}：{scheduleTime(job.next_run_at, context?.timezone)}</p>
-    {job.enabled && job.binding_state === "ready" && <p>到期并不保证立即开始；当前运行未结束时不会重叠，服务恢复后多个错过周期合并为一次。</p>}
+    {job.enabled && job.binding_state === "ready" && <p>到期并不保证立即开始；当前运行未结束时不会重叠。重启时是否跳过未接单到期周期取决于上述设置。</p>}
     {job.last_run_at != null && <p>最近发生状态结算：{scheduleTime(job.last_run_at, context?.timezone)}</p>}
     {context && <p>Local / Native · {context.workspace} · {context.provider_id} / {context.model} · {context.reasoning_effort ?? "默认强度"} · {label(context.mode)} · {context.budget_tokens} tokens · {context.timezone}<br />权限：{context.permission_rules?.map((rule) => `${rule.tool_pattern}:${rule.action}`).join("，") || "逐次询问"} · 校验：{context.validate_command || "未配置"} · 自动任务钩子已禁用</p>}
   </div>;

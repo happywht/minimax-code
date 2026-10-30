@@ -347,6 +347,7 @@ class ScheduleContext(_Base):
     hooks_policy: Literal["disabled"] = "disabled"
     validate_command: str = ""
     timezone: str = "Asia/Shanghai"
+    restart_missed_policy: Literal["coalesce", "skip"] = "coalesce"
 
 
 class ScheduleRunNowParams(BaseModel):

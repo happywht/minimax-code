@@ -136,6 +136,10 @@ class JobScheduler:
                 await asyncio.sleep(0)
                 self._aps = AsyncIOScheduler(executors={"default": {"type": "asyncio"}})
                 self._aps_shutdown_issued = False
+            # Advance explicitly opted-in idle jobs before any cron wakeup or
+            # startup catch-up can claim them. Existing occurrences are never
+            # discarded or replayed by this policy.
+            await self._skip_restart_due()
             if not self._aps.running:
                 self._aps.start()
             self._started = True
@@ -342,6 +346,27 @@ class JobScheduler:
         for row in await self._dao.due():
             if not row.get("deleted_at") and row.get("binding_state") == "ready" and not row.get("active_occurrence_id"):
                 self._spawn_fire(row,source="cron")
+
+    async def _skip_restart_due(self):
+        """Skip overdue, unclaimed work for opted-in idle jobs at startup only."""
+        from datetime import UTC, datetime
+
+        cutoff = datetime.now(UTC).replace(microsecond=0)
+        cutoff_text = cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
+        async with self._admission_lock:
+            for row in await self._dao.due(now=cutoff_text):
+                if (row.get("deleted_at") or row.get("binding_state") != "ready"
+                        or row.get("active_occurrence_id")
+                        or (row.get("context") or {}).get("restart_missed_policy", "coalesce") != "skip"):
+                    continue
+                next_due = _next_due(row["cron_expr"], row["timezone"], now=cutoff)
+                async with self._db.transaction() as conn:
+                    await conn.execute(
+                        "UPDATE scheduled_jobs SET next_run_at=? WHERE id=? AND revision=? "
+                        "AND next_run_at=? AND enabled=1 AND deleted_at IS NULL "
+                        "AND binding_state='ready' AND active_occurrence_id IS NULL",
+                        (next_due, row["id"], row["revision"], row["next_run_at"]),
+                    )
 
     # ------------------------------------------------------------------
     # Internal: APScheduler plumbing

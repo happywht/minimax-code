@@ -2238,7 +2238,7 @@ the authorized skill execution boundary; non-push or empty-commit events are ski
 command、self_evolution、use_runservice:false、混合或未知字段在创建、修改、启用、手动触发及实际分派路径拒绝。
 旧任务升级后 disabled/needs_rebind，原 payload 保留供导出/查看/删除；不会自动转成可执行提示词。
 
-schedule.create/update 的 context 输入选择 project_id、provider_id/model（必须一起指定，均省略则在此刻固定当前选择）、reasoning_effort、mode(chat/execute/plan)、budget_tokens、timezone。
+schedule.create/update 的 context 输入选择 project_id、provider_id/model（必须一起指定，均省略则在此刻固定当前选择）、reasoning_effort、mode(chat/execute/plan)、budget_tokens、timezone，以及 restart_missed_policy（coalesce 默认或 skip）。
 输入也可回传已知的 v1 快照字段以支持编辑；服务端重新捕获只读字段，不采用其值。未知顶层字段和未知 context 字段（包括 execution_profile_id、execution_target）均拒绝，已有快照携带未知字段时启用和分派也会拒绝。调度仍只支持受信宿主 Local / Native，不支持受限容器或无人值守容器执行；请求受限目标不能被忽略后转为宿主执行。
 返回的 context v1 固定 canonical workspace+目录身份、local/native、provider ID/协议/endpoint 配置摘要、模型/强度、顺序权限规则及默认策略版本、hooks_policy=disabled、正 token 上限、校验命令及时区。
 密钥不序列化。正预算来自显式值或 MINIMAX_CODE_SCHEDULED_BUDGET_TOKENS / MINIMAX_CODE_RUN_BUDGET_TOKENS；无正上限拒绝。全局模型切换不改变任务，Provider 配置/目录身份漂移及缺失密钥均阻止推理。
@@ -2249,7 +2249,7 @@ schedule.run_now 必须提交 job_id、idempotency_key、expected_revision，返
 同键同 revision 重放先于启停/删除/配置检查；不同 revision 冲突。客户端丢回执后保留原 key+revision。另一个手动意图在同任务租约占用时返回 busy，不积压。
 
 每次发生创建独立项目会话及任务，run 使用 schedule:occurrence_id 稳定键；用户消息、run、发生记录关联和 tasks 表的 run_id 原子提交。
-Cron 身份是 job/revision/持久 UTC scheduled_for；SQLite 原子推进 next_run_at，遗漏多个周期合并一次并记录 coalesced_through，下一 due 严格晚于当前时刻。
+Cron 身份是 job/revision/持久 UTC scheduled_for；SQLite 原子推进 next_run_at，遗漏多个周期合并一次并记录 coalesced_through，下一 due 严格晚于当前时刻。选择 skip 的计划在服务启动时，若启用、绑定就绪且没有当前发生，原子推进启动时刻及之前已到期的游标到之后的下一周期，不创建发生记录；已有发生仍按原恢复规则处理，运行中占用引起的积压仍合并补跑。新字段写入上下文后，旧版本可能拒绝该上下文，回退须使用兼容版本或升级前备份。
 
 `schedule.list` 返回的 `next_run_at` 和 `last_run_at` 是持久 UTC ISO 字符串或 null；前者为待处理到期游标，不保证实际开始时间，后者为最近发生状态结算时间。`schedule.occurrences` 的 `scheduled_for` 和 `coalesced_through` 是该次 cron 接单时的最早到期与检查截止边界，并非各周期均已执行的回执。客户端可按发生记录的快照时区显示并保留原始时间。
 同一任务跨 revision 独占租约，覆盖排队、授权、工具、校验及清理。停用/删除后未接单 work 不启动，正在运行的 work 仍可清理/取消；重新启用从未来开始。

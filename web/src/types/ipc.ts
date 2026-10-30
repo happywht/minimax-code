@@ -464,6 +464,7 @@ export interface ScheduleContext {
   mode: "chat" | "execute" | "plan";
   budget_tokens: number;
   timezone: string;
+  restart_missed_policy?: "coalesce" | "skip";
   validate_command?: string;
   permission_rules?: { tool_pattern: string; action: string }[];
 }
