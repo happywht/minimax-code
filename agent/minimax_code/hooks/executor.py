@@ -12,11 +12,23 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
 
-from ..execution import communicate_bounded, spawn_exec
+from ..execution import communicate_bounded, spawn_exec, terminate_tree
 from .types import HookConfig, HookContext, HookDecision
 
 logger = logging.getLogger(__name__)
+_hook_cancel: ContextVar[asyncio.Event | None] = ContextVar("hook_cancel", default=None)
+
+
+@contextmanager
+def hook_cancellation_scope(event: asyncio.Event):
+    token = _hook_cancel.set(event)
+    try:
+        yield
+    finally:
+        _hook_cancel.reset(token)
 
 
 @dataclass
@@ -40,6 +52,9 @@ class HookExecutor:
     """Runs hooks as child processes. Always fail-open."""
 
     async def run(self, hook: HookConfig, context: HookContext) -> HookExecutionResult:
+        cancel_event = _hook_cancel.get()
+        if cancel_event is not None and cancel_event.is_set():
+            return HookExecutionResult(error="hook cancelled before start")
         stdin_payload = (
             context.model_dump_json().encode("utf-8") if hook.pass_stdin else None
         )
@@ -56,8 +71,34 @@ class HookExecutor:
             label = hook.command[0] if hook.command else "<empty>"
             logger.warning("hook %s failed to spawn: %s", label, exc)
             return HookExecutionResult(error=f"spawn failed: {exc}")
+        capture_started = False
+
+        async def capture():
+            nonlocal capture_started
+            capture_started = True
+            return await communicate_bounded(proc, input=stdin_payload, timeout=hook.timeout, limit=64 * 1024)
+
         try:
-            captured = await communicate_bounded(proc, input=stdin_payload, timeout=hook.timeout, limit=64 * 1024)
+            if cancel_event is None:
+                captured = await capture()
+            else:
+                owned = asyncio.create_task(capture())
+                cancelled = asyncio.create_task(cancel_event.wait())
+                try:
+                    done, _ = await asyncio.wait((owned, cancelled), return_when=asyncio.FIRST_COMPLETED)
+                    if cancelled in done:
+                        return HookExecutionResult(error="hook cancelled; side effects may have occurred")
+                    captured = owned.result()
+                finally:
+                    for task in (owned, cancelled):
+                        if not task.done():
+                            task.cancel()
+                    async def cleanup():
+                        await asyncio.gather(owned, cancelled, return_exceptions=True)
+                        if not capture_started:
+                            await terminate_tree(proc)
+                    from ..budget_ledger import owned_cleanup
+                    await owned_cleanup(cleanup())
             stdout_b, stderr_b = captured.stdout, captured.stderr
         except TimeoutError:
             logger.warning("hook %s timed out after %ss", hook.command, hook.timeout)

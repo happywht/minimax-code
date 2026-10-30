@@ -1829,7 +1829,7 @@ async def _handle_agent_send_message(
             logger.debug("unregister_gater failed", exc_info=True)
         # Fire session_end hooks (R10) symmetrically — even on failure —
         # so plugins see the complete run lifecycle. Fail-open.
-        if hook_manager is not None:
+        if hook_manager is not None and not job.cancel_requested and not core.cancelled:
             try:
                 await hook_manager.fire_session_end(session_id)
             except Exception:

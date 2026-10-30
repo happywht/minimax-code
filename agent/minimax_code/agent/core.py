@@ -791,7 +791,10 @@ class AgentCore:
 
             budget_token = publish_current_budget(self.budget)
         try:
-            return await self._run_turn(session_id, user_message)
+            from ..hooks.executor import hook_cancellation_scope
+
+            with hook_cancellation_scope(self._cancel):
+                return await self._run_turn(session_id, user_message)
         finally:
             if budget_token is not None:
                 from ..budget import reset_current_budget
@@ -1782,7 +1785,7 @@ class AgentCore:
         # post_tool_use hooks — notification (fail-open). A bad hook
         # must never corrupt the real tool result already in hand.
         policy_denied = (result.metadata or {}).get("permission") == "policy_changed"
-        if self.hooks is not None and name and not policy_denied:
+        if self.hooks is not None and name and not policy_denied and not self.cancelled:
             try:
                 await self.hooks.fire_post_tool_use(
                     self._current_session_id, name, args, result.to_dict()
