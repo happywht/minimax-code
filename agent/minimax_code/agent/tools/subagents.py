@@ -41,6 +41,20 @@ def _spawn_semaphore() -> asyncio.Semaphore | None:
     return _MAX_CONCURRENT_SUBAGENTS
 
 
+async def _cancel_and_drain(task: asyncio.Future[Any]) -> asyncio.CancelledError | None:
+    """Keep ownership until a cancelled child has finished its cleanup."""
+    if not task.done() and not getattr(task, "cancelling", lambda: 0)():
+        task.cancel()
+    drain = asyncio.gather(task, return_exceptions=True)
+    interrupted: asyncio.CancelledError | None = None
+    while not drain.done():
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError as exc:
+            interrupted = interrupted or exc
+    return interrupted
+
+
 # P0-4 — DAG dependency tracking. ``_BACKGROUND_DEP_PENDING`` holds
 # the list of run_ids a background run is still waiting on; entries
 # are pruned once the dep completes. ``_BACKGROUND_STARTED_AT`` is
@@ -479,6 +493,8 @@ async def _drive_run_impl(
 
     def cancel_child() -> None:
         nonlocal cancel_requested
+        if cancel_requested:
+            return
         cancel_requested = True
         if handle.core is not None:
             handle.core.cancel()
@@ -486,7 +502,8 @@ async def _drive_run_impl(
         # the latter would also interrupt an unrelated parent turn.
         if slot_wait is not None and not slot_wait.done():
             slot_wait.cancel()
-        if inner is not None and not inner.done():
+        if (inner is not None and not inner.done()
+                and not getattr(inner, "cancelling", lambda: 0)()):
             inner.cancel()
 
     # Register for IPC cancellation (agent.cancel_subagent) and
@@ -553,7 +570,7 @@ async def _drive_run_impl(
             elif wall and wall > 0:
                 result = await asyncio.wait_for(asyncio.shield(inner), timeout=wall)
             else:
-                result = await inner
+                result = await asyncio.shield(inner)
         except asyncio.CancelledError:
             if not cancel_requested or asyncio.current_task().cancelling():
                 raise
@@ -565,16 +582,17 @@ async def _drive_run_impl(
             try:
                 result = await asyncio.wait_for(asyncio.shield(inner), timeout=5)
             except TimeoutError:
-                inner.cancel()
-                await asyncio.gather(inner, return_exceptions=True)
+                interrupted = await _cancel_and_drain(inner)
+                if interrupted is not None:
+                    raise interrupted
                 raise TimeoutError("Sub-agent did not stop within the cancellation grace period") from None
     except BaseException as exc:
+        interrupted = None
         if inner is not None and not inner.done():
             if handle.core is not None:
                 handle.core.cancel()
-            inner.cancel()
-            await asyncio.gather(inner, return_exceptions=True)
-        failure_status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+            interrupted = await _cancel_and_drain(inner)
+        failure_status = "cancelled" if interrupted or isinstance(exc, asyncio.CancelledError) else "failed"
         if run_dao is not None:
             try:
                 from ...process_children import refresh_child_metadata
@@ -587,6 +605,8 @@ async def _drive_run_impl(
         await _emit_safe(
             emit, emit_event(failure_status, 1.0, str(exc)[:80], error=str(exc))
         )
+        if interrupted is not None:
+            raise interrupted
         raise
     finally:
         if slot_acquired and sem is not None:
