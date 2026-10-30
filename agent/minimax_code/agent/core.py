@@ -1471,63 +1471,7 @@ class AgentCore:
         prepared = await self._prepare_tool_call(call)
         return await self._execute_tool_call(prepared)
 
-    async def _prepare_tool_call(self, call: dict[str, Any]) -> _PreparedToolCall:
-        """Phase 1 (serial): parse args → permission → pre-hook → breaker.
-
-        Every step that must stay ordered lives here: argument parsing,
-        the interactive permission-consent prompt (concurrent prompts
-        would race the UI), the ``pre_tool_use`` policy hook, and the
-        per-tool circuit-breaker entry check (a shared state read). On
-        any rejection — deny / user-deny / hook-block / breaker-open /
-        malformed args — the call short-circuits: the offending result
-        is emitted + audited here and carried as ``short_circuit`` so
-        :meth:`_execute_tool_call` returns it without dispatching.
-
-        Returns a :class:`_PreparedToolCall` carrying the parsed args,
-        the resolved permission ``action`` (for the audit trail) and the
-        breaker handle (for the post-dispatch outcome record). The
-        ``tool_call`` / ``tool_running`` status events are emitted here so
-        the UI learns call order even when execution is parallel.
-        """
-        name = call.get("name") or (call.get("function") or {}).get("name", "")
-        raw_args = call.get("arguments")
-        if raw_args is None and isinstance(call.get("function"), dict):
-            raw_args = call["function"].get("arguments")
-        logger.debug(
-            "prepare_tool_call: id=%s name=%r raw_args_type=%s",
-            call.get("id", ""), name, type(raw_args).__name__,
-        )
-        if isinstance(raw_args, str):
-            try:
-                args = json.loads(raw_args) if raw_args.strip() else {}
-            except json.JSONDecodeError as exc:
-                # v1.2.1: the dominant real-world cause is the output-token
-                # limit cutting the streamed arguments mid-string (typically
-                # inside long non-ASCII content, where token boundaries are
-                # densest). Tell the model HOW to recover so it can retry
-                # with a smaller payload instead of repeating the failure.
-                err = ToolResult.fail(
-                    f"tool '{name}' got malformed JSON args: {exc}. This "
-                    "usually means the arguments were truncated by the "
-                    "output-token limit — retry with a smaller payload "
-                    "(e.g. write the file in smaller chunks with append/"
-                    "edit steps) or ask the user to raise "
-                    "MINIMAX_CODE_MAX_OUTPUT_TOKENS."
-                )
-                await self._maybe_emit_tool_call(call, err)
-                return _PreparedToolCall(
-                    call_log={**call, "name": name, "args": {}},
-                    name=name, args={}, action="malformed",
-                    breaker=None, short_circuit=err,
-                )
-        elif isinstance(raw_args, dict):
-            args = raw_args
-        else:
-            args = {}
-
-        tool_call_id = call.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
-        call_log = {**call, "id": tool_call_id, "name": name, "args": args}
-
+    def _tool_permission_action(self, name: str, args: dict[str, Any]) -> str | None:
         # 1. Permission check (configurable, default-allow).
         action = _check_rule(self._permission_store, name)
         from ..mcp.registry import (
@@ -1592,6 +1536,66 @@ class AgentCore:
                 action = "deny"
         if action == "ask" and self._permission_gater is None:
             action = "deny"
+        return action
+
+    async def _prepare_tool_call(self, call: dict[str, Any]) -> _PreparedToolCall:
+        """Phase 1 (serial): parse args → permission → pre-hook → breaker.
+
+        Every step that must stay ordered lives here: argument parsing,
+        the interactive permission-consent prompt (concurrent prompts
+        would race the UI), the ``pre_tool_use`` policy hook, and the
+        per-tool circuit-breaker entry check (a shared state read). On
+        any rejection — deny / user-deny / hook-block / breaker-open /
+        malformed args — the call short-circuits: the offending result
+        is emitted + audited here and carried as ``short_circuit`` so
+        :meth:`_execute_tool_call` returns it without dispatching.
+
+        Returns a :class:`_PreparedToolCall` carrying the parsed args,
+        the resolved permission ``action`` (for the audit trail) and the
+        breaker handle (for the post-dispatch outcome record). The
+        ``tool_call`` / ``tool_running`` status events are emitted here so
+        the UI learns call order even when execution is parallel.
+        """
+        name = call.get("name") or (call.get("function") or {}).get("name", "")
+        raw_args = call.get("arguments")
+        if raw_args is None and isinstance(call.get("function"), dict):
+            raw_args = call["function"].get("arguments")
+        logger.debug(
+            "prepare_tool_call: id=%s name=%r raw_args_type=%s",
+            call.get("id", ""), name, type(raw_args).__name__,
+        )
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args) if raw_args.strip() else {}
+            except json.JSONDecodeError as exc:
+                # v1.2.1: the dominant real-world cause is the output-token
+                # limit cutting the streamed arguments mid-string (typically
+                # inside long non-ASCII content, where token boundaries are
+                # densest). Tell the model HOW to recover so it can retry
+                # with a smaller payload instead of repeating the failure.
+                err = ToolResult.fail(
+                    f"tool '{name}' got malformed JSON args: {exc}. This "
+                    "usually means the arguments were truncated by the "
+                    "output-token limit — retry with a smaller payload "
+                    "(e.g. write the file in smaller chunks with append/"
+                    "edit steps) or ask the user to raise "
+                    "MINIMAX_CODE_MAX_OUTPUT_TOKENS."
+                )
+                await self._maybe_emit_tool_call(call, err)
+                return _PreparedToolCall(
+                    call_log={**call, "name": name, "args": {}},
+                    name=name, args={}, action="malformed",
+                    breaker=None, short_circuit=err,
+                )
+        elif isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            args = {}
+
+        tool_call_id = call.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
+        call_log = {**call, "id": tool_call_id, "name": name, "args": args}
+
+        action = self._tool_permission_action(name, args)
         if action == "deny":
             denied = ToolResult.fail(
                 f"tool '{name}' denied by permission policy (action=deny)",
@@ -1748,7 +1752,7 @@ class AgentCore:
                 result = ToolResult.fail(f"tool '{name}' cancelled")
             else:
                 result, duration_ms = await self._dispatch_prepared_tool(
-                    name, args, tool_call_id, tool_breaker
+                    name, args, tool_call_id, tool_breaker, action
                 )
 
         # Keep pathological output out of the context window: spill the
@@ -1777,7 +1781,8 @@ class AgentCore:
 
         # post_tool_use hooks — notification (fail-open). A bad hook
         # must never corrupt the real tool result already in hand.
-        if self.hooks is not None and name:
+        policy_denied = (result.metadata or {}).get("permission") == "policy_changed"
+        if self.hooks is not None and name and not policy_denied:
             try:
                 await self.hooks.fire_post_tool_use(
                     self._current_session_id, name, args, result.to_dict()
@@ -1786,13 +1791,13 @@ class AgentCore:
                 logger.warning("post_tool_use hooks raised for %s", name, exc_info=True)
 
         # Audit: record the tool dispatch (fire-and-forget).
-        status = "success" if result.success else (
+        status = "denied" if policy_denied else "success" if result.success else (
             "timeout" if "timeout" in (result.error or "") else "fail"
         )
         exit_code = getattr(result, "exit_code", None)
         await self._record_audit(
             call_log, status,
-            permission=action,
+            permission="deny" if policy_denied else action,
             duration_ms=duration_ms,
             error=result.error if not result.success else None,
             exit_code=exit_code,
@@ -1801,7 +1806,7 @@ class AgentCore:
 
     async def _dispatch_prepared_tool(
         self, name: str, args: dict[str, Any], tool_call_id: str,
-        tool_breaker: CircuitBreaker | None,
+        tool_breaker: CircuitBreaker | None, admitted_action: str,
     ) -> tuple[ToolResult, int]:
         # R14 — one tool span per dispatch; nests under ``agent.turn``.
         # Times only the registry dispatch, so the span duration is
@@ -1834,12 +1839,22 @@ class AgentCore:
                 # before dispatch as cancellation may arrive during setup.
                 if self.cancelled:
                     return False, ToolResult.fail(f"tool '{name}' cancelled")
+                async def dispatch_checked() -> tuple[bool, ToolResult]:
+                    if self.cancelled:
+                        return False, ToolResult.fail(f"tool '{name}' cancelled")
+                    current_action = self._tool_permission_action(name, args)
+                    if current_action == "deny" or (current_action == "ask" and admitted_action != "ask"):
+                        return False, ToolResult.fail(
+                            f"tool '{name}' blocked because permission policy changed before dispatch",
+                            permission="policy_changed",
+                        )
+                    return True, await self.registry.dispatch(name, args)
                 # These tools own their subprocess through the shared, awaited
                 # process cleanup path. Other tools may delegate side effects
                 # to threads which cannot be stopped by cancelling a coroutine.
                 if name not in {"exec_command", "verify_subagent"}:
-                    return True, await self.registry.dispatch(name, args)
-                dispatch = asyncio.create_task(self.registry.dispatch(name, args))
+                    return await dispatch_checked()
+                dispatch = asyncio.create_task(dispatch_checked())
                 cancellation = asyncio.create_task(self._cancel.wait())
                 try:
                     done, _ = await asyncio.wait(
@@ -1849,7 +1864,7 @@ class AgentCore:
                         return False, ToolResult.fail(
                             f"tool '{name}' cancelled; side effects may have occurred"
                         )
-                    return True, dispatch.result()
+                    return dispatch.result()
                 finally:
                     # Do not release the tool's ownership until its cleanup
                     # has finished, even if cancellation is requested again.
