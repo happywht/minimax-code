@@ -2181,6 +2181,8 @@ export interface InvokeMcpToolResult {
   text: string | null;
   content: unknown[] | null;
   isError: boolean;
+  /** Ordered MCP content blocks, including text and its annotations. */
+  contentBlocks?: unknown[] | null;
   structuredContent?: unknown;
 }
 // ---------------------------------------------------------------------------

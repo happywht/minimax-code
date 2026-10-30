@@ -898,6 +898,8 @@ export const strings = {
       testToolError: "工具返回错误",
       testResultTitle: "结果",
       testResultEmpty: "（无返回内容）",
+      testContentBlocks: "内容块（按返回顺序）",
+      testStructuredContent: "结构化结果",
     },
   },
 

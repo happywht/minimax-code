@@ -376,6 +376,10 @@ async def handle_mcp_invoke_tool(params: Any, ctx: Context) -> None:
                 "text": payload.get("text"),
                 "content": payload.get("content"),
                 "isError": result.isError,
+                "contentBlocks": [
+                    {**block.model_dump(exclude_unset=True), "type": block.type}
+                    for block in result.content
+                ],
                 **({"structuredContent": payload["structuredContent"]}
                    if "structuredContent" in payload else {}),
             }

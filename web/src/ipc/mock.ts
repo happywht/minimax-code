@@ -1826,6 +1826,7 @@ function mockHandle(
         tool_name: p.tool_name,
         text: `Mock result from ${p.tool_name}`,
         content: null,
+        contentBlocks: [{ type: "text", text: `Mock result from ${p.tool_name}` }],
         isError: false,
       } satisfies InvokeMcpToolResult;
     }

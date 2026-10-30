@@ -96,6 +96,12 @@ content stays absent. Audio and resource-link content join the existing text,
 image and embedded-resource models. SDK schema errors fail the call; tool-level
 `isError` remains an unsuccessful ToolResult.
 
+The direct invocation IPC also exposes `contentBlocks`, the ordered content
+blocks including text annotations; the existing `text` and non-text `content`
+projections remain for older clients. The settings tester displays those blocks
+alongside `structuredContent` when present, including explicit null. This is
+an inspection view, not a renderer for external media or resource links.
+
 Each operation has one 30-second total deadline including semaphore wait and all
 pages/retries, with at most eight active operations. Explicit tool/resource/prompt
 listings are capped at 100 pages, 1000 items and 8 MiB of serialized listing data.

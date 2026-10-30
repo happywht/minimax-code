@@ -473,10 +473,13 @@ function ToolTester({ server, tool }: ToolTesterProps): JSX.Element {
                 : "border-line bg-surface-0 text-ink-0")
             }
           >
-            {result.text ??
-              (result.content
-                ? JSON.stringify(result.content, null, 2)
-                : strings.settings.mcp.testResultEmpty)}
+            {result.contentBlocks?.length
+              ? `${strings.settings.mcp.testContentBlocks}\n${JSON.stringify(result.contentBlocks, null, 2)}`
+              : [result.text, result.content ? JSON.stringify(result.content, null, 2) : null]
+                  .filter((part) => part !== null).join("\n") ||
+                (!("structuredContent" in result) ? strings.settings.mcp.testResultEmpty : "")}
+            {"structuredContent" in result &&
+              `\n${strings.settings.mcp.testStructuredContent}\n${JSON.stringify(result.structuredContent, null, 2)}`}
           </pre>
         </div>
       )}

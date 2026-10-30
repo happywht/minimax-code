@@ -84,6 +84,7 @@ class InvokeMcpToolResult(_Base):
     text: str | None
     content: list[dict[str, Any]] | None
     isError: bool
+    contentBlocks: list[dict[str, Any]] | None = None
     structuredContent: Any = None
 
 
