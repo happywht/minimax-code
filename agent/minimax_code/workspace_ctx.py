@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 #: The active workspace root for the current task, or ``None`` when the
 #: process-wide default (:func:`env_or_cwd_root`) applies.
-_current_root: ContextVar[Path | None] = ContextVar(
+_current_root: ContextVar[tuple[Path, int, int] | None] = ContextVar(
     "minimax_workspace_root", default=None
 )
 
@@ -84,23 +84,27 @@ def current_root() -> Path | None:
     Revalidate that root on each use so a deleted directory or a replacement
     symlink cannot silently redirect later file or process operations.
     """
-    root = _current_root.get()
-    if root is None:
+    binding = _current_root.get()
+    if binding is None:
         return None
+    root, device, inode = binding
     resolved = require_directory(root)
-    if resolved != root:
+    info = resolved.stat()
+    if resolved != root or (info.st_dev, info.st_ino) != (device, inode):
         raise WorkspaceUnavailableError(
             "Session workspace has changed; rebind before continuing."
         )
     return resolved
 
 
-def set_current_root(root: Path) -> Token[Path | None]:
+def set_current_root(root: Path) -> Token[tuple[Path, int, int] | None]:
     """Publish *root* for the current task; returns the reset token."""
-    return _current_root.set(Path(root).resolve())
+    resolved = require_directory(root)
+    info = resolved.stat()
+    return _current_root.set((resolved, info.st_dev, info.st_ino))
 
 
-def reset_current_root(token: Token[Path | None]) -> None:
+def reset_current_root(token: Token[tuple[Path, int, int] | None]) -> None:
     """Undo a previous :func:`set_current_root` (call in ``finally``)."""
     _current_root.reset(token)
 

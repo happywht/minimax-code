@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ipc } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores/sessionStore";
 import type { WorkspaceCheckResult } from "../../types/ipc";
 
@@ -21,31 +21,43 @@ function guidance(result: WorkspaceCheckResult): string {
 
 export function WorkspaceDiagnostic(): JSX.Element | null {
   const session = useSessionStore((s) => s.currentSessionId);
-  const project = useSessionStore((s) => s.sessions.find((row) => row.id === session)?.project_id ?? null);
-  const [result, setResult] = useState<WorkspaceCheckResult | null>(null);
+  const sessionRow = useSessionStore((s) => s.sessions.find((row) => row.id === session));
+  const project = sessionRow?.project_id ?? null;
+  const projectRoot = useSessionStore((s) => s.projects.find((row) => row.id === project)?.root_path ?? null);
+  const workspacePath = sessionRow?.workspace_path ?? null;
+  const workspaceMode = sessionRow?.workspace_mode ?? null;
+  const scope = JSON.stringify([session, project, projectRoot, workspacePath, workspaceMode]);
+  const [checked, setChecked] = useState<{ scope: string; result: WorkspaceCheckResult } | null>(null);
+  const result = checked?.scope === scope ? checked.result : null;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const epoch = useRef(0);
   useEffect(() => {
-    setResult(null); setError(""); setBusy(false);
+    setChecked(null); setError(""); setBusy(false);
     const generation = epoch;
     return () => { generation.current++; };
-  }, [session, project]);
-  useEffect(() => ipc.onSideCar(() => { epoch.current++; setResult(null); setBusy(false); setError("连接变化，请重新检查。"); }), []);
+  }, [scope]);
+  useEffect(() => ipc.onSideCar(() => { epoch.current++; setChecked(null); setBusy(false); setError("连接变化，请重新检查。"); }), []);
   if (!session) return null;
   const check = async () => {
     const ticket = ++epoch.current, host = ipc.agentBaseUrl;
-    setBusy(true); setError(""); setResult(null);
+    setBusy(true); setError(""); setChecked(null);
     const current = () => {
       const state = useSessionStore.getState();
+      const liveSession = state.sessions.find((row) => row.id === session);
       return ticket === epoch.current && host === ipc.agentBaseUrl && state.currentSessionId === session &&
-        (state.sessions.find((row) => row.id === session)?.project_id ?? null) === project;
+        (liveSession?.project_id ?? null) === project && (liveSession?.workspace_path ?? null) === workspacePath &&
+        (liveSession?.workspace_mode ?? null) === workspaceMode &&
+        (state.projects.find((row) => row.id === project)?.root_path ?? null) === projectRoot;
     };
     try {
+      const before = await typedIPC.getServiceIdentity();
       const data = await ipc.request<WorkspaceCheckResult>("runtime.workspace_check", { session_id: session, project_id: project });
+      const after = await typedIPC.getServiceIdentity();
       if (!current()) return;
-      if (data.session_id !== session || data.project_id !== project || !data.service_id) throw new Error("检查结果归属已变化");
-      setResult(data);
+      if (data.session_id !== session || data.project_id !== project || !before.service_id ||
+          data.service_id !== before.service_id || after.service_id !== before.service_id) throw new Error("检查结果归属已变化");
+      setChecked({ scope, result: data });
     } catch (failure) { if (current()) setError(`无法确认目录：${String(failure)}`); }
     finally { if (current()) setBusy(false); }
   };

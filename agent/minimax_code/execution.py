@@ -17,7 +17,7 @@ import subprocess
 import sys
 from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ class ExecutionPolicy:
     workspace: Path | None = None
     read_only: bool = False
     restrict_network_tools: bool = False
+    _workspace_identity: tuple[int, int] | None = None
 
 
 _policy: ContextVar[ExecutionPolicy | None] = ContextVar("execution_policy", default=None)
@@ -58,6 +59,9 @@ def execution_scope(policy: ExecutionPolicy) -> Iterator[None]:
     elif policy.workspace is not None:
         policy = ExecutionPolicy(workspace=require_directory(policy.workspace), read_only=policy.read_only,
                                  restrict_network_tools=policy.restrict_network_tools)
+    if policy.workspace is not None:
+        info = policy.workspace.stat()
+        policy = replace(policy, _workspace_identity=(info.st_dev, info.st_ino))
     token = _policy.set(policy)
     try:
         yield
@@ -97,7 +101,8 @@ def policy_workspace() -> Path | None:
     if policy is None or policy.workspace is None:
         return None
     root = require_directory(policy.workspace)
-    if root != policy.workspace:
+    info = root.stat()
+    if root != policy.workspace or (info.st_dev, info.st_ino) != policy._workspace_identity:
         raise ExecutionDeniedError("Execution workspace has changed; rebind before continuing.")
     return root
 
