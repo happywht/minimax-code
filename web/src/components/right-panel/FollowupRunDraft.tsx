@@ -11,7 +11,7 @@ const clip = (text: string, limit: number) => text.length > limit ? `${text.slic
 
 type OutputRef = { output_ref: string; service_id: string; run_id: string; session_id: string; project_id: string; chars: number; sha256: string; label: string };
 type OutputPage = { id: string; service_id: string; run_id: string; session_id: string; project_id: string; chars: number; sha256: string; offset: number; next_offset: number; page: string };
-type Prepared = { text: string; service: string; artifacts: TextArtifact[]; more: boolean; outputs: OutputRef[] };
+type Prepared = { text: string; service: string; artifacts: TextArtifact[]; more: boolean; outputs: OutputRef[]; verificationOutput: string | null };
 type SelectedArtifact = { row: TextArtifact; preview: string; truncated: boolean };
 
 /** Prepares editable context from a persisted run; it never sends a task. */
@@ -22,10 +22,11 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [selected, setSelected] = useState<SelectedArtifact | null>(null);
   const [output, setOutput] = useState<{ ref: OutputRef; page: OutputPage } | null>(null);
+  const [includeVerification, setIncludeVerification] = useState(false);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const epoch = useRef(0);
-  useEffect(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setMessage(""); setBusy(false); return () => { ++epoch.current; }; }, [run.id, session, project, host]);
-  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setBusy(false); setMessage("连接变化，请重新准备草稿。"); }), []);
+  useEffect(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setIncludeVerification(false); setMessage(""); setBusy(false); return () => { ++epoch.current; }; }, [run.id, session, project, host]);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setIncludeVerification(false); setBusy(false); setMessage("连接变化，请重新准备草稿。"); }), []);
   const sourceSession = run.session_id;
   const available = !!project && !!session && (allowOtherSession || sourceSession === session) && run.metadata?.project_id === project && terminal.has(run.status);
   if (!available || !project || !session) return null;
@@ -75,7 +76,7 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
     if (result) {
       lines.push(`验证命令：${result.command ? clip(result.command, 400) : "未记录"}`);
       lines.push(`退出码：${result.exit_code == null ? "未知" : result.exit_code} · ${result.timed_out ? "超时" : result.exit_code == null ? "结果未知" : result.ok && result.exit_code === 0 ? "命令通过" : "命令未通过"}`);
-      lines.push(`命令输出未加入草稿${result.stdout_truncated || result.stderr_truncated ? "；已保存输出存在截断" : ""}，请在原运行中查看。`);
+      lines.push(`命令输出默认不加入草稿${result.stdout_truncated || result.stderr_truncated ? "；已保存输出存在截断" : ""}，请在原运行中查看。`);
     } else lines.push("未记录可用验证命令或结果。");
     if (saved.status !== "completed") {
       const reviewSteps = snapshot.steps.filter((step) => step.run_id === saved.id && step.session_id === sourceSession &&
@@ -88,6 +89,13 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
       lines.push("已核对的进展：（请填写）", "未完成事项：（请填写）", "不确定的操作及外部副作用：（请核对后填写）");
       lines.push("预算与未知用量：（请核对原运行及子任务；未知不等于零）");
     }
+    // Only offer actual saved output; absent fields are not evidence of empty output.
+    const streams = (["stdout", "stderr"] as const).filter((key) => typeof result?.[key] === "string");
+    const verificationOutput = result && streams.length ? streams.map((key) => {
+      const value = result[key] as string;
+      const savedTruncated = result[key === "stdout" ? "stdout_truncated" : "stderr_truncated"] === true;
+      return `${key}：\n${clip(value, 4000) || "（已保存为空）"}${savedTruncated ? "\n（保存的输出已截断）" : ""}`;
+    }).join("\n\n") : null;
     const records = snapshot.steps.filter((step) => step.run_id === saved.id && step.session_id === sourceSession && step.status === "completed" &&
       step.payload?.source === "run_attachment_v1" && step.payload?.project_id === project && step.payload?.service_id === identity.service_id);
     const rows = records.map((step) => attachments.attachments.find((item) => item.id === step.payload?.attachment_id &&
@@ -114,7 +122,7 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
           service_id: identity.service_id, sha256: ref.sha256, chars: ref.chars, label: step.tool_name || step.title || "工具输出" });
       }
     }
-    return { text: lines.join("\n"), service: identity.service_id, artifacts: artifacts.value?.artifacts ?? [], more: !!artifacts.value?.next_cursor, outputs };
+    return { text: lines.join("\n"), service: identity.service_id, artifacts: artifacts.value?.artifacts ?? [], more: !!artifacts.value?.next_cursor, outputs, verificationOutput };
   };
   const readSelected = async (row: TextArtifact, expected: Prepared, ticket: number): Promise<SelectedArtifact> => {
     const before = await read(ticket);
@@ -160,7 +168,7 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
     finally { if (isCurrent(ticket)) setBusy(false); }
   };
   const prepare = async () => {
-    const ticket = ++epoch.current; setBusy(true); setPrepared(null); setSelected(null); setOutput(null); setMessage("");
+    const ticket = ++epoch.current; setBusy(true); setPrepared(null); setSelected(null); setOutput(null); setIncludeVerification(false); setMessage("");
     try { const value = await read(ticket); if (isCurrent(ticket)) setPrepared(value); }
     catch (error) { if (isCurrent(ticket)) setMessage(error instanceof Error ? error.message : String(error)); }
     finally { if (isCurrent(ticket)) setBusy(false); }
@@ -173,6 +181,13 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
       if (!isCurrent(ticket)) return;
       if (value.service !== expected.service || value.text !== expected.text) { setPrepared(null); throw new Error("运行证据或关联成果已变化，请重新准备。"); }
       let text = value.text;
+      if (includeVerification) {
+        if (!value.verificationOutput || value.verificationOutput !== expected.verificationOutput) {
+          setPrepared(null); setIncludeVerification(false);
+          throw new Error("验证输出已变化或不可用，请重新准备并核对。");
+        }
+        text += `\n\n用户选择的已保存验证输出（仅为记录摘录，不代表交付验收）：\n${value.verificationOutput}`;
+      }
       if (selected) {
         const fresh = await readSelected(selected.row, expected, ticket);
         if (!isCurrent(ticket)) return;
@@ -188,7 +203,7 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
       const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project, session, text };
       window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
       setMessage(detail.result ?? "当前聊天输入区未打开，请先切换到聊天再操作。");
-      if (detail.result === "已添加到当前会话草稿，尚未发送。") { setPrepared(null); setSelected(null); setOutput(null); }
+      if (detail.result === "已添加到当前会话草稿，尚未发送。") { setPrepared(null); setSelected(null); setOutput(null); setIncludeVerification(false); }
     } catch (error) { if (isCurrent(ticket)) setMessage(error instanceof Error ? error.message : String(error)); }
     finally { if (isCurrent(ticket)) setBusy(false); }
   };
@@ -196,6 +211,11 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
     <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void prepare()}>准备后续任务草稿</Button>
     {prepared && <div className="space-y-2 rounded border border-line p-2"><p>来源会话：{sourceSession}；目标会话：{session}。请核对以下草稿；不会自动发送。</p>
       <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-1 p-2">{prepared.text}</pre>
+      {prepared.verificationOutput !== null && <div className="space-y-1 rounded border border-line p-2">
+        <label className="flex items-center gap-2"><input type="checkbox" checked={includeVerification} disabled={busy} onChange={(event) => setIncludeVerification(event.target.checked)} />将以下已保存验证输出摘录加入草稿</label>
+        <p>每个输出流最多加入前 4000 个字符；缺失的输出流不会补造。请检查内容是否适合分享。</p>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words" aria-label="后续任务验证输出预览">{prepared.verificationOutput}</pre>
+      </div>}
       {!!prepared.artifacts.length && <div className="space-y-1"><p>选择一项登记关联的文本成果，读取并核对后可随草稿追加。关联不证明由该运行生成。</p>
         <div className="flex flex-wrap gap-1">{prepared.artifacts.map((row) => <Button key={row.id} type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void selectArtifact(row)}>{row.source_path} · v{row.version}</Button>)}</div>
         {prepared.more && <p>还有更早的成果，请在原运行中查看。</p>}
