@@ -351,6 +351,7 @@ def register_team_handlers(
             from ..runs import get_run_service
             from ..storage.dao.runs import AgentRunsDAO
             from ..budget import resolve_run_budget
+            from ..model_snapshot import ModelSnapshot
             from .handlers_permissions import _ensure_permission_store
 
             permission_store = await _ensure_permission_store(ctx.server)
@@ -359,11 +360,14 @@ def register_team_handlers(
             from ..schedule_context import FrozenPermissions
             permission_rules = copy.deepcopy(permission_store.list_rules())
             frozen_permissions = FrozenPermissions(permission_rules, permission_store, ask_unmatched=False)
+            llm = get_subagent_llm()
+            model_snapshot = ModelSnapshot.capture() if llm is not None else None
 
             orch = TeamOrchestrator(
                 team_dao=team_dao,
                 agent_dao=agent_dao_instance,
-                llm=get_subagent_llm(),
+                llm=model_snapshot.client if model_snapshot is not None else None,
+                reasoning_effort=model_snapshot.reasoning_effort if model_snapshot is not None else None,
                 emit_event=ctx.emit,
                 permission_store=frozen_permissions,
                 permission_server=ctx.server,
@@ -417,6 +421,7 @@ def register_team_handlers(
                     metadata={"team_result": None, "parent_session_id": parent_session_id,
                               "workspace_snapshot": workspace, "project_id": project_id,
                               "permission_rules_snapshot": permission_rules,
+                              **({"model_snapshot": model_snapshot.metadata()} if model_snapshot is not None else {}),
                               "budget": {"limit_tokens": resolve_run_budget(budget_tokens)},
                               "team_max_parallel": effective_parallel},
                     workspace=workspace, project_id=project_id, operation=operation, finalize=finalize)

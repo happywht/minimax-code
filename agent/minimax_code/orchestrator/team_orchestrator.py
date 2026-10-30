@@ -151,6 +151,7 @@ class TeamOrchestrator:
         team_dao: AgentTeamDAO | None = None,
         agent_dao: AgentDAO | None = None,
         llm: MiniMaxClient | None = None,
+        reasoning_effort: str | None = None,
         emit_event: Any | None = None,
         permission_store: Any | None = None,
         permission_server: Any | None = None,
@@ -158,6 +159,7 @@ class TeamOrchestrator:
         self._team_dao = team_dao
         self._agent_dao = agent_dao
         self._llm = llm
+        self._reasoning_effort = reasoning_effort
         self._emit_event = emit_event
         self._permission_store = permission_store
         self._permission_server = permission_server
@@ -666,7 +668,7 @@ class TeamOrchestrator:
         total: int,
     ) -> AgentRunResult:
         """Build, invoke, and wrap the result for one agent."""
-        from .subagent import SubAgentRuntime
+        from .subagent import SubAgentRuntime, subagent_runtime_scope
 
         agent_name = config.name
         sid = session_id or f"teamrun_session_{uuid.uuid4().hex[:8]}"
@@ -706,7 +708,7 @@ class TeamOrchestrator:
         )
 
         try:
-            runtime = SubAgentRuntime(llm=self._llm)
+            runtime = SubAgentRuntime(llm=self._llm, reasoning_effort=self._reasoning_effort)
             handle = runtime.build(config)
             timeout_s = _subagent_wall_clock_s()
             # Every member needs a distinct copy even if the caller inherited
@@ -714,13 +716,14 @@ class TeamOrchestrator:
             from ..workspace_ctx import reset_current_run_id, set_current_run_id
             token = set_current_run_id(None)
             try:
-                if timeout_s > 0:
-                    envelope = await asyncio.wait_for(
-                        runtime.invoke(handle, session_id=sid, request=request),
-                        timeout=timeout_s,
-                    )
-                else:
-                    envelope = await runtime.invoke(handle, session_id=sid, request=request)
+                with subagent_runtime_scope(runtime):
+                    if timeout_s > 0:
+                        envelope = await asyncio.wait_for(
+                            runtime.invoke(handle, session_id=sid, request=request),
+                            timeout=timeout_s,
+                        )
+                    else:
+                        envelope = await runtime.invoke(handle, session_id=sid, request=request)
             finally:
                 reset_current_run_id(token)
             stop_reasons = [key for key in ("cancelled", "truncated", "budget_exhausted", "partial")
