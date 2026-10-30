@@ -42,6 +42,12 @@ _SCHEDULED_SESSION_ID_PREFIX = "ses_sched_"
 #: executor worker thread forever (v1.2.2).
 _PAYLOAD_TIMEOUT_S = 3600.0
 
+# Cron wakeups can be missed while the process is suspended or the event loop
+# is stalled beyond APScheduler's misfire grace. Scan the durable cursor
+# independently so a monthly job need not wait another month to be noticed.
+_RECOVERY_SCAN_INTERVAL_S = 30
+_RECOVERY_SCAN_JOB_ID = "schedule_recovery_scan"
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -102,6 +108,7 @@ class JobScheduler:
         self._stop_generation = 0
         self._stops_pending = 0
         self._admission_lock = asyncio.Lock()
+        self._dispatch_lock = asyncio.Lock()
         self._started = False
         self._stopping = False
         self._aps_shutdown_issued = False
@@ -142,6 +149,15 @@ class JobScheduler:
             await self._skip_restart_due()
             if not self._aps.running:
                 self._aps.start()
+            self._aps.add_job(
+                self._recovery_tick,
+                "interval",
+                seconds=_RECOVERY_SCAN_INTERVAL_S,
+                id=_RECOVERY_SCAN_JOB_ID,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
             self._started = True
             # Re-load every enabled job from the DB. We do this AFTER
             # the scheduler has started so the add_job calls have a
@@ -374,10 +390,24 @@ class JobScheduler:
     async def _dispatch_due(self):
         if self._stopping:
             return
-        await self._reconcile_occurrences(dispatch_pending=True)
-        for row in await self._dao.due():
-            if not row.get("deleted_at") and row.get("binding_state") == "ready" and not row.get("active_occurrence_id"):
-                self._spawn_fire(row,source="cron")
+        async with self._dispatch_lock:
+            if self._stopping:
+                return
+            await self._reconcile_occurrences(dispatch_pending=True)
+            for row in await self._dao.due():
+                if not row.get("deleted_at") and row.get("binding_state") == "ready" and not row.get("active_occurrence_id"):
+                    self._spawn_fire(row,source="cron")
+
+    async def _recovery_tick(self):
+        """Revisit durable work even when an individual cron wakeup was lost."""
+        if self._stopping:
+            return
+        task = asyncio.current_task()
+        self._inflight.add(task)
+        try:
+            await self._dispatch_due()
+        finally:
+            self._inflight.discard(task)
 
     async def _skip_restart_due(self):
         """Skip overdue, unclaimed work for opted-in idle jobs at startup only."""
