@@ -746,6 +746,8 @@ def register_run_handlers(server: Any) -> None:
                           "Inspect the existing workspace and conversation. Determine which side effects already occurred "
                           "and verify them before taking further action. Continue only the unfinished work; "
                           "do not blindly replay the original instruction or repeat unconfirmed writes.]")
+                if request.handoff.strip():
+                    prompt += "\n\nUser recovery handoff (reviewed by the user):\n" + request.handoff
                 recovery = RunStartParams(session_id=run["session_id"], engine="codex", mode=run["mode"],
                     content=prompt, idempotency_key=request.idempotency_key,
                     budget_tokens=request.budget_tokens if request.budget_tokens is not None else saved)
@@ -775,6 +777,8 @@ def register_run_handlers(server: Any) -> None:
                     f"boundary. The workspace reflects only confirmed effects; continue the task "
                     "under the authorized cumulative budget.]"
                 )
+            if request.handoff.strip():
+                note += "\n\nUser recovery handoff (reviewed by the user):\n" + request.handoff
             content = previous["content"]
             if isinstance(content, list):
                 content = [*content, {"type": "text", "text": note}]

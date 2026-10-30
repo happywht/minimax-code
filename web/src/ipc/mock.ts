@@ -803,7 +803,8 @@ function mockHandle(
       return { ok: true, requested: true, run: structuredClone(entry.run) };
     }
     case "run.resume": {
-      const p = params as { run_id: string; idempotency_key: string; reviewed?: boolean };
+      const p = params as { run_id: string; idempotency_key: string; reviewed?: boolean; handoff?: string };
+      if (p.handoff !== undefined && (typeof p.handoff !== "string" || p.handoff.length > 4000)) throw new Error("Invalid recovery handoff");
       const entry = mockRuns.get(p.run_id);
       const original = mockRunRequests.get(p.run_id);
       if (!entry || !original || !["interrupted", "failed", "cancelled"].includes(entry.run.status)) {
@@ -811,8 +812,9 @@ function mockHandle(
       }
       if (entry.run.started_at && !p.reviewed) throw new Error("Review prior steps and workspace before resuming");
       const note = `\n\n[Runtime recovery context: prior run ${entry.run.id} ended as ${entry.run.status}. Continue the original task after inspecting the existing workspace and prior conversation. Verify which actions already took effect before repeating a write. No tool step has been automatically retried.]`;
-      const content = typeof original.content === "string" ? original.content + note
-        : [...original.content, { type: "text" as const, text: note }];
+      const handoff = p.handoff?.trim() ? `\n\nUser recovery handoff (reviewed by the user):\n${p.handoff}` : "";
+      const content = typeof original.content === "string" ? original.content + note + handoff
+        : [...original.content, { type: "text" as const, text: note + handoff }];
       const result = mockHandle("run.start", { ...original, content, idempotency_key: p.idempotency_key }, client, id) as import("../types/ipc").RunAdmissionResult;
       mockRuns.get(result.run.id)!.run.resumed_from_id = p.run_id;
       return { ...result, run: structuredClone(mockRuns.get(result.run.id)!.run) };

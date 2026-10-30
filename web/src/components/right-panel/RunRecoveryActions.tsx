@@ -6,7 +6,7 @@ import { Button } from "../../ui";
 import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
 
 type Review = { snapshot: RunStepsResult; service: string; host: string; project: string | null };
-type Attempt = { key: string; run: string; session: string; project: string | null; service: string; host: string; cursor: number; budget: number | null; reviewed: true };
+type Attempt = { key: string; run: string; session: string; project: string | null; service: string; host: string; cursor: number; budget: number | null; handoff: string; reviewed: true };
 const retryStorage = (item: Pick<Attempt, "host" | "service" | "session" | "run">) =>
   `minimax:resume:${encodeURIComponent(item.host)}:${encodeURIComponent(item.service)}:${encodeURIComponent(item.session)}:${encodeURIComponent(item.run)}`;
 
@@ -14,7 +14,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   const [reviewed, setReviewed] = useState(false), [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null), [cancelRequested, setCancelRequested] = useState(false);
   const [resumed, setResumed] = useState(false), [budgetTokens, setBudgetTokens] = useState("");
-  const [changeBudget, setChangeBudget] = useState(false);
+  const [changeBudget, setChangeBudget] = useState(false), [handoff, setHandoff] = useState("");
   const [review, setReview] = useState<Review | null>(null), [attempt, setAttempt] = useState<Attempt | null>(null);
   const [foundRun, setFoundRun] = useState<AgentRun | null>(null);
   const [loading, setLoading] = useState(false);
@@ -28,7 +28,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   const resumable = scheduledContinuation || ["interrupted", "failed", "cancelled", "budget_paused"].includes(run.status);
   const active = ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status);
   useEffect(() => {
-    ++epoch.current; setReview(null); setAttempt(null); setFoundRun(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens(""); setChangeBudget(false);
+    ++epoch.current; setReview(null); setAttempt(null); setFoundRun(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens(""); setChangeBudget(false); setHandoff("");
     return () => { ++epoch.current; };
   }, [run.id, run.status, session, project, selectedProject, host]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setReview(null); setAttempt(null); setReviewed(false); setPending(false); setLoading(false); setError("连接变化，请重新读取运行和待确认请求。"); }), []);
@@ -74,11 +74,13 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
           const value = JSON.parse(raw) as Attempt;
           if (value.run !== run.id || value.session !== session || value.project !== project || value.host !== host || value.service !== identity.service_id ||
               typeof value.key !== "string" || !value.key || value.reviewed !== true || !Number.isSafeInteger(value.cursor) || value.cursor < 0 ||
-              (value.budget !== null && (!Number.isSafeInteger(value.budget) || value.budget <= 0))) throw new Error("待确认记录无效，请手动检查");
-          saved = value;
+              (value.budget !== null && (!Number.isSafeInteger(value.budget) || value.budget <= 0)) ||
+              (value.handoff !== undefined && (typeof value.handoff !== "string" || value.handoff.length > 4000))) throw new Error("待确认记录无效，请手动检查");
+          saved = { ...value, handoff: value.handoff ?? "" };
         }
       } catch (failure) { throw new Error(`无法读取安全重试记录：${failure instanceof Error ? failure.message : String(failure)}`); }
       setReview({ snapshot, service: identity.service_id, host, project }); setAttempt(saved);
+      if (saved) setHandoff(saved.handoff);
       if (saved?.budget != null) { setBudgetTokens(String(saved.budget)); setChangeBudget(true); }
     } catch (failure) { if (current(ticket)) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { if (current(ticket)) setLoading(false); }
@@ -98,7 +100,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
     if (!review || !reviewed || !session || session !== run.session_id || !sameProject || (budgetPaused && changeBudget && !attempt && !validBudget)) return;
     if (attempt && attempt.cursor !== review.snapshot.cursor) { setError("原运行记录已变化；请检查是否已有接续运行，不能直接重试旧请求。"); return; }
     const payload: Attempt = attempt ?? { key: crypto.randomUUID(), run: run.id, session, project, service: review.service,
-      host, cursor: review.snapshot.cursor, budget: budgetPaused && changeBudget ? Number(budgetTokens) : null, reviewed: true };
+      host, cursor: review.snapshot.cursor, budget: budgetPaused && changeBudget ? Number(budgetTokens) : null, handoff, reviewed: true };
     try { localStorage.setItem(retryStorage(payload), JSON.stringify(payload)); }
     catch { setError("浏览器存储不可用，无法保留重试身份；未发送恢复请求。"); return; }
     const ticket = ++epoch.current; setAttempt(payload); inFlight.current = true; setPending(true); setError(null);
@@ -106,7 +108,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
       const identity = await typedIPC.getServiceIdentity();
       if (!current(ticket) || identity.service_id !== payload.service) throw new Error("服务或会话已变化，请重新核对");
       const result = await typedIPC.resumeRun(run.id, payload.key, true, payload.budget ?? undefined,
-        { service: payload.service, session: payload.session, project: payload.project, cursor: payload.cursor });
+        { service: payload.service, session: payload.session, project: payload.project, cursor: payload.cursor }, payload.handoff);
       if (!current(ticket)) return;
       if (result.run.session_id !== session || result.run.resumed_from_id !== run.id) throw new Error("接续运行归属不匹配，请在时间线核对");
       localStorage.removeItem(retryStorage(payload)); setAttempt(null); setResumed(true); await refresh();
@@ -161,6 +163,10 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
         {review.snapshot.steps.length > 50 && <p>较早步骤未在此显示，请查看完整时间线。</p>}
         <RunWorkspaceDiff run={review.snapshot.run} />
         <label className="flex items-start gap-2"><input type="checkbox" checked={reviewed} disabled={pending} onChange={(event) => setReviewed(event.target.checked)} />已核对记录、当前文件及可能的外部副作用。</label>
+        <label className="block">恢复交接（可选）：记录已核实的操作、仍不确定的结果和剩余事项
+          <textarea aria-label="恢复交接" className="mt-1 block w-full rounded border border-line bg-surface-1 p-2" maxLength={4000} value={handoff} disabled={pending || !!attempt} onChange={(event) => setHandoff(event.target.value)} />
+        </label>
+        <p>交接内容会随恢复请求保存并发送给模型；不要填写不应发送的秘密。</p>
         {budgetPaused && <div className="space-y-1">
           <label className="flex items-center gap-2"><input type="checkbox" checked={changeBudget} disabled={pending || !!attempt} onChange={(event) => setChangeBudget(event.target.checked)} />修改累计 token 上限</label>
           <p>默认保留原运行的累计上限（包括未设置上限），不清除已用额度或未知责任。日额度及账本检查仍然生效；如家族额度已变化，请先核对最新运行。</p>

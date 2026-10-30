@@ -532,6 +532,7 @@ class RunRecoveryLookupParams(BaseModel):
 class RunResumeParams(RunIdParams):
     idempotency_key: str = Field(min_length=1, max_length=128)
     reviewed: bool = False
+    handoff: str = Field(default="", max_length=4000)
     # None preserves the original cumulative cap, including an unset cap.
     # A supplied value may preserve or raise it; the ledger rejects reductions.
     budget_tokens: int | None = Field(default=None, ge=0)

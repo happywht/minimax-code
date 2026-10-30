@@ -911,7 +911,10 @@ Run states additionally include `queued`, `waiting_input`, `budget_paused` and
 `interrupted`. Startup marks unfinished requests interrupted; a queued request
 has not started, while a previously running request needs review. No request or
 tool is automatically replayed. `run.resume` accepts `{run_id, idempotency_key,
-reviewed?: boolean, budget_tokens?: positive integer}`; started requests require explicit
+reviewed?: boolean, budget_tokens?: positive integer, handoff?: string}`; the optional handoff
+(up to 4000 characters) records the user’s reviewed findings and remaining work in the
+new request and is sent to the model. Retries must retain the identical handoff.
+Started requests require explicit
 `reviewed: true` (including Codex budget pauses, whose external side effects need review).
 Native clean budget boundaries retain their existing exemption. Omitting `budget_tokens`
 preserves the source run's cumulative cap, including an unset cap; supplying a value
