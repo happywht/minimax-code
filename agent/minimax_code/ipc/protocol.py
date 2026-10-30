@@ -716,6 +716,18 @@ class RunSnapshotResult(_Base):
 # ---- Error object ---------------------------------------------------------
 
 
+class HostServiceStartParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    host_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    hostname: str = Field(min_length=1, max_length=255)
+    username: str = Field(min_length=1, max_length=128)
+    port: int = Field(ge=1, le=65535)
+    identity_file: str = Field(max_length=4096)
+    remote_port: int = Field(ge=1, le=65535)
+    unit: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service$")
+
+
 class HostTransferStatusParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     host_id: str = Field(min_length=1)

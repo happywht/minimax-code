@@ -231,6 +231,7 @@ const LONG_RUNNING_METHODS: Record<string, number> = {
   "host.push": 420_000,          // transfer plus journal preparation/reconciliation
   "host.fetch": 420_000,         // transfer plus remote checksum
   "host.transfer_status": 45_000,
+  "host.service_start": 40_000,
   "skill.invoke": 120_000,       // 2 min — skill execution
 };
 

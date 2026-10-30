@@ -4,6 +4,7 @@ import type { HostTransferResult, RemoteHost } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileBrowser } from "./HostFileBrowser";
+import { HostServiceStart } from "./HostServiceStart";
 import { downloadHostFile } from "../../ipc/hostDownload";
 import { uploadHostFile } from "../../ipc/hostUpload";
 
@@ -143,7 +144,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     } catch (e) { if (valid(ticket)) setMessage(`${e instanceof Error ? e.message : String(e)}；上传结果仍未知。`); }
     finally { if (valid(ticket)) setBusy(false); }
   };
-  return <details className="rounded border border-line p-2"><summary>上传 / 下载文件</summary>
+  return <><HostServiceStart host={host} /><details className="rounded border border-line p-2"><summary>上传 / 下载文件</summary>
     <p className="text-xs text-ink-2">本机路径指运行当前服务的机器，不是浏览器选中的文件；远端路径指此主机的 Linux 绝对路径。仅单文件、显式操作，不自动同步。传输使用独立 SSH/SFTP，服务隧道状态不代表传输可用。</p>
     <label className="block text-xs">本机文件绝对路径<Input aria-label={`${host.name} 本机传输路径`} value={local} disabled={busy} onChange={(e) => setLocal(e.target.value)} placeholder="C:\\资料\\报告.pdf" /></label>
     <label className="block text-xs">远端文件绝对路径<Input aria-label={`${host.name} 远端传输路径`} value={remote} disabled={busy} onChange={(e) => setRemote(e.target.value)} placeholder="/home/user/report.pdf" /></label>
@@ -169,5 +170,5 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     <p className="text-xs text-ink-2">恢复记录包含服务地址、主机和远端路径，请自行妥善保存；不包含私钥或本机文件路径。填入不会自动查询或上传，也不会替换本标签页的未决上传记录。</p>
     {busy && <p role="status">传输或查询进行中；请勿重复提交。</p>}{message && <p role="status" className="break-words text-xs">{message}</p>}
     {status && <p className="break-all text-xs">状态：{status.publication_state ?? "未知"} · 远端路径：{status.remote_path}{status.backup_path ? ` · 备份：${status.backup_path}` : ""}{status.stderr ? ` · 信息：${status.stderr}` : ""}</p>}
-  </details>;
+  </details></>;
 }

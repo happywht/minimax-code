@@ -57,6 +57,7 @@ def build_ssh_args(
     identity_file: str | None = None,
     connect_timeout: float = 10.0,
     remote_command: str | None = None,
+    strict_host_key: bool = False,
 ) -> list[str]:
     """Assemble the ssh argv (unit-tested without any network)."""
     args = [
@@ -64,7 +65,7 @@ def build_ssh_args(
         "-p", str(port),
         "-o", "BatchMode=yes",
         "-o", f"ConnectTimeout={int(connect_timeout)}",
-        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "StrictHostKeyChecking=" + ("yes" if strict_host_key else "accept-new"),
     ]
     if identity_file:
         args += ["-i", str(identity_file)]
@@ -82,6 +83,7 @@ async def run_ssh(
     timeout: float = 60.0,
     connect_timeout: float = 10.0,
     runner: Any = None,
+    strict_host_key: bool = False,
 ) -> SshResult:
     """Execute ``remote_command`` on the host row's machine.
 
@@ -95,6 +97,7 @@ async def run_ssh(
         identity_file=host.get("identity_file") or None,
         connect_timeout=connect_timeout,
         remote_command=remote_command,
+        strict_host_key=strict_host_key,
     )
     if runner is not None:
         code, out, err = await runner(argv)

@@ -170,6 +170,11 @@ export interface RemoteHost extends HostConfig {
   last_probe_ok: boolean | null;
 }
 
+export interface HostServiceStartParams {
+  host_id: string; expected_service_id: string; hostname: string; username: string;
+  port: number; identity_file: string; remote_port: number; unit: string;
+}
+
 export interface HostPushParams {
   host_id: string;
   local_path: string;

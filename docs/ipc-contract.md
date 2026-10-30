@@ -261,6 +261,7 @@ binding or an expired request.
 | `engine.status` | req/res | M4 — one engine's card by id. Unavailable engines carry `unavailable_reason` so the UI can disable them explicitly. |
 | `host.create` | req/res | M5 — register a remote Linux run host (name/hostname/username/SSH port/remote_port/identity_file reference — credentials are never stored). Duplicate names and missing identity files fail fast. |
 | `host.list` | req/res | M5 — list hosts, optional `enabled` filter. |
+| `host.service_start` | req/res | Explicitly start an existing Linux systemd user service using SSH with a previously trusted host key. Requires `host_id`, `expected_service_id`, exact saved hostname, username, port, identity_file and remote_port, and a restricted `unit` ending in `.service`. Disabled or changed hosts and changed service identity are rejected. Does not install, enable, restart or guarantee health; timeout or lost response leaves outcome unknown. |
 | `host.connect` | req/res | Start an owned loopback SSH forward to an existing remote agent using its saved `remote_port` (default 8765); an optional `remote_port` overrides it for this connection only. Returns connection status. |
 | `host.disconnect` | req/res | Close and reap the host's SSH forward. |
 | `host.connection` | req/res | Read the current forward status. |
@@ -2306,3 +2307,6 @@ The local temporary directory is removed on completion, error, or cancellation;
 remote cleanup is best effort. Cancellation or a lost response can coincide with
 publication, so the saved ID and remote path must be used to query
 `host.transfer_status` before a new attempt. This does not change `host.push`.
+
+
+`host.service_start` runs `systemctl --user start` only after an explicit user action. A successful command is not proof of sustained health, task completion, linger, or restart recovery. The browser must reconnect and inspect the target service; errors and timeouts can leave the command outcome unknown. Host configuration updates through this service are serialized with the request; external changes are not locked.
