@@ -2168,14 +2168,20 @@ the authorized skill execution boundary; non-push or empty-commit events are ski
 
 `workflow.trigger` 返回 `ok`、`steps_completed`、`steps_failed` 和 `errors`
 （失败步骤的零起始索引与消息）；只要有步骤失败，`ok` 为 `false`。
-手动技能运行仅支持恰好一个 `run-skill` 步骤，不执行混合步骤。请求需包含
+手动技能运行仅支持线性 `run-skill` 步骤，不执行条件或其他混合步骤。请求需包含
 `skill_execution`：`skill_id`、`session_id`、`request`、正整数 `budget_tokens`、
-`idempotency_key`、`expected_service_id` 和 `expected_project_id`（可为 null）。
-服务端按工作流 ID 和触发键派生技能接单键，经 `skill.invoke` 的持久接单、
-工作区及权限边界处理。返回 `skill_admission: {run, created}`；接单不代表完成，
-应通过 `run.get` 查看状态和结果。同一会话中同键同请求可重试，变更请求会冲突；
-编辑或删除工作流、切换会话或服务后应先查看原运行，不能盲目重放。技能步骤
-不计入 `steps_completed`，该数不代表异步运行完成。其他旧工作流按原路径执行。
+`idempotency_key`、`expected_service_id`、`expected_project_id`（可为 null）及
+`step_index`（零起始，省略为 0）。首次提交固定整个步骤定义与会话、服务及项目绑定。
+每步由用户明确提交请求和预算；只有前面各步的持久运行均为 `completed`、回执完整且没有
+明确失败或需核对的标记，才能提交后续步骤。状态查询返回每步的 `continuation_blocked_reason`。
+完成状态并不代表成果验收，也不会自动传递输出。失败、取消、暂停及未知状态均不自动继续。
+服务端按工作流 ID、触发键及步骤索引派生技能接单键，经 `skill.invoke` 的持久接单、
+工作区及权限边界处理。返回 `skill_admission: {run, created}`；接单不代表完成。
+同一链同一步同请求可重试，变更请求会冲突；编辑定义或更换绑定不能用同一键继续。
+传入 `skill_status`（包含触发 `idempotency_key`、`session_id`、`expected_service_id`、
+`expected_project_id`）可查询持久快照及各步骤关联运行，即使工作流已删除；运行结果可通过
+`run.get` 查看。技能步骤不计入 `steps_completed`，其他旧工作流按原路径执行。旧版单技能
+运行在链账本建立前没有快照；若其键用于新的多步链，会拒绝并要求先检查旧运行。
 
 
 ## 固定上下文调度契约（2026-10-26，Schema036）

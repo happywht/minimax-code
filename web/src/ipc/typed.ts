@@ -485,7 +485,8 @@ export interface TypedIPC {
   deleteWorkflow(id: string): Promise<{ deleted: boolean }>;
   enableWorkflow(id: string): Promise<WorkflowEntry>;
   disableWorkflow(id: string): Promise<WorkflowEntry>;
-  triggerWorkflow(id: string, context?: Record<string, unknown>, skillExecution?: { skill_id: string; session_id: string; request: string; budget_tokens: number; idempotency_key: string; expected_service_id: string; expected_project_id: string | null }): Promise<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[]; skill_admission?: import("../types/ipc").RunAdmissionResult }>;
+  triggerWorkflow(id: string, context?: Record<string, unknown>, skillExecution?: { skill_id: string; session_id: string; request: string; budget_tokens: number; idempotency_key: string; expected_service_id: string; expected_project_id: string | null; step_index?: number }): Promise<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[]; skill_admission?: import("../types/ipc").RunAdmissionResult }>;
+  getWorkflowSkillChain(id: string, scope: { idempotency_key: string; session_id: string; expected_service_id: string; expected_project_id: string | null }): Promise<{ skill_chain: { index: number; skill_id: string; run: AgentRun | null; continuation_blocked_reason: string | null }[] }>;
 
   // team (v0.8.0) — drive the Settings page's Teams tab.
   listTeams(): Promise<ListTeamsResult>;
@@ -1045,6 +1046,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<WorkflowEntry>("workflow.disable", { id }),
     triggerWorkflow: (id, context, skillExecution) =>
       client.request<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[]; skill_admission?: RunAdmissionResult }>("workflow.trigger", { id, context, ...(skillExecution ? { skill_execution: skillExecution } : {}) }),
+    getWorkflowSkillChain: (id, scope) => client.request("workflow.trigger", { id, skill_status: scope }),
 
     // team (v0.8.0)
     listTeams: () => client.request<ListTeamsResult>("team.list", {}),

@@ -28,6 +28,64 @@ from .handler_utils import HandlerError
 
 logger = logging.getLogger(__name__)
 
+
+def _skill_step_key(wid: str, key: str, index: int) -> str:
+    # Index zero preserves the key used by earlier single-step workflows.
+    parts = [wid, key] if index == 0 else [wid, key, index]
+    return "workflow:" + hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
+
+
+async def _chain_scope(db: Any, session_id: Any, service_id: Any, project_id: Any) -> None:
+    from ..storage.dao.text_artifacts import ArtifactDAO
+    if not isinstance(session_id, str) or not session_id.strip() or not isinstance(service_id, str) or not service_id.strip():
+        raise HandlerError(-32602, "Explicit session and service identity are required")
+    if project_id is not None and not isinstance(project_id, str):
+        raise HandlerError(-32602, "Invalid project identity")
+    session = await db.fetchone("SELECT engine, project_id FROM sessions WHERE id=?", (session_id,))
+    if not session or session["engine"] != "native" or session["project_id"] != project_id or await ArtifactDAO(db).service_id() != service_id:
+        raise HandlerError(-32602, "Service, Native session or project binding changed")
+
+
+async def _chain_status(db: Any, wid: str, key: str, session_id: str) -> list[dict[str, Any]]:
+    from ..storage.dao.runs import AgentRunsDAO
+    row = await db.fetchone("SELECT steps_json FROM workflow_skill_chains WHERE workflow_id=? AND trigger_key=?", (wid, key))
+    if row is None:
+        raise HandlerError(-32002, "Workflow skill chain not found")
+    dao = AgentRunsDAO(db)
+    results = []
+    for index, step in enumerate(json.loads(row["steps_json"])):
+        run_row = await db.fetchone("SELECT id FROM agent_runs WHERE session_id=? AND request_key=?", (session_id, _skill_step_key(wid, key, index)))
+        run = await dao.get_run(run_row["id"]) if run_row else None
+        receipt = await dao.result_payload(run["id"]) if run and run["status"] == "completed" else None
+        results.append({"index": index, "skill_id": step["config"]["skill_id"], "run": run,
+                        "continuation_blocked_reason": _continuation_blocked_reason(run, receipt)})
+    return results
+
+
+def _continuation_blocked_reason(run: Any, receipt: Any) -> str | None:
+    if not run:
+        return "尚未接单"
+    if run.get("status") != "completed":
+        return f"运行状态为 {run.get('status', '未知')}"
+    metadata = run.get("metadata")
+    if not isinstance(metadata, dict) or not isinstance(receipt, dict):
+        return "完成回执或运行信息不可用，需要核对"
+    if metadata.get("truncated") or receipt.get("truncated") or receipt.get("partial"):
+        return "输出被截断或结果不完整，需要核对"
+    if (run.get("error") or metadata.get("budget_exhausted") or receipt.get("error")
+            or receipt.get("ok") is False or receipt.get("cancelled")
+            or receipt.get("budget_paused") or receipt.get("budget_exhausted")
+            or receipt.get("run_status", "completed") != "completed"
+            or receipt.get("status", "completed") != "completed"):
+        return "运行回执显示失败或未正常完成，需要核对"
+    for verification in (metadata.get("verification"), receipt.get("verification")):
+        if verification is not None and not isinstance(verification, dict):
+            return "验证信息无效，需要核对"
+        if verification and (verification.get("requires_review") or verification.get("failed_tool_calls")
+                             or verification.get("verdict") == "failed"):
+            return "运行验证失败或需要核对"
+    return None
+
 # ---------------------------------------------------------------------------
 # Lazy DAO factory (same pattern as handlers_notifications.py)
 # ---------------------------------------------------------------------------
@@ -191,6 +249,17 @@ async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[
     wid = params.get("id")
     if not wid:
         raise HandlerError(-32001, "Missing 'id'")
+    status = params.get("skill_status")
+    if status is not None:
+        required = {"idempotency_key", "session_id", "expected_service_id", "expected_project_id"}
+        if not isinstance(status, dict) or set(status) != required or not isinstance(status["idempotency_key"], str) or not status["idempotency_key"].strip():
+            raise HandlerError(-32602, "Explicit chain identity is required")
+        db = dao._db
+        await _chain_scope(db, status["session_id"], status["expected_service_id"], status["expected_project_id"])
+        chain = await db.fetchone("SELECT session_id,service_id,project_id FROM workflow_skill_chains WHERE workflow_id=? AND trigger_key=?", (wid, status["idempotency_key"]))
+        if not chain or (chain["session_id"], chain["service_id"], chain["project_id"]) != (status["session_id"], status["expected_service_id"], status["expected_project_id"]):
+            raise HandlerError(-32002, "Workflow skill chain not found in this scope")
+        return {"skill_chain": await _chain_status(db, wid, status["idempotency_key"], status["session_id"])}
     workflow = await dao.get(wid)
     if workflow is None:
         raise HandlerError(-32002, f"Workflow '{wid}' not found")
@@ -198,15 +267,18 @@ async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[
     steps = workflow.get("steps") or []
     skill_steps = [s for s in steps if s.get("type") == "action" and s.get("action_type") == "run-skill"]
     if skill_steps or params.get("skill_execution") is not None:
-        if len(steps) != 1 or len(skill_steps) != 1:
-            raise HandlerError(-32602, "Skill workflows must contain exactly one run-skill step")
+        if not steps or len(steps) != len(skill_steps) or any(not isinstance((s.get("config") or {}).get("skill_id"), str) or not s["config"]["skill_id"].strip() for s in steps):
+            raise HandlerError(-32602, "Only linear workflows containing exclusively run-skill steps are supported")
         intent = params.get("skill_execution")
         if not isinstance(intent, dict):
             raise HandlerError(-32602, "Explicit skill execution inputs are required")
         required = {"skill_id", "session_id", "request", "budget_tokens", "idempotency_key", "expected_service_id", "expected_project_id"}
-        if set(intent) != required:
+        if set(intent) not in (required, required | {"step_index"}):
             raise HandlerError(-32602, "Skill execution inputs are incomplete or contain unknown fields")
-        skill_id = (skill_steps[0].get("config") or {}).get("skill_id")
+        index = intent.get("step_index", 0)
+        if type(index) is not int or index < 0 or index >= len(steps):
+            raise HandlerError(-32602, "Invalid skill step index")
+        skill_id = (skill_steps[index].get("config") or {}).get("skill_id")
         if not isinstance(skill_id, str) or not skill_id.strip() or intent["skill_id"] != skill_id:
             raise HandlerError(-32602, "Workflow skill changed or is missing; inspect the original run before retrying")
         key = intent["idempotency_key"]
@@ -220,10 +292,35 @@ async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[
         if intent["expected_project_id"] is not None and not isinstance(intent["expected_project_id"], str):
             raise HandlerError(-32602, "Expected project identity is invalid")
 
-        # Namespace a user's trigger key by workflow. Stable across retries;
-        # the skill admission layer rejects a changed request under that key.
-        digest = hashlib.sha256(json.dumps([wid, key], ensure_ascii=False).encode()).hexdigest()
-        skill_params = {**intent, "idempotency_key": f"workflow:{digest}", "admission_only": True}
+        from pydantic import ValidationError
+        from .protocol import SkillInvokeParams
+        skill_params = {k: v for k, v in intent.items() if k != "step_index"}
+        skill_params.update(idempotency_key=_skill_step_key(wid, key, index), admission_only=True)
+        try:
+            SkillInvokeParams.model_validate(skill_params)
+        except ValidationError as exc:
+            raise HandlerError(-32602, str(exc)) from exc
+        db = dao._db
+        await _chain_scope(db, intent["session_id"], intent["expected_service_id"], intent["expected_project_id"])
+        snapshot = json.dumps(steps, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        from ..storage.dao._base import now_iso
+        async with db.transaction() as conn:
+            async with conn.execute("SELECT * FROM workflow_skill_chains WHERE workflow_id=? AND trigger_key=?", (wid, key)) as cursor:
+                chain = await cursor.fetchone()
+            if chain is None:
+                if index != 0:
+                    raise HandlerError(-32602, "Start the chain with step zero")
+                if len(steps) > 1:
+                    async with conn.execute("SELECT id FROM agent_runs WHERE session_id=? AND request_key=?", (intent["session_id"], _skill_step_key(wid, key, 0))) as cursor:
+                        if await cursor.fetchone():
+                            raise HandlerError(-32602, "Legacy run exists for this key; inspect it and use a new key for a chain")
+                await conn.execute("INSERT INTO workflow_skill_chains VALUES (?,?,?,?,?,?,?)", (wid, key, intent["session_id"], intent["expected_service_id"], intent["expected_project_id"], snapshot, now_iso()))
+            elif (chain["session_id"], chain["service_id"], chain["project_id"], chain["steps_json"]) != (intent["session_id"], intent["expected_service_id"], intent["expected_project_id"], snapshot):
+                raise HandlerError(-32602, "Chain binding or workflow steps changed; inspect the original chain")
+        previous = await _chain_status(db, wid, key, intent["session_id"])
+        for item in previous[:index]:
+            if item["continuation_blocked_reason"]:
+                raise HandlerError(-32602, f"步骤 {item['index']} 不能继续：{item['continuation_blocked_reason']}")
         handler = ctx.server._handlers.get("skill.invoke")
         if handler is None:
             raise HandlerError(-32004, "Skill admission is unavailable")
