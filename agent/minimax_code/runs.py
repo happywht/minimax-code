@@ -133,6 +133,10 @@ class RunService:
                         try:
                             return await operation(job)
                         finally:
+                            # Once the operation has ended, cancellation must not
+                            # turn its outcome into a cancellation while optional
+                            # observation or durable finalization is in progress.
+                            job.finalizing = True
                             if job.capture_file_changes:
                                 from .run_file_changes import save_comparison
                                 await save_comparison(job, baseline)
