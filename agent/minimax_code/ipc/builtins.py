@@ -859,6 +859,7 @@ async def handle_agent_send_message(
                                       reasoning_effort=model_snapshot.reasoning_effort)
             if not job.workspace:
                 raise RuntimeError("Accepted workspace is missing; rebind before starting a new task")
+            job.verify_workspace()
             with execution_scope(ExecutionPolicy(workspace=Path(job.workspace), read_only=mode == "plan", restrict_network_tools=restrict_network_tools)), subagent_runtime_scope(runtime), budget_scope(job.budget_handle), run_children_scope(children):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
                                                  model_snapshot=model_snapshot, internal_schedule=internal_schedule,

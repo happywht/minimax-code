@@ -860,6 +860,17 @@ runs may omit it. Missing/disabled providers and empty endpoint configuration re
 The accepted workspace path and project are also
 saved; execution validates the captured directory and never follows later rebinding.
 
+New RunService admissions also record the local directory device and file
+identity for the current service process. Queued Native and Codex runs recheck
+it before work starts; an unavailable or replaced directory fails the run
+rather than using the replacement. Continuation and recovery keep their
+existing review and path checks and capture a new identity at admission: the
+recorded identity is not used to authenticate the original workspace across
+restarts or hosts. Device/inode can be reused or cloned, and the database's
+service ID alone is not proof of host identity. Users must inspect the original
+effects and workspace before recovery. Already running processes and external
+changes after a check remain outside this guarantee.
+
 
 A caller may supply `idempotency_key` (1–128 non-blank characters) with an explicit
 `session_id` on `agent.send_message`; it is required on `run.start`. A duplicate key

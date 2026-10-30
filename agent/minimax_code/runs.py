@@ -19,6 +19,20 @@ from typing import Any
 from .live_stream import LiveStream
 
 logger = logging.getLogger(__name__)
+_WORKSPACE_RUNTIME_ID = uuid.uuid4().hex
+
+
+def _workspace_identity(path: str) -> dict[str, Any]:
+    from .workspace_ctx import require_directory
+
+    root = require_directory(path)
+    if str(root) != path:
+        raise ValueError("Workspace path changed; start a new task after reviewing its binding")
+    info = root.stat()
+    if not info.st_ino:
+        raise ValueError("Workspace directory identity is unavailable; cannot safely queue this task")
+    return {"version": 1, "device": info.st_dev, "inode": info.st_ino,
+            "runtime": _WORKSPACE_RUNTIME_ID}
 
 
 class RunServiceClosing(RuntimeError):
@@ -75,6 +89,7 @@ class RunJob:
     live_stream: LiveStream = field(default_factory=LiveStream)
     error: dict[str, Any] | None = None
     workspace: str | None = None
+    workspace_identity: dict[str, Any] | None = None
     project_id: str | None = None
     # M2 — resolved budget for this run (None = unlimited) and the
     # day's already-spent total captured at admission. Execution reads
@@ -87,6 +102,10 @@ class RunJob:
     validate_command: str = ""
     capture_file_changes: bool = False
     steer_controller: Any = None
+
+    def verify_workspace(self) -> None:
+        if not self.workspace or not self.workspace_identity or _workspace_identity(self.workspace) != self.workspace_identity:
+            raise ValueError("Accepted workspace directory changed or its identity is unavailable; start a new task after review")
 
 
 class RunService:
@@ -142,6 +161,8 @@ class RunService:
                     try:
                         if job.cancel_requested:
                             raise asyncio.CancelledError
+                        if job.workspace_identity is not None:
+                            job.verify_workspace()
                         job.operation_started = True
                         baseline = None
                         if job.capture_file_changes:
@@ -266,8 +287,10 @@ class RunService:
                                 raise ValueError(
                                     "Workspace overlaps an active or queued run in another session; "
                                     "wait for it to finish or use an independent workspace")
+                    identity = _workspace_identity(workspace)
+                    bound_metadata = {**metadata, "workspace_identity": identity}
                     run, created = await dao.admit_run(
-                        session_id=session_id, request=request, title=title, metadata=metadata,
+                        session_id=session_id, request=request, title=title, metadata=bound_metadata,
                         request_key=request_key, resumed_from_id=resumed_from_id,
                         **({"continuation": True} if continuation else {}))
                     if not created:
@@ -275,6 +298,7 @@ class RunService:
                         return run, self._by_run.get(run["id"]), False
                     job = RunJob(session_id, run_id=run["id"], dao=dao,
                                  message_id=run["assistant_message_id"], workspace=workspace,
+                                 workspace_identity=identity,
                                  project_id=project_id, budget_tokens=budget_tokens,
                                  daily_baseline=daily_baseline,
                                  daily_budget_limit=daily_budget_limit,
