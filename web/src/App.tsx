@@ -94,6 +94,7 @@ export default function App() {
   const deliveryEdited = useRef(false);
   const officeEdited = useRef(false);
   const [overlayView, setOverlayView] = useState<OverlayView | null>(null);
+  const [deliveryRunTarget, setDeliveryRunTarget] = useState<{ host: string; service: string; project: string; session: string; run: string } | null>(null);
   const [historicalTransfer, setHistoricalTransfer] = useState<HistoricalReportTransfer | null>(null);
   useEffect(() => { if (overlayView !== "attachments") setHistoricalTransfer(null); }, [overlayView]);
   const [scheduleTarget, setScheduleTarget] = useState<{ jobId: string; occurrenceId?: string; host: string } | null>(null);
@@ -193,6 +194,7 @@ export default function App() {
     const automation = (value: string | null) => value === "scheduled" || value === "workflows" || value === "webhooks";
     if (automation(overlayView) && !automation(next) && !leaveAutomation()) return;
     if (next === "skills" || next === "settings" || next === "scheduled" || next === "workflows" || next === "webhooks" || next === "agents" || next === "artifacts" || next === "attachments" || next === "office" || next === "research" || next === "run-artifacts" || next === "task-dashboard") {
+      if (next === "run-artifacts") setDeliveryRunTarget(null);
       if (next === "settings") setSettingsInitialTab("models");
       if (next === "scheduled" || next === "workflows" || next === "webhooks") setSettingsInitialTab(next);
       if (next === "agents") setSettingsInitialTab("agents");
@@ -215,6 +217,22 @@ export default function App() {
     const openChat = () => { if (isDelivery(overlayView) && !leaveDelivery()) return; if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return; if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return; setOverlayView(null); setView("chat"); };
     window.addEventListener("minimax:open-chat", openChat);
     return () => window.removeEventListener("minimax:open-chat", openChat);
+  }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
+
+  useEffect(() => {
+    const openRunDeliveries = (event: Event) => {
+      const target = (event as CustomEvent<{ host: string; service: string; project: string; session: string; run: string }>).detail;
+      const scope = useSessionStore.getState();
+      if (!target || target.host !== ipc.agentBaseUrl || target.project !== scope.currentProjectId ||
+          target.session !== scope.currentSessionId || !target.run || !target.service ||
+          scope.sessions.find((item) => item.id === target.session)?.project_id !== target.project) return;
+      if (isDelivery(overlayView) && !leaveDelivery()) return;
+      if ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) return;
+      if ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation()) return;
+      setDeliveryRunTarget(target); setOverlayView("run-artifacts");
+    };
+    window.addEventListener("minimax:open-run-deliveries", openRunDeliveries);
+    return () => window.removeEventListener("minimax:open-run-deliveries", openRunDeliveries);
   }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
 
   useEffect(() => {
@@ -421,7 +439,7 @@ export default function App() {
                       setOverlayView(null); setView("chat"); setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline"));
                     }} onPrepareReport={(transfer) => { setHistoricalTransfer(transfer); setOverlayView("attachments"); }} />
                   ) : overlayView === "office" || overlayView === "research" || overlayView === "attachments" || overlayView === "artifacts" || overlayView === "run-artifacts" ? (
-                    <DeliveryWorkspace tab={overlayView} historicalTransfer={historicalTransfer} onClearHistoricalTransfer={() => setHistoricalTransfer(null)} onSelect={(tab) => setOverlayView(tab)} onEdit={(kind) => { if (kind === "table") officeEdited.current = true; else deliveryEdited.current = true; }} onClose={() => { if (leaveDelivery()) setOverlayView(null); }} />
+                    <DeliveryWorkspace tab={overlayView} runTarget={deliveryRunTarget} onClearRunTarget={() => setDeliveryRunTarget(null)} historicalTransfer={historicalTransfer} onClearHistoricalTransfer={() => setHistoricalTransfer(null)} onSelect={(tab) => setOverlayView(tab)} onEdit={(kind) => { if (kind === "table") officeEdited.current = true; else deliveryEdited.current = true; }} onClose={() => { if (leaveDelivery()) setOverlayView(null); }} />
                   ) : overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks" ? (
                     <AutomationWorkspace scheduleTarget={scheduleTarget} tab={overlayView} onSelect={(tab) => setOverlayView(tab)} onEdit={() => { automationEdited.current = true; }} onScheduledEdit={() => { scheduledDraftEdited.current = true; }} onClose={() => { if (leaveAutomation()) setOverlayView(null); }} onOpenSession={() => { if (!leaveAutomation()) return false; setOverlayView(null); setView("chat"); return true; }} />
                   ) : overlayView === "skills" ? (

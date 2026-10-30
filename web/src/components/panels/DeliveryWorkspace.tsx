@@ -25,7 +25,7 @@ export type ReportTableTransfer = { rows: string[][]; source: string };
 export type RunAttachmentTransfer = { attachment: AttachmentOriginal; runId: string };
 type Binding = { project: string; session: string | null; host: string; service: string };
 
-export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTransfer, onClearHistoricalTransfer }: { tab: DeliveryTab; onSelect: (tab: DeliveryTab) => void; onClose: () => void; onEdit?: (kind: "report" | "table") => void; historicalTransfer?: HistoricalReportTransfer | null; onClearHistoricalTransfer?: () => void }): JSX.Element {
+export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTransfer, onClearHistoricalTransfer, runTarget, onClearRunTarget }: { tab: DeliveryTab; onSelect: (tab: DeliveryTab) => void; onClose: () => void; onEdit?: (kind: "report" | "table") => void; historicalTransfer?: HistoricalReportTransfer | null; onClearHistoricalTransfer?: () => void; runTarget?: { host: string; service: string; project: string; session: string; run: string } | null; onClearRunTarget?: () => void }): JSX.Element {
   const project = useSessionStore((s) => s.currentProjectId), session = useSessionStore((s) => s.currentSessionId);
   const projectName = useSessionStore((s) => s.projects.find((item) => item.id === project)?.name);
   const host = ipc.agentBaseUrl;
@@ -111,23 +111,26 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTr
         {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} tableTransfer={tableTransfer?.scope === scopeKey ? tableTransfer.value : null} onClearTableTransfer={() => setTableTransfer(null)} researchTransfer={researchTransfer?.scope === scopeKey ? researchTransfer.ids : null} onClearResearchTransfer={() => setResearchTransfer(null)} attachmentTransfer={attachmentTransfers[scopeKey] ?? null} onClearAttachmentTransfer={() => setAttachmentTransfers((previous) => { const next = { ...previous }; delete next[scopeKey]; return next; })} onTableApplied={() => onEdit?.("report")} artifactTransfer={historicalMatches ? historicalTransfer!.row : artifactTransfer?.scope === scopeKey ? artifactTransfer.row : null} onClearArtifactTransfer={() => { setArtifactTransfer(null); onClearHistoricalTransfer?.(); }} /></div>}
         {visited.has("office") && <div className="h-full" hidden={tab !== "office"}><OfficeDeliveryPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} initialDraft={officeDrafts.get(scopeKey)} onRetainDraft={(draft) => officeDrafts.set(scopeKey, draft)} tableTransferPending={tableTransfer?.scope === scopeKey} onPrepareReportTable={(value) => { setTableTransfer({ scope: scopeKey, value }); switchTab("attachments"); }} /></div>}
         {visited.has("research") && <div className="h-full" hidden={tab !== "research"}><ResearchSourcesPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} reportService={validBinding.service} reportTransferPending={researchTransfer?.scope === scopeKey} onPrepareReport={(ids) => { setResearchTransfer({ scope: scopeKey, ids }); switchTab("attachments"); }} /></div>}
-        {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} attachmentTransferPending={!!attachmentTransfers[scopeKey]} onPrepareAttachment={(value) => { setAttachmentTransfers((previous) => ({ ...previous, [scopeKey]: value })); switchTab("attachments"); }} onPrepareReport={(row) => { setArtifactTransfer({ scope: scopeKey, row }); switchTab("attachments"); }} /></div>}
+        {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} target={runTarget} onClearTarget={onClearRunTarget} attachmentTransferPending={!!attachmentTransfers[scopeKey]} onPrepareAttachment={(value) => { setAttachmentTransfers((previous) => ({ ...previous, [scopeKey]: value })); switchTab("attachments"); }} onPrepareReport={(row) => { setArtifactTransfer({ scope: scopeKey, row }); switchTab("attachments"); }} /></div>}
       </div>
     </div>}
   </section>;
 }
 
-function SessionDeliveries({ binding, onPrepareReport, onPrepareAttachment, attachmentTransferPending }: { binding: Binding; onPrepareReport: (row: TextArtifact) => void; onPrepareAttachment: (value: RunAttachmentTransfer) => void; attachmentTransferPending: boolean }): JSX.Element {
+function SessionDeliveries({ binding, target, onClearTarget, onPrepareReport, onPrepareAttachment, attachmentTransferPending }: { binding: Binding; target?: { host: string; service: string; project: string; session: string; run: string } | null; onClearTarget?: () => void; onPrepareReport: (row: TextArtifact) => void; onPrepareAttachment: (value: RunAttachmentTransfer) => void; attachmentTransferPending: boolean }): JSX.Element {
   const runs = useRunTimelineStore((s) => s.runs), order = useRunTimelineStore((s) => s.order);
   const loading = useRunTimelineStore((s) => s.loading), error = useRunTimelineStore((s) => s.error);
   const load = useRunTimelineStore((s) => s.loadForSession);
   useEffect(() => { void load(binding.session); }, [binding.session, load]);
   const associated = order.map((id) => runs[id]).filter((run) => run && run.session_id === binding.session &&
     run.metadata?.project_id === binding.project);
+  const targetMatches = target && target.host === binding.host && target.service === binding.service && target.project === binding.project && target.session === binding.session;
+  const visible = target ? (targetMatches ? associated.filter((run) => run.id === target.run) : []) : associated;
   return <div className="space-y-3 text-sm"><h3 className="font-semibold">当前会话的任务关联成果</h3>
     <p>列出当前项目和会话的近期运行及活动运行。附件来自已记录的工具结果；文本成果需按运行读取登记关联。关联不证明成果由该运行生成，内容均需自行核对。更早的成果可在项目成果中查找。</p>
     {binding.session && <Button type="button" size="sm" variant="secondary" disabled={loading} onClick={() => void load(binding.session)}>刷新运行</Button>}
-    {!binding.session ? <p>请先选择会话。</p> : error ? <p role="alert">无法读取运行记录：{error}</p> : loading ? <p role="status">正在读取运行记录…</p> : !associated.length ? <p>当前会话没有可确认项目归属的近期运行。</p> : associated.map((run) => <article key={run.id} className="rounded border border-line p-3">
+    {target && <div><p>{targetMatches ? `正在查看任务 ${target.run}` : "目标任务的项目、会话或服务已变化，请重新选择。"}</p><Button type="button" size="sm" variant="ghost" onClick={onClearTarget}>查看全部近期运行</Button></div>}
+    {!binding.session ? <p>请先选择会话。</p> : error ? <p role="alert">无法读取运行记录：{error}</p> : loading ? <p role="status">正在读取运行记录…</p> : target && !targetMatches ? null : !visible.length ? <p>{targetMatches ? "此任务不在当前近期运行列表，请在项目任务状态中查找历史记录。" : "当前会话没有可确认项目归属的近期运行。"}</p> : visible.map((run) => <article key={run.id} className="rounded border border-line p-3">
       <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p><RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} transferPending={attachmentTransferPending} onPrepareAttachment={(attachment, runId) => onPrepareAttachment({ attachment, runId })} />
       <details className="mt-2"><summary>登记关联的文本成果</summary><RunTextArtifacts runId={run.id} sessionId={binding.session!} projectId={binding.project} serviceId={binding.service} onPrepareReport={onPrepareReport} /></details>
       <FollowupRunDraft run={run} />

@@ -42,6 +42,7 @@ export function RunTimelineTextArtifacts({ run }: { run: AgentRun }): JSX.Elemen
       {busy ? "正在确认服务…" : service ? "收起任务文本成果" : "查看任务文本成果"}
     </Button>
     {error && <p role="alert">{error}</p>}
+    {service && <Button type="button" size="sm" variant="ghost" onClick={() => window.dispatchEvent(new CustomEvent("minimax:open-run-deliveries", { detail: { host, service, project, session, run: run.id } }))}>在交付物工作区查看此任务</Button>}
     {service && <RunTextArtifacts key={`${host}:${service}:${project}:${session}:${run.id}`} runId={run.id} sessionId={session} projectId={project} serviceId={service} />}
   </div>;
 }
