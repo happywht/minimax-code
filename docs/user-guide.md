@@ -401,6 +401,8 @@ Windows 使用本机绝对路径。目标父目录须已存在，目标目录必
 uv run python -m minimax_code.backup_copy --source /absolute/backups/data-vault.zip --destination-parent /absolute/other-backups
 ```
 
+Windows 可双击程序目录中的 `Copy-Backup.cmd`，输入已完成的备份文件与已有目标父目录的绝对路径，核对后输入 `YES` 才复制；取消不会开始复制。它优先使用该版本 `agent/.venv/Scripts/python.exe`，缺失时要求输入已有 Python 3.11+ 的绝对路径，不安装运行时。窗口会保留结果和退出码供查看；旧发行包可能没有此入口，交互入口尚未进行实机演练。
+
 工具在目标目录下新建随机子目录，复制文件并写入含字节数和 SHA-256 的 `receipt.json`，不覆盖原文件或已有备份。成功标记为 `.COPY-COMPLETE` 且不存在 `.COPY-INCOMPLETE`；失败或中断可能同时留下两个标记，应视为未完成并保留目录供检查，不要将其当作备份。复制期间不要修改或替换源文件，也不要在目标目录中并发操作；带 SQLite WAL、SHM 或 journal 旁文件的数据库会被拒绝，不应复制运行中的数据库。摘要只记录复制流，不认证来源或证明文件完整、可恢复或与当前版本兼容。此操作仅复制指定文件，SQLite 快照不包含独立 vault，数据包的排除范围见 14.1；两者都不能替代另行保全凭据、工作区和其他外部文件。备份及收据可能包含敏感信息，目标目录权限由操作者管理。
 
 导入前会弹出确认（显示行数与 schema 版本）。**大规模导入前请至少保留一份备份**；旧版本会拒绝导入新 schema 的文件，而不是损坏自身。
