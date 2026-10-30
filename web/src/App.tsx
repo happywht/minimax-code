@@ -220,6 +220,20 @@ export default function App() {
   }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
 
   useEffect(() => {
+    const openSessionTimeline = (event: Event) => {
+      const target = (event as CustomEvent<{ host: string; project: string; session: string }>).detail;
+      const scope = useSessionStore.getState();
+      if (!target || target.host !== ipc.agentBaseUrl || target.project !== scope.currentProjectId ||
+          target.session !== scope.currentSessionId) return;
+      // The caller has already obtained permission to close its workspace.
+      setView("chat"); setInspectorOpen(true);
+      window.dispatchEvent(new Event("minimax:open-timeline"));
+    };
+    window.addEventListener("minimax:open-session-timeline", openSessionTimeline);
+    return () => window.removeEventListener("minimax:open-session-timeline", openSessionTimeline);
+  }, []);
+
+  useEffect(() => {
     const openRunDeliveries = (event: Event) => {
       const target = (event as CustomEvent<{ host: string; service: string; project: string; session: string; run: string }>).detail;
       const scope = useSessionStore.getState();

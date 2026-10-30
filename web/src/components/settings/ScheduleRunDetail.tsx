@@ -27,13 +27,15 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
   const cancelInFlight = useRef(false);
   const attentionInFlight = useRef(false);
   const [attentionBusy, setAttentionBusy] = useState(false);
+  const [timelineBusy, setTimelineBusy] = useState(false);
+  const timelineInFlight = useRef(false);
   const epoch = useRef(0);
   const project = occurrence.context?.project_id, host = ipc.agentBaseUrl;
   const scopeKey = JSON.stringify([occurrence.id, occurrence.run_id, occurrence.job_id, occurrence.revision,
     occurrence.context?.workspace, occurrence.context?.host, occurrence.context?.engine, project, host, activeSession, activeProject]);
   const eligible = !!occurrence.run_id && !!project && occurrence.context?.host === "local" && occurrence.context?.engine === "native" && !!occurrence.context?.workspace;
   useEffect(() => {
-    setOpen(false); setDetail(null); setError(""); setBusy(false); setCancelling(false); setCancelMessage(""); onVerified?.(null);
+    setOpen(false); setDetail(null); setError(""); setBusy(false); setTimelineBusy(false); setCancelling(false); setCancelMessage(""); onVerified?.(null);
     const version = epoch;
     return () => { version.current++; };
   }, [scopeKey]);
@@ -119,6 +121,34 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
       else if (current()) setError(message);
     } finally { attentionInFlight.current = false; if (current()) setAttentionBusy(false); }
   };
+  const openTimeline = async () => {
+    if (!view || !run || !project || !serviceId || !onOpenSession || view.serviceId !== serviceId || timelineInFlight.current) return;
+    const ticket = epoch.current, runId = run.id, sessionId = occurrence.session_id;
+    const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === activeProject;
+    timelineInFlight.current = true; setTimelineBusy(true); setError("");
+    try {
+      const [identity, snapshot, session] = await Promise.all([
+        typedIPC.getServiceIdentity(), typedIPC.getRunSteps(runId), typedIPC.getSession(sessionId),
+      ]);
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      const item = snapshot.run;
+      const schedule = item.metadata?.schedule as { occurrence_id?: string; job_id?: string; revision?: number } | undefined;
+      if (identity.service_id !== serviceId || after.service_id !== serviceId || item.id !== runId ||
+          item.session_id !== sessionId || item.metadata?.project_id !== project ||
+          item.metadata?.workspace_snapshot !== occurrence.context.workspace || item.metadata?.model_snapshot?.engine !== "native" ||
+          schedule?.occurrence_id !== occurrence.id || schedule.job_id !== occurrence.job_id || schedule.revision !== occurrence.revision ||
+          snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId) ||
+          session.session.id !== sessionId || session.session.project_id !== project)
+        throw new Error("服务、运行或会话归属已变化，请重新读取。");
+      if (onOpenSession() === false) return;
+      if (!useSessionStore.getState().setCurrentProject(project) || !useSessionStore.getState().setCurrent(sessionId)) return;
+      void useSessionStore.getState().refresh({ loadCurrent: false });
+      window.dispatchEvent(new CustomEvent("minimax:open-session-timeline", { detail: { host, project, session: sessionId } }));
+    } catch (failure) { if (current()) setError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { timelineInFlight.current = false; if (current()) setTimelineBusy(false); }
+  };
   const cancel = async () => {
     if (!view || !run || !sameStatus || !cancellable.includes(run.status) || !project || cancelInFlight.current) return;
     const ticket = epoch.current;
@@ -188,6 +218,7 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
       {cancelMessage && <p role="status">{cancelMessage}</p>}
       {run && view && <>
         <p>读取时运行状态：{labels[run.status] ?? run.status} · 运行 {run.id} · 服务 {view.serviceId}</p>
+        {serviceId === view.serviceId && onOpenSession && <Button type="button" size="sm" variant="secondary" disabled={timelineBusy} loading={timelineBusy} onClick={() => void openTimeline()}>打开原会话时间线</Button>}
         {run.error && <p>运行错误：{run.error}</p>}
         {!sameStatus && <p>读取期间运行状态发生变化，请刷新后查看回执。</p>}
         {sameStatus && serviceId === view.serviceId && <div className="space-y-1">
