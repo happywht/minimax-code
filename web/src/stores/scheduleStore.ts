@@ -27,7 +27,7 @@ export interface ScheduleState {
 
   invalidateScope: (clearPending?: boolean) => void;
   refresh: () => Promise<void>;
-  create: (opts: ScheduleDefinition) => Promise<ScheduledJobEntry | null>;
+  create: (opts: ScheduleDefinition & { enabled?: boolean; expected_service_id?: string }) => Promise<ScheduledJobEntry | null>;
   remove: (jobId: string) => Promise<void>;
   /**
    * Compare-and-swap the definition; running occurrences retain their snapshot.

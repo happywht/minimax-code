@@ -2,10 +2,11 @@
  * Scheduled tab — manage cron jobs via `schedule.*` IPC.
  * Includes ScheduledJobRow and TaskStatusDot sub-components.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  Copy,
   Pencil,
   Play,
   Plus,
@@ -27,12 +28,15 @@ import { StreamEvent } from "../../types/ipc";
 export { ScheduledTab };
 
 // Deliberately process-local: drafts never leave this browser page or survive reload.
-type CreateDraft = { name: string; cron: string; prompt: string; context: ScheduleContext };
+type CreateDraft = { name: string; cron: string; prompt: string; context: ScheduleContext; enabled?: boolean };
 type EditDraft = CreateDraft & { revision: number | null; service: string | null; initial: string };
 const createDrafts = new Map<string, CreateDraft>();
 const editDrafts = new Map<string, EditDraft>();
+// A lost create reply may have created a job. Retain the fence across remounts
+// for this service scope until the user has checked the list.
+const uncertainCreates = new Set<string>();
 
-function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, target}: {target?: { jobId: string; occurrenceId?: string } | null; onOpenSession?: () => boolean | void; active?: boolean; serviceId?: string; draftScope?: string}): JSX.Element {
+function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, draftScope, target}: {target?: { jobId: string; occurrenceId?: string } | null; onOpenSession?: () => boolean | void; onDraftEdit?: () => void; active?: boolean; serviceId?: string; draftScope?: string}): JSX.Element {
   const jobs = useScheduleStore((s) => s.jobs);
   const refresh = useScheduleStore((s) => s.refresh);
   const create = useScheduleStore((s) => s.create);
@@ -66,10 +70,18 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
   const [draftCron, setDraftCron] = useState(() => draftScope ? createDrafts.get(draftScope)?.cron ?? "" : "");
   const [draftPrompt, setDraftPrompt] = useState(() => draftScope ? createDrafts.get(draftScope)?.prompt ?? "" : "");
   const [draftContext, setDraftContext] = useState(() => (draftScope && createDrafts.get(draftScope)?.context) || emptyScheduleContext());
+  const [draftEnabled, setDraftEnabled] = useState(() => !!(draftScope && createDrafts.get(draftScope)?.enabled));
+  const createScope = JSON.stringify([ipc.agentBaseUrl, serviceId]);
+  const [creating, setCreating] = useState(false), [createUncertain, setCreateUncertain] = useState(() => uncertainCreates.has(createScope));
+  const createInFlight = useRef(false), copyEpoch = useRef(0);
+  const draftSignature = JSON.stringify([draftName, draftCron, draftPrompt, draftContext, draftEnabled]);
+  const draftSignatureRef = useRef(draftSignature); draftSignatureRef.current = draftSignature;
+  useEffect(() => () => { copyEpoch.current++; }, []);
+  useEffect(() => { setCreateUncertain(uncertainCreates.has(createScope)); }, [createScope]);
 
   useEffect(() => {
-    if (draftScope) createDrafts.set(draftScope, { name: draftName, cron: draftCron, prompt: draftPrompt, context: draftContext });
-  }, [draftScope, draftName, draftCron, draftPrompt, draftContext]);
+    if (draftScope) createDrafts.set(draftScope, { name: draftName, cron: draftCron, prompt: draftPrompt, context: draftContext, enabled: draftEnabled });
+  }, [draftScope, draftName, draftCron, draftPrompt, draftContext, draftEnabled]);
 
   useEffect(() => { if (active && jobs.length === 0) void refresh(); }, [active, jobs.length, refresh]);
   useEffect(() => {
@@ -82,11 +94,30 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
   }, [refresh, active]);
 
   const handleCreate = async () => {
-    const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context: draftContext });
-    if (job) {
-      toast.success(strings.settings.scheduled.createdToast, job.name);
-      setDraftName(""); setDraftCron(""); setDraftPrompt(""); setDraftContext(emptyScheduleContext());
-    }
+    if (createInFlight.current || createUncertain || uncertainCreates.has(createScope) || !serviceId || !active) return;
+    createInFlight.current = true; uncertainCreates.add(createScope); setCreating(true);
+    try {
+      const job = await create({ name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context: draftContext, enabled: draftEnabled, expected_service_id: serviceId });
+      if (job) {
+        uncertainCreates.delete(createScope);
+        toast.success(strings.settings.scheduled.createdToast, job.name);
+        setDraftName(""); setDraftCron(""); setDraftPrompt(""); setDraftContext(emptyScheduleContext()); setDraftEnabled(false);
+      } else setCreateUncertain(true);
+    } finally { createInFlight.current = false; setCreating(false); }
+  };
+  const copyToDraft = async (job: ScheduledJob) => {
+    if (creating || createUncertain) return;
+    const ticket = ++copyEpoch.current, host = ipc.agentBaseUrl, signature = draftSignature;
+    if ((draftName || draftCron || draftPrompt || validScheduleContext(draftContext)) && !await requestConfirmation({ title: "替换新建草稿？", description: "当前新建草稿将被所选计划替换。", confirmLabel: "替换草稿" })) return;
+    if (ticket !== copyEpoch.current || ipc.agentBaseUrl !== host || !active || createInFlight.current || uncertainCreates.has(createScope)) return;
+    if (signature !== draftSignatureRef.current) { toast.error("草稿已变化", "请重新选择复制，避免覆盖新的编辑。"); return; }
+    const source = job.context;
+    setDraftName(`${job.name}（副本）`); setDraftCron(job.cron); setDraftPrompt(job.prompt);
+    setDraftContext(source ? { project_id: source.project_id, provider_id: source.provider_id, model: source.model,
+      reasoning_effort: source.reasoning_effort, mode: source.mode, budget_tokens: source.budget_tokens,
+      timezone: source.timezone, restart_missed_policy: source.restart_missed_policy } : emptyScheduleContext());
+    setDraftEnabled(false); onDraftEdit?.();
+    document.getElementById("scheduled-job-name")?.focus();
   };
 
   return (
@@ -103,6 +134,7 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
       />
 
       <Panel title={strings.settings.scheduled.newTitle}>
+        <fieldset disabled={creating}>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
           <label htmlFor="scheduled-job-name" className="sr-only">{strings.settings.scheduled.fieldName}</label>
           <Input
@@ -142,7 +174,8 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
             size="sm"
             variant="subtle"
             data-testid="settings-job-add"
-            disabled={!draftName.trim() || !draftCron.trim() || !draftPrompt.trim() || !validScheduleContext(draftContext)}
+            disabled={!active || !serviceId || creating || createUncertain || !draftName.trim() || !draftCron.trim() || !draftPrompt.trim() || !validScheduleContext(draftContext)}
+            loading={creating}
             onClick={() => void handleCreate()}
             icon={<Plus />}
             className="sm:col-span-2"
@@ -152,6 +185,10 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
         </div>
         <ScheduleCronBuilder onApply={setDraftCron} timezone={draftContext.timezone} />
         <ScheduleContextFields value={draftContext} onChange={setDraftContext} />
+        <label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={draftEnabled} onChange={(event) => setDraftEnabled(event.target.checked)} />创建后启用计划</label>
+        <p className="text-xs text-ink-2">默认先创建为停用，核对后可启用；启用的计划会在到期时执行。</p>
+        {createUncertain && <div className="mt-2 text-xs text-status-warning" role="alert"><p>创建结果未确认。请刷新计划列表，核对是否已创建，避免重复计划。</p><Button type="button" size="sm" variant="secondary" onClick={async () => { await refresh(); }}>刷新计划列表</Button> <Button type="button" size="sm" variant="secondary" onClick={async () => { if (await requestConfirmation({title: "已核对创建结果？", description: "只有确认不会造成重复计划时，才可再次提交此草稿。", confirmLabel: "已核对，允许再次提交"})) { uncertainCreates.delete(createScope); setCreateUncertain(false); } }}>已核对，允许再次提交</Button></div>}
+        </fieldset>
       </Panel>
 
       {draftScope && !loading && [...editDrafts.entries()].filter(([key]) => {
@@ -208,6 +245,7 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
               if (accepted) await remove(j.id);
             }}
             onRunNow={() => void runNow(j.id)}
+            onCopy={() => void copyToDraft(j)}
             onUpdate={async (revision, name, cron, prompt, context, expectedService) => {
               const result = await update(j.id, revision, { name, cron, prompt, context }, expectedService);
               if (result.job) toast.success(strings.settings.scheduled.updatedToast, result.job.name);
@@ -220,12 +258,13 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId, hidden }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onCopy, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId, hidden }: {
   hidden?: boolean;
   targetJob?: boolean; targetOccurrenceId?: string;
   onOpenSession?: () => boolean | void;
   job: ScheduledJob; serviceId?: string; draftKey?: string; onToggle: (enabled: boolean) => void;
   onDelete: () => void; onRunNow: () => void;
+  onCopy: () => void;
   onUpdate: (revision: number, name: string, cron: string, prompt: string, context: ScheduleContext, expectedService: string) => Promise<{ job: ScheduledJob | null; error?: string }>;
 }): JSX.Element {
   const [restored] = useState(() => draftKey ? editDrafts.get(draftKey) : undefined);
@@ -323,6 +362,10 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onUpdate, onOpenSe
           />
           {job.enabled ? strings.settings.scheduled.enabled : strings.settings.scheduled.disabled}
         </label>
+        <IconButton
+          onClick={onCopy}
+          aria-label="复制计划到新建草稿"
+        ><Copy /></IconButton>
         <IconButton
           data-testid={`settings-job-edit-${job.id}`}
           onClick={editing ? () => void cancelEdit() : startEditing}

@@ -93,7 +93,7 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
           if (!(event.target instanceof Element) || !event.target.closest("[data-schedule-filter]")) onScheduledEdit?.();
         } else onEdit();
       }}>
-        {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab target={scheduleTarget?.host === binding.host ? scheduleTarget : null} key={JSON.stringify([binding.host, binding.service, project])} active={ready} serviceId={binding.service} draftScope={JSON.stringify([binding.host, binding.service, project])} onOpenSession={onOpenSession} /></div>}
+        {visited.has("scheduled") && <div hidden={tab !== "scheduled"}><ScheduledTab target={scheduleTarget?.host === binding.host ? scheduleTarget : null} key={JSON.stringify([binding.host, binding.service, project])} active={ready} serviceId={binding.service} draftScope={JSON.stringify([binding.host, binding.service, project])} onOpenSession={onOpenSession} onDraftEdit={onScheduledEdit} /></div>}
         {visited.has("workflows") && <div hidden={tab !== "workflows"}><WorkflowsTab /></div>}
         {visited.has("webhooks") && <div hidden={tab !== "webhooks"}><WebhooksTab /></div>}
       </div>

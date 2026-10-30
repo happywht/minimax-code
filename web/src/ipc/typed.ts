@@ -341,7 +341,7 @@ export interface TypedIPC {
   // The JS API is friendlier (cron / prompt) than the wire (cron_expr / payload)
   // and the binding translates at the boundary.
   listJobs(): Promise<ListJobsResult>;
-  createJob(opts: ScheduleDefinition): Promise<{ job: ScheduledJob }>;
+  createJob(opts: ScheduleDefinition & { enabled?: boolean; expected_service_id?: string }): Promise<{ job: ScheduledJob }>;
   updateJob(jobId: string, expectedRevision: number, opts: ScheduleDefinition, expectedService?: string): Promise<{job: ScheduledJob}>;
   listScheduleOccurrences(jobId: string, before?: ScheduleOccurrenceCursor, statusGroup?: string): Promise<{occurrences: ScheduleOccurrence[]; next_cursor?: ScheduleOccurrenceCursor | null}>;
   deleteJob(jobId: string): Promise<{ ok: true }>;
@@ -885,6 +885,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
         // Wire names differ from the JS API for historical reasons.
         cron_expr: opts.cron,
         payload: { prompt: opts.prompt }, context: opts.context,
+        ...(opts.enabled !== undefined ? { enabled: opts.enabled } : {}),
+        ...(opts.expected_service_id ? { expected_service_id: opts.expected_service_id } : {}),
       });
       return { job: normalizeScheduledJob(result.job) };
     },

@@ -82,8 +82,15 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
         try:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"name", "cron_expr"})
-            if set(params) - {"name", "cron_expr", "payload", "enabled", "context"}:
+            if set(params) - {"name", "cron_expr", "payload", "enabled", "context", "expected_service_id"}:
                 raise HandlerError(INVALID_PARAMS, "Unsupported schedule creation fields")
+            expected_service = params.get("expected_service_id")
+            if expected_service is not None:
+                if not isinstance(expected_service, str) or not expected_service:
+                    raise ValueError("Invalid expected service identity")
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                if await ArtifactDAO(sched._db).service_id() != expected_service:
+                    raise ValueError("Service identity changed; review the schedule again")
             name = str(params["name"]).strip()
             cron_expr = str(params["cron_expr"]).strip()
             payload = params.get("payload")
@@ -91,7 +98,9 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
                 raise HandlerError(
                     INVALID_PARAMS, "payload must be a JSON object if provided"
                 )
-            enabled = bool(params.get("enabled", True))
+            enabled = params.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be a boolean")
             job = await sched.add_job(
                 name=name,
                 cron_expr=cron_expr,
