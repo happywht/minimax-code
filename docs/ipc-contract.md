@@ -2166,6 +2166,11 @@ the authorized skill execution boundary; non-push or empty-commit events are ski
 | `workflow.enable` / `workflow.disable` | 启用/停用 |
 | `workflow.trigger` | 手动触发一次 |
 
+`workflow.trigger` 返回 `ok`、`steps_completed`、`steps_failed` 和 `errors`
+（失败步骤的零起始索引与消息）；只要有步骤失败，`ok` 为 `false`。
+工作流的 `run-skill` 步骤目前不可执行，会报告失败。直接调用 `skill.invoke`
+需要显式会话、请求和幂等键，并经过持久接单与工作区边界。
+
 
 ## 固定上下文调度契约（2026-10-26，Schema036）
 

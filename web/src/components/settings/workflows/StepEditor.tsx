@@ -160,6 +160,8 @@ function ActionFields({
       )}
 
       {actionType === "run-skill" && (
+        <>
+        <p className="text-[11px] text-status-error">工作流技能执行暂不可用；请直接运行技能。</p>
         <Field label={strings.settings.workflows.configSkillId} htmlFor={`step-${p}-skill`}>
           <Input
             id={`step-${p}-skill`}
@@ -170,6 +172,7 @@ function ActionFields({
             onChange={(e) => onConfig("skill_id", e.target.value)}
           />
         </Field>
+        </>
       )}
 
       {actionType === "code-review" && (

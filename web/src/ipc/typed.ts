@@ -485,7 +485,7 @@ export interface TypedIPC {
   deleteWorkflow(id: string): Promise<{ deleted: boolean }>;
   enableWorkflow(id: string): Promise<WorkflowEntry>;
   disableWorkflow(id: string): Promise<WorkflowEntry>;
-  triggerWorkflow(id: string, context?: Record<string, unknown>): Promise<{ ok: boolean; steps_completed: number; steps_failed: number }>;
+  triggerWorkflow(id: string, context?: Record<string, unknown>): Promise<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[] }>;
 
   // team (v0.8.0) — drive the Settings page's Teams tab.
   listTeams(): Promise<ListTeamsResult>;
@@ -1044,7 +1044,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     disableWorkflow: (id) =>
       client.request<WorkflowEntry>("workflow.disable", { id }),
     triggerWorkflow: (id, context) =>
-      client.request<{ ok: boolean; steps_completed: number; steps_failed: number }>("workflow.trigger", { id, context }),
+      client.request<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[] }>("workflow.trigger", { id, context }),
 
     // team (v0.8.0)
     listTeams: () => client.request<ListTeamsResult>("team.list", {}),

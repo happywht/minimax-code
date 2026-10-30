@@ -73,14 +73,15 @@ class WorkflowEngine:
     ) -> dict[str, Any]:
         """Run a workflow's steps in sequence.
 
-        Returns a result dict with ``steps_completed`` and ``steps_failed``.
+        Returns step counts and errors for failed steps.
         """
         steps: list[dict[str, Any]] = workflow.get("steps") or []
         if not steps:
-            return {"steps_completed": 0, "steps_failed": 0}
+            return {"steps_completed": 0, "steps_failed": 0, "errors": []}
 
         completed = 0
         failed = 0
+        errors: list[dict[str, Any]] = []
         idx = 0
 
         while idx < len(steps):
@@ -102,13 +103,15 @@ class WorkflowEngine:
                 else:
                     logger.warning("Unknown step type: %s", step_type)
                     failed += 1
-            except Exception:
+                    errors.append({"step": idx, "message": f"Unknown step type: {step_type}"})
+            except Exception as exc:
                 logger.warning("Workflow step %d failed", idx, exc_info=True)
                 failed += 1
+                errors.append({"step": idx, "message": str(exc) or type(exc).__name__})
 
             idx += 1
 
-        return {"steps_completed": completed, "steps_failed": failed}
+        return {"steps_completed": completed, "steps_failed": failed, "errors": errors}
 
     # ------------------------------------------------------------------
     # Step runners
@@ -163,7 +166,7 @@ class WorkflowEngine:
         elif action_type == "run-skill":
             await self._action_run_skill(config, context, workflow)
         else:
-            logger.warning("Unknown action_type: %s", action_type)
+            raise ValueError(f"Unknown action_type: {action_type}")
 
     async def _action_notify(
         self,
@@ -171,26 +174,23 @@ class WorkflowEngine:
         context: dict[str, Any],
         workflow: dict[str, Any],
     ) -> None:
-        try:
-            from .notifications import get_notification_manager
+        from .notifications import get_notification_manager
 
-            mgr = get_notification_manager()
-            title = config.get("title", f"Workflow: {workflow.get('name', '')}")
-            body = config.get("body", "")
-            # Template substitution: {{field}} → context value
-            for key, val in context.items():
-                title = title.replace(f"{{{{{key}}}}}", str(val))
-                body = body.replace(f"{{{{{key}}}}}", str(val))
-            await mgr.notify(
-                type="workflow",
-                title=title,
-                body=body,
-                source="workflow",
-                source_id=workflow.get("id"),
-                priority=int(config.get("priority", 0)),
-            )
-        except Exception:
-            logger.warning("Workflow action:notify failed", exc_info=True)
+        mgr = get_notification_manager()
+        title = config.get("title", f"Workflow: {workflow.get('name', '')}")
+        body = config.get("body", "")
+        # Template substitution: {{field}} → context value
+        for key, val in context.items():
+            title = title.replace(f"{{{{{key}}}}}", str(val))
+            body = body.replace(f"{{{{{key}}}}}", str(val))
+        await mgr.notify(
+            type="workflow",
+            title=title,
+            body=body,
+            source="workflow",
+            source_id=workflow.get("id"),
+            priority=int(config.get("priority", 0)),
+        )
 
     async def _action_send_message(
         self,
@@ -234,17 +234,10 @@ class WorkflowEngine:
         context: dict[str, Any],
         workflow: dict[str, Any],
     ) -> None:
-        skill_id = config.get("skill_id", "")
-        if not skill_id:
-            return
-        try:
-            from .agent.skills import get_runtime
-
-            runtime = get_runtime()
-            if runtime is not None:
-                await runtime.invoke(skill_id, context)
-        except Exception:
-            logger.warning("Workflow action:run-skill failed", exc_info=True)
+        raise RuntimeError(
+            "Workflow skill execution is unavailable: explicit session, request, and durable "
+            "idempotent admission are not yet supported. Invoke the skill directly instead."
+        )
 
 
 # ---------------------------------------------------------------------------

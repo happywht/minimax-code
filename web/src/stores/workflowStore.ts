@@ -142,9 +142,15 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   trigger: async (id, context) => {
     const scope = scopeEpoch;
     try {
-      await typedIPC.triggerWorkflow(id, context);
+      const result = await typedIPC.triggerWorkflow(id, context);
       if (scope !== scopeEpoch) return ;
       await get().refresh();
+      if (!result.ok || result.steps_failed > 0) {
+        const msg = result.errors?.map((e) => `步骤 ${e.step}: ${e.message}`).join("; ")
+          || `${result.steps_failed} 个工作流步骤失败`;
+        toast.error(strings.toasts.workflowTriggerFailed, msg);
+        set({ error: msg });
+      }
     } catch (e) {
       if (scope !== scopeEpoch) return;
       const msg = String(e);

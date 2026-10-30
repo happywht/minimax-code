@@ -198,7 +198,7 @@ async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[
     engine = get_workflow_engine()
     result = await engine.run_workflow(workflow, context)
     await dao.increment_run(wid)
-    return {"ok": True, **result}
+    return {"ok": result["steps_failed"] == 0, **result}
 
 # ---------------------------------------------------------------------------
 # Registration
