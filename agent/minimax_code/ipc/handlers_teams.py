@@ -383,6 +383,9 @@ def register_team_handlers(
                 if not session:
                     await ctx.reply_error(INVALID_PARAMS, "Team session is unavailable")
                     return
+                # Keep this admission's template and member configuration in
+                # memory; team runs are not resumed after a server restart.
+                await orch.capture_team(team_name)
                 service = get_run_service(ctx.server)
                 dao = AgentRunsDAO(team_dao._db)
                 project_id = session.get("project_id")

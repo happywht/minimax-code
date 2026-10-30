@@ -36,6 +36,7 @@ v0.11.0 — Agent Studio orchestration enhancements.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import uuid
@@ -163,6 +164,18 @@ class TeamOrchestrator:
         self._emit_event = emit_event
         self._permission_store = permission_store
         self._permission_server = permission_server
+        self._accepted_team = None
+        self._accepted_agents = None
+
+    async def capture_team(self, team_name: str) -> None:
+        """Capture the template and member rows for this in-process admission."""
+        team = await self._team_dao.get_by_name(team_name)
+        rows = {}
+        if team is not None and self._agent_dao is not None:
+            for name in team.get("agents", []):
+                rows[name] = copy.deepcopy(await self._agent_dao.get(name))
+        self._accepted_team = copy.deepcopy(team)
+        self._accepted_agents = rows
 
     # -- public API ---------------------------------------------------------
 
@@ -349,8 +362,10 @@ class TeamOrchestrator:
             )
 
         # Resolve team template
-        team = await self._team_dao.get_by_name(team_name)
-        if team is None:
+        current_team = await self._team_dao.get_by_name(team_name)
+        team = self._accepted_team if self._accepted_agents is not None else current_team
+        if (team is None or current_team is None
+                or (self._accepted_agents is not None and team.get("id") != current_team.get("id"))):
             return TeamRunResult(
                 team_name=team_name,
                 orchestration_mode="parallel",
@@ -358,7 +373,7 @@ class TeamOrchestrator:
                 success=False,
                 merged_text=f"Error: unknown team {team_name!r}",
             )
-        if not team.get("enabled", True):
+        if not team.get("enabled", True) or not current_team.get("enabled", True):
             return TeamRunResult(
                 team_name=team_name,
                 orchestration_mode=team["orchestration_mode"],
@@ -386,7 +401,17 @@ class TeamOrchestrator:
         try:
             if current_process_target() is not None:
                 raise ProcessBoundaryError("L1 does not support team execution")
-            configs = await self._resolve_agents(agent_names)
+            if self._accepted_agents is not None:
+                # Revocation and capability changes must not be hidden by the
+                # snapshot. Fail the entire run before any member starts.
+                for name in agent_names:
+                    accepted = self._accepted_agents.get(name)
+                    current = await self._agent_dao.get(name) if self._agent_dao else None
+                    fields = ("id", "tool_allowlist", "skills", "execution_profile_id")
+                    if (accepted is None or current is None or not current.get("enabled", True)
+                            or any(accepted.get(key) != current.get(key) for key in fields)):
+                        raise ProcessBoundaryError(f"team member {name!r} is unavailable or its capabilities changed while queued")
+            configs = await self._resolve_agents(agent_names, self._accepted_agents)
         except ProcessBoundaryError as exc:
             return TeamRunResult(
                 team_name=team_name,
@@ -924,7 +949,7 @@ class TeamOrchestrator:
 
     # -- agent resolution ---------------------------------------------------
 
-    async def _resolve_agents(self, names: list[str]) -> list[Any]:
+    async def _resolve_agents(self, names: list[str], rows: dict[str, Any] | None = None) -> list[Any]:
         """Load :class:`SubAgentConfig` objects for the given agent names."""
         if self._agent_dao is None:
             return []
@@ -933,7 +958,7 @@ class TeamOrchestrator:
 
         configs: list[SubAgentConfig] = []
         for name in names:
-            row = await self._agent_dao.get(name)
+            row = rows.get(name) if rows is not None else await self._agent_dao.get(name)
             if row is None:
                 logger.warning("Agent %r not found, skipping", name)
                 continue
