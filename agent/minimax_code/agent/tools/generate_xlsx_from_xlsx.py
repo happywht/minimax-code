@@ -150,7 +150,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 if group_by is not None:
                     result.output["group_by"] = group_by
                     result.output["group_count"] = len(spec["rows"])
-                    result.output["group_notice"] = ("Blank keys form one group; row count includes all rows after filtering and optional deduplication. "
+                    result.output["group_notice"] = ("Equal key combinations, including blanks, form one group; row count includes all rows after filtering and optional deduplication. "
                         "Count excludes blanks; sum and average ignore blanks and are blank if all values are blank. "
                         "Average rounds half-up to the requested decimals. Values are static and business quality is unverified.")
                 result.output["source_sheet"] = source_sheet

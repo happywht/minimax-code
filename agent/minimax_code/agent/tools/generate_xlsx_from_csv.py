@@ -9,7 +9,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ...attachments import AttachmentService
 from ...execution import require_write_access
@@ -176,8 +176,21 @@ class GroupMetric(BaseModel):
 
 class GroupBy(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    column: str
+    column: str | None = None
+    columns: list[str] | None = Field(default=None, min_length=1, max_length=18)
     metrics: list[GroupMetric] = Field(min_length=1, max_length=18)
+
+    @model_validator(mode="after")
+    def check_keys(self):
+        if ("column" in self.model_fields_set) == ("columns" in self.model_fields_set):
+            raise ValueError("Specify exactly one of group_by column or columns")
+        keys = [self.column] if self.column is not None else self.columns
+        if (not keys or any(not isinstance(key, str) or not key for key in keys)
+                or len(set(keys)) != len(keys)):
+            raise ValueError("Group columns must be nonempty and unique")
+        if len(keys) + 1 + len(self.metrics) > 20:
+            raise ValueError("Group columns, row count and metrics may total at most 20 columns")
+        return self
 
 
 def group_spec(spec: dict, group_by: dict) -> dict:
@@ -185,9 +198,10 @@ def group_spec(spec: dict, group_by: dict) -> dict:
     source = XlsxSpec.model_validate(spec)
     config = GroupBy.model_validate(group_by)
     names = {column.name: index for index, column in enumerate(source.columns)}
-    if config.column not in names:
-        raise ValueError("Group column must be an output column")
-    group_index = names[config.column]
+    keys = [config.column] if config.column is not None else config.columns
+    if any(key not in names for key in keys):
+        raise ValueError("Group columns must be output columns")
+    group_indices = [names[key] for key in keys]
     for metric in config.metrics:
         if metric.column not in names:
             raise ValueError("Group metric column must be an output column")
@@ -195,10 +209,10 @@ def group_spec(spec: dict, group_by: dict) -> dict:
             raise ValueError("Group sum and average require a numeric column")
     groups: dict[Any, list[list[Any]]] = {}
     for row in source.rows:
-        groups.setdefault(row[group_index], []).append(row)
+        groups.setdefault(tuple(row[index] for index in group_indices), []).append(row)
     rows = []
     for key, members in groups.items():
-        result_row = [key, len(members)]
+        result_row = [*key, len(members)]
         for metric in config.metrics:
             values = [row[names[metric.column]] for row in members if row[names[metric.column]] is not None]
             if metric.operation == "count":
@@ -217,7 +231,8 @@ def group_spec(spec: dict, group_by: dict) -> dict:
         rows.append(result_row)
     return XlsxSpec.model_validate({
         "sheet_name": source.sheet_name,
-        "columns": [source.columns[group_index].model_dump(), {"name": "行数", "kind": "number"},
+        "columns": [*[source.columns[index].model_dump() for index in group_indices],
+                    {"name": "行数", "kind": "number"},
                     *[{"name": metric.name, "kind": "number"} for metric in config.metrics]],
         "rows": rows,
     }).model_dump()
@@ -354,7 +369,7 @@ class GenerateXlsxFromCsvTool(Tool):
         "Apply filters, optional deduplicate_by, optional group_by, then optional sort_by before summaries and chart. "
         "deduplicate_by uses exact output-column values and keeps the first matching row; blanks match blanks. "
         "Sort uses up to three output columns, typed values, stable ties and blanks last. "
-        "group_by produces only grouped rows: "
+        "group_by accepts one column or an ordered columns list for composite grouping and produces only grouped rows: "
         "blank keys form one group, row count includes every row, count excludes blanks, "
         "sum and average ignore blanks and are blank when all values are blank. "
         "Average rounds half-up to 0–8 decimals (default 2). Values are static. "
@@ -395,14 +410,16 @@ class GenerateXlsxFromCsvTool(Tool):
                     "direction": {"type": "string", "enum": ["asc", "desc"]},
                 }, "required": ["column", "direction"], "additionalProperties": False}},
             "group_by": {"type": "object", "properties": {
-                "column": {"type": "string", "description": "Exact output column used for grouping"},
+                "column": {"type": "string", "description": "One exact output column; mutually exclusive with columns"},
+                "columns": {"type": "array", "minItems": 1, "maxItems": 18,
+                            "items": {"type": "string"}, "description": "Ordered unique output columns; mutually exclusive with column"},
                 "metrics": {"type": "array", "minItems": 1, "maxItems": 18, "items": {
                     "type": "object", "properties": {
                         "column": {"type": "string"}, "name": {"type": "string"},
                         "operation": {"type": "string", "enum": ["sum", "count", "average"]},
                         "decimals": {"type": "integer", "minimum": 0, "maximum": 8},
                     }, "required": ["column", "name", "operation"], "additionalProperties": False}},
-            }, "required": ["column", "metrics"], "additionalProperties": False},
+            }, "required": ["metrics"], "additionalProperties": False},
             "summaries": GenerateTableXlsxTool.parameters["properties"]["summaries"],
             "chart": GenerateTableXlsxTool.parameters["properties"]["chart"],
         }, "required": ["attachment_id", "filename", "request_key", "sheet_name", "columns"],
@@ -487,7 +504,7 @@ class GenerateXlsxFromCsvTool(Tool):
                 if group_by is not None:
                     result.output["group_by"] = group_by
                     result.output["group_count"] = len(spec["rows"])
-                    result.output["group_notice"] = ("Blank keys form one group; row count includes all rows after filtering and optional deduplication. "
+                    result.output["group_notice"] = ("Equal key combinations, including blanks, form one group; row count includes all rows after filtering and optional deduplication. "
                         "Count excludes blanks; sum and average ignore blanks and are blank if all values are blank. "
                         "Average rounds half-up to the requested decimals. Values are static and business quality is unverified.")
                 result.output["source_notice"] = "Converted from verified CSV original bytes; the source was not modified."
