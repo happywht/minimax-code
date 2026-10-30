@@ -1132,6 +1132,12 @@ class AgentCore:
                 if self.budget is not None:
                     self.budget.record(response.usage)
                 await self._maybe_emit_usage(response.usage)
+                # A cooperative cancellation can end a stream without a
+                # complete assistant message. Do not persist or dispatch its
+                # partial tool calls, or report it as a completed answer.
+                if self.cancelled:
+                    cancelled = True
+                    break
                 # v1.1.0: real prompt-side usage feeds the next iteration's
                 # compaction check (``or None`` keeps 0/absent as "unknown",
                 # which skips the check rather than firing it spuriously).
@@ -1414,29 +1420,50 @@ class AgentCore:
             # failures on write_file/edit_file).
             max_tokens=self.config.max_output_tokens,
         ).__aiter__()
+        waiting_for_chunk = False
         try:
-            while True:
-                try:
-                    if stall and stall > 0:
-                        # Keep generator entry, yields and close in one task:
-                        # request budget ContextVar tokens span those yields.
-                        async with asyncio.timeout(stall):
-                            chunk = await aiter.__anext__()
-                    else:
-                        chunk = await aiter.__anext__()
-                except StopAsyncIteration:
-                    break
-                except TimeoutError as exc:
+            try:
+                # Run generator entry, yields and close in the owner task:
+                # request budget ContextVar tokens span those yields. A
+                # watcher advances its timeout when cooperative cancellation
+                # arrives, including while the provider is silent.
+                async with asyncio.timeout(None) as deadline:
+                    async def interrupt_on_cancel() -> None:
+                        await self._cancel.wait()
+                        deadline.reschedule(asyncio.get_running_loop().time())
+
+                    watcher = asyncio.create_task(interrupt_on_cancel())
+                    try:
+                        while not self.cancelled:
+                            deadline.reschedule(
+                                asyncio.get_running_loop().time() + stall
+                                if stall and stall > 0 else None
+                            )
+                            try:
+                                waiting_for_chunk = True
+                                chunk = await aiter.__anext__()
+                            except StopAsyncIteration:
+                                break
+                            waiting_for_chunk = False
+                            # Callback time is not provider idle time.
+                            deadline.reschedule(None)
+                            if self.cancelled:
+                                break
+                            chunks.append(chunk)
+                            if chunk.delta:
+                                await self._emit_chunk(chunk.delta, False, None)
+                    finally:
+                        watcher.cancel()
+                        await asyncio.gather(watcher, return_exceptions=True)
+            except TimeoutError as exc:
+                if not self.cancelled:
+                    if not waiting_for_chunk:
+                        raise
                     logger.warning("stream stall: no chunk for %.0fs, aborting turn", stall)
                     await self._emit_chunk(
                         "\n\nLLM stream stopped responding. This run was stopped; retry to continue.",
                         False, None)
                     raise LLMStreamTimeout(stall) from exc
-                if self.cancelled:
-                    break
-                chunks.append(chunk)
-                if chunk.delta:
-                    await self._emit_chunk(chunk.delta, False, None)
         finally:
             # Cooperative cancel/early close must persist unresolved request
             # liability before the owner releases its run or dispatches tools.
