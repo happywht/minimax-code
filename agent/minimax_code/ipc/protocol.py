@@ -34,6 +34,44 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class FileBackupListParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+
+
+class FileBackupRestoreParams(FileBackupListParams):
+    backup_id: str
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    workspace: str
+    workspace_identity: str
+    destination: str
+    confirmed: Literal[True]
+
+
+class FileBackupItem(BaseModel):
+    id: str
+    original_path: str
+    sha256: str
+    timestamp: str
+    bytes: int
+
+
+class FileBackupListResult(BaseModel):
+    items: list[FileBackupItem]
+    truncated: bool
+    workspace: str
+    workspace_identity: str
+    service_id: str
+
+
+class FileBackupRestoreResult(BaseModel):
+    destination: str
+    sha256: str
+    backup_id: str
+
+
 class CodebaseReadCurrentParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str

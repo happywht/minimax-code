@@ -869,6 +869,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     from .ipc.handlers_audit import register_audit_handlers
     from .ipc.handlers_checkpoint import register_checkpoint_handlers
     from .ipc.handlers_codebase import register_codebase_handlers
+    from .ipc.handlers_file_backup import register_file_backup_handlers
     from .ipc.handlers_crash import register_crash_handlers
     from .ipc.handlers_data import register_data_handlers
     from .ipc.handlers_diag import register_diag_handlers
@@ -995,6 +996,7 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # The codebase handlers expose ``codebase.status`` /
     # ``codebase.build_index`` / ``codebase.search`` / ``codebase.summarize``
     # for the code-understanding features in v0.11.0 Milestone 2.
+    register_file_backup_handlers(server)
     register_codebase_handlers(server)
     # The git handlers expose ``git.status`` / ``git.diff`` /
     # ``git.log`` for the v0.3.0 code-review flow and the top-bar

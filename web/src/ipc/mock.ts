@@ -1919,6 +1919,11 @@ function mockHandle(
       } satisfies CodebaseSearchResultShape;
     }
 
+    case "file_backup.list":
+    case "file_backup.restore_copy": {
+      throw new Error("模拟模式无法访问工作区备份");
+    }
+
     case "codebase.read_current": {
       throw new Error("模拟模式无法读取当前工作区文件");
     }

@@ -2508,3 +2508,9 @@ export type AttachmentOcrParams = { project_id: string; session_id: string; expe
 export type AttachmentPdfOcrParams = AttachmentOcrParams & { page: number };
 export type AttachmentPdfOcrResult = AttachmentOcrResult & { page: number };
 export type AttachmentOcrResult = { ok: true; project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; language: AttachmentOcrParams["language"]; quality: "unverified"; text: string; truncated: boolean };
+
+/** Verified native file-edit backup, scoped to a session workspace. */
+export interface FileBackupItem { id: string; original_path: string; sha256: string; timestamp: string; bytes: number }
+export interface FileBackupScope { session_id: string; project_id: string; expected_service_id: string }
+export interface FileBackupList { items: FileBackupItem[]; truncated: boolean; workspace: string; workspace_identity: string; service_id: string }
+export interface FileBackupRestore extends FileBackupScope { backup_id: string; expected_sha256: string; workspace: string; workspace_identity: string; destination: string; confirmed: true }

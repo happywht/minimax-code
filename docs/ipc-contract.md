@@ -295,6 +295,7 @@ binding or an expired request.
 | `plugins.list` / `plugins.info` / `plugins.enable` / `plugins.disable` / `plugins.reload` | req/res | Plugin toggles synchronise future hooks in active sessions; already started processes are not recalled. Runtime overrides are in memory and reload or restart uses manifest state. Hooks are not OS-sandboxed. |
 | `mcp.list_servers` / `mcp.add_server` / `mcp.update_server` / `mcp.remove_server` / `mcp.list_tools` / `mcp.invoke_tool` / `mcp.resources` / `mcp.prompts` | req/res | MCP server management, tool invocation and session-bound resource and prompt browsing. |
 | `codebase.status` / `codebase.build_index` / `codebase.search` / `codebase.summarize` / `codebase.read_current` | req/res | Codebase indexing and retrieval. Indexes are keyed per project root; current-source reads require an explicit project and session. |
+| `file_backup.list` / `file_backup.restore_copy` | req/res | List verified native file-edit backups and restore one to a new workspace path. |
 | `memory.list` / `memory.add` / `memory.delete` / `memory.search` / `memory.extract` | req/res | Long-term memory management (v0.11.0 Milestone 3). |
 | `data.export`               | req/res   | Data portability (R21): dump every business table into one self-describing JSON envelope. See §6 for the envelope shape. |
 | `data.import`               | req/res   | Data portability (R22): validate + replace-import such an envelope in one transaction (idempotent). See §6. |
@@ -1877,6 +1878,15 @@ document the migration in this file.
 > 本表由 `agent/tests/test_ipc_contract_doc.py` 双向守护：
 > 新增 handler 未列入此表、或表中/正文提及的方法在代码中不存在，测试即红。
 > 详细的请求/响应形状见上文各命名空间章节；此处保证**每个注册方法都有文档锚点**。
+
+### file_backup.* — 原生文件编辑备份副本
+
+| 方法 | 参数 | 返回 |
+|------|------|------|
+| `file_backup.list` | `{session_id, project_id, expected_service_id}` | `{items, truncated, workspace, workspace_identity, service_id}` |
+| `file_backup.restore_copy` | `{session_id, project_id, expected_service_id, backup_id, expected_sha256, workspace, workspace_identity, destination, confirmed:true}` | `{backup_id, destination, sha256}` |
+
+只检查当前会话绑定工作区 `.minimax/backups` 最近 500 份清单，列出原路径位于当前工作区、清单位置一致且文件 SHA-256 匹配的备份；文件上限 16 MiB。清单和内容可被工作区写入者篡改，摘要匹配并不证明来源可信。旧式无清单备份、其他来源、超限或损坏的副本不列出；这不是完整应用备份。列表要求 `read_file` 全局 allow；恢复还要求 `write_file` 全局 allow，ask、deny 及无匹配不授权。恢复时重新校验服务、项目、会话、工作区身份、路径和摘要，目标须为允许的工作区相对路径且父目录已存在，只通过不覆盖创建发布。备份和目标路径拒绝链接及受限路径。检查与写入不锁定工作区外部进程，连接中断时先检查目标，勿自动重试。
 
 ### agent.* — 子 Agent 定义与调用
 

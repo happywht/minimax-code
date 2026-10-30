@@ -92,10 +92,11 @@ def _atomic_replace_locked(target: Path, write: Callable[[BinaryIO], object], *,
             os.chmod(temporary, mode)
         elif new_mode is not None:
             os.chmod(temporary, new_mode())
-        if target_existed and baseline_path == target:
+        if target_existed and baseline_path == target and baseline_sha256 is not None:
             os.replace(temporary, target)
         else:
-            # A different baseline means an overlay's first write: the
+            # A missing baseline or a different baseline means a new file
+            # or an overlay's first write: the
             # destination was absent when the read view was chosen. Even if
             # it appeared before target_existed was sampled, do not replace
             # that other writer's mirror. Linking also protects new files

@@ -14,6 +14,7 @@ import { requestConfirmation } from "../modals/ConfirmationDialog";
 import type { Checkpoint, CheckpointDiffResult } from "../../types/ipc";
 import { strings } from "../../ui/strings";
 import { CheckpointPatchReview } from "./CheckpointPatchReview";
+import { FileBackupRecovery } from "./FileBackupRecovery";
 
 export interface CheckpointPanelProps {
   testId?: string;
@@ -262,6 +263,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
       </div>
 
       <div className="space-y-2 px-3 pb-3">
+        <FileBackupRecovery />
         {creationWarnings.length > 0 && <div role="alert" className="rounded border border-status-warning/30 p-2 text-status-warning"><p>检查点创建警告（仅本次显示）：</p>{creationWarnings.map((warning, index) => <p key={index} className="break-words">{warning}</p>)}</div>}
         {sessionId ? (
           <div className="space-y-2 rounded-md border border-minimax-border bg-minimax-bg/40 p-2">
