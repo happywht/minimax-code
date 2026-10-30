@@ -23,6 +23,12 @@ const searchStatuses: Record<SearchStatus, string[]> = {
   attention: ["awaiting_approval", "waiting_input", "budget_paused", "interrupted"], active: ["queued", "planning", "running"],
   failed: ["failed", "cancelled", "interrupted"], completed: ["completed"],
 };
+type WorkbenchMemory = { group: Group; query: string; status: SearchStatus;
+  search?: { term: string; status: SearchStatus; offset: number }; selected?: { id: string; session: string } };
+const rememberedWork = new Map<string, WorkbenchMemory>();
+const memoryKey = (host: string, service: string, project: string) => JSON.stringify([host, service, project]);
+const defaultMemory = (): WorkbenchMemory => ({ group: "attention", query: "", status: "all" });
+
 const groupLabels: Record<Group, string> = { attention: "等待处理", active: "运行与排队", recent: "最近结果" };
 const cancellable = new Set(["queued", "planning", "running", "awaiting_approval", "waiting_input"]);
 const statusLabels: Record<string, string> = { queued: "排队中", planning: "规划中", running: "运行中", awaiting_approval: "等待授权",
@@ -41,12 +47,18 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
   const [searchStatus, setSearchStatus] = useState<SearchStatus>("all"), [appliedStatus, setAppliedStatus] = useState<SearchStatus>("all");
   const [history, setHistory] = useState<ProjectRunSummaryResult["history"]>(undefined);
   const [historyStale, setHistoryStale] = useState(false);
-  const historyService = useRef<string | null>(null);
+  const historyService = useRef<string | null>(null), restoredScope = useRef<string | null>(null);
+  const [restoreNotice, setRestoreNotice] = useState("");
+  const remember = (patch: Partial<WorkbenchMemory>) => {
+    if (!project || !service) return;
+    const key = memoryKey(host, service, project);
+    rememberedWork.set(key, { ...(rememberedWork.get(key) ?? defaultMemory()), ...patch });
+  };
   const generation = useRef(0), actionEpoch = useRef(0), actionLock = useRef(false), timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preserveDetailForSession = useRef<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null), [stopNotice, setStopNotice] = useState("");
   const [requested, setRequested] = useState<Set<string>>(() => new Set());
-  useEffect(() => { preserveDetailForSession.current = null; generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setHistoryStale(false); historyService.current = null; setQuery(""); setAppliedQuery(""); setSearchStatus("all"); setAppliedStatus("all"); setError(""); setBusy(false); }, [project, host]);
+  useEffect(() => { preserveDetailForSession.current = null; generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setHistoryStale(false); historyService.current = null; restoredScope.current = null; setRestoreNotice(""); setQuery(""); setAppliedQuery(""); setSearchStatus("all"); setAppliedStatus("all"); setError(""); setBusy(false); }, [project, host]);
   useEffect(() => { generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); if (preserveDetailForSession.current !== activeSession) { preserveDetailForSession.current = null; setDetail(undefined); setSnapshot(null); } setBusy(false); }, [activeSession]);
   const refresh = useCallback(async () => {
     if (!project) return;
@@ -67,6 +79,41 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
       if (historyService.current && historyService.current !== scope.service_id) {
         setHistory(undefined); historyService.current = null;
       } else if (historyService.current) setHistoryStale(true);
+      const savedKey = memoryKey(host, scope.service_id, project);
+      const saved = rememberedWork.get(savedKey);
+      if (saved && restoredScope.current !== savedKey) {
+        setGroup(saved.group); setQuery(saved.query); setSearchStatus(saved.status); setRestoreNotice("");
+        const [historyResult, detailResult, stepsResult, identityResult] = await Promise.allSettled([
+          saved.search ? typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: scope.service_id,
+            history_query: saved.search.term, history_offset: saved.search.offset, history_status: saved.search.status }) : Promise.resolve(null),
+          saved.selected ? typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: scope.service_id, run_id: saved.selected.id }) : Promise.resolve(null),
+          saved.selected ? typedIPC.getRunSteps(saved.selected.id) : Promise.resolve(null),
+          typedIPC.getServiceIdentity(),
+        ]);
+        if (!current()) return;
+        if (identityResult.status !== "fulfilled" || identityResult.value.service_id !== scope.service_id) throw new Error("服务身份变化，无法恢复工作上下文");
+        restoredScope.current = savedKey;
+        let failed = false;
+        if (saved.search) {
+          const found = historyResult.status === "fulfilled" ? historyResult.value : null, page = found?.history;
+          if (found?.project_id === project && found.service_id === scope.service_id && page?.offset === saved.search.offset &&
+              Array.isArray(page.items) && page.items.length <= 25 && typeof page.has_more === "boolean" &&
+              page.items.every((item) => searchStatuses[saved.search!.status].includes(item.status))) {
+            setAppliedQuery(saved.search.term); setAppliedStatus(saved.search.status); setHistory(page); setHistoryStale(false); historyService.current = scope.service_id;
+          } else { setHistory(undefined); failed = true; }
+        }
+        if (saved.selected) {
+          const found = detailResult.status === "fulfilled" ? detailResult.value : null;
+          const steps = stepsResult.status === "fulfilled" ? stepsResult.value : null;
+          if (found?.project_id === project && found.service_id === scope.service_id && found.detail?.id === saved.selected.id &&
+              found.detail.session_id === saved.selected.session && steps?.run.id === saved.selected.id && found.detail.status === steps.run.status &&
+              steps.run.session_id === saved.selected.session && steps.run.metadata?.project_id === project &&
+              Number.isSafeInteger(steps.cursor) && steps.cursor >= 0 && steps.steps.every((step) => step.run_id === saved.selected!.id && step.session_id === saved.selected!.session)) {
+            setDetail(found.detail); setSnapshot(steps);
+          } else { setDetail(undefined); setSnapshot(null); failed = true; }
+        }
+        setRestoreNotice(failed ? "部分已记住的搜索或运行无法重新确认，请重新查找。" : "已重新读取上次的任务工作上下文；结果为当前读取时快照。");
+      }
     } catch (e) { if (current()) { setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); historyService.current = null; setError(e instanceof Error ? e.message : String(e)); } }
     finally { if (current()) setBusy(false); }
   }, [project, host, activeSession]);
@@ -74,7 +121,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
   useEffect(() => {
     const wake = () => { setHistoryStale(true); if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => setRevision((n) => n + 1), 250); };
     const unsubs = [StreamEvent.RunCreated, StreamEvent.RunUpdated, StreamEvent.RunCompleted].map((event) => ipc.on(event, wake));
-    unsubs.push(ipc.onSideCar((event) => { generation.current++; actionEpoch.current++; setStopping(null); setRequested(new Set()); setStopNotice("连接变化；若已发送停止请求，请刷新运行状态确认结果。"); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setHistoryStale(false); historyService.current = null; setBusy(false);
+    unsubs.push(ipc.onSideCar((event) => { generation.current++; actionEpoch.current++; setStopping(null); setRequested(new Set()); setStopNotice("连接变化；若已发送停止请求，请刷新运行状态确认结果。"); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setHistoryStale(false); historyService.current = null; restoredScope.current = null; setBusy(false);
       if (event.status === "started") wake(); else setError("连接中断，运行状态待刷新。"); }));
     return () => { generation.current++; actionEpoch.current++; if (timer.current) clearTimeout(timer.current); unsubs.forEach((off) => off()); };
   }, []);
@@ -100,8 +147,9 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
         if (useSessionStore.getState().currentProjectId !== project && !useSessionStore.getState().setCurrentProject(project)) return;
         if (useSessionStore.getState().currentSessionId !== item.session_id && !useSessionStore.getState().setCurrent(item.session_id)) return;
         void useSessionStore.getState().refresh({ loadCurrent: false });
+        remember({ selected: { id: item.id, session: item.session_id } });
         onOpenSession();
-      } else { setDetail(result.detail); setSnapshot(steps); }
+      } else { setDetail(result.detail); setSnapshot(steps); remember({ selected: { id: item.id, session: item.session_id } }); }
     } catch (e) { if (current()) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (current()) setBusy(false); }
   };
@@ -142,6 +190,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
       if (result.project_id !== project || result.service_id !== expected || !result.history || result.history.offset !== offset ||
           !Array.isArray(result.history.items) || result.history.items.length > 25 || result.history.items.some((item) => !searchStatuses[status].includes(item.status)) || typeof result.history.has_more !== "boolean") throw new Error("历史运行归属不匹配");
       setAppliedQuery(term); setAppliedStatus(status); historyService.current = expected; setHistoryStale(false); setHistory(result.history);
+      remember({ search: { term, status, offset }, selected: undefined });
     } catch (e) { if (current()) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (current()) setBusy(false); }
   };
@@ -183,17 +232,17 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
     <div className="flex justify-between gap-2"><div><h2 className="text-lg font-semibold">项目任务状态</h2>
       <p className="break-all text-xs text-ink-2">项目：{name ?? project ?? "未选择"} · 服务：{host} · 身份：{service ?? "待确认"}</p></div><Button size="sm" variant="ghost" onClick={onClose}>关闭</Button></div>
     <p className="text-sm text-ink-1">按持久运行记录分组，不按会话计数。每组最多显示最近 25 条；已归档会话、未绑定项目的旧记录和内部子任务不在此列表。等待状态不代表审批或问题仍有效。</p>
-    <div className="flex flex-wrap gap-2">{(Object.keys(groupLabels) as Group[]).map((id) => <Button key={id} type="button" size="sm" variant={group === id ? "primary" : "secondary"} aria-pressed={group === id} onClick={() => { setGroup(id); setDetail(undefined); setSnapshot(null); }}>{groupLabels[id]}</Button>)}
+    <div className="flex flex-wrap gap-2">{(Object.keys(groupLabels) as Group[]).map((id) => <Button key={id} type="button" size="sm" variant={group === id ? "primary" : "secondary"} aria-pressed={group === id} disabled={busy} onClick={() => { setGroup(id); setDetail(undefined); setSnapshot(null); remember({ group: id, selected: undefined }); }}>{groupLabels[id]}</Button>)}
       <Button type="button" size="sm" variant="ghost" disabled={busy || !project} onClick={() => void refresh()}>刷新</Button></div>
     <form className="flex flex-wrap items-end gap-2 rounded border border-line p-2" onSubmit={(event) => { event.preventDefault(); void searchHistory(query.trim(), 0, searchStatus); }}>
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">查找项目运行
-        <input className="rounded border border-line bg-surface-0 p-1" value={query} maxLength={200} onChange={(event) => setQuery(event.target.value)} placeholder="运行标题、会话标题或运行 ID" />
+        <input className="rounded border border-line bg-surface-0 p-1" value={query} maxLength={200} disabled={busy} onChange={(event) => { setQuery(event.target.value); remember({ query: event.target.value }); }} placeholder="运行标题、会话标题或运行 ID" />
       </label>
-      <label className="flex flex-col gap-1 text-sm">状态范围<select aria-label="任务搜索状态" className="rounded border border-line bg-surface-0 p-1" value={searchStatus} onChange={(event) => setSearchStatus(event.target.value as SearchStatus)}>
+      <label className="flex flex-col gap-1 text-sm">状态范围<select aria-label="任务搜索状态" className="rounded border border-line bg-surface-0 p-1" value={searchStatus} disabled={busy} onChange={(event) => { const status = event.target.value as SearchStatus; setSearchStatus(status); remember({ status }); }}>
         {(Object.keys(searchLabels) as SearchStatus[]).map((status) => <option key={status} value={status}>{searchLabels[status]}</option>)}
       </select></label>
       <Button type="submit" size="sm" variant="secondary" disabled={busy || !service}>查找</Button>
-      {history && <Button type="button" size="sm" variant="ghost" onClick={() => { setHistory(undefined); historyService.current = null; }}>关闭搜索结果</Button>}
+      {history && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { setHistory(undefined); historyService.current = null; remember({ search: undefined }); }}>关闭搜索结果</Button>}
       <p className="w-full text-xs text-ink-2">按状态和关键词搜索项目持久运行；空关键词浏览所选状态。等待处理包括授权、输入、预算暂停和中断；已归档会话和未绑定项目的旧记录不包含在内。</p>
     </form>
     {history && <div className="space-y-2 rounded border border-line p-2" aria-label="项目运行搜索结果">
@@ -211,6 +260,11 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
         <Button type="button" size="sm" variant="secondary" disabled={busy || !history.has_more || history.offset >= 10000} onClick={() => void searchHistory(appliedQuery, history.offset + 25, appliedStatus)}>下一页</Button></div>
       {history.has_more && history.offset >= 10000 && <p className="text-xs">已到浏览上限，请缩小搜索范围。</p>}
       <p className="text-xs text-ink-2">记录可能在翻页时变化，页码不是固定快照；主机不可访问的记录不会显示。</p>
+    </div>}
+    {service && <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">
+      <span>搜索条件和所选运行只在本页面按服务地址、服务身份和项目保留；返回时重新读取。</span>
+      <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { if (project) rememberedWork.delete(memoryKey(host, service, project)); setRestoreNotice("已忘记此项目的任务工作上下文；当前页面不变。"); }}>忘记任务工作上下文</Button>
+      {restoreNotice && <span role="status">{restoreNotice}</span>}
     </div>}
     {stopNotice && <p role="status" className="break-words text-sm text-status-warning">{stopNotice}</p>}
     {!project && <p role="status">请先选择项目。</p>}{busy && <p role="status">正在读取当前服务记录…</p>}{error && <p role="alert">{error}</p>}
