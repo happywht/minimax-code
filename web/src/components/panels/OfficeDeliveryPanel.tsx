@@ -34,9 +34,10 @@ function saveCsv(table: CsvTable): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+type InputStatus = "independent" | "current" | "needs_review";
 export type TableDraft = { filename: string; runId: string; source: string; csv: string; csvTable: CsvTable | null;
   originalCsvTable: CsvTable | null; tableDirty: boolean; kinds: OfficeTableSpec["columns"][number]["kind"][];
-  candidate: { name: string; text: string; table: CsvTable } | null; analysis: OfficeAnalysisOptions; operatorNotes?: OfficeOperatorNotes };
+  candidate: { name: string; text: string; table: CsvTable } | null; analysis: OfficeAnalysisOptions; operatorNotes?: OfficeOperatorNotes; inputStatus?: InputStatus };
 function isDraftTable(value: unknown): value is CsvTable {
   if (!value || typeof value !== "object") return false;
   const table = value as Record<string, unknown>;
@@ -64,6 +65,7 @@ function readTableDraft(value: unknown): TableDraft {
     if (!notes || typeof notes !== "object" || Object.keys(notes).some((key) => !["source", "method", "limitations"].includes(key)) ||
         ["source", "method", "limitations"].some((key) => typeof notes[key] !== "string" || [...(notes[key] as string)].length > 2000)) throw new Error("处理说明草稿无效");
   }
+  if (data.inputStatus !== undefined && !["independent", "current", "needs_review"].includes(String(data.inputStatus))) throw new Error("表格输入状态无效");
   if (!analysis || typeof analysis !== "object" || !Array.isArray(analysis.summaries) || analysis.summaries.length > 20 ||
       analysis.summaries.some((item) => !item || typeof item !== "object" || typeof item.column !== "string" ||
         !["sum", "count", "average"].includes(item.operation) || typeof item.decimals !== "number" || !Number.isFinite(item.decimals))) throw new Error("汇总草稿无效");
@@ -97,8 +99,14 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const fileSequence = useRef(0);
   const [filePending, setFilePending] = useState(false);
   const [candidate, setCandidate] = useState<{ name: string; text: string; table: CsvTable } | null>(initialDraft?.candidate ?? null);
-  const draftRef = useRef<TableDraft>({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes });
-  draftRef.current = { filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes };
+  const [inputStatus, setInputStatus] = useState<InputStatus>(initialDraft?.inputStatus ?? (initialDraft?.csv || initialDraft?.csvTable ? "needs_review" : "independent"));
+  const [converting, setConverting] = useState(false);
+  const draftRef = useRef<TableDraft>({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus });
+  draftRef.current = { filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus };
+  const conversionRef = useRef("");
+  conversionRef.current = JSON.stringify([project, session, host, state.serviceId, filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, filePending]);
+  const conversionRevision = useRef({ value: conversionRef.current, revision: 0 });
+  if (conversionRevision.current.value !== conversionRef.current) conversionRevision.current = { value: conversionRef.current, revision: conversionRevision.current.revision + 1 };
   useEffect(() => () => { onRetainDraft?.(draftRef.current); }, []);
   const scoped = state.projectId === project && state.host === host;
   const filteredEntries = scoped ? state.entries : [];
@@ -112,7 +120,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const cancelFileRead = () => { fileSequence.current++; fileReader.current?.abort(); fileReader.current = null; setFilePending(false); };
   const applyCsv = (text: string, table: CsvTable) => {
     csvRef.current = text; setCsv(text); setCsvTable(table); setOriginalCsvTable(table); setTableDirty(false); setKinds(table.headers.map(() => "text"));
-    setCandidate(null); setFormError(null);
+    setCandidate(null); setInputStatus("needs_review"); setFormError(null);
   };
   const readCsvFile = (file: File) => {
     cancelFileRead(); setCandidate(null); setFormError(null);
@@ -140,6 +148,24 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
     catch { fileReader.current = null; setFilePending(false); setFormError("读取 CSV 文件失败，草稿未更改"); }
   };
   const edited = () => { setKey(crypto.randomUUID()); setFormError(null); };
+  const convert = async () => {
+    if (!csvTable || converting || filePending || candidate) return;
+    try {
+      const next = JSON.stringify(csvToOfficeSpec(csvTable, kinds), null, 2);
+      const expected = conversionRevision.current.revision;
+      setConverting(true);
+      if (source !== next && source.length > 0) {
+        const accepted = await requestConfirmation({ title: "替换结构化输入？", description: "转换会替换当前结构化 JSON；表格草稿和原文件保留。请先保存需要保留的 JSON。", confirmLabel: "替换 JSON" });
+        if (!accepted) return;
+      }
+      const active = useSessionStore.getState(), office = useOfficeDeliveryStore.getState();
+      if (conversionRevision.current.revision !== expected || ipc.agentBaseUrl !== host || active.currentProjectId !== project || active.currentSessionId !== session || office.projectId !== project || office.host !== host || office.serviceId !== state.serviceId) {
+        setFormError("草稿或归属在确认期间发生变化；结构化输入未更改。"); return;
+      }
+      setSource(next); setInputStatus("current"); edited();
+    } catch (error) { setFormError(error instanceof Error ? error.message : "转换失败"); }
+    finally { setConverting(false); }
+  };
   const parsed = () => {
     if (new TextEncoder().encode(source).length > 1048576) throw new Error("结构化输入超过 1 MiB");
     const spec = JSON.parse(source) as OfficeTableSpec;
@@ -156,6 +182,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   }, [source]);
   const submit = (requestKey: string) => {
     try {
+      if (inputStatus === "needs_review" || filePending || candidate || converting) throw new Error("请先转换当前表格，或明确选择使用现有 JSON；待处理文件也需先处理。");
       const spec = parsed(), scope = generationScope.current; setFormError(null);
       const notes = Object.values(operatorNotes).some((value) => value.trim()) ? { operator_notes: operatorNotes } : {};
       if (analysis.summaries.length === 0 && !analysis.chart) {
@@ -217,11 +244,11 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <OfficeDeliveryPackage key={`package:${state.selected.delivery.id}:${state.selected.attachment.sha256}`} selected={state.selected} project={project} session={session} service={state.serviceId} host={host} />
       {state.selected.delivery.validation_report.scope === "xlsx_plain_cells_v1" && <OfficeDeliveryReuse key={`${state.selected.delivery.id}:${state.selected.attachment.sha256}`}
         selected={state.selected} project={project} session={session} service={state.serviceId} host={host}
-        draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, filePending])} filePending={filePending}
+        draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, filePending, converting])} filePending={filePending || converting}
         onApply={(text, table, name) => { cancelFileRead(); applyCsv(text, table); setFilename(name); edited(); }} />}
       <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
         <Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>
-        <Button variant="secondary" disabled={state.busy || ipc.isMock} onClick={() => { const next = crypto.randomUUID(); setKey(next); submit(next); }}>按当前文件名和输入生成新文件</Button></div>
+        <Button variant="secondary" disabled={state.busy || ipc.isMock || inputStatus === "needs_review" || filePending || !!candidate || converting} onClick={() => { const next = crypto.randomUUID(); setKey(next); submit(next); }}>按当前文件名和输入生成新文件</Button></div>
       {inputs[`${state.selected.delivery.service_id}:${state.selected.delivery.id}`] ? <Button variant="secondary" onClick={() => saveJson(inputs[`${state.selected!.delivery.service_id}:${state.selected!.delivery.id}`], "office-input.json")}>下载此成果的输入 JSON</Button> :
         <p role="status">此成果的输入未保存在当前页面，请使用生成时另行保存的输入 JSON 复验；当前编辑器内容不一定匹配。</p>}
       <p>校验报告不是数字签名。空串已按空白规范化。输入快照仅保留到离开页面或切换项目；图表输入包含图表配置及原始数据行数。</p>
@@ -230,27 +257,28 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <pre className="whitespace-pre-wrap break-words rounded border border-line p-3" aria-label="办公成果纯文本预览">{state.selected.preview_text}</pre>
     </div>}
     </div>
-    <DraftFileControl<TableDraft> kind="table" disabled={state.busy || filePending}
+    <DraftFileControl<TableDraft> kind="table" disabled={state.busy || filePending || converting}
       scope={scoped && project && state.serviceId ? { host, service: state.serviceId, project, session } : null}
-      capture={() => ({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes })}
+      capture={() => ({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus })}
       decode={async (value) => readTableDraft(value)}
       apply={(draft) => {
         cancelFileRead(); setFilename(draft.filename); setRunId(draft.runId); setSource(draft.source);
         csvRef.current = draft.csv; setCsv(draft.csv); setCsvTable(draft.csvTable); setOriginalCsvTable(draft.originalCsvTable);
-        setTableDirty(draft.tableDirty); setKinds(draft.kinds); setCandidate(draft.candidate); setAnalysis(draft.analysis); setOperatorNotes(draft.operatorNotes ?? { source: "", method: "", limitations: "" }); edited();
+        setTableDirty(draft.tableDirty); setKinds(draft.kinds); setCandidate(draft.candidate); setAnalysis(draft.analysis); setOperatorNotes(draft.operatorNotes ?? { source: "", method: "", limitations: "" });
+        setInputStatus(draft.inputStatus === "needs_review" || !!draft.csv || !!draft.csvTable ? "needs_review" : "independent"); edited();
       }} />
-    <ProjectCsvImport project={project} session={session} service={scoped ? state.serviceId : null} host={host} disabled={state.busy || filePending}
-      draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, filePending])}
+    <ProjectCsvImport project={project} session={session} service={scoped ? state.serviceId : null} host={host} disabled={state.busy || filePending || converting}
+      draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, filePending, converting])}
       onApply={(text, table) => { cancelFileRead(); applyCsv(text, table); }} />
     <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} onImport={(text, table) => {
-      const scope = generationScope.current, expectedService = state.serviceId;
+      const scope = generationScope.current, expectedService = state.serviceId, before = conversionRevision.current.revision;
       void (async () => {
         if (csvRef.current || tableDirty) {
           const accepted = await requestConfirmation({ title: "替换表格草稿？", description: "将替换当前 CSV 和表格编辑草稿；下方已转换的表格输入暂不改变。", confirmLabel: "替换草稿" });
           if (!accepted) return;
         }
         if (!scope.active || ipc.agentBaseUrl !== host || useSessionStore.getState().currentProjectId !== project ||
-            useSessionStore.getState().currentSessionId !== session || useOfficeDeliveryStore.getState().serviceId !== expectedService) return;
+            useSessionStore.getState().currentSessionId !== session || useOfficeDeliveryStore.getState().serviceId !== expectedService || conversionRevision.current.revision !== before) return;
         cancelFileRead(); applyCsv(text, table);
       })();
     }} />
@@ -261,31 +289,34 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <p>文件仅在本页读取，不会上传或保存为项目附件。生成时提交转换后的表格数据。</p>
       {filePending && <p role="status">正在读取文件；现有草稿保留。</p>}
       {candidate && <div><p>已读取 {candidate.name}（{candidate.table.rows.length} 行）；当前 CSV 草稿不会自动覆盖。替换也会放弃尚未转换的表格编辑。</p><Button type="button" variant="secondary" onClick={() => applyCsv(candidate.text, candidate.table)}>使用此文件替换 CSV 草稿</Button><Button type="button" variant="ghost" onClick={() => setCandidate(null)}>保留当前草稿</Button></div>}
-      <Textarea aria-label="粘贴 CSV" rows={6} value={csv} readOnly={tableDirty} onChange={(event) => { csvRef.current = event.target.value; setCsv(event.target.value); setCsvTable(null); setOriginalCsvTable(null); setFormError(null); }} />
+      <Textarea aria-label="粘贴 CSV" rows={6} value={csv} readOnly={tableDirty} onChange={(event) => { csvRef.current = event.target.value; setCsv(event.target.value); setCsvTable(null); setOriginalCsvTable(null); setInputStatus("needs_review"); setFormError(null); }} />
       {tableDirty && <p role="status">表格有编辑，CSV 草稿暂为只读；恢复读取时的表格后可修改原稿。</p>}
-      <Button type="button" variant="secondary" disabled={tableDirty} onClick={() => { try { const table = parseOfficeCsv(csv); setCsvTable(table); setOriginalCsvTable(table); setTableDirty(false); setKinds(table.headers.map(() => "text")); setFormError(null); } catch (error) { setCsvTable(null); setOriginalCsvTable(null); setFormError(error instanceof Error ? error.message : "CSV 无效"); } }}>读取 CSV 列</Button>
+      <Button type="button" variant="secondary" disabled={tableDirty} onClick={() => { try { const table = parseOfficeCsv(csv); setCsvTable(table); setOriginalCsvTable(table); setTableDirty(false); setKinds(table.headers.map(() => "text")); setInputStatus("needs_review"); setFormError(null); } catch (error) { setCsvTable(null); setOriginalCsvTable(null); setInputStatus("needs_review"); setFormError(error instanceof Error ? error.message : "CSV 无效"); } }}>读取 CSV 列</Button>
       {csvTable && <div className="space-y-2"><p>当前表格包含 {csvTable.rows.length} 行，{csvTable.headers.length} 列。数字须在支持的精度内；布尔只接受 true / false。</p>
-        {csvTable.headers.map((name, index) => <label key={index} className="flex items-center gap-2">{name}<select aria-label={`第 ${index + 1} 列类型`} value={kinds[index]} onChange={(event) => setKinds((old) => old.map((kind, i) => i === index ? event.target.value as typeof kind : kind))}>
+        {csvTable.headers.map((name, index) => <label key={index} className="flex items-center gap-2">{name}<select aria-label={`第 ${index + 1} 列类型`} value={kinds[index]} onChange={(event) => { setKinds((old) => old.map((kind, i) => i === index ? event.target.value as typeof kind : kind)); setInputStatus("needs_review"); }}>
           <option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option></select></label>)}
-        {originalCsvTable && <CsvTableEditor table={csvTable} original={originalCsvTable} kinds={kinds} onChange={(next, nextKinds) => { setCsvTable(next); if (nextKinds) setKinds(nextKinds); setTableDirty(next !== originalCsvTable); setFormError(null); }} />}
+        {originalCsvTable && <CsvTableEditor table={csvTable} original={originalCsvTable} kinds={kinds} onChange={(next, nextKinds) => { setCsvTable(next); if (nextKinds) setKinds(nextKinds); setTableDirty(next !== originalCsvTable); setInputStatus("needs_review"); setFormError(null); }} />}
         <p>下载的是当前表格的新文件，不修改原件。CSV 仅保存单元格文本，不保存列类型；表格软件可能将公式样文本解释为公式或自动转换数据。带类型 JSON 按所选列类型保存，空字符串转为空值，数字和布尔值会规范化。</p>
         <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={() => { saveCsv(csvTable); setFormError(null); }}>下载当前表格 CSV</Button>
           <Button type="button" variant="secondary" onClick={() => { try { saveJson(csvToOfficeSpec(csvTable, kinds), "表格处理结果.json"); setFormError(null); } catch (error) { setFormError(error instanceof Error ? error.message : "导出失败"); } }}>下载带类型表格 JSON</Button></div>
-        <Button type="button" variant="secondary" onClick={() => { try { setSource(JSON.stringify(csvToOfficeSpec(csvTable, kinds), null, 2)); edited(); } catch (error) { setFormError(error instanceof Error ? error.message : "转换失败"); } }}>转换为表格输入</Button>
+        <Button type="button" variant="secondary" disabled={converting || filePending || !!candidate} onClick={() => void convert()}>转换为表格输入</Button>
         {onPrepareReportTable && <OfficeReportTableTransfer table={csvTable} project={project} session={session} service={scoped ? state.serviceId : null} host={host} pending={tableTransferPending} onPrepare={onPrepareReportTable} />}
       </div>}
     </details>
     <form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); submit(key); }}>
       <Input aria-label="XLSX 文件名" value={filename} onChange={(event) => { setFilename(event.target.value); edited(); }} />
       <Input aria-label="关联已有 Run ID（可选）" value={runId} onChange={(event) => { setRunId(event.target.value); edited(); }} placeholder="可留空，仅支持本项目普通 native host run" />
-      <Textarea aria-label="结构化表格 JSON" rows={12} value={source} onChange={(event) => { setSource(event.target.value); edited(); }} />
+      <p role="status">{inputStatus === "needs_review" ? "CSV 或表格草稿已变化，当前 JSON 不再确认对应它；请转换表格或明确选择现有 JSON。" : inputStatus === "current" ? "当前 JSON 来自最近一次转换；再次编辑表格后需重新处理。" : "当前使用独立 JSON；导入或编辑表格后需重新选择。"}</p>
+      {inputStatus === "needs_review" && <Button type="button" variant="secondary" disabled={converting || filePending || !!candidate} onClick={() => { setInputStatus("independent"); edited(); }}>确认使用现有 JSON，不转换表格</Button>}
+      {(filePending || !!candidate) && <p role="status">请先完成或放弃待处理 CSV 文件，才能生成。</p>}
+      <Textarea aria-label="结构化表格 JSON" rows={12} value={source} onChange={(event) => { setSource(event.target.value); setInputStatus((old) => old === "needs_review" ? old : "independent"); edited(); }} />
       <OfficeAnalysisControls spec={analysisSpec} value={analysis} onChange={(next) => { setAnalysis(next); edited(); }} />
       <fieldset className="space-y-2 rounded border border-line p-2"><legend>成果处理说明（可选，用户填写）</legend>
         <p>说明会与成果回执一起保存并可下载；不会写入 XLSX，不自动追踪编辑或核验来源及业务结果。请在修改数据后更新，不要填写不必要的敏感信息。</p>
         {([ ["source", "输入来源", "文件、工作表、附件 ID 或数据来源"], ["method", "变换口径", "筛选、去重、分组、计算及其他处理步骤"], ["limitations", "限制与待核对事项", "例如未计算公式、缺失范围、业务核验状态"] ] as const).map(([key, label, placeholder]) => <label key={key} className="block">{label}
           <Textarea aria-label={`处理说明：${label}`} maxLength={2000} rows={3} value={operatorNotes[key]} placeholder={placeholder} onChange={(event) => { setOperatorNotes((old) => ({ ...old, [key]: event.target.value })); edited(); }} /></label>)}
       </fieldset>
-      <div className="flex flex-wrap gap-2"><Button type="submit" disabled={!scoped || !state.serviceId || state.busy || ipc.isMock}>生成并登记 XLSX</Button>
+      <div className="flex flex-wrap gap-2"><Button type="submit" disabled={!scoped || !state.serviceId || state.busy || ipc.isMock || inputStatus === "needs_review" || filePending || !!candidate || converting}>生成并登记 XLSX</Button>
         <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(project, state.query)}>刷新</Button>
         <Button type="button" variant="secondary" onClick={() => { try { saveJson(parsed(), "office-input.json"); } catch { setFormError("请先输入有效表格 JSON"); } }}>保存当前输入 JSON</Button></div>
     </form>
