@@ -12,7 +12,7 @@ from pathlib import PurePosixPath
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
-from .hosts.ssh import build_ssh_args, _stop_transfer_process
+from .hosts.ssh import build_ssh_args, _stop_transfer_process, ssh_environment
 
 LIMIT = 10 * 1024 * 1024
 SLOTS = asyncio.Semaphore(2)
@@ -64,7 +64,8 @@ async def _read(host, path):
                           port=int(host['port']), identity_file=host.get('identity_file') or None,
                           remote_command=command)
     proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.DEVNULL)
+                                                stderr=asyncio.subprocess.DEVNULL,
+                                                env=ssh_environment())
     try:
         async with asyncio.timeout(120):
             header = await proc.stdout.readline()

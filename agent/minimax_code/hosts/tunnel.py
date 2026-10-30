@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 
+from .ssh import ssh_environment
+
 
 def _port(value: Any, *, allow_zero: bool = False) -> int:
     if type(value) is not int or not (0 if allow_zero else 1) <= value <= 65535:
@@ -109,7 +111,7 @@ class HostTunnelManager:
                            local_port: int) -> Any:
         spawning = asyncio.create_task(self._spawn(
             *argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL))
+            stdin=asyncio.subprocess.DEVNULL, env=ssh_environment()))
         try:
             return await asyncio.shield(spawning)
         except asyncio.CancelledError:

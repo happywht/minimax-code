@@ -26,6 +26,15 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..execution import process_environment
+
+
+def ssh_environment() -> dict[str, str]:
+    """Filter service credentials while retaining SSH agent authentication."""
+    extra = {key: value for key, value in os.environ.items()
+             if key.upper() == "SSH_AUTH_SOCK"}
+    return process_environment(extra)
+
 
 @dataclass
 class SshResult:
@@ -95,6 +104,7 @@ async def run_ssh(
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
+            env=ssh_environment(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -316,6 +326,7 @@ async def _run_scp(argv: list[str], *, timeout: float,
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
+            env=ssh_environment(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
