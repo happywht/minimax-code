@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .live_stream import LiveStream
@@ -25,6 +27,17 @@ class RunServiceClosing(RuntimeError):
 
 class RunShutdownError(RuntimeError):
     """An admission or run did not confirm successful teardown."""
+
+
+def _workspace_overlaps(first: str, second: str) -> bool:
+    """Compare canonical roots, including roots nested inside another root."""
+    left = os.path.normcase(str(Path(first).resolve()))
+    right = os.path.normcase(str(Path(second).resolve()))
+    try:
+        common = os.path.commonpath((left, right))
+    except ValueError:  # Different Windows drives.
+        return False
+    return common == left or common == right
 
 
 @dataclass(eq=False)
@@ -205,6 +218,32 @@ class RunService:
                 assert current is not None
                 self._accepted_admissions.add(current)
                 try:
+                    # Idempotent retries must find their original run before
+                    # checking other sessions' workspace reservations.
+                    if request_key is not None:
+                        if (not isinstance(request_key, str) or not request_key.strip()
+                                or len(request_key) > 128):
+                            raise ValueError("idempotency_key must be a non-empty string of at most 128 characters")
+                        profile = metadata.get("agent_execution")
+                        if profile is not None and not resumed_from_id:
+                            existing = await dao.find_agent_root(
+                                profile["source_session_id"], request_key, profile["intent"])
+                        else:
+                            existing = await dao.find_request(session_id, request_key, request)
+                        if existing is not None:
+                            return existing, self._by_run.get(existing["id"]), False
+
+                    # Reservations cover queued jobs as well as execution and
+                    # finalization. Reject rather than wait: a parent can await
+                    # a child, so a workspace lock could otherwise deadlock.
+                    for other_session, jobs in self._jobs.items():
+                        if other_session == session_id:
+                            continue
+                        for other in jobs:
+                            if other.workspace and _workspace_overlaps(workspace, other.workspace):
+                                raise ValueError(
+                                    "Workspace overlaps an active or queued run in another session; "
+                                    "wait for it to finish or use an independent workspace")
                     run, created = await dao.admit_run(
                         session_id=session_id, request=request, title=title, metadata=metadata,
                         request_key=request_key, resumed_from_id=resumed_from_id,
