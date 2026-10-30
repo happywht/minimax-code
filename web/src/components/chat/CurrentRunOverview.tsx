@@ -4,6 +4,7 @@ import { useChat, usePermissionStore, useRunTimelineStore, useSessionStore } fro
 import type { BudgetStateResult } from "../../types/ipc";
 import { Button } from "../../ui";
 import { QueuedRuns } from "./QueuedRuns";
+import { InterruptedPlanDraft } from "./InterruptedPlanDraft";
 
 const labels: Record<string, string> = { queued: "已接收，排队中", planning: "规划中", running: "运行中",
   awaiting_approval: "等待授权", waiting_input: "等待回答", budget_paused: "预算暂停", interrupted: "已中断，待核对",
@@ -157,6 +158,7 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
           </li>)}
         </ol> : <p>当前没有计划步骤。</p>}
         {md.codex_plan.truncated && <p>计划内容过长，显示已截断。</p>}
+        <InterruptedPlanDraft run={run} />
         {run.mode === "plan" && run.status === "completed" && !md.codex_plan.truncated &&
           (md.codex_plan.explanation || md.codex_plan.steps.length > 0) && <div className="space-y-1">
             <Button type="button" size="sm" variant="secondary" disabled={stale} onClick={prepareStructuredPlan}>准备执行此计划</Button>
