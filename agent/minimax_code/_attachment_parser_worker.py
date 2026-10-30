@@ -68,7 +68,7 @@ def establish_limits():
 
 def main():
     try:
-        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"}:
+        if len(sys.argv) < 4 or sys.argv[-3] not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_extract_cache", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"}:
             raise RuntimeError("Invalid fixed parser kind")
         job = establish_limits()
     except Exception:
@@ -113,7 +113,7 @@ def main():
         if len(data) > 2 * 1024 * 1024:
             return 127
         result = list_sheets(data)
-    elif sys.argv[-3] == "xlsx_extract":
+    elif sys.argv[-3] in {"xlsx_extract", "xlsx_extract_cache"}:
         from minimax_code.attachment_xlsx import extract_sheet
 
         if len(data) < 4:
@@ -125,7 +125,7 @@ def main():
             sheet = data[4:4 + length].decode("utf-8", errors="strict")
         except UnicodeError:
             return 127
-        result = extract_sheet(data[4 + length:], sheet)
+        result = extract_sheet(data[4 + length:], sheet, use_formula_cache=sys.argv[-3] == "xlsx_extract_cache")
     elif len(data) > 10 * 1024 * 1024:
         return 127
     elif sys.argv[-3] == "pdf":

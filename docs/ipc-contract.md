@@ -1880,7 +1880,7 @@ document the migration in this file.
 | `attachment.ocr_pdf_page` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language, page}` | 手动渲染并 OCR 指定 PDF 物理页，返回临时未核验文本及页号 |
 | `attachment.ocr_image` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language}` | 手动执行本地 PNG/JPEG OCR，返回临时未核验文本 |
 | `attachment.read_document` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, unit, offset}` | 读取匹配原件的 PDF 物理页、DOCX 正文段落或 UTF-8 TXT/CSV 有界文本片段，返回来源、位置与下一游标 |
-| `attachment.extract_xlsx` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, sheet_name}` | 复核会话、服务与附件后返回受控完整工作表行及日期、百分比、货币列；不计算公式 |
+| `attachment.extract_xlsx` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, sheet_name, use_formula_cache?}` | 复核会话、服务与附件后返回受控完整工作表行及日期、百分比、货币列；显式缓存模式额外返回 `formula_cells` 坐标，不计算公式 |
 | `attachment.list_xlsx_sheets` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256}` | 复核会话、服务与原件后返回最多 32 个工作表的名称及可见状态，不读取行或计算公式 |
 | `attachment.list` | `{project_id, cursor?, query?}` | `{attachments, service_id, next_cursor}`，每页最多 200 条元数据，不含预览。可选 query（1–240 字符）按名称区分大小写作字面子串匹配，不读取或搜索原件；搜索游标绑定项目、服务和 query，继续时必须使用相同参数。无 query 保持原游标行为 |
 | `attachment.get` | `{project_id, attachment_id}` | `{attachment, preview_text}`，核对原件后返回有界纯文本 |
@@ -1970,7 +1970,7 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 `attachment.read_document` 仅在会话归属项目、服务及附件 SHA-256 匹配时读取原件；单次最多 4000 个 Unicode 字符，初始游标为 unit=1、offset=0，按返回的 next_cursor 继续，offset 上限为 10 Mi 字符。PDF 为物理页已有文本（最多 200 页），DOCX 为正文与表格段落，使用隔离解析器；不读取页眉页脚、脚注、文本框、修订或图像文字，不执行 OCR，不还原版式。TXT/CSV 为严格 UTF-8 原文（unit 固定为 1，不接受 NUL），CSV 不解析表格、不执行公式。空文本不代表原件无内容；文字未经核验。原件不修改，也不自动加入对话。缺依赖或资源限制不可用时返回错误。
 
-`attachment.extract_xlsx` 仅在会话归属项目、服务和附件校验值匹配时读取不可变原件，使用现有隔离解析器完整提取一个可见工作表；上限 2 MiB、A1:T1001、5000 格及 1 MiB 提取数据。公式、隐藏行列、复杂表和不明确数字格式等拒绝；日期转 ISO，百分比和货币为底层数值，不保留格式。返回前再次核对会话和服务；不会修改原件。
+`attachment.extract_xlsx` 仅在会话归属项目、服务和附件校验值匹配时读取不可变原件，使用现有隔离解析器完整提取一个可见工作表；上限 2 MiB、A1:T1001、5000 格及 1 MiB 提取数据。默认拒绝公式；显式 `use_formula_cache: true` 时只使用普通公式单元格中非空且支持的数字、布尔或字符串缓存，返回 `formula_cells` 坐标和 `use_formula_cache: true`，不返回公式表达式、不执行或重算。任一公式缺失/空缓存、错误缓存、共享或数组公式、其他不支持的类型，以及隐藏行列、复杂表和不明确数字格式等均拒绝整张工作表（包括未选区域）；不能判断缓存是否过期或正确。日期转 ISO，百分比和货币为底层数值，不保留格式。返回前再次核对会话和服务；不会修改原件。此缓存模式尚未运行测试、构建或实机验证。
 
 `attachment.list_xlsx_sheets` 使用相同的身份与 2 MiB 原件边界，返回完整工作表名称及 `visible`、`hidden` 或 `veryHidden` 状态，超出解析限制或不支持时返回错误。列表不保证表内容可提取；隐藏表不能提取。只读取元数据，不修改原件、不计算公式。
 

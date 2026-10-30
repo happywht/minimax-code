@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import sysconfig
@@ -31,7 +32,7 @@ def _environment():
 
 
 def _command(kind):
-    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"}:
+    if kind not in {"docx", "pdf", "xlsx", "xlsx_extract", "xlsx_extract_cache", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"}:
         raise ValueError("Invalid fixed parser kind")
     # Windows venv python.exe is a redirector. Kill/wait must target the actual
     # parser PID, so launch the base interpreter and add only trusted venv libs
@@ -52,7 +53,7 @@ def _command(kind):
 
 def _run(data, cancelled, scope=SCOPE, kind="docx"):
     def failed(reason, **kwargs):
-        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"} else failure(reason, scope=scope, **kwargs)
+        return {"ok": False, "reason": reason} if kind in {"xlsx_extract", "xlsx_extract_cache", "xlsx_list", "pdf_page", "docx_segment", "ocr_image", "ocr_pdf_page"} else failure(reason, scope=scope, **kwargs)
 
     if sys.platform not in {"linux", "win32"}:
         return failed("limits_unavailable", unavailable=True)
@@ -97,7 +98,7 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
             finally:
                 process.stdin.close()
 
-        output_limit = 3 * 1024 * 1024 if kind == "xlsx_extract" else STDOUT_LIMIT
+        output_limit = 3 * 1024 * 1024 if kind in {"xlsx_extract", "xlsx_extract_cache"} else STDOUT_LIMIT
         for stream, target, limit in ((process.stdout, output, output_limit),
                                       (process.stderr, errors, STDERR_LIMIT)):
             reader = threading.Thread(target=read, args=(stream, target, limit), daemon=True)
@@ -197,15 +198,18 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
                         or len({sheet["name"].casefold() for sheet in sheets}) != len(sheets)):
                     raise ValueError
                 return result
-            if kind == "xlsx_extract":
+            if kind in {"xlsx_extract", "xlsx_extract_cache"}:
                 reasons = {"sheet_name", "sheet_not_found", "hidden_sheet", "hidden_rows", "hidden_columns",
-                           "complex_sheet", "import_limit", "formula", "unsupported_cell", "formatted_number", "unsupported_date", "padded_identifier",
+                           "complex_sheet", "import_limit", "formula", "formula_cache_missing", "formula_cache_type", "unsupported_cell", "formatted_number", "unsupported_date", "padded_identifier",
                            "missing_dependency", "invalid_package", "unsafe_package", "package_limit", "unsupported_feature"}
                 if type(result) is not dict:
                     raise ValueError
                 if result.get("ok") is False and set(result) == {"ok", "reason"} and result["reason"] in reasons:
                     return result
-                if result.get("ok") is not True or set(result) != {"ok", "rows", "date_columns", "percentage_columns", "currency_columns"}:
+                expected_fields = {"ok", "rows", "date_columns", "percentage_columns", "currency_columns"}
+                if kind == "xlsx_extract_cache":
+                    expected_fields.add("formula_cells")
+                if result.get("ok") is not True or set(result) != expected_fields:
                     raise ValueError
                 rows = result["rows"]
                 if (type(rows) is not list or not 1 <= len(rows) <= 1001
@@ -220,6 +224,18 @@ def _run(data, cancelled, scope=SCOPE, kind="docx"):
                             or any(type(value) is not str or value not in rows[0] for value in columns)
                             or len(set(columns)) != len(columns)):
                         raise ValueError
+                if kind == "xlsx_extract_cache":
+                    cells = result["formula_cells"]
+                    if (type(cells) is not list or len(cells) > len(rows) * len(rows[0]) or
+                            any(type(cell) is not str for cell in cells) or len(set(cells)) != len(cells)):
+                        raise ValueError
+                    for cell in cells:
+                        match = re.fullmatch(r"([A-T])([1-9][0-9]{0,3})", cell)
+                        if not match:
+                            raise ValueError
+                        row, column = int(match[2]), ord(match[1]) - ord("A") + 1
+                        if row > len(rows) or column > len(rows[0]) or rows[row - 1][column - 1] == "":
+                            raise ValueError
                 return result
             return validate(result, expected_scope=scope,
                             expected_kind="xlsx" if kind == "xlsx" else None)
@@ -252,8 +268,8 @@ async def list_xlsx_sheets(data):
     return await _inspect(data, PDF_SCOPE, "xlsx_list")
 
 
-async def extract_xlsx(data, sheet_name):
-    if not isinstance(sheet_name, str) or not 1 <= len(sheet_name) <= 31:
+async def extract_xlsx(data, sheet_name, *, use_formula_cache=False):
+    if type(use_formula_cache) is not bool or not isinstance(sheet_name, str) or not 1 <= len(sheet_name) <= 31:
         return {"ok": False, "reason": "sheet_name"}
     try:
         encoded = sheet_name.encode("utf-8")
@@ -262,7 +278,7 @@ async def extract_xlsx(data, sheet_name):
     if len(encoded) > 124 or len(data) > 2 * 1024 * 1024:
         return {"ok": False, "reason": "import_limit"}
     framed = len(encoded).to_bytes(4, "big") + encoded + data
-    return await _inspect(framed, PDF_SCOPE, "xlsx_extract")
+    return await _inspect(framed, PDF_SCOPE, "xlsx_extract_cache" if use_formula_cache else "xlsx_extract")
 
 
 async def read_document_segment(data, kind, unit=1, offset=0):

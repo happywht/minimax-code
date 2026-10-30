@@ -93,14 +93,16 @@ def register_attachment_handlers(server):
             original, data = await service.content(request.project_id, request.attachment_id)
             if original["recognized_type"] != "xlsx" or original["sha256"] != request.expected_sha256:
                 raise ValueError("XLSX attachment identity changed")
-            result = await list_xlsx_sheets(data) if listing else await extract_sheet(data, request.sheet_name)
+            result = await list_xlsx_sheets(data) if listing else await extract_sheet(data, request.sheet_name, use_formula_cache=request.use_formula_cache)
             if not result["ok"]:
-                raise ValueError(_MESSAGES.get(result["reason"], "Workbook is unsupported or parser unavailable"))
+                messages = {"formula_cache_missing": "A formula has a missing or empty cached value; no sheet was imported",
+                            "formula_cache_type": "A formula cache has an unsupported type; no sheet was imported"}
+                raise ValueError(messages.get(result["reason"], _MESSAGES.get(result["reason"], "Workbook is unsupported or parser unavailable")))
             await check_scope()
             await ctx.reply({**result, "project_id": request.project_id, "session_id": request.session_id,
                 "service_id": request.expected_service_id, "attachment_id": request.attachment_id,
                 "sha256": request.expected_sha256,
-                **({} if listing else {"sheet_name": request.sheet_name})})
+                **({} if listing else {"sheet_name": request.sheet_name, "use_formula_cache": request.use_formula_cache})})
         except ValidationError:
             await ctx.reply_error(INVALID_PARAMS, "Invalid XLSX extraction parameters")
         except (ValueError, OSError) as exc:

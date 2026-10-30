@@ -250,7 +250,7 @@ def _xml(parts, fromstring):
     return trees, overrides, relationships
 
 
-def _preflight(parts, fromstring, *, full_sheet=None):
+def _preflight(parts, fromstring, *, full_sheet=None, use_formula_cache=False):
     trees, overrides, relationships = _xml(parts, fromstring)
     strings = []
     if "xl/sharedStrings.xml" in trees:
@@ -312,6 +312,7 @@ def _preflight(parts, fromstring, *, full_sheet=None):
         selected = {}
         capture = full_sheet is not None and name == full_sheet
         full_cells = {} if capture else None
+        formula_cells = [] if capture else None
         max_row, max_column = 0, 0
         if capture:
             require(state == "visible", "hidden_sheet")
@@ -375,8 +376,11 @@ def _preflight(parts, fromstring, *, full_sheet=None):
                 raw = value.text or "" if value is not None else None
                 import_kind = None
                 if capture:
-                    require(not formulae, "formula")
+                    require(not formulae or use_formula_cache, "formula")
                     require(kind != "e", "unsupported_cell")
+                    if formulae:
+                        require(kind in {"n", "b", "str"}, "formula_cache_type")
+                        require(value is not None and raw not in {None, ""}, "formula_cache_missing")
                     if kind == "n" and value is not None and raw not in {None, ""}:
                         from .xlsx_import_formats import number_kind
 
@@ -424,6 +428,11 @@ def _preflight(parts, fromstring, *, full_sheet=None):
                         "recalculated": False,
                     }
                     has_value = True
+                    if capture:
+                        decoded = _stored(kind, raw, strings)
+                        record = {"cell": coordinate, "kind": {"n": "number", "b": "boolean", "str": "string"}[kind],
+                                  "stored_type": kind, "raw": decoded}
+                        formula_cells.append(coordinate)
                 else:
                     require(not inline or kind == "inlineStr")
                     if kind == "inlineStr":
@@ -465,6 +474,7 @@ def _preflight(parts, fromstring, *, full_sheet=None):
             item["full_cells"] = full_cells
             item["full_rows"] = max_row
             item["full_columns"] = max_column
+            item["formula_cells"] = formula_cells
         result.append(item)
     require(targets == {name for name, mime in overrides.items() if mime == SHEET})
     return result, populated, clipped
@@ -491,14 +501,14 @@ def list_sheets(data):
         return {"ok": False, "reason": "invalid_package"}
 
 
-def extract_sheet(data, sheet_name):
-    """Return complete bounded raw cells, never computed or cached formulas."""
+def extract_sheet(data, sheet_name, *, use_formula_cache=False):
+    """Return bounded stored cells; formulas require explicit cache-only mode."""
     try:
         from defusedxml.ElementTree import fromstring
 
         require(isinstance(sheet_name, str) and 1 <= len(sheet_name) <= 31, "sheet_name")
         parts = package_parts(data)
-        sheets, _, _ = _preflight(parts, fromstring, full_sheet=sheet_name)
+        sheets, _, _ = _preflight(parts, fromstring, full_sheet=sheet_name, use_formula_cache=use_formula_cache)
         selected = next((sheet for sheet in sheets if sheet["name"] == sheet_name), None)
         require(selected is not None, "sheet_not_found")
         cells = selected["full_cells"]
@@ -521,6 +531,8 @@ def extract_sheet(data, sheet_name):
 
         result = {"ok": True, "rows": rows, "date_columns": columns_of("date"),
                   "percentage_columns": columns_of("percentage"), "currency_columns": columns_of("currency")}
+        if use_formula_cache:
+            result["formula_cells"] = selected["formula_cells"]
         require(len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= 1024 * 1024,
                 "import_limit")
         return result

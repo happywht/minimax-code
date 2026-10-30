@@ -37,7 +37,7 @@ function saveCsv(table: CsvTable): void {
 type InputStatus = "independent" | "current" | "needs_review";
 export type TableDraft = { filename: string; runId: string; source: string; csv: string; csvTable: CsvTable | null;
   originalCsvTable: CsvTable | null; tableDirty: boolean; kinds: OfficeTableSpec["columns"][number]["kind"][];
-  candidate: { name: string; text: string; table: CsvTable } | null; analysis: OfficeAnalysisOptions; operatorNotes?: OfficeOperatorNotes; inputStatus?: InputStatus };
+  candidate: { name: string; text: string; table: CsvTable } | null; analysis: OfficeAnalysisOptions; operatorNotes?: OfficeOperatorNotes; inputStatus?: InputStatus; cacheNotice?: string };
 function isDraftTable(value: unknown): value is CsvTable {
   if (!value || typeof value !== "object") return false;
   const table = value as Record<string, unknown>;
@@ -66,6 +66,7 @@ function readTableDraft(value: unknown): TableDraft {
         ["source", "method", "limitations"].some((key) => typeof notes[key] !== "string" || [...(notes[key] as string)].length > 2000)) throw new Error("处理说明草稿无效");
   }
   if (data.inputStatus !== undefined && !["independent", "current", "needs_review"].includes(String(data.inputStatus))) throw new Error("表格输入状态无效");
+  if (data.cacheNotice !== undefined && (typeof data.cacheNotice !== "string" || [...data.cacheNotice].length > 2000)) throw new Error("公式缓存说明无效");
   if (!analysis || typeof analysis !== "object" || !Array.isArray(analysis.summaries) || analysis.summaries.length > 20 ||
       analysis.summaries.some((item) => !item || typeof item !== "object" || typeof item.column !== "string" ||
         !["sum", "count", "average"].includes(item.operation) || typeof item.decimals !== "number" || !Number.isFinite(item.decimals))) throw new Error("汇总草稿无效");
@@ -89,6 +90,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const [formError, setFormError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<OfficeAnalysisOptions>(initialDraft?.analysis ?? { summaries: [], chart: null });
   const [operatorNotes, setOperatorNotes] = useState<OfficeOperatorNotes>(initialDraft?.operatorNotes ?? { source: "", method: "", limitations: "" });
+  const [cacheNotice, setCacheNotice] = useState(initialDraft?.cacheNotice ?? "");
   const [csv, setCsv] = useState(initialDraft?.csv ?? "");
   const [csvTable, setCsvTable] = useState<CsvTable | null>(initialDraft?.csvTable ?? null);
   const [originalCsvTable, setOriginalCsvTable] = useState<CsvTable | null>(initialDraft?.originalCsvTable ?? null);
@@ -101,10 +103,10 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const [candidate, setCandidate] = useState<{ name: string; text: string; table: CsvTable } | null>(initialDraft?.candidate ?? null);
   const [inputStatus, setInputStatus] = useState<InputStatus>(initialDraft?.inputStatus ?? (initialDraft?.csv || initialDraft?.csvTable ? "needs_review" : "independent"));
   const [converting, setConverting] = useState(false);
-  const draftRef = useRef<TableDraft>({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus });
-  draftRef.current = { filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus };
+  const draftRef = useRef<TableDraft>({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, cacheNotice });
+  draftRef.current = { filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, cacheNotice };
   const conversionRef = useRef("");
-  conversionRef.current = JSON.stringify([project, session, host, state.serviceId, filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, filePending]);
+  conversionRef.current = JSON.stringify([project, session, host, state.serviceId, filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, cacheNotice, filePending]);
   const conversionRevision = useRef({ value: conversionRef.current, revision: 0 });
   if (conversionRevision.current.value !== conversionRef.current) conversionRevision.current = { value: conversionRef.current, revision: conversionRevision.current.revision + 1 };
   useEffect(() => () => { onRetainDraft?.(draftRef.current); }, []);
@@ -120,7 +122,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const cancelFileRead = () => { fileSequence.current++; fileReader.current?.abort(); fileReader.current = null; setFilePending(false); };
   const applyCsv = (text: string, table: CsvTable) => {
     csvRef.current = text; setCsv(text); setCsvTable(table); setOriginalCsvTable(table); setTableDirty(false); setKinds(table.headers.map(() => "text"));
-    setCandidate(null); setInputStatus("needs_review"); setFormError(null);
+    setCandidate(null); setInputStatus("needs_review"); setCacheNotice(""); setFormError(null);
   };
   const readCsvFile = (file: File) => {
     cancelFileRead(); setCandidate(null); setFormError(null);
@@ -244,7 +246,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <OfficeDeliveryPackage key={`package:${state.selected.delivery.id}:${state.selected.attachment.sha256}`} selected={state.selected} project={project} session={session} service={state.serviceId} host={host} />
       {state.selected.delivery.validation_report.scope === "xlsx_plain_cells_v1" && <OfficeDeliveryReuse key={`${state.selected.delivery.id}:${state.selected.attachment.sha256}`}
         selected={state.selected} project={project} session={session} service={state.serviceId} host={host}
-        draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, filePending, converting])} filePending={filePending || converting}
+        draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, cacheNotice, filePending, converting])} filePending={filePending || converting}
         onApply={(text, table, name) => { cancelFileRead(); applyCsv(text, table); setFilename(name); edited(); }} />}
       <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
         <Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>
@@ -259,18 +261,18 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
     </div>
     <DraftFileControl<TableDraft> kind="table" disabled={state.busy || filePending || converting}
       scope={scoped && project && state.serviceId ? { host, service: state.serviceId, project, session } : null}
-      capture={() => ({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus })}
+      capture={() => ({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, cacheNotice })}
       decode={async (value) => readTableDraft(value)}
       apply={(draft) => {
         cancelFileRead(); setFilename(draft.filename); setRunId(draft.runId); setSource(draft.source);
         csvRef.current = draft.csv; setCsv(draft.csv); setCsvTable(draft.csvTable); setOriginalCsvTable(draft.originalCsvTable);
         setTableDirty(draft.tableDirty); setKinds(draft.kinds); setCandidate(draft.candidate); setAnalysis(draft.analysis); setOperatorNotes(draft.operatorNotes ?? { source: "", method: "", limitations: "" });
-        setInputStatus(draft.inputStatus === "needs_review" || !!draft.csv || !!draft.csvTable ? "needs_review" : "independent"); edited();
+        setInputStatus(draft.inputStatus === "needs_review" || !!draft.csv || !!draft.csvTable ? "needs_review" : "independent"); setCacheNotice(draft.cacheNotice ?? ""); edited();
       }} />
     <ProjectCsvImport project={project} session={session} service={scoped ? state.serviceId : null} host={host} disabled={state.busy || filePending || converting}
-      draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, filePending, converting])}
+      draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, cacheNotice, filePending, converting])}
       onApply={(text, table) => { cancelFileRead(); applyCsv(text, table); }} />
-    <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} disabled={state.busy || filePending || converting} onImport={(text, table) => {
+    <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} disabled={state.busy || filePending || converting} onImport={(text, table, cacheInfo) => {
       const scope = generationScope.current, expectedService = state.serviceId, before = conversionRevision.current.revision;
       void (async () => {
         if (csvRef.current || tableDirty) {
@@ -279,7 +281,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         }
         if (!scope.active || ipc.agentBaseUrl !== host || useSessionStore.getState().currentProjectId !== project ||
             useSessionStore.getState().currentSessionId !== session || useOfficeDeliveryStore.getState().serviceId !== expectedService || useOfficeDeliveryStore.getState().busy || conversionRevision.current.revision !== before) return;
-        cancelFileRead(); applyCsv(text, table);
+        cancelFileRead(); applyCsv(text, table); setCacheNotice(cacheInfo ?? "");
       })();
     }} />
     <details className="rounded border border-line p-3">
@@ -313,6 +315,12 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <OfficeAnalysisControls spec={analysisSpec} value={analysis} onChange={(next) => { setAnalysis(next); edited(); }} />
       <fieldset className="space-y-2 rounded border border-line p-2"><legend>成果处理说明（可选，用户填写）</legend>
         <p>说明会与成果回执一起保存并可下载；不会写入 XLSX，不自动追踪编辑或核验来源及业务结果。请在修改数据后更新，不要填写不必要的敏感信息。</p>
+        {cacheNotice && <div className="rounded border border-line p-2"><p className="break-all">本次表格导入涉及公式缓存：{cacheNotice} 请核对后记录到处理说明；独立 JSON 不一定来自该表格。</p>
+          <Button type="button" variant="secondary" onClick={() => {
+            const next = [operatorNotes.limitations, cacheNotice].filter(Boolean).join("\n");
+            if ([...next].length > 2000) { setFormError("限制说明超过 2000 字，未追加；请手动精简。"); return; }
+            setOperatorNotes((old) => ({ ...old, limitations: next })); edited();
+          }}>将缓存来源与风险追加到处理说明</Button></div>}
         {([ ["source", "输入来源", "文件、工作表、附件 ID 或数据来源"], ["method", "变换口径", "筛选、去重、分组、计算及其他处理步骤"], ["limitations", "限制与待核对事项", "例如未计算公式、缺失范围、业务核验状态"] ] as const).map(([key, label, placeholder]) => <label key={key} className="block">{label}
           <Textarea aria-label={`处理说明：${label}`} maxLength={2000} rows={3} value={operatorNotes[key]} placeholder={placeholder} onChange={(event) => { setOperatorNotes((old) => ({ ...old, [key]: event.target.value })); edited(); }} /></label>)}
       </fieldset>

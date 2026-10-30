@@ -160,6 +160,7 @@ class AttachmentXlsxParams(ArtifactListParams):
 
 class AttachmentExtractXlsxParams(AttachmentXlsxParams):
     sheet_name: str = Field(min_length=1, max_length=31)
+    use_formula_cache: bool = False
 
 
 class AttachmentReadDocumentParams(ArtifactListParams):
