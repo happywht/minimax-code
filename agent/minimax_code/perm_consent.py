@@ -82,6 +82,7 @@ class PendingRequest:
     future: asyncio.Future[bool]
     session_id: str | None
     deadline: float
+    explicit_once: bool = False
 
 
 class PermissionGater:
@@ -131,7 +132,7 @@ class PermissionGater:
         return [{"request_id": request.request_id, "tool": request.tool, "args": dict(request.args),
                  "session_id": session_id, "run_id": run_id,
                  "remaining_ms": max(0, int((request.deadline - now) * 1000)),
-                 **({"approval_policy": "explicit_once"} if self.explicit_once else {})}
+                 **({"approval_policy": "explicit_once"} if request.explicit_once else {})}
                 for request in self._pending.values()
                 if request.session_id == session_id and not request.future.done() and request.deadline > now]
 
@@ -144,6 +145,7 @@ class PermissionGater:
         args: dict[str, Any],
         session_id: str | None = None,
         timeout: float | None = None,
+        explicit_once: bool = False,
     ) -> bool:
         """Emit a ``permission.request`` event and block until resolve.
 
@@ -166,6 +168,7 @@ class PermissionGater:
             self._pending[request_id] = PendingRequest(
                 request_id=request_id, tool=tool, args=dict(args), future=future,
                 session_id=session_id, deadline=deadline,
+                explicit_once=self.explicit_once or explicit_once,
             )
 
         payload: dict[str, Any] = {
@@ -178,7 +181,7 @@ class PermissionGater:
         if self.run_id:
             payload["run_id"] = self.run_id
             payload["remaining_ms"] = max(0, int((deadline - loop.time()) * 1000))
-            if self.explicit_once:
+            if self.explicit_once or explicit_once:
                 payload["approval_policy"] = "explicit_once"
 
         try:

@@ -1141,7 +1141,7 @@ export const useChat = create<ChatState>((set, get) => ({
     if (!current) return;
     try {
       const result = await typedIPC.answerUser(current.request_id, answers, false,
-        current.engine === "codex" && current.run_id ? { session_id: current.session_id, run_id: current.run_id } : undefined);
+        current.run_id ? { session_id: current.session_id, run_id: current.run_id } : undefined);
       if (!result.ok) {
         // The backend explicitly rejected the answer (unknown/expired
         // request_id) — the card is dead weight, drop it.

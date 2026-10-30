@@ -887,6 +887,8 @@ export interface AskUserData extends RunStreamContext {
   tool_call_id?: string | null;
   /** Name of the child agent asking on behalf of the owning run. */
   agent_name?: string;
+  /** Separate session whose core owns this child's question. */
+  child_session_id?: string;
   engine?: "codex";
   is_blocking?: boolean;
 }

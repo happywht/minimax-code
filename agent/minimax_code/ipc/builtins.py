@@ -1633,14 +1633,15 @@ async def _handle_agent_send_message(
     core.on_tool_call = _on_tool_call
 
     def _bind_ask_user(question_core, question_session, source=None):
-        if question_session != session_id:
-            raise ValueError("Sub-agent question session does not match its owning run")
+        if not isinstance(question_session, str) or not question_session:
+            raise ValueError("Question session is unavailable")
 
         async def _on_ask_user(payload: dict) -> None:
             """Publish the live question owned by this core and run."""
-            if payload.get("session_id") != session_id:
+            if payload.get("session_id") != question_session:
                 raise ValueError("Question session changed")
-            event = {**payload, "run_id": job.run_id, **({"agent_name": source} if source else {})}
+            event = {**payload, "session_id": session_id, "run_id": job.run_id,
+                     **({"agent_name": source, "child_session_id": question_session} if source else {})}
             deadline = question_core._ask_user_deadlines[payload["request_id"]]
             event["remaining_ms"] = max(0, int((deadline - asyncio.get_running_loop().time()) * 1000))
             future = question_core._pending_ask_user.get(payload["request_id"])
@@ -1654,7 +1655,7 @@ async def _handle_agent_send_message(
         async def _on_ask_user_closed(payload: dict) -> None:
             registry = getattr(ctx.server, "_live_ask_users", {})
             registry.pop(payload["request_id"], None)
-            event = {**payload, "run_id": job.run_id}
+            event = {**payload, "session_id": session_id, "run_id": job.run_id}
             await ctx.emit("agent.ask_user_closed", event)
             await scheduled_attention("question", event, closed=True)
 
@@ -2242,6 +2243,14 @@ async def handle_agent_answer_user(params: Any, ctx: Context) -> None:
     if not isinstance(answers, list) or not answers:
         await ctx.reply_error(-32602, "answers must be a non-empty array")
         return
+
+    if "session_id" in params or "run_id" in params:
+        live = getattr(ctx.server, "_live_ask_users", {}).get(request_id)
+        event = live[0] if live else None
+        if (not event or params.get("session_id") != event.get("session_id")
+                or params.get("run_id") != event.get("run_id")):
+            await ctx.reply({"ok": False, "error": "Request binding does not match"})
+            return
 
     from ..agent.core import _ASK_USER_ROUTES
 

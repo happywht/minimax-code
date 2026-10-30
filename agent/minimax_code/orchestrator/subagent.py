@@ -331,7 +331,7 @@ class _ParentPermissionGater:
             args={**args, "_subagent_session": session_id,
                   "_child_workspace": str(root) if root is not None else "unknown",
                   "_execution_boundary": "working copy; host processes are not OS-sandboxed"},
-            session_id=self.parent_session_id, timeout=timeout,
+            session_id=self.parent_session_id, timeout=timeout, explicit_once=True,
         )
 
 
