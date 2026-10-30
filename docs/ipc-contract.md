@@ -2194,10 +2194,13 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 |------|------|
 | `schedule.create` / `schedule.list` / `schedule.delete` | 固定上下文提示词任务创建/列表/软删除 |
 | `schedule.update` | expected_revision 比较并交换，保留旧发生记录快照 |
+| `schedule.preview` | 只读计算给定 Cron 和时区的未来最多五次到期时间，不创建或运行计划 |
 | `schedule.occurrences` | 按 job_id 查询准确发生记录和执行/校验证据 |
 | `schedule.enable` / `schedule.disable` | 启用/停用 |
 | `schedule.manual_receipt` | 按计划、请求键、版本和服务身份只读找回原手动接单回执，不调用调度器或触发运行 |
 | `schedule.run_now` | 立即触发一次 |
+
+`schedule.preview` 接受 `{cron_expr, timezone, expected_service_id}`，各为非空字符串、最多 128 字符；核对服务身份后用与调度游标相同的计算方法，返回 `{service_id, cron_expr, timezone, calculated_at, times}`，其中 `times` 为计算时刻之后最多五个 UTC ISO 到期时刻。此只读操作不创建计划、接单或启动运行；它不代表计划已启用、会按这些时刻执行或会通过权限与预算准入。浏览器按所选时区和 UTC 同时显示，输入或连接变化后丢弃旧结果。Mock 模式不提供真实计算。
 
 ### secrets.* — 旧版 MiniMax 密钥
 

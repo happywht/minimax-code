@@ -363,6 +363,7 @@ export interface TypedIPC {
   enableJob(jobId: string, acknowledgeOccurrenceId?: string, expectedRevision?: number, expectedService?: string): Promise<{ job: ScheduledJob }>;
   disableJob(jobId: string, scope?: { expected_revision: number; expected_service_id: string; expected_occurrence_id: string }): Promise<{ job: ScheduledJob }>;
   getScheduleManualReceipt(jobId: string, idempotencyKey: string, expectedRevision: number, expectedService: string): Promise<{ found: boolean; receipt: ScheduleTriggerResult | null }>;
+  previewSchedule(cron: string, timezone: string, expectedService: string): Promise<import("../types/ipc").SchedulePreview>;
   runNowJob(jobId: string, idempotencyKey: string, expectedRevision: number, expectedService?: string): Promise<ScheduleTriggerResult>;
 
   // agent (multi-agent)
@@ -940,6 +941,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       const result = await client.request<{ job: WireScheduledJob }>("schedule.disable", { job_id: jid, ...scope });
       return { job: normalizeScheduledJob(result.job) };
     },
+    previewSchedule: (cron, timezone, expectedService) => client.request("schedule.preview", { cron_expr: cron, timezone, expected_service_id: expectedService }),
     getScheduleManualReceipt: (jid, idempotencyKey, expectedRevision, expectedService) =>
       client.request("schedule.manual_receipt", { job_id: jid, idempotency_key: idempotencyKey, expected_revision: expectedRevision, expected_service_id: expectedService }),
     runNowJob: (jid, idempotencyKey, expectedRevision, expectedService) =>

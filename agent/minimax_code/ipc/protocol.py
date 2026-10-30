@@ -424,6 +424,13 @@ class ScheduleRunNowParams(BaseModel):
     expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class SchedulePreviewParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    cron_expr: str = Field(min_length=1, max_length=128)
+    timezone: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+
+
 class ScheduleManualReceiptParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     job_id: str = Field(min_length=1, max_length=128)

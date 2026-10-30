@@ -1165,6 +1165,8 @@ function mockHandle(
       return structuredClone(p.admission_only ? {run,created:true} : receipt);
     }
 
+    case "schedule.preview":
+      throw new Error("Mock 模式无法计算真实调度时间，请连接实际服务。");
     case "schedule.list":
       return { jobs: mockJobs };
 

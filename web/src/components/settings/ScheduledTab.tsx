@@ -21,6 +21,7 @@ import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { InlineCode, TabHeader } from "./fields";
 import { emptyScheduleContext, validScheduleContext, ScheduleContextFields, ScheduleSnapshot, ScheduleHistory } from "./ScheduleContextFields";
 import { ScheduleCronBuilder } from "./ScheduleCronBuilder";
+import { ScheduleTimePreview } from "./ScheduleTimePreview";
 import { ScheduleManualTrigger } from "./ScheduleManualTrigger";
 import { ipc } from "../../ipc";
 import { StreamEvent } from "../../types/ipc";
@@ -209,6 +210,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
           </Button>
         </div>
         <ScheduleCronBuilder onApply={setDraftCron} timezone={draftContext.timezone} />
+        <ScheduleTimePreview cron={draftCron} timezone={draftContext.timezone} serviceId={serviceId} />
         <ScheduleContextFields value={draftContext} onChange={setDraftContext} />
         <label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={draftEnabled} onChange={(event) => setDraftEnabled(event.target.checked)} />创建后启用计划</label>
         <p className="text-xs text-ink-2">默认先创建为停用，核对后可启用；启用的计划会在到期时执行。</p>
@@ -488,6 +490,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onCopy, onUpdate, onOpenSess
             </div>
           </div>
           <ScheduleCronBuilder onApply={setEditCron} timezone={editContext.timezone} />
+          <ScheduleTimePreview cron={editCron} timezone={editContext.timezone} serviceId={serviceId} />
           <ScheduleContextFields value={editContext} onChange={setEditContext} />
           </fieldset>
         </div>

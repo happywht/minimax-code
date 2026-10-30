@@ -35,6 +35,7 @@ from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     ScheduleManualReceiptParams,
+    SchedulePreviewParams,
 )
 from .server import Context
 
@@ -61,6 +62,45 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
         :func:`minimax_code.scheduler.get_scheduler` on each call.
     """
     scheduler_factory = _make_scheduler_factory(scheduler)
+
+    async def handle_schedule_preview(params: Any, ctx: Context) -> None:
+        from datetime import UTC, datetime
+
+        from pydantic import ValidationError
+
+        from ..app import ensure_db
+        from ..scheduler import InvalidCronError, _next_due
+        from ..storage.dao.text_artifacts import ArtifactDAO
+
+        try:
+            request = SchedulePreviewParams.model_validate(params)
+            if not request.cron_expr.strip() or not request.timezone.strip():
+                raise ValueError("Cron and timezone must not be blank")
+            db = scheduler._db if scheduler is not None else await ensure_db()
+            if db is None:
+                raise RuntimeError("Storage unavailable")
+            service_id = await ArtifactDAO(db).service_id()
+            if service_id != request.expected_service_id:
+                raise ValueError("Service identity changed; preview again")
+            now = datetime.now(UTC)
+            cursor = now
+            times = []
+            for _ in range(5):
+                due = _next_due(request.cron_expr, request.timezone, now=cursor)
+                if due is None:
+                    break
+                next_cursor = datetime.fromisoformat(due.replace("Z", "+00:00"))
+                if next_cursor <= cursor:
+                    raise ValueError("Cron did not advance in UTC")
+                times.append(due)
+                cursor = next_cursor
+            await ctx.reply({"service_id": service_id, "cron_expr": request.cron_expr,
+                             "timezone": request.timezone, "calculated_at": now.isoformat(), "times": times})
+        except (ValidationError, ValueError, InvalidCronError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("schedule.preview failed")
+            await ctx.reply_error(INTERNAL_ERROR, "schedule.preview unavailable")
 
     async def handle_schedule_list(params: Any, ctx: Context) -> None:
         try:
@@ -289,6 +329,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
         except Exception as exc:
             await ctx.reply_error(INTERNAL_ERROR,str(exc))
 
+    server.register("schedule.preview", handle_schedule_preview)
     server.register("schedule.update", handle_schedule_update)
     server.register("schedule.occurrences", handle_occurrences)
     server.register("schedule.list", handle_schedule_list)

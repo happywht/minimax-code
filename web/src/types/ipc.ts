@@ -520,6 +520,7 @@ export interface ScheduleContext {
 }
 
 export interface ScheduleDefinition { name: string; cron: string; prompt: string; context: ScheduleContext }
+export interface SchedulePreview { service_id: string; cron_expr: string; timezone: string; calculated_at: string; times: string[] }
 export interface ScheduleOccurrence {
   id: string; job_id: string; revision: number; source: "cron" | "manual";
   session_id: string; task_id: string; run_id: string | null; status: string;
