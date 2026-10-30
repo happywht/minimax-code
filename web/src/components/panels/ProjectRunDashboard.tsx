@@ -9,6 +9,7 @@ import { RunAttachments } from "../right-panel/RunAttachments";
 import { RunTextArtifacts } from "../right-panel/RunTextArtifacts";
 import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 import { RunRecoveryActions } from "../right-panel/RunRecoveryActions";
+import { RunChangeEvidence } from "./RunChangeEvidence";
 
 type Group = "attention" | "active" | "recent";
 const groupLabels: Record<Group, string> = { attention: "等待处理", active: "运行与排队", recent: "最近结果" };
@@ -224,6 +225,8 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
           {snapshot.steps.filter((step) => step.status === "failed").length > 25 && <p>仅显示前 25 项失败步骤，请打开所属会话查看全部记录。</p>}
           <p className="text-ink-2">步骤记录与配置命令的结果不证明交付质量；运行中的快照可能发生变化。</p>
         </div>
+        <RunChangeEvidence key={`${service}:${detail.id}:${detail.session_id}`} steps={snapshot.steps}
+          workspace={typeof snapshot.run.metadata?.workspace_snapshot === "string" ? snapshot.run.metadata.workspace_snapshot : null} />
         <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: detail.session_id, projectId: project!, serviceId: service }} />
         <RunTextArtifacts key={`${service}:${detail.id}:${detail.session_id}`} runId={detail.id} sessionId={detail.session_id} projectId={project!} serviceId={service} review onPrepareReport={(row) => void prepareHistoricalReport(row)} />
         <FollowupRunDraft key={`${service}:${detail.id}:${activeSession}`} run={snapshot.run} allowOtherSession />
