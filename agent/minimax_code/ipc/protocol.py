@@ -855,6 +855,9 @@ class HostServiceAutostartParams(HostServiceStartParams):
 class HostServiceLogsParams(HostServiceStartParams):
     """Explicit service binding for a bounded, user-requested journal read."""
 
+    lines: Literal[25, 50, 100, 200] = 100
+    since: Literal["all", "15m", "1h", "24h", "7d"] = "all"
+
 
 class HostTransferStatusParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)

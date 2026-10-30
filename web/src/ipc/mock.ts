@@ -290,8 +290,10 @@ function mockHandle(
       return { ok: false, timed_out: false };
     }
     case "host.service_logs": {
-      const p = params as { host_id: string };
+      const p = params as { host_id: string; lines?: number; since?: string };
       if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");
+      if ((p.lines !== undefined && ![25, 50, 100, 200].includes(p.lines)) ||
+          (p.since !== undefined && !["all", "15m", "1h", "24h", "7d"].includes(p.since))) throw new Error("Invalid journal range");
       return { ok: false, reason: "unavailable_or_empty", text: null, truncated: false };
     }
     case "host.service_status": {

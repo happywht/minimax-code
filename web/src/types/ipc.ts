@@ -197,6 +197,11 @@ export interface HostServiceStartParams extends HostBindingParams {
   unit: string;
 }
 
+export interface HostServiceLogsParams extends HostServiceStartParams {
+  lines?: 25 | 50 | 100 | 200;
+  since?: "all" | "15m" | "1h" | "24h" | "7d";
+}
+
 export interface HostServiceStopParams extends HostServiceStartParams {
   acknowledge_interrupt: true;
 }

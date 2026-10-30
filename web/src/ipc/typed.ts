@@ -166,7 +166,7 @@ export interface TypedIPC {
   disconnectHost(hostId: string): Promise<{ connection: import("../types/ipc").HostConnection }>;
   getHostConnection(hostId: string): Promise<{ connection: import("../types/ipc").HostConnection }>;
   setHostServiceAutostart(params: import("../types/ipc").HostServiceStartParams & { enabled: boolean }): Promise<{ ok: boolean; timed_out: boolean }>;
-  getHostServiceLogs(params: import("../types/ipc").HostServiceStartParams): Promise<import("../types/ipc").HostServiceLogsResult>;
+  getHostServiceLogs(params: import("../types/ipc").HostServiceLogsParams): Promise<import("../types/ipc").HostServiceLogsResult>;
   getHostServiceStatus(params: import("../types/ipc").HostServiceStartParams): Promise<import("../types/ipc").HostServiceStatusResult>;
   stopHostService(params: import("../types/ipc").HostServiceStopParams): Promise<{ ok: boolean; timed_out: boolean }>;
   startHostService(params: import("../types/ipc").HostServiceStartParams): Promise<{ ok: boolean; exit_code: number | null; stderr: string; timed_out: boolean }>;

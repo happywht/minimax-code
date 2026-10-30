@@ -615,8 +615,11 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             request = HostServiceLogsParams.model_validate(params)
             async with lifecycle_lock:
                 host = await _bound_service_host(request)
+                since = {"all": None, "15m": "15 minutes ago", "1h": "1 hour ago",
+                         "24h": "24 hours ago", "7d": "7 days ago"}[request.since]
+                since_arg = f" --since={shlex.quote(since)}" if since else ""
                 command = ("LC_ALL=C SYSTEMD_COLORS=0 journalctl --user --no-pager "
-                           "--output=short-iso --lines=100 "
+                           f"--output=short-iso --lines={request.lines}{since_arg} "
                            f"--unit={shlex.quote(request.unit)} 2>/dev/null | head -c 16385")
                 result = await run_ssh(host, command, timeout=20, runner=runner, strict_host_key=True)
             if result.timed_out or not result.ok or not result.stdout:
