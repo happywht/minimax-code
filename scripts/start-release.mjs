@@ -50,6 +50,8 @@ try {
   if (manifest.format !== "minimax-code-release-v1" || typeof manifest.version_label !== "string" || !/^[0-9a-f]{40}$/.test(manifest.commit)) throw new Error("Release manifest identity is invalid");
   const data = await directory(args.data, "Data directory"), workspace = await directory(args.workspace, "Workspace");
   if (overlaps(release, data) || overlaps(release, workspace) || overlaps(data, workspace)) throw new Error("Release, data and workspace directories must not overlap");
+  try { await lstat(path.join(data, ".RESTORE-INCOMPLETE")); throw new Error("Snapshot restore is incomplete; do not start this data directory"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
   const dataEntries = await readdir(data);
   if (args.initializeNew && dataEntries.length) throw new Error("--initialize-new requires an empty data directory");
   if (!args.initializeNew) {
