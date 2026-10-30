@@ -1577,7 +1577,7 @@ export interface ChildWorkspaceReview {
   root: string; revision: string; state: string; kind: string; omitted: string[]; receipt?: ChildWorkspaceReceipt;
   collection_attempts?: ChildWorkspaceCollectionAttempt[];
   team_collection?: { eligible: boolean; step_id: string | null; reason: string | null } | null;
-  files: Array<{ path: string; parent_sha256?: string | null; child_sha256?: string | null; conflict: string | null; resolved?: boolean; merge_parent_text?: string; merge_child_text?: string; diff?: string; diff_truncated?: boolean; diff_unavailable?: boolean }>;
+  files: Array<{ path: string; parent_sha256?: string | null; child_sha256?: string | null; owner_executable?: boolean; conflict: string | null; resolved?: boolean; merge_parent_text?: string; merge_child_text?: string; diff?: string; diff_truncated?: boolean; diff_unavailable?: boolean }>;
 }
 
 /** HTTP POST /preview/access; a temporary read-only preview path. */

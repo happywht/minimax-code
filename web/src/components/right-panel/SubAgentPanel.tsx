@@ -609,6 +609,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       {review.omitted.length > 0 && <p>未纳入：{review.omitted.join("、")}</p>}
       {review.files.length === 0 && <p>没有记录到文件变化。</p>}
       {review.files.map((file) => <details key={file.path}><summary>{file.path}{file.conflict ? ` · 冲突：${file.conflict}` : file.resolved ? " · 已手动合并" : ""}</summary>
+        {file.owner_executable !== undefined && <p>新增文件：所有者{file.owner_executable ? "可执行" : "不可执行"}；收集不复制组或其他用户权限。</p>}
         {file.diff_unavailable ? <p>差异过大或非 UTF-8，请手动查看。</p> : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.diff || "（内容相同或无文本差异）"}</pre>}
         {file.diff_truncated && <p>差异已截断，请手动查看。</p>}
         {(allowCollect || review.team_collection?.eligible) && file.conflict === "parent_changed" && file.merge_parent_text !== undefined && <button type="button" disabled={busy} onClick={() => setMerge({ path: file.path, text: file.merge_parent_text! })}>编辑手动合并结果</button>}

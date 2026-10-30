@@ -4,6 +4,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import stat
 
 from .child import ChildWorkspace, _digest, _path, _scan, collection_history
 
@@ -16,6 +17,10 @@ def preview(child: ChildWorkspace) -> dict:
     final = _scan(child.root)
     if final != child.record.get("final"):
         raise ValueError("Child files changed after execution; preserve them for manual review")
+    modes = child.record.get("final_owner_executable", {})
+    if any(bool(_path(child.root, path).lstat().st_mode & stat.S_IXUSR) != executable
+           for path, executable in modes.items()):
+        raise ValueError("Child file permissions changed after execution; preserve them for manual review")
     baseline = child.record["baseline"]
     paths = sorted(p for p in baseline.keys() | final.keys() if baseline.get(p) != final.get(p))
     if len(paths) > 500:
@@ -36,6 +41,8 @@ def preview(child: ChildWorkspace) -> dict:
         entry = {"path": path, "baseline_sha256": baseline.get(path),
                  "parent_sha256": current, "child_sha256": after, "conflict": reason,
                  "resolved": resolved}
+        if path in modes:
+            entry["owner_executable"] = modes[path]
         # Only small UTF-8 files are rendered, and the diff budget is shared.
         try:
             if remaining and all(not f.exists() or f.stat().st_size <= 16384 for f in (parent_path, child_path)):

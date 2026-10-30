@@ -51,17 +51,18 @@ def _baseline_state(path: Path) -> tuple[str | None, tuple[int, ...] | None]:
 
 
 def _atomic_replace(target: Path, write: Callable[[BinaryIO], object], *, baseline_path: Path,
-                    baseline_sha256: str | None) -> None:
+                    baseline_sha256: str | None, new_mode: Callable[[], int] | None = None) -> None:
     require_write_access()
     target = Path(target)
     lock_key = os.path.normcase(os.path.abspath(target))
     with _WRITE_LOCKS[hash(lock_key) % len(_WRITE_LOCKS)]:
         _atomic_replace_locked(target, write, baseline_path=baseline_path,
-                               baseline_sha256=baseline_sha256)
+                               baseline_sha256=baseline_sha256, new_mode=new_mode)
 
 
 def _atomic_replace_locked(target: Path, write: Callable[[BinaryIO], object], *,
-                           baseline_path: Path, baseline_sha256: str | None) -> None:
+                           baseline_path: Path, baseline_sha256: str | None,
+                           new_mode: Callable[[], int] | None = None) -> None:
     parent = target.parent.resolve()
     if parent != target.parent or target.is_symlink():
         raise OSError("Write target changed to a symbolic link; re-read before writing")
@@ -89,6 +90,8 @@ def _atomic_replace_locked(target: Path, write: Callable[[BinaryIO], object], *,
             raise OSError("Write target changed during preparation")
         if mode is not None:
             os.chmod(temporary, mode)
+        elif new_mode is not None:
+            os.chmod(temporary, new_mode())
         if target_existed and baseline_path == target:
             os.replace(temporary, target)
         else:
@@ -131,14 +134,30 @@ def atomic_append_text(target: Path, content: str, *, baseline_path: Path,
 
 
 def atomic_copy_file(source: Path, target: Path, *, baseline_sha256: str | None,
-                     expected_source_sha256: str | None = None) -> None:
+                     expected_source_sha256: str | None = None,
+                     expected_owner_execute: bool | None = None) -> None:
+    source_mode = 0
+
     def write(stream: BinaryIO) -> None:
+        nonlocal source_mode
         with source.open("rb") as incoming:
+            before = os.fstat(incoming.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("Source is not a regular file")
             digest = hashlib.sha256()
             while chunk := incoming.read(65536):
                 stream.write(chunk)
                 digest.update(chunk)
             if expected_source_sha256 is not None and digest.hexdigest() != expected_source_sha256:
                 raise OSError("Source changed during collection; preserve it for manual review")
+            if expected_owner_execute is not None:
+                after = os.fstat(incoming.fileno())
+                if (_file_identity(before) != _file_identity(after)
+                        or _file_identity(after) != _file_identity(source.lstat())):
+                    raise OSError("Source identity or permissions changed during collection")
+                if bool(before.st_mode & stat.S_IXUSR) != expected_owner_execute:
+                    raise OSError("Source executable permission changed after completion")
+                source_mode = before.st_mode
 
-    _atomic_replace(target, write, baseline_path=target, baseline_sha256=baseline_sha256)
+    _atomic_replace(target, write, baseline_path=target, baseline_sha256=baseline_sha256,
+                    new_mode=(lambda: 0o600 | (source_mode & stat.S_IXUSR)) if expected_owner_execute is not None else None)

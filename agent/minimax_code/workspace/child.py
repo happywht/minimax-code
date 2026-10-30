@@ -201,6 +201,10 @@ class ChildWorkspace:
             final = _scan(self.root, restricted=self.record.get("restricted", False))
             self.record["final"] = final
             baseline = self.record["baseline"]
+            self.record["final_owner_executable"] = {
+                path: bool(_path(self.root, path).lstat().st_mode & stat.S_IXUSR)
+                for path in final if path not in baseline
+            }
             self.record["changes"] = sorted(p for p in baseline.keys() | final.keys()
                                              if baseline.get(p) != final.get(p))
         except (OSError, ValueError, ProcessBoundaryError) as exc:
@@ -244,6 +248,12 @@ def load_child(parent: Path, run_id: str) -> ChildWorkspace | None:
             _path(base / "workspace", relative)
     if record["state"] in {"completed", "failed", "cancelled", "collected"} and "final" not in record:
         raise ValueError("Finished child workspace has no final snapshot")
+    modes = record.get("final_owner_executable")
+    if modes is not None and (not isinstance(modes, dict) or any(
+            not isinstance(path, str) or path not in record.get("final", {})
+            or path in record["baseline"] or type(value) is not bool
+            for path, value in modes.items())):
+        raise ValueError("Child workspace executable metadata is invalid")
     if record["state"] == "collected":
         receipt = record.get("receipt")
         if (not isinstance(receipt, dict) or receipt.get("run_id") != run_id
@@ -419,6 +429,10 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
     final = _scan(child.root)
     if final != child.record.get("final"):
         raise ValueError("Child files changed after execution; preserve them for manual review")
+    modes = child.record.get("final_owner_executable", {})
+    if any(bool(_path(child.root, path).lstat().st_mode & stat.S_IXUSR) != executable
+           for path, executable in modes.items()):
+        raise ValueError("Child file permissions changed after execution; preserve them for manual review")
     baseline = child.record["baseline"]
     changes = sorted(p for p in baseline.keys() | final.keys() if baseline.get(p) != final.get(p))
     conflicts, pending, noop = [], [], []
@@ -475,7 +489,7 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
             target.parent.mkdir(parents=True, exist_ok=True)
             _check_parent_identity(child.parent, expected_parent_identity)
             atomic_copy_file(_path(child.root, relative), target, baseline_sha256=current,
-                             expected_source_sha256=final[relative])
+                             expected_source_sha256=final[relative], expected_owner_execute=modes.get(relative))
             report["merged"].append({"path": relative, "sha256": final[relative]})
             attempt["pending_path"] = None
             save_attempt()

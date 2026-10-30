@@ -412,6 +412,12 @@ and persisted `team.run.get` results carry the same optional field on each
 does not mean edits were merged or independently verified.
 
 `collect_subagent(run_id)` recognizes both new copies and legacy overlays.
+For newly created files in newly finished independent workspaces, collection
+records and preserves the owner's execute bit, while creating the file with
+owner-only read/write permissions. A changed recorded execute bit blocks review
+and collection. Existing files retain their parent permissions; mode-only edits
+and group/other permissions are not collected. Older workspace records without
+this metadata retain their previous behavior.
 It checks the original hashes against the current parent files, preflights
 conflicts before a default `fail` collection, and atomically applies additions
 and modifications with backups. Changed parent files, aliases, post-run child
