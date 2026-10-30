@@ -89,8 +89,8 @@ are not retrieved by its validator.
 ## Tool bridge and limits
 
 Tools retain namespacing, per-tool enabled state and existing permission dispatch.
-The bridge and `mcp.invoke_tool` preserve text, non-text content, `isError`, declared
-`outputSchema` and additive `structuredContent`. Structured false, zero, empty
+The tool definition retains declared `outputSchema`. `mcp.invoke_tool` preserves
+text, non-text content, `isError` and additive `structuredContent`. Structured false, zero, empty
 objects/arrays and explicitly present null retain presence; absent structured
 content stays absent. Audio and resource-link content join the existing text,
 image and embedded-resource models. SDK schema errors fail the call; tool-level
@@ -101,6 +101,17 @@ blocks including text annotations; the existing `text` and non-text `content`
 projections remain for older clients. The settings tester displays those blocks
 alongside `structuredContent` when present, including explicit null. This is
 an inspection view, not a renderer for external media or resource links.
+
+The Agent bridge uses a separate bounded projection before results enter the
+tool transcript: at most 16 ordered blocks, with text and resource text capped
+at 2048 UTF-8 bytes per block. Image and audio data and resource blobs are
+omitted, with their type and available media or resource identifiers retained.
+Omitted blocks and truncated text are marked. A single text block retains the
+existing `text` field; mixed or multiple blocks use `contentBlocks`. Structured
+content is included only if JSON-serializable and at most 8192 serialized bytes;
+otherwise an omission marker is returned. Tool errors remain failures. This
+projection does not give the model image or audio perception. Direct invocation
+continues to return the original content for inspection.
 
 Each operation has one 30-second total deadline including semaphore wait and all
 pages/retries, with at most eight active operations. Explicit tool/resource/prompt

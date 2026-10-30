@@ -25,6 +25,7 @@ logged and skipped, not raised.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -35,7 +36,7 @@ from .client import MCPClient, MCPClientError
 from .http_policy import validate_headers, validate_url
 from .sdk_client import SDKMCPClient
 from .transport import MCPTransport, StdioTransport
-from .types import CallToolResult, tool_result_payload
+from .types import CallToolResult
 from .types import Tool as MCPTool
 
 logger = logging.getLogger(__name__)
@@ -171,15 +172,75 @@ class _BridgedTool(Tool):
         return _to_tool_result(result, server=self._server, tool=self._tool_name)
 
 
+_MAX_BRIDGE_BLOCKS = 16
+_MAX_BRIDGE_TEXT_BYTES = 2048
+_MAX_BRIDGE_STRUCTURED_BYTES = 8192
+
+
+def _bounded_text(value: Any, limit: int = _MAX_BRIDGE_TEXT_BYTES) -> str:
+    raw = str(value).encode("utf-8", errors="replace")
+    if len(raw) <= limit:
+        return raw.decode("utf-8")
+    return raw[:limit].decode("utf-8", errors="ignore") + " [truncated]"
+
+
+def _bounded_structured(value: Any) -> bool:
+    """Check serialized size without assembling an unbounded JSON string."""
+    size = 0
+    try:
+        for part in json.JSONEncoder(ensure_ascii=True, allow_nan=False).iterencode(value):
+            size += len(part.encode("utf-8"))
+            if size > _MAX_BRIDGE_STRUCTURED_BYTES:
+                return False
+    except (TypeError, ValueError, RecursionError):
+        return False
+    return True
+
+
+def _bridge_block(block: Any) -> dict[str, Any]:
+    """Project supported blocks to bounded text; never forward media bytes."""
+    kind = block.type
+    if kind == "text":
+        return {"type": kind, "text": _bounded_text(block.text)}
+    if kind in {"image", "audio"}:
+        return {"type": kind, "mimeType": _bounded_text(block.mimeType, 256),
+                "data": "[binary data omitted]"}
+    if kind == "resource_link":
+        return {"type": kind, "uri": _bounded_text(block.uri, 1024),
+                "name": _bounded_text(block.name, 256)}
+    resource = block.resource
+    projected: dict[str, Any] = {}
+    for key, limit in (("uri", 1024), ("mimeType", 256), ("text", _MAX_BRIDGE_TEXT_BYTES)):
+        if isinstance(resource.get(key), str):
+            projected[key] = _bounded_text(resource[key], limit)
+    if "blob" in resource:
+        projected["blob"] = "[binary data omitted]"
+    return {"type": kind, "resource": projected}
+
+
 def _to_tool_result(
     result: CallToolResult, *, server: str, tool: str
 ) -> ToolResult:
     """Translate an MCP :class:`CallToolResult` into a MiniMax :class:`ToolResult`."""
     metadata: dict[str, Any] = {"server": server, "tool": tool, "isError": result.isError}
-    output = tool_result_payload(result)
+    blocks = [_bridge_block(block) for block in result.content[:_MAX_BRIDGE_BLOCKS]]
+    output: dict[str, Any] = {}
+    if len(result.content) == 1 and blocks[0]["type"] == "text":
+        # Preserve the historical simple-text projection.
+        output["text"] = blocks[0]["text"]
+    elif blocks:
+        output["contentBlocks"] = blocks
+    if len(result.content) > _MAX_BRIDGE_BLOCKS:
+        output["omittedContentBlocks"] = len(result.content) - _MAX_BRIDGE_BLOCKS
+    if "structuredContent" in result.model_fields_set:
+        if _bounded_structured(result.structuredContent):
+            output["structuredContent"] = result.structuredContent
+        else:
+            output["structuredContentOmitted"] = "exceeds limit or is not JSON serializable"
     if result.isError:
+        error_text = next((block["text"] for block in blocks if block["type"] == "text"), None)
         return ToolResult.fail(
-            output.get("text") or "MCP tool reported an error",
+            error_text or "MCP tool reported an error",
             output=output or None,
             **metadata,
         )
