@@ -104,6 +104,7 @@ export interface OfficeReport {
   writer: { name: "openpyxl"; version: "3.1.5" };
   validator_version: 1;
   processing?: Record<string, unknown>;
+  operator_notes?: OfficeOperatorNotes;
 }
 export interface OfficeDelivery {
   id: string;
@@ -129,7 +130,9 @@ export interface OfficeGenerateParams {
   filename: string;
   run_id?: string | null;
   spec: OfficeTableSpec;
+  operator_notes?: OfficeOperatorNotes;
 }
+export interface OfficeOperatorNotes { source: string; method: string; limitations: string }
 export interface OfficeSummary { column: string; operation: "sum" | "count" | "average"; decimals: number }
 export interface OfficeChart { kind: "bar" | "line"; category_column: string; value_column: string; title: string }
 export type OfficeAnalysisParams = OfficeGenerateParams & { summaries: OfficeSummary[]; chart: OfficeChart | null; register_chart_delivery?: boolean };

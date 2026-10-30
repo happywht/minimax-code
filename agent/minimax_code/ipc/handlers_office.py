@@ -43,6 +43,8 @@ def register_office_handlers(server):
                     raise ValueError("Chart columns must belong to the original data")
                 analysis = AnalysisSpec(spec=combined, chart=request.chart, source_rows=len(original.rows))
             if analysis is not None and not request.register_chart_delivery:
+                if request.operator_notes is not None:
+                    raise ValueError("Operator notes require a registered chart delivery")
                 if request.run_id is not None:
                     raise ValueError("Chart attachments cannot be associated with a run")
                 async with asyncio.timeout(TOTAL_SECONDS), _slot():
@@ -62,7 +64,7 @@ def register_office_handlers(server):
                                      "analysis_spec": analysis.model_dump()})
                     return
             result = await service.generate(plain, analysis=analysis,
-                request_context=request.model_dump(exclude={"request_key"}) if analysis else None)
+                request_context=request.model_dump(exclude={"request_key", "operator_notes"}) if analysis else None)
             await ctx.reply({"kind": "delivery", **result, "materialized_spec": combined.model_dump(),
                              **({"analysis_spec": analysis.model_dump()} if analysis else {})})
         except ValidationError:

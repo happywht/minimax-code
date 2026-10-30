@@ -106,7 +106,10 @@ class OfficeService:
         require_write_access()
         async with asyncio.timeout(TOTAL_SECONDS), _slot():
             project = await self._identity(request.project_id, request.expected_service_id)
-            fingerprint_input = {"request": request.model_dump(exclude={"request_key"}), "project": project}
+            base_request = request.model_dump(exclude={"request_key", "operator_notes"})
+            fingerprint_input = {"request": base_request, "project": project}
+            if request.operator_notes is not None:
+                fingerprint_input["operator_notes"] = request.operator_notes.model_dump()
             if processing is not None:
                 fingerprint_input["processing"] = processing
             if analysis is not None:
@@ -118,8 +121,8 @@ class OfficeService:
             if existing is not None:
                 if existing["request_hash"] != fingerprint:
                     # Preserve retries of receipts created before processing descriptions existed.
-                    legacy = digest({"request": request.model_dump(exclude={"request_key"}), "project": project})
-                    if analysis is not None or processing is None or existing["request_hash"] != legacy:
+                    legacy = digest({"request": base_request, "project": project})
+                    if analysis is not None or processing is None or request.operator_notes is not None or existing["request_hash"] != legacy:
                         raise ValueError("Office request key already belongs to different input")
                 return await self.get(request.project_id, existing["id"])
             binding = await self.dao.binding(project, request.run_id)
@@ -136,6 +139,8 @@ class OfficeService:
                     "validator_version": 1})
             if processing is not None:
                 report["processing"] = processing
+            if request.operator_notes is not None:
+                report["operator_notes"] = request.operator_notes.model_dump()
             from .office_metadata import validate_report
             validate_report(report)
             parsed = await inspect_xlsx(data)

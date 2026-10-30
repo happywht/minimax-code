@@ -1950,10 +1950,13 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 | 方法 | 参数 | 返回 |
 |------|------|------|
-| `office.generate_xlsx` | `{project_id, expected_service_id, request_key, filename, spec, run_id?}` | `{delivery, attachment, preview_text}` |
+| `office.generate_xlsx` | `{project_id, expected_service_id, request_key, filename, spec, run_id?, operator_notes?}` | `{delivery, attachment, preview_text}` |
 | `office.generate_analysis` | 上述字段加 `summaries`、可选 `chart` 和 `register_chart_delivery`（默认 false） | 无图表返回 `{kind:"delivery",delivery,attachment,preview_text,materialized_spec}`；图表选择登记时额外返回 `analysis_spec`，否则兼容旧返回 `{kind:"attachment",attachment,validation_report,analysis_spec}` |
+
 | `office.list` | `{project_id, cursor?, query?}` | `{deliveries:[{delivery,attachment}], service_id, next_cursor}`，每页最多 200 条；按登记顺序倒序，query 字面匹配文件名、成果 ID 或运行 ID，区分大小写。游标绑定项目、服务和查询 |
 | `office.get` | `{project_id, delivery_id}` | `{delivery, attachment, preview_text}`，重新检查 vault 原件大小/hash |
+
+`operator_notes` 为可选的 `{source, method, limitations}`，三个字段为用户填写的字符串（各最多 2000 个 Unicode 字符，至少一项非空），记录输入来源、变换口径和限制。说明保存在办公成果回执 `validation_report.operator_notes`，可与自动产生的 `processing` 共存，与 XLSX 成果一同登记，但不写入 XLSX 文件；属于用户声明，不代表来源或业务内容已核验。图表需要 `register_chart_delivery: true` 才能保存说明。说明参与请求键冲突判定，修改说明须使用新请求键；未传说明的旧请求键保持兼容。回执整体仍受 64 KiB 限制，说明可能包含敏感信息，随数据备份或回执导出。
 
 汇总为静态值。图表只引用原始数据行；显式设置 `register_chart_delivery: true` 按办公成果登记，可关联符合既有约束的 run，同一请求键及输入可安全重试，输入变化则冲突。默认 false 保留旧的独立附件行为：不支持 run，非幂等，响应不明时先检查项目附件。图表回执核对保存单元格与图表系列引用，不代表视觉或业务验收。旧版图表附件不会自动补登记，仍可从项目附件访问。
 

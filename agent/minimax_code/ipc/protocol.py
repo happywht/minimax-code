@@ -281,12 +281,26 @@ class AttachmentGetParams(ArtifactListParams):
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
 
 
+class OfficeOperatorNotes(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    source: str = Field(default="", max_length=2000)
+    method: str = Field(default="", max_length=2000)
+    limitations: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def require_content(self):
+        if not any(value.strip() for value in (self.source, self.method, self.limitations)):
+            raise ValueError("Provide at least one operator note")
+        return self
+
+
 class OfficeGenerateParams(ArtifactListParams):
     expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
     request_key: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
     run_id: str | None = Field(default=None, min_length=1, max_length=128)
     filename: str = Field(min_length=6, max_length=120)
     spec: XlsxSpec
+    operator_notes: OfficeOperatorNotes | None = None
 
     @field_validator("filename")
     @classmethod

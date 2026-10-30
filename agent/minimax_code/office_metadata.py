@@ -115,7 +115,13 @@ def validate_report(value: object) -> dict:
     _require(type(value) is dict, "Invalid Office report fields")
     chart = value.get("scope") == "xlsx_chart_values_v1"
     keys = CHART_REPORT_KEYS if chart else REPORT_KEYS
-    _require(set(value) in (keys, keys | {"processing"}), "Invalid Office report fields")
+    _require(set(value) - {"processing", "operator_notes"} == keys, "Invalid Office report fields")
+    if "operator_notes" in value:
+        notes = value["operator_notes"]
+        _require(type(notes) is dict and set(notes) == {"source", "method", "limitations"}
+                 and all(type(notes[key]) is str and len(notes[key]) <= 2000
+                         and (not notes[key] or _text(notes[key], 2000)) for key in notes)
+                 and any(notes[key].strip() for key in notes), "Invalid operator notes")
     if "processing" in value:
         processing = value["processing"]
         if type(processing) is dict and processing.get("version") in (2, 3):

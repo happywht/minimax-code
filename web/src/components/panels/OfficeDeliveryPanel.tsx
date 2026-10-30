@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ipc } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
-import type { OfficeTableSpec } from "../../types/ipc";
+import type { OfficeOperatorNotes, OfficeTableSpec } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 import { XlsxTablePreview } from "./XlsxTablePreview";
 import { csvToOfficeSpec, parseOfficeCsv, serializeOfficeCsv, type CsvTable } from "./officeCsv";
@@ -34,7 +34,7 @@ function saveCsv(table: CsvTable): void {
 
 export type TableDraft = { filename: string; runId: string; source: string; csv: string; csvTable: CsvTable | null;
   originalCsvTable: CsvTable | null; tableDirty: boolean; kinds: OfficeTableSpec["columns"][number]["kind"][];
-  candidate: { name: string; text: string; table: CsvTable } | null; analysis: OfficeAnalysisOptions };
+  candidate: { name: string; text: string; table: CsvTable } | null; analysis: OfficeAnalysisOptions; operatorNotes?: OfficeOperatorNotes };
 function isDraftTable(value: unknown): value is CsvTable {
   if (!value || typeof value !== "object") return false;
   const table = value as Record<string, unknown>;
@@ -57,6 +57,11 @@ function readTableDraft(value: unknown): TableDraft {
     if (!candidate || typeof candidate !== "object" || typeof candidate.name !== "string" || typeof candidate.text !== "string" || !isDraftTable(candidate.table)) throw new Error("待选择的 CSV 草稿无效");
   }
   const analysis = data.analysis as Record<string, unknown>;
+  if (data.operatorNotes !== undefined) {
+    const notes = data.operatorNotes as Record<string, unknown>;
+    if (!notes || typeof notes !== "object" || Object.keys(notes).some((key) => !["source", "method", "limitations"].includes(key)) ||
+        ["source", "method", "limitations"].some((key) => typeof notes[key] !== "string" || [...(notes[key] as string)].length > 2000)) throw new Error("处理说明草稿无效");
+  }
   if (!analysis || typeof analysis !== "object" || !Array.isArray(analysis.summaries) || analysis.summaries.length > 20 ||
       analysis.summaries.some((item) => !item || typeof item !== "object" || typeof item.column !== "string" ||
         !["sum", "count", "average"].includes(item.operation) || typeof item.decimals !== "number" || !Number.isFinite(item.decimals))) throw new Error("汇总草稿无效");
@@ -79,6 +84,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<OfficeAnalysisOptions>(initialDraft?.analysis ?? { summaries: [], chart: null });
+  const [operatorNotes, setOperatorNotes] = useState<OfficeOperatorNotes>(initialDraft?.operatorNotes ?? { source: "", method: "", limitations: "" });
   const [csv, setCsv] = useState(initialDraft?.csv ?? "");
   const [csvTable, setCsvTable] = useState<CsvTable | null>(initialDraft?.csvTable ?? null);
   const [originalCsvTable, setOriginalCsvTable] = useState<CsvTable | null>(initialDraft?.originalCsvTable ?? null);
@@ -89,8 +95,8 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const fileSequence = useRef(0);
   const [filePending, setFilePending] = useState(false);
   const [candidate, setCandidate] = useState<{ name: string; text: string; table: CsvTable } | null>(initialDraft?.candidate ?? null);
-  const draftRef = useRef<TableDraft>({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis });
-  draftRef.current = { filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis };
+  const draftRef = useRef<TableDraft>({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes });
+  draftRef.current = { filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes };
   useEffect(() => () => { onRetainDraft?.(draftRef.current); }, []);
   const scoped = state.projectId === project && state.host === host;
   const filteredEntries = scoped ? state.entries : [];
@@ -149,8 +155,9 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
   const submit = (requestKey: string) => {
     try {
       const spec = parsed(), scope = generationScope.current; setFormError(null);
+      const notes = Object.values(operatorNotes).some((value) => value.trim()) ? { operator_notes: operatorNotes } : {};
       if (analysis.summaries.length === 0 && !analysis.chart) {
-        void state.generate({ filename, spec, run_id: runId || null, request_key: requestKey }).then((result) => {
+        void state.generate({ filename, spec, run_id: runId || null, request_key: requestKey, ...notes }).then((result) => {
           if (result && scope.active) setInputs((previous) => ({ ...previous, [`${result.delivery.service_id}:${result.delivery.id}`]: spec }));
         });
         return;
@@ -168,7 +175,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
 
       }
       void state.generateAnalysis({ filename, spec, run_id: runId || null, request_key: requestKey,
-        summaries: analysis.summaries, chart }).then((result) => {
+        summaries: analysis.summaries, chart, ...notes }).then((result) => {
         if (!scope.active || !result) return;
         setInputs((previous) => ({ ...previous, [`${result.delivery.service_id}:${result.delivery.id}`]: result.analysis_spec ?? result.materialized_spec }));
       });
@@ -201,6 +208,9 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         <p>记录生成时的来源和处理参数，业务正确性未核验。筛选值和空值标记可能包含敏感内容。</p>
         <pre className="whitespace-pre-wrap break-words">{JSON.stringify(state.selected.delivery.validation_report.processing, null, 2)}</pre>
       </details>}
+      {state.selected.delivery.validation_report.operator_notes && <details open><summary>用户填写的来源与处理说明（未核验）</summary>
+        {([ ["输入来源", state.selected.delivery.validation_report.operator_notes.source], ["变换口径", state.selected.delivery.validation_report.operator_notes.method], ["限制与待核对事项", state.selected.delivery.validation_report.operator_notes.limitations] ] as const).map(([label, value]) => value && <div key={label}><p>{label}：</p><p className="whitespace-pre-wrap break-words">{value}</p></div>)}
+      </details>}
       {state.selected.delivery.validation_report.scope === "xlsx_plain_cells_v1" && <OfficeFollowupDraft selected={state.selected} />}
       {state.selected.delivery.validation_report.scope === "xlsx_plain_cells_v1" && <OfficeDeliveryReuse key={`${state.selected.delivery.id}:${state.selected.attachment.sha256}`}
         selected={state.selected} project={project} session={session} service={state.serviceId} host={host}
@@ -219,12 +229,12 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
     </div>
     <DraftFileControl<TableDraft> kind="table" disabled={state.busy || filePending}
       scope={scoped && project && state.serviceId ? { host, service: state.serviceId, project, session } : null}
-      capture={() => ({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis })}
+      capture={() => ({ filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes })}
       decode={async (value) => readTableDraft(value)}
       apply={(draft) => {
         cancelFileRead(); setFilename(draft.filename); setRunId(draft.runId); setSource(draft.source);
         csvRef.current = draft.csv; setCsv(draft.csv); setCsvTable(draft.csvTable); setOriginalCsvTable(draft.originalCsvTable);
-        setTableDirty(draft.tableDirty); setKinds(draft.kinds); setCandidate(draft.candidate); setAnalysis(draft.analysis); edited();
+        setTableDirty(draft.tableDirty); setKinds(draft.kinds); setCandidate(draft.candidate); setAnalysis(draft.analysis); setOperatorNotes(draft.operatorNotes ?? { source: "", method: "", limitations: "" }); edited();
       }} />
     <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} onImport={(text, table) => {
       const scope = generationScope.current, expectedService = state.serviceId;
@@ -264,6 +274,11 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <Input aria-label="关联已有 Run ID（可选）" value={runId} onChange={(event) => { setRunId(event.target.value); edited(); }} placeholder="可留空，仅支持本项目普通 native host run" />
       <Textarea aria-label="结构化表格 JSON" rows={12} value={source} onChange={(event) => { setSource(event.target.value); edited(); }} />
       <OfficeAnalysisControls spec={analysisSpec} value={analysis} onChange={(next) => { setAnalysis(next); edited(); }} />
+      <fieldset className="space-y-2 rounded border border-line p-2"><legend>成果处理说明（可选，用户填写）</legend>
+        <p>说明会与成果回执一起保存并可下载；不会写入 XLSX，不自动追踪编辑或核验来源及业务结果。请在修改数据后更新，不要填写不必要的敏感信息。</p>
+        {([ ["source", "输入来源", "文件、工作表、附件 ID 或数据来源"], ["method", "变换口径", "筛选、去重、分组、计算及其他处理步骤"], ["limitations", "限制与待核对事项", "例如未计算公式、缺失范围、业务核验状态"] ] as const).map(([key, label, placeholder]) => <label key={key} className="block">{label}
+          <Textarea aria-label={`处理说明：${label}`} maxLength={2000} rows={3} value={operatorNotes[key]} placeholder={placeholder} onChange={(event) => { setOperatorNotes((old) => ({ ...old, [key]: event.target.value })); edited(); }} /></label>)}
+      </fieldset>
       <div className="flex flex-wrap gap-2"><Button type="submit" disabled={!scoped || !state.serviceId || state.busy || ipc.isMock}>生成并登记 XLSX</Button>
         <Button type="button" variant="secondary" disabled={state.busy} onClick={() => void state.activate(project, state.query)}>刷新</Button>
         <Button type="button" variant="secondary" onClick={() => { try { saveJson(parsed(), "office-input.json"); } catch { setFormError("请先输入有效表格 JSON"); } }}>保存当前输入 JSON</Button></div>
