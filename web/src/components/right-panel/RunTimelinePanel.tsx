@@ -285,7 +285,7 @@ function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: stri
           <span className="truncate text-[11px] font-medium text-minimax-fg">
             {step.title || labelForKind(step.kind)}
           </span>
-          <span className={"shrink-0 text-[10px] " + statusClass}>{({ pending: "待处理", running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消" } as Record<string, string>)[step.status] ?? step.status}</span>
+          <span className={"shrink-0 text-[10px] " + statusClass}>{step.tool_name === "codex.webSearch" && step.status === "completed" ? "事件已结束" : ({ pending: "待处理", running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消" } as Record<string, string>)[step.status] ?? step.status}</span>
           {step.duration_ms != null && (
             <span className="shrink-0 font-mono text-[11px] text-minimax-muted">
               {formatDuration(step.duration_ms)}
@@ -301,10 +301,27 @@ function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: stri
           />
         )}
         <CodexMcpEvidence step={step} />
+        <CodexWebSearchEvidence step={step} />
         <CapturedToolOutput step={step} />
       </div>
     </li>
   );
+}
+
+function CodexWebSearchEvidence({ step }: { step: AgentRunStep }): JSX.Element | null {
+  if (step.tool_name !== "codex.webSearch") return null;
+  const result = step.payload?.result as Record<string, unknown> | undefined;
+  return <details className="mt-1 text-[11px] text-minimax-muted">
+    <summary>查看 Codex 网页搜索事件</summary>
+    <p>引擎报告的事件；结束不表示搜索成功或内容已核实。未记录搜索结果。</p>
+    {result && <>
+      <p>查询{result.truncated === true ? "（预览可能已截断）" : ""}：</p>
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{typeof result.query === "string" && result.query ? result.query : "未提供"}</pre>
+      <p>动作：</p>
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{result.action_available === true ? String(result.action_preview ?? "") : "未提供"}</pre>
+    </>}
+    {!result && <p>等待结束事件；未收到结束事件时结果未知。</p>}
+  </details>;
 }
 
 function CodexMcpEvidence({ step }: { step: AgentRunStep }): JSX.Element | null {

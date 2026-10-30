@@ -175,6 +175,31 @@ async def drive_codex_run(
     # Only items belonging to this turn are exposed. Map external IDs to
     # run-scoped IDs so reconnects and concurrent sessions cannot collide.
     tool_items: dict[str, dict[str, Any]] = {}
+    web_search_items: set[str] = set()
+
+    async def web_search_event(params: dict[str, Any]) -> None:
+        if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
+            return
+        item = params.get("item")
+        if not isinstance(item, dict) or item.get("type") != "webSearch":
+            return
+        item_id, query, action = item.get("id"), item.get("query"), item.get("action")
+        if (not isinstance(item_id, str) or not item_id or not isinstance(query, str)
+                or (action is not None and not isinstance(action, dict))):
+            raise ValueError("Invalid Codex web search item")
+        if item_id in web_search_items:
+            return
+        web_search_items.add(item_id)
+        action_preview, truncated = _json_preview(action, 4000)
+        result = {"query": query[:4000], "action_preview": action_preview,
+                  "action_available": action is not None,
+                  "truncated": truncated or len(query) > 4000}
+        if conversation:
+            step = await job.dao.create_step(run_id=job.run_id, session_id=job.session_id,
+                kind="observation", title="Codex 网页搜索事件", tool_name="codex.webSearch",
+                summary="引擎报告搜索事件结束；结果状态未知", payload={"result": result})
+            step = await job.dao.complete_step(step["id"], summary="引擎报告搜索事件结束；结果状态未知")
+            await emit("run.step.completed", {"run_id": job.run_id, "step": step})
 
     async def tool_event(method: str, params: dict[str, Any]) -> None:
         if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
@@ -319,6 +344,8 @@ async def drive_codex_run(
             raise ValueError("Invalid Codex notification: missing thread/turn identity")
         if method in {"item/started", "item/completed"}:
             await tool_event(method, params)
+            if method == "item/completed":
+                await web_search_event(params)
         elif method == "item/agentMessage/delta":
             delta = str(params.get("delta") or "")
             if conversation:
