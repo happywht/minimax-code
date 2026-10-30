@@ -1605,6 +1605,7 @@ export interface ChildWorkspaceCollectionAttempt {
 export interface ChildWorkspaceReview {
   run_id: string; session_id: string; project_id: string | null; service_id: string;
   root: string; revision: string; state: string; kind: string; omitted: string[]; receipt?: ChildWorkspaceReceipt;
+  recovery_snapshot?: boolean; child_path?: string;
   collection_attempts?: ChildWorkspaceCollectionAttempt[];
   team_collection?: { eligible: boolean; step_id: string | null; reason: string | null } | null;
   files: Array<{ path: string; baseline_sha256?: string | null; parent_sha256?: string | null; child_sha256?: string | null; owner_executable?: boolean; conflict: string | null; resolved?: boolean; merge_parent_text?: string; merge_child_text?: string; diff?: string; diff_truncated?: boolean; diff_unavailable?: boolean }>;

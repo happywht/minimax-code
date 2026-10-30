@@ -84,3 +84,16 @@ def preview(child: ChildWorkspace) -> dict:
             "omitted": child.record.get("omitted", []),
             "collection_attempts": collection_history(child),
             **({"receipt": child.record["receipt"]} if child.record["state"] == "collected" else {})}
+
+
+def preview_interrupted(child: ChildWorkspace) -> dict:
+    """Read a provisional snapshot without changing the manifest or enabling collection."""
+    if child.record.get("restricted") or child.record.get("state") not in {"running"}:
+        raise ValueError("This workspace cannot be previewed as an interrupted snapshot")
+    final = _scan(child.root)
+    provisional = ChildWorkspace(child.parent, child.run_id, child.base,
+                                 {**child.record, "state": "failed", "final": final,
+                                  "final_owner_executable": {}})
+    result = preview(provisional)
+    result.update(state=child.record["state"], recovery_snapshot=True, child_path=str(child.root))
+    return result

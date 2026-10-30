@@ -326,7 +326,7 @@ def register_run_handlers(server: Any) -> None:
         from ..storage.dao.text_artifacts import ArtifactDAO
         from ..workspace.child import (collect_child, load_child, read_resolution_backup,
                                        resolve_child_text, restore_resolution_backup_copy)
-        from ..workspace.child_review import preview
+        from ..workspace.child_review import preview, preview_interrupted
         from ..workspace_ctx import require_directory, resolve_root_for_session
         from .host_session_gate import require_host_session
 
@@ -417,7 +417,16 @@ def register_run_handlers(server: Any) -> None:
                 permitted_states = {"completed", "collected"} if req.action == "restore_backup_copy" else {"completed"}
                 if req.action in {"collect", "resolve_text", "restore_backup_copy"} and team_collection is not None and child.record.get("state") not in permitted_states:
                     raise ValueError("Interrupted team member workspace is not confirmed completed")
-                reviewed = await asyncio.to_thread(preview, child)
+                if req.action == "preview" and child.record.get("state") in {"running"}:
+                    if not req.team_run_id:
+                        child_run = await dao.get_run(req.run_id)
+                        parent = await dao.get_run(parent_run_id) if parent_run_id else None
+                        terminal = {"completed", "failed", "cancelled", "interrupted", "budget_paused"}
+                        if not child_run or child_run["status"] not in terminal or not parent or parent["status"] not in terminal:
+                            raise ValueError("Child and parent runs must be terminal before recovery review")
+                    reviewed = await asyncio.to_thread(preview_interrupted, child)
+                else:
+                    reviewed = await asyncio.to_thread(preview, child)
                 if await binding() != (root, project_id, identity):
                     raise ValueError("Session, project or service changed during review")
                 if team_collection is not None and reviewed["state"] not in {"completed", "collected"}:

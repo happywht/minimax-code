@@ -733,8 +733,9 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     </div>}
     {review && <div className="space-y-1">
       <p>父目录：{review.root} · {review.kind} · {review.state}</p>
+      {review.recovery_snapshot && <p className="break-all">中断后的只读快照：{review.child_path}。进程及副作用可能仍未结束，内容可能继续变化；请先核对相关进程，再手动保全和处理文件。此快照不能收集或自动恢复。</p>}
       <p>对比当前父目录与子任务结果；同期用户修改不归因于 Agent。普通独立目录不是操作系统沙盒。</p>
-      {!!review.collection_attempts?.length && <details open><summary>收集历史（最近 50 次）</summary>
+      {!review.recovery_snapshot && !!review.collection_attempts?.length && <details open><summary>收集历史（最近 50 次）</summary>
         {review.collection_attempts.map((attempt) => <div key={attempt.id} className="my-1 rounded border border-line p-2">
           <p>{attempt.operation === "manual_resolution" ? "手动合并 · " : ""}{attempt.id} · {attempt.status === "complete" ? "完成" : attempt.status === "partial" ? "部分收集" : "中断或进行中，结果未确认"}</p>
           {validReceipt(attempt.report, runId) ? <>
@@ -768,10 +769,10 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       {review.files.length === 0 && <p>没有记录到文件变化。</p>}
       {review.files.map((file) => <details key={file.path}><summary>{file.path}{file.conflict ? ` · 冲突：${file.conflict}` : file.resolved ? " · 已手动合并" : ""}</summary>
         {file.owner_executable !== undefined && <p>新增文件：所有者{file.owner_executable ? "可执行" : "不可执行"}；收集不复制组或其他用户权限。</p>}
-        {(allowCollect || review.team_collection?.eligible) && !file.conflict && file.child_sha256 && file.parent_sha256 !== file.child_sha256 && <button type="button" disabled={busy || review.state === "collected"} onClick={() => void invoke(true, false, file.path)}>仅收集此文件</button>}
+        {!review.recovery_snapshot && (allowCollect || review.team_collection?.eligible) && !file.conflict && file.child_sha256 && file.parent_sha256 !== file.child_sha256 && <button type="button" disabled={busy || review.state === "collected"} onClick={() => void invoke(true, false, file.path)}>仅收集此文件</button>}
         {file.diff_unavailable ? <p>差异过大或非 UTF-8，请手动查看。</p> : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.diff || "（内容相同或无文本差异）"}</pre>}
         {file.diff_truncated && <p>差异已截断，请手动查看。</p>}
-        {(allowCollect || review.team_collection?.eligible) && file.conflict === "parent_changed" && file.merge_parent_text !== undefined && <button type="button" disabled={busy} onClick={() => setMerge({ path: file.path, text: file.merge_parent_text! })}>编辑手动合并结果</button>}
+        {!review.recovery_snapshot && (allowCollect || review.team_collection?.eligible) && file.conflict === "parent_changed" && file.merge_parent_text !== undefined && <button type="button" disabled={busy} onClick={() => setMerge({ path: file.path, text: file.merge_parent_text! })}>编辑手动合并结果</button>}
         {merge?.path === file.path && <div className="space-y-1">
           <p>初始内容为当前父文件；请参考上方差异自行合并子任务成果。提交将写入完整文件。</p>
           {file.merge_child_text !== undefined ? <details><summary>查看完整子任务文件（只读）</summary>
@@ -782,11 +783,11 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
           <button type="button" disabled={busy} onClick={() => setMerge(null)}>取消编辑</button>
         </div>}
       </details>)}
-      <ChildConflictHandoff review={review} teamRunId={teamRunId} disabled={busy} />
-      <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>
-      {review.files.some((f) => !!f.conflict) && review.files.some((f) => !f.conflict && f.parent_sha256 !== f.child_sha256) && <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected"} onClick={() => void invoke(true, true)}>仅收集无冲突文件，跳过冲突</button>}
+      {!review.recovery_snapshot && <ChildConflictHandoff review={review} teamRunId={teamRunId} disabled={busy} />}
+      {!review.recovery_snapshot && <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>}
+      {!review.recovery_snapshot && review.files.some((f) => !!f.conflict) && review.files.some((f) => !f.conflict && f.parent_sha256 !== f.child_sha256) && <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected"} onClick={() => void invoke(true, true)}>仅收集无冲突文件，跳过冲突</button>}
       {!allowCollect && <p>{review.team_collection?.eligible ? "已保存成员完成及受管任务收束记录；请自行核对相关进程并明确确认。" : `不能收集：${review.team_collection?.reason || "缺少停止或成员完成证据"}。`} 工作副本不是操作系统沙箱。</p>}
-      <p>可对小型 UTF-8 文件手动合并；删除及其他冲突需在外部处理。执行中出现错误时可能部分写入，请核对文件。</p>
+      {!review.recovery_snapshot && <p>可对小型 UTF-8 文件手动合并；删除及其他冲突需在外部处理。执行中出现错误时可能部分写入，请核对文件。</p>}
     </div>}
   </div>;
 }
