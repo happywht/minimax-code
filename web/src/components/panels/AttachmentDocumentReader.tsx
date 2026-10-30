@@ -28,8 +28,10 @@ export function AttachmentDocumentReader({ attachment, project, session, service
   const [searched, setSearched] = useState(false);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
   const epoch = useRef(0);
-  const eligible = (attachment.recognized_type === "pdf" || attachment.recognized_type === "docx") &&
-    attachment.declared_type === attachment.recognized_type;
+  const textFile = (attachment.declared_type === "txt" || attachment.declared_type === "csv") && attachment.recognized_type === "utf8_text";
+  const eligible = textFile || ((attachment.recognized_type === "pdf" || attachment.recognized_type === "docx") &&
+    attachment.declared_type === attachment.recognized_type);
+  const expectedKind = textFile ? attachment.declared_type : attachment.recognized_type;
   useEffect(() => {
     ++epoch.current; setResult(null); setError(""); setBusy(false); setUnit("1"); setQuery(""); setMatches([]); setSearchCursor(null); setSearched(false);
     return () => { ++epoch.current; };
@@ -51,7 +53,7 @@ export function AttachmentDocumentReader({ attachment, project, session, service
         expected_service_id: service, attachment_id: id, expected_sha256: sha, ...cursor });
       if (!current()) return;
       if (response.project_id !== project || response.session_id !== session || response.service_id !== service ||
-          response.attachment_id !== id || response.sha256 !== sha || response.kind !== attachment.recognized_type ||
+          response.attachment_id !== id || response.sha256 !== sha || response.kind !== expectedKind ||
           response.start !== cursor.offset || (response.unit !== cursor.unit && response.unit_total !== 0))
         throw new Error("返回的附件身份或位置不匹配，请重新选择。");
       setResult(response);
@@ -80,7 +82,7 @@ export function AttachmentDocumentReader({ attachment, project, session, service
           expected_service_id: service, attachment_id: id, expected_sha256: sha, unit: scan.unit, offset: start });
         if (!current()) return;
         if (response.project_id !== project || response.session_id !== session || response.service_id !== service ||
-            response.attachment_id !== id || response.sha256 !== sha || response.kind !== attachment.recognized_type ||
+            response.attachment_id !== id || response.sha256 !== sha || response.kind !== expectedKind ||
             response.start !== start || (response.unit !== scan.unit && response.unit_total !== 0))
           throw new Error("返回的附件身份或位置不匹配，请重新选择。");
         const characters = Array.from(response.text);
@@ -108,12 +110,12 @@ export function AttachmentDocumentReader({ attachment, project, session, service
   const number = Number(unit);
   return <div className="space-y-2 rounded border border-line p-3" aria-label="文档分段读取">
     <h4 className="font-medium">手动读取文档片段</h4>
-    <p className="text-xs text-ink-1">{attachment.recognized_type === "pdf"
+    <p className="text-xs text-ink-1">{textFile ? "读取 UTF-8 原始文本；CSV 不解析表格、不执行公式。" : attachment.recognized_type === "pdf"
       ? "按 PDF 物理页读取已有文字，不还原版式；扫描图像未尝试 OCR。"
       : "按正文和表格段落读取，不含页眉页脚、脚注、修订、文本框及图像文字；未尝试 OCR。"}空文本不代表原件无内容，内容未经核验。每次最多 4000 字符，不自动加入对话。</p>
-    <div className="flex flex-wrap gap-2"><Input aria-label={attachment.recognized_type === "pdf" ? "物理页序号" : "正文段落序号"}
-      type="number" min={1} max={attachment.recognized_type === "pdf" ? 200 : 10000} value={unit} onChange={(event) => setUnit(event.target.value)} />
-      <Button type="button" variant="secondary" disabled={!project || !session || !service || busy || ipc.isMock || !Number.isInteger(number) || number < 1 || number > (attachment.recognized_type === "pdf" ? 200 : 10000)} onClick={() => void read({ unit: number, offset: 0 })}>读取指定位置</Button>
+    <div className="flex flex-wrap gap-2"><Input aria-label={textFile ? "文本单元序号（固定为 1）" : attachment.recognized_type === "pdf" ? "物理页序号" : "正文段落序号"}
+      type="number" min={1} max={textFile ? 1 : attachment.recognized_type === "pdf" ? 200 : 10000} value={unit} onChange={(event) => setUnit(event.target.value)} />
+      <Button type="button" variant="secondary" disabled={!project || !session || !service || busy || ipc.isMock || !Number.isInteger(number) || number < 1 || number > (textFile ? 1 : attachment.recognized_type === "pdf" ? 200 : 10000)} onClick={() => void read({ unit: number, offset: 0 })}>读取指定位置</Button>
       {result?.next_cursor && <Button type="button" variant="secondary" disabled={busy} onClick={() => void read(result.next_cursor!)}>读取下一片段</Button>}</div>
     <div className="space-y-2 border-t border-line pt-3" aria-label="文档内容搜索">
       <h4 className="font-medium">搜索文档文字</h4>

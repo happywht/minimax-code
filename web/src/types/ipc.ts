@@ -2374,7 +2374,7 @@ export interface MemoryExtractResult {
 
 export type AttachmentDocumentCursor = { unit: number; offset: number };
 export type AttachmentDocumentParams = { project_id: string; session_id: string; expected_service_id: string; attachment_id: string; expected_sha256: string } & AttachmentDocumentCursor;
-export type AttachmentDocumentResult = { ok: true; project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; kind: "pdf" | "docx"; unit: number; unit_total: number; location: string; start: number; end: number; text: string; truncated: boolean; next_cursor: AttachmentDocumentCursor | null; status: "text" | "empty"; ocr: "not_attempted" };
+export type AttachmentDocumentResult = { ok: true; project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; kind: "pdf" | "docx" | "txt" | "csv"; unit: number; unit_total: number; location: string; start: number; end: number; text: string; truncated: boolean; next_cursor: AttachmentDocumentCursor | null; status: "text" | "empty"; ocr: "not_attempted" };
 
 export type AttachmentOcrParams = { project_id: string; session_id: string; expected_service_id: string; attachment_id: string; expected_sha256: string; language: "eng" | "chi_sim" | "eng+chi_sim" };
 export type AttachmentPdfOcrParams = AttachmentOcrParams & { page: number };

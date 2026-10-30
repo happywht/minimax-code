@@ -367,7 +367,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           setCitationNeedsReview(restoredMarkers === null || restoredMarkers.length > 0);
         }} />
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
-      <div className="space-y-2 rounded border border-line p-2"><p>资料引用（最多 10 条）：在上方读取 PDF 或 DOCX，选中原文后加入。正文可使用 [资料1] 等编号；生成时从原件重新读取并附上位置和摘录。扫描件、OCR 和其他格式不支持此手工选择；事实与编号需自行核对。</p>
+      <div className="space-y-2 rounded border border-line p-2"><p>资料引用（最多 10 条）：在上方读取 PDF、DOCX、UTF-8 TXT 或 CSV，选中原文后加入。正文可使用 [资料1] 等编号；生成时从原件重新读取并附上位置和摘录。CSV 为原始文本，不解析表格或执行公式；扫描件、OCR 和其他格式不支持此手工选择；事实与编号需自行核对。</p>
         {documentCitations.map((item, index) => <div key={`${item.ref.attachment_id}:${item.ref.unit}:${item.ref.start}:${index}`} className="break-all">[资料{index + 1}] {item.label} · {item.ref.attachment_id} · SHA-256 {item.ref.expected_sha256}
           <Button type="button" variant="secondary" onClick={() => { setDocumentCitations(documentCitations.filter((_, i) => i !== index)); setDocumentReview(true); }}>移除此引用</Button></div>)}
         {documentReview && <div role="alert">资料引用顺序已变化或草稿已恢复，正文编号不会自动更新；请核对。<Button type="button" variant="secondary" onClick={() => setDocumentReview(false)}>已核对资料引用编号</Button></div>}

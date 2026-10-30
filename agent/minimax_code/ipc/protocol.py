@@ -139,7 +139,7 @@ class AttachmentReadDocumentParams(ArtifactListParams):
     attachment_id: str = Field(pattern=r"^att_[0-9a-f]{32}$")
     expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     unit: int = Field(ge=1, le=10000)
-    offset: int = Field(ge=0, le=1024 * 1024)
+    offset: int = Field(ge=0, le=10 * 1024 * 1024)
 
 
 class AttachmentOcrParams(ArtifactListParams):

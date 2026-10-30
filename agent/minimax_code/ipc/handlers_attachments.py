@@ -134,10 +134,26 @@ def register_attachment_handlers(server):
             await check_scope()
             row, data = await service.content(request.project_id, request.attachment_id)
             kind = row["recognized_type"]
-            if (kind not in {"pdf", "docx"} or row["declared_type"] != kind
-                    or row["sha256"] != request.expected_sha256):
-                raise ValueError("Select the same PDF or DOCX attachment")
-            result = await read_document_segment(data, kind, request.unit, request.offset)
+            if row["sha256"] != request.expected_sha256:
+                raise ValueError("Attachment identity changed")
+            if row["declared_type"] in {"txt", "csv"} and kind == "utf8_text":
+                try:
+                    text = data.decode("utf-8", errors="strict")
+                except UnicodeDecodeError as exc:
+                    raise ValueError("Text must be valid UTF-8") from exc
+                if "\x00" in text or request.unit != 1 or request.offset > len(text):
+                    raise ValueError("Invalid text or cursor outside this document")
+                end = min(request.offset + 4000, len(text))
+                truncated = end < len(text)
+                result = {"ok": True, "kind": row["declared_type"], "unit": 1, "unit_total": 1,
+                          "location": "text", "start": request.offset, "end": end,
+                          "text": text[request.offset:end], "truncated": truncated,
+                          "next_cursor": {"unit": 1, "offset": end} if truncated else None,
+                          "status": "text" if text else "empty", "ocr": "not_attempted"}
+            elif kind in {"pdf", "docx"} and row["declared_type"] == kind:
+                result = await read_document_segment(data, kind, request.unit, request.offset)
+            else:
+                raise ValueError("Select a matching PDF, DOCX, UTF-8 TXT or CSV attachment")
             if not result["ok"]:
                 messages = {
                     "missing_dependency": "Document parser dependency is unavailable; install the attachments extra",

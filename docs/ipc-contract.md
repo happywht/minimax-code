@@ -1806,7 +1806,7 @@ document the migration in this file.
 | `attachment.generate_docx` | `{project_id, expected_service_id, filename, title, paragraphs}` | `{attachment, preview_text}`，生成并保存有界纯文本 DOCX；不验证版式或事实 |
 | `attachment.ocr_pdf_page` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language, page}` | 手动渲染并 OCR 指定 PDF 物理页，返回临时未核验文本及页号 |
 | `attachment.ocr_image` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language}` | 手动执行本地 PNG/JPEG OCR，返回临时未核验文本 |
-| `attachment.read_document` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, unit, offset}` | 读取匹配原件的 PDF 物理页或 DOCX 正文段落的有界文本片段，返回来源、位置与下一游标 |
+| `attachment.read_document` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, unit, offset}` | 读取匹配原件的 PDF 物理页、DOCX 正文段落或 UTF-8 TXT/CSV 有界文本片段，返回来源、位置与下一游标 |
 | `attachment.extract_xlsx` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, sheet_name}` | 复核会话、服务与附件后返回受控完整工作表行及日期、百分比、货币列；不计算公式 |
 | `attachment.list_xlsx_sheets` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256}` | 复核会话、服务与原件后返回最多 32 个工作表的名称及可见状态，不读取行或计算公式 |
 | `attachment.list` | `{project_id, cursor?, query?}` | `{attachments, service_id, next_cursor}`，每页最多 200 条元数据，不含预览。可选 query（1–240 字符）按名称区分大小写作字面子串匹配，不读取或搜索原件；搜索游标绑定项目、服务和 query，继续时必须使用相同参数。无 query 保持原游标行为 |
@@ -1861,7 +1861,7 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 手工 `attachment.generate_docx`、`attachment.generate_pdf` 和 `attachment.generate_report_pair` 可选传 `session_id`、`page_source_ids` 与 `page_excerpt_ranges`（每项为 `{page_source_id,start,end}`，按 Unicode 字符从零计数、结束位置不包含；每个来源最多一段、最多 1000 字，须位于已保存摘录内），服务端在生成时按会话、项目和 `expected_service_id` 解析真实来源；手工 `sources` 在前，ID 来源按顺序追加，合计最多 30 条。来源记录不存在、项目或服务不匹配时拒绝；会话绑定在附件登记时再次核对。
 
-同一组方法也接受 `document_excerpts`（最多 10 条；每项 `{attachment_id,expected_sha256,unit,start,end}`），必须提供绑定当前项目的 `session_id`。生成时服务端从项目附件原件复取指定单元和 Unicode 字符区间（结束位置不包含，每条最多 1000 字），验证 SHA-256 和范围，按顺序附加 `[资料1]` 等带文件身份、位置和提取范围的摘录；缺失、身份变化或范围无效则拒绝。报告正文编号由用户填写和核对，不自动验证事实。手工界面支持从 PDF 物理页和 DOCX 正文/表格段落选取；不含扫描件 OCR、DOCX 其他部件或版式恢复。输出为新附件，不改动原件。
+同一组方法也接受 `document_excerpts`（最多 10 条；每项 `{attachment_id,expected_sha256,unit,start,end}`），必须提供绑定当前项目的 `session_id`。生成时服务端从项目附件原件复取指定单元和 Unicode 字符区间（结束位置不包含，每条最多 1000 字），验证 SHA-256 和范围，按顺序附加 `[资料1]` 等带文件身份、位置和提取范围的摘录；缺失、身份变化或范围无效则拒绝。报告正文编号由用户填写和核对，不自动验证事实。手工界面支持从 PDF 物理页、DOCX 正文/表格段落及 UTF-8 TXT/CSV 原文选取；不含扫描件 OCR、DOCX 其他部件或版式恢复，CSV 不解析或执行公式。输出为新附件，不改动原件。
 
 普通 Native 聊天的 `read_public_page` 成功后，将实际获取的页面信息写入当前 run 的持久 observation，返回 `page_source_id`；无项目绑定时只返回读取结果、不登记来源。后续同项目任务可调用 `list_research_sources({query?,limit?,offset?})` 按时间倒序每页查询最多 20 条，并将 ID 交给 `generate_report_docx`、`generate_report_pdf` 或 `generate_report_pair`。`offset` 上限 10000，满页返回的 `next_offset` 仅表示可能有后续记录；记录变化可能影响跨页结果。记录保留最终 URL、访问时间、最多 500 字标题、最多 8000 字摘录和相应截断标志；报告中标题最多 200 字、摘录最多 1000 字并标注截断。项目、当前会话及 service_id 均须匹配，未知、重复或跨项目来源 ID 失败；手工 `sources` 在前，ID 来源按请求顺序在后，合计最多 30 条。来源存入已有 run 日志，不新增数据库表；随 run/会话删除而删除，现有 SQLite 数据包会携带这些记录。service_id 是现有服务身份，不是硬件身份；数据包克隆保留该身份和来源，不能证明新主机重新访问了网页。搜索摘要不产生来源 ID，网页与报告事实、正文编号均不自动核验。
 
@@ -1881,7 +1881,7 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 `run.output_inventory({session_id,offset?})` 返回全库与当前会话逻辑用量、当前会话按页 50 条已绑定的输出记录及服务身份；全库统计包括其他会话和不可访问的旧记录，但不暴露其详情。`run.output_clear({run_id,session_id,output_ref,expected_service_id,expected_sha256})` 仅清理明确指定、已终结且不再清理中的运行的正文，保留不可读取的清理标记；调用不会删除运行、摘要或原文件，重试同一记录幂等。清理与新读请求按数据库事务排序，已取出的并发页可能仍被返回；通知供客户端清除已显示或在途页面。数据库文件、旧备份与存储介质可能保留原始字节，并非安全擦除。
 
-`attachment.read_document` 仅在会话归属项目、服务及附件 SHA-256 匹配时读取原件，复用隔离解析器；单次最多 4000 字符，初始游标为 unit=1、offset=0，按返回的 next_cursor 继续。PDF 为物理页已有文本（最多 200 页），DOCX 为正文与表格段落；不读取页眉页脚、脚注、文本框、修订或图像文字，不执行 OCR，不还原版式。空文本不代表原件无内容；文字未经核验。原件不修改，也不自动加入对话。缺依赖或资源限制不可用时返回错误。
+`attachment.read_document` 仅在会话归属项目、服务及附件 SHA-256 匹配时读取原件；单次最多 4000 个 Unicode 字符，初始游标为 unit=1、offset=0，按返回的 next_cursor 继续，offset 上限为 10 Mi 字符。PDF 为物理页已有文本（最多 200 页），DOCX 为正文与表格段落，使用隔离解析器；不读取页眉页脚、脚注、文本框、修订或图像文字，不执行 OCR，不还原版式。TXT/CSV 为严格 UTF-8 原文（unit 固定为 1，不接受 NUL），CSV 不解析表格、不执行公式。空文本不代表原件无内容；文字未经核验。原件不修改，也不自动加入对话。缺依赖或资源限制不可用时返回错误。
 
 `attachment.extract_xlsx` 仅在会话归属项目、服务和附件校验值匹配时读取不可变原件，使用现有隔离解析器完整提取一个可见工作表；上限 2 MiB、A1:T1001、5000 格及 1 MiB 提取数据。公式、隐藏行列、复杂表和不明确数字格式等拒绝；日期转 ISO，百分比和货币为底层数值，不保留格式。返回前再次核对会话和服务；不会修改原件。
 
