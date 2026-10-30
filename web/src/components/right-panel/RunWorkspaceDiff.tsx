@@ -15,8 +15,10 @@ function filterDiff(diff: string, query: string): string {
     .join("");
 }
 
+type DiffChoice = { scope: "working" | "staged"; block: string };
+
 /** Render complete file patches without interpreting Git's quoted path syntax. */
-function FileDiffs({ diff, query, label, onSelect, disabled }: { diff: string; query: string; label: string; onSelect: (block: string) => void; disabled: boolean }): JSX.Element {
+function FileDiffs({ diff, query, label, onSelect, disabled, selectedBlocks, onToggle, maxReached }: { diff: string; query: string; label: string; onSelect: (block: string) => void; disabled: boolean; selectedBlocks: string[]; onToggle: (block: string) => void; maxReached: boolean }): JSX.Element {
   const filtered = filterDiff(diff, query);
   if (!filtered) return <p>{diff ? `没有匹配的${label}` : `无${label}`}</p>;
   if (!filtered.startsWith("diff --git ")) {
@@ -39,7 +41,10 @@ function FileDiffs({ diff, query, label, onSelect, disabled }: { diff: string; q
           <span className="text-status-error">-{removed}</span>
         </summary>
         <div className="overflow-auto border-t border-line"><DiffLines text={block} /></div>
-        <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={() => onSelect(block)}>针对这份差异准备后续任务</Button>
+        <div className="flex flex-wrap items-center gap-2 p-1">
+          <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={() => onSelect(block)}>针对这份差异准备后续任务</Button>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={selectedBlocks.includes(block)} aria-label={`加入多文件交接：${label} ${title}`} disabled={disabled || (!selectedBlocks.includes(block) && maxReached)} onChange={() => onToggle(block)} />加入多文件交接</label>
+        </div>
       </details>;
     })}
   </div>;
@@ -56,7 +61,9 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   const [comparison, setComparison] = useState<Record<string, unknown> | null>(null);
   const [search, setSearch] = useState("");
   const [preview, setPreview] = useState<{ path: string; text: string } | null>(null);
-  const [selected, setSelected] = useState<{ scope: "working" | "staged"; block: string } | null>(null);
+  const [selected, setSelected] = useState<DiffChoice | null>(null);
+  const [handoff, setHandoff] = useState<DiffChoice[]>([]);
+  const [handoffNote, setHandoffNote] = useState("");
   const [reviewNote, setReviewNote] = useState("");
   const [untrackedNote, setUntrackedNote] = useState("");
   const [draftMessage, setDraftMessage] = useState("");
@@ -65,17 +72,17 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
 
   useEffect(() => {
     const revision = version;
-    ++revision.current; setResult(null); setComparison(null); setPreview(null); setUntrackedNote(""); setError(null); setLoading(false); setSearch(""); setSelected(null); setReviewNote(""); setDraftMessage("");
+    ++revision.current; setResult(null); setComparison(null); setPreview(null); setUntrackedNote(""); setError(null); setLoading(false); setSearch(""); setSelected(null); setReviewNote(""); setHandoff([]); setHandoffNote(""); setDraftMessage("");
     return () => { ++revision.current; };
   }, [run.id, sessionId, projectId]);
   useEffect(() => ipc.onSideCar(() => {
-    ++version.current; setResult(null); setComparison(null); setPreview(null); setUntrackedNote(""); setSelected(null); setReviewNote(""); setDraftMessage(""); setError(null); setLoading(false);
+    ++version.current; setResult(null); setComparison(null); setPreview(null); setUntrackedNote(""); setSelected(null); setReviewNote(""); setHandoff([]); setHandoffNote(""); setDraftMessage(""); setError(null); setLoading(false);
   }), []);
 
   const load = async () => {
     if (!available || !sessionId) return;
     const request = ++version.current, host = ipc.agentBaseUrl;
-    setLoading(true); setError(null); setResult(null); setPreview(null); setUntrackedNote(""); setSelected(null); setReviewNote(""); setDraftMessage("");
+    setLoading(true); setError(null); setResult(null); setPreview(null); setUntrackedNote(""); setSelected(null); setReviewNote(""); setHandoff([]); setHandoffNote(""); setDraftMessage("");
     const current = () => request === version.current && ipc.agentBaseUrl === host
       && useSessionStore.getState().currentSessionId === sessionId
       && (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
@@ -165,6 +172,57 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
     } finally { appending.current = false; if (current()) setLoading(false); }
   };
 
+  const toggleHandoff = (scope: DiffChoice["scope"], block: string) => {
+    setHandoff((previous) => {
+      const exists = previous.some((item) => item.scope === scope && item.block === block);
+      if (exists) return previous.filter((item) => item.scope !== scope || item.block !== block);
+      return previous.length < 10 ? [...previous, { scope, block }] : previous;
+    });
+    setDraftMessage("");
+  };
+
+  const appendHandoff = async () => {
+    if (appending.current || !handoff.length || !handoffNote.trim() || !result || !sessionId || !available) return;
+    appending.current = true;
+    const request = ++version.current, host = ipc.agentBaseUrl, snapshot = result, choices = handoff;
+    const current = () => request === version.current && ipc.agentBaseUrl === host
+      && useSessionStore.getState().currentSessionId === sessionId
+      && (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
+    setLoading(true); setDraftMessage("");
+    try {
+      const fresh = await typedIPC.gitRunWorkspaceDiff(run.id, sessionId);
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (fresh.run_id !== run.id || fresh.session_id !== sessionId || fresh.project_id !== runProject ||
+          fresh.workspace !== workspace || fresh.scope !== "current_workspace" ||
+          fresh.service_id !== snapshot.service_id || identity.service_id !== snapshot.service_id ||
+          fresh.workspace_identity !== snapshot.workspace_identity) throw new Error("工作区或服务已变化，请重新审阅。");
+      for (const choice of choices) {
+        const diff = choice.scope === "working" ? fresh.diff : fresh.staged_diff;
+        const blocks = diff.startsWith("diff --git ") ? diff.split(/(?=^diff --git )/m).filter(Boolean) : [];
+        if (!blocks.includes(choice.block)) throw new Error("所选差异已变化，请重新读取并审阅。");
+      }
+      let remaining = 20000;
+      const excerpts = choices.map((choice) => {
+        const length = Math.min(4000, remaining), excerpt = choice.block.slice(0, length);
+        remaining -= excerpt.length;
+        return `【${choice.scope === "working" ? "未暂存" : "已暂存"}】${choice.block.split("\n")[0]}\n` +
+          (excerpt || "（总长度上限，未附差异内容）") +
+          (choice.block.length > excerpt.length ? "\n（差异未完整加入，请重新读取原文件。）" : "");
+      });
+      const text = `请处理以下多文件审阅意见（发送前可编辑）：\n来源运行：${run.id}\n` +
+        `工作区：${fresh.workspace}；当前差异可能包含用户或其他任务的修改，不能归因于此运行。请保留用户同期修改。\n` +
+        `审阅意见：\n${handoffNote.trim()}\n\n审阅时所选差异：\n${excerpts.join("\n\n")}` +
+        "\n此交接操作未执行验证；任务验证结果请查看原运行。";
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project: projectId, session: sessionId, text };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      setDraftMessage(detail.result ?? "当前聊天输入区未打开，请先切换到聊天再操作。");
+      if (detail.result === "已添加到当前会话草稿，尚未发送。") { setHandoff([]); setHandoffNote(""); }
+    } catch (reason) {
+      if (current()) setDraftMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally { appending.current = false; if (current()) setLoading(false); }
+  };
+
   const appendUntrackedReview = async () => {
     if (appending.current || !preview || !result || !sessionId || !available || !untrackedNote.trim()) return;
     appending.current = true;
@@ -236,8 +294,16 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
       {search.trim() && ((result.diff && !result.diff.startsWith("diff --git ")) || (result.staged_diff && !result.staged_diff.startsWith("diff --git "))) &&
         <p className="text-ink-2">部分差异格式无法按文件筛选，已保留完整原文。</p>}
       <p className="text-ink-2">展开文件查看完整差异；加减数字为文本行数。</p>
-      <details open><summary>未暂存的已跟踪文件差异</summary><FileDiffs diff={result.diff} query={search} label="未暂存差异" disabled={loading} onSelect={(block) => { setSelected({ scope: "working", block }); setReviewNote(""); setDraftMessage(""); }} /></details>
-      <details open={search.trim() ? true : undefined}><summary>已暂存的差异</summary><FileDiffs diff={result.staged_diff} query={search} label="已暂存差异" disabled={loading} onSelect={(block) => { setSelected({ scope: "staged", block }); setReviewNote(""); setDraftMessage(""); }} /></details>
+      <details open><summary>未暂存的已跟踪文件差异</summary><FileDiffs diff={result.diff} query={search} label="未暂存差异" disabled={loading} maxReached={handoff.length >= 10} selectedBlocks={handoff.filter((item) => item.scope === "working").map((item) => item.block)} onToggle={(block) => toggleHandoff("working", block)} onSelect={(block) => { setSelected({ scope: "working", block }); setReviewNote(""); setDraftMessage(""); }} /></details>
+      <details open={search.trim() ? true : undefined}><summary>已暂存的差异</summary><FileDiffs diff={result.staged_diff} query={search} label="已暂存差异" disabled={loading} maxReached={handoff.length >= 10} selectedBlocks={handoff.filter((item) => item.scope === "staged").map((item) => item.block)} onToggle={(block) => toggleHandoff("staged", block)} onSelect={(block) => { setSelected({ scope: "staged", block }); setReviewNote(""); setDraftMessage(""); }} /></details>
+      {handoff.length > 0 && <div className="space-y-2 rounded border border-line p-2" aria-label="多文件差异交接">
+        <p>已选择 {handoff.length} 项（最多 10 项）；追加前逐项重新核对当前差异。</p>
+        <ul className="max-h-40 overflow-auto">{handoff.map((item, index) => <li key={index} className="break-all">{item.scope === "working" ? "未暂存" : "已暂存"} · {item.block.split("\n")[0]}</li>)}</ul>
+        <label className="block">交接意见或后续目标<textarea value={handoffNote} disabled={loading} maxLength={4000} onChange={(event) => setHandoffNote(event.target.value)} className="mt-1 block w-full rounded border border-line bg-surface-1 p-2 text-ink-0" rows={3} /></label>
+        <Button type="button" size="sm" disabled={loading || !handoffNote.trim()} onClick={() => void appendHandoff()}>将所选差异追加到草稿</Button>{" "}
+        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => { setHandoff([]); setHandoffNote(""); }}>清除所选差异</Button>
+        <p>每项最多 4000 字符、合计最多 20000 字符；不完整的差异会标明。请先检查内容是否适合分享。不会自动发送或执行验证。</p>
+      </div>}
       {selected && <div className="space-y-2 rounded border border-line p-2">
         <p className="break-all">已选择：{selected.block.split("\n")[0]}（{selected.scope === "working" ? "未暂存" : "已暂存"}）。追加前会重新读取并核对这份差异。</p>
         <label className="block">审阅意见或后续目标
