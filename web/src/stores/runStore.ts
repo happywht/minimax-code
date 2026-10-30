@@ -110,6 +110,8 @@ async function drain(): Promise<void> {
         };
       }
       useRunTimelineStore.setState({ runs: next, order: entries.map((entry) => entry.run.id), error: null });
+      const active = entries.some((entry) => !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(entry.run.status));
+      useChat.getState().reconcileActiveStatus(current, active);
       if (refresh) {
         for (const entry of entries) if (entry.live_stream && !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(entry.run.status)) {
           useChat.getState().reconcileLiveStream(entry.run, entry.live_stream);
@@ -132,7 +134,6 @@ async function drain(): Promise<void> {
       const stamp = entries.map((entry) => `${entry.run.id}:${entry.cursor}`).join("|");
       if (refresh || stamp !== conversationStamp) {
         conversationStamp = stamp;
-        const active = entries.some((entry) => !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(entry.run.status));
         void useChat.getState().reconcileRuns(entries.map((entry) => entry.run),
           () => isCurrent() && (active || conversationStamp === stamp), refresh);
       }
@@ -186,7 +187,12 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
         StreamEvent.PermissionResolved, StreamEvent.PermissionClosed].map((event) =>
         ipc.on(event, () => { void requestSync(useSessionStore.getState().currentSessionId, true); })),
       ipc.onSideCar((event) => {
-        if (event.status === "started") void requestSync(useSessionStore.getState().currentSessionId, true);
+        if (event.status === "started") {
+          // Discard responses begun before this connection epoch, even if the
+          // replacement service happens to expose the same session id.
+          generation++;
+          void requestSync(useSessionStore.getState().currentSessionId, true);
+        }
       }),
     ];
     set({ initialized: true });

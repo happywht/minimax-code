@@ -69,6 +69,7 @@ export interface ChatState {
   /** Load persisted messages for a session from the backend. */
   loadMessages: (sessionId: string) => Promise<void>;
   reconcileRuns: (runs: AgentRun[], stillCurrent: () => boolean, includeActive?: boolean) => Promise<void>;
+  reconcileActiveStatus: (sessionId: string, active: boolean) => void;
   reconcileLiveStream: (run: AgentRun, stream: NonNullable<RunStepsResult["live_stream"]>) => void;
   reset: () => void;
   cancel: () => Promise<void>;
@@ -93,6 +94,7 @@ let statusUnsub: (() => void) | null = null;
 let askUserUnsub: (() => void) | null = null;
 let askUserClosedUnsub: (() => void) | null = null;
 let pendingAssistantId: string | null = null;
+let pendingActiveSession: string | null = null;
 const inFlightRequests = new Map<string, Promise<unknown>>();
 
 function trackRequest<T>(sessionId: string, request: Promise<T>): Promise<T> {
@@ -417,6 +419,12 @@ export const useChat = create<ChatState>((set, get) => ({
       if (next) { cursor.queued.delete(cursor.seq + 1); replay.push(next); }
     }
     replay.forEach(applyStreamEvent);
+  },
+
+  reconcileActiveStatus: (sessionId, active) => {
+    if (useSessionStore.getState().currentSessionId !== sessionId) return;
+    pendingActiveSession = active && get().loadingMessages ? sessionId : null;
+    if (active && !get().loadingMessages && get().status === "idle") set({ status: "streaming" });
   },
 
   init: async () => {
@@ -1228,10 +1236,17 @@ export const useChat = create<ChatState>((set, get) => ({
       const message = err instanceof Error ? err.message : String(err);
       toast.error(strings.toasts.messagesLoadFailed, message);
       set({ loadingMessages: false });
+    } finally {
+      if (seq === _loadSeq && pendingActiveSession === sessionId
+          && useSessionStore.getState().currentSessionId === sessionId) {
+        pendingActiveSession = null;
+        if (get().status === "idle") set({ status: "streaming" });
+      }
     }
   },
 
   reset: () => {
+    pendingActiveSession = null;
     ++askVersion;
     closedAskIds.clear();
     if (askExpiryTimer) clearTimeout(askExpiryTimer);

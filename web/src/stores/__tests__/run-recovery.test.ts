@@ -79,6 +79,36 @@ describe("durable run recovery", () => {
     expect(useChat.getState().status).toBe("streaming");
   });
 
+  it("restores active status before any stream text exists", async () => {
+    await store.getState().loadForSession("s1");
+    expect(useChat.getState().status).toBe("streaming");
+    expect(useChat.getState().messages).toEqual([]);
+  });
+
+  it("waits for history loading before restoring active status", async () => {
+    const history = deferred<{ messages: never[] }>();
+    api.listMessages.mockReturnValueOnce(history.promise);
+    const loading = useChat.getState().loadMessages("s1");
+    await store.getState().loadForSession("s1");
+    expect(useChat.getState().status).toBe("idle");
+    history.resolve({ messages: [] });
+    await loading;
+    expect(useChat.getState().status).toBe("streaming");
+  });
+
+  it("does not restore an active status after that run finishes during history loading", async () => {
+    const history = deferred<{ messages: never[] }>();
+    api.listMessages.mockReturnValueOnce(history.promise);
+    const loading = useChat.getState().loadMessages("s1");
+    await store.getState().loadForSession("s1");
+    api.getRunSteps.mockResolvedValue(snapshot({ ...run, status: "completed" }, 2));
+    api.sidecar?.({ status: "started" });
+    await idle();
+    history.resolve({ messages: [] });
+    await loading;
+    expect(useChat.getState().status).toBe("idle");
+  });
+
   it("restores a live question from a reconnect snapshot", async () => {
     const question = { request_id: "ask-1", session_id: "s1", run_id: "r1", timeout_s: 60,
       expires_at_ms: Date.now() + 60000, questions: [] };
