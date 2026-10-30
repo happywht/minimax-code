@@ -126,7 +126,7 @@ def validate_report(value: object) -> dict:
                 "deduplicate_by", "group_by", "sort_by", "summaries", "counts"
             }
             _require(type(processing) is dict
-                     and set(processing) in (processing_keys, processing_keys | {"calculated_columns"})
+                     and set(processing) - {"calculated_columns", "fill_missing"} == processing_keys
                      and type(processing["version"]) is int and processing["version"] == 1,
                      "Invalid Office processing description")
             source = processing["source"]
@@ -155,6 +155,25 @@ def validate_report(value: object) -> dict:
                     and len(column["null_values"]) <= 20
                     and all(type(marker) is str and len(marker) <= 4096 for marker in column["null_values"])
                     and _integer(column["changed_cells"], 0, 1000), "Invalid Office processing column")
+            if "fill_missing" in processing:
+                fills = processing["fill_missing"]
+                column_kinds = {column["name"]: column["kind"] for column in columns}
+                _require(type(fills) is list and 1 <= len(fills) <= 20,
+                         "Invalid Office fill description")
+                seen_fills = set()
+                for fill in fills:
+                    _require(type(fill) is dict and set(fill) == {"column", "value", "filled_cells"}
+                             and type(fill["column"]) is str and fill["column"] in column_kinds
+                             and fill["column"] not in seen_fills
+                             and _integer(fill["filled_cells"], 0, 1000),
+                             "Invalid Office fill description")
+                    seen_fills.add(fill["column"])
+                    val, kind = fill["value"], column_kinds[fill["column"]]
+                    _require((kind == "text" and _text(val, 4096))
+                             or (kind == "boolean" and type(val) is bool)
+                             or (kind == "number" and type(val) in (int, float)
+                                 and abs(val) <= 999999999999999),
+                             "Invalid Office fill value")
             counts = processing["counts"]
             _require(type(counts) is dict and set(counts) == {
                 "source_rows", "matched_rows", "removed_duplicates", "output_rows"
@@ -163,6 +182,9 @@ def validate_report(value: object) -> dict:
                 and counts["removed_duplicates"] <= counts["matched_rows"]
                 and counts["output_rows"] <= counts["matched_rows"] - counts["removed_duplicates"],
                 "Invalid Office processing counts")
+            if "fill_missing" in processing:
+                _require(all(fill["filled_cells"] <= counts["source_rows"] for fill in processing["fill_missing"]),
+                         "Invalid Office fill counts")
             _require(all(type(processing[key]) is list and len(processing[key]) <= limit
                          for key, limit in (("filters", 10), ("deduplicate_by", 20),
                                             ("sort_by", 3), ("summaries", 20)))

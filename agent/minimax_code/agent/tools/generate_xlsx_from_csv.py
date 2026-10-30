@@ -107,6 +107,38 @@ def csv_to_spec(data: bytes, sheet_name: str, columns: list[dict[str, Any]],
         raise ValueError("CSV is malformed or contains an oversized field") from exc
 
 
+def fill_missing_spec(spec: dict, fills: list[dict[str, Any]]) -> tuple[dict, list[dict[str, Any]]]:
+    """Fill explicitly selected missing cells with validated, typed constants."""
+    source = XlsxSpec.model_validate(spec)
+    if not isinstance(fills, list) or not 1 <= len(fills) <= 20:
+        raise ValueError("fill_missing must contain 1–20 column values")
+    names = [column.name for column in source.columns]
+    seen: set[str] = set()
+    rows = [row.copy() for row in source.rows]
+    applied = []
+    for item in fills:
+        if not isinstance(item, dict) or set(item) != {"column", "value"}:
+            raise ValueError("Each fill requires column and value")
+        name, value = item["column"], item["value"]
+        if not isinstance(name, str) or name not in names or name in seen:
+            raise ValueError("Fill columns must be unique selected output columns")
+        if value is None or value == "":
+            raise ValueError("Fill value must be nonblank")
+        seen.add(name)
+        index = names.index(name)
+        # Validate the constant even when there are no source rows or blanks.
+        checked = XlsxSpec.model_validate({"sheet_name": source.sheet_name,
+            "columns": [source.columns[index].model_dump()], "rows": [[value]]}).rows[0][0]
+        count = 0
+        for row in rows:
+            if row[index] is None:
+                row[index] = checked
+                count += 1
+        applied.append({"column": name, "value": checked, "filled_cells": count})
+    result = XlsxSpec.model_validate({**source.model_dump(), "rows": rows}).model_dump()
+    return result, applied
+
+
 def filter_spec(spec: dict, filters: list[dict[str, Any]] | None) -> dict:
     """Filter converted rows using explicit, typed output-column conditions."""
     if filters is None:
@@ -364,6 +396,7 @@ class GenerateXlsxFromCsvTool(Tool):
         "numbers are strict decimal and booleans are true/false. Text beginning '=' remains literal. "
         "For each column, optional trim removes surrounding Unicode whitespace and null_values maps explicit "
         "exact markers to blank before type conversion; markers are matched after trimming. "
+        "Optional fill_missing replaces blank cells with explicit same-type constants before calculations and filters. "
         "Optional filters use output column names and typed values; all conditions must match. "
         "Use calculated_column or calculated_columns (1–10 ordered calculations), not both, before filters. Each may reference earlier numeric results. Add, subtract, multiply or divide numeric columns; division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors. Blank operands yield blank; results are static. "
         "Apply filters, optional deduplicate_by, optional group_by, then optional sort_by before summaries and chart. "
@@ -388,6 +421,11 @@ class GenerateXlsxFromCsvTool(Tool):
                                 "items": {"type": "string", "maxLength": 4096},
                                 "description": "Exact markers to convert to blank after optional trim"},
             }, "required": ["source", "name", "kind"], "additionalProperties": False}},
+            "fill_missing": {"type": "array", "minItems": 1, "maxItems": 20, "items": {
+                "type": "object", "properties": {"column": {"type": "string"},
+                    "value": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "number"},
+                                        {"type": "boolean"}]}},
+                "required": ["column", "value"], "additionalProperties": False}},
             "calculated_column": {"type": "object", "properties": {
                 "name": {"type": "string"}, "left": {"type": "string"}, "right": {"type": "string"},
                 "operation": {"type": "string", "enum": ["add", "subtract", "multiply", "divide"]},
@@ -434,7 +472,7 @@ class GenerateXlsxFromCsvTool(Tool):
         self.generator = GenerateTableXlsxTool(db, session_id, project_id)
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None) -> ToolResult:
+                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -452,6 +490,9 @@ class GenerateXlsxFromCsvTool(Tool):
                 raise ValueError("CSV attachment is not a valid UTF-8 CSV")
             cleaning_counts: dict[str, int] = {}
             spec = csv_to_spec(data, sheet_name, columns, cleaning_counts)
+            fill_results = None
+            if fill_missing is not None:
+                spec, fill_results = fill_missing_spec(spec, fill_missing)
             spec, calculated_column, calculated_columns = calculate_columns_spec(
                 spec, calculated_column, calculated_columns)
             source_row_count = len(spec["rows"])
@@ -480,6 +521,8 @@ class GenerateXlsxFromCsvTool(Tool):
                            "removed_duplicates": removed_duplicate_count,
                            "output_rows": len(spec["rows"])},
             }
+            if fill_results is not None:
+                processing["fill_missing"] = fill_results
             if calculated_columns is not None:
                 processing["calculated_columns"] = calculated_columns
             bound_key = hashlib.sha256(canonical([request_key, attachment_id, original["sha256"]])).hexdigest()
@@ -492,6 +535,8 @@ class GenerateXlsxFromCsvTool(Tool):
                 result.output["cleaning"] = [{"column": column["name"],
                     "trim": column.get("trim", False), "null_values": column.get("null_values", []),
                     "changed_cells": cleaning_counts[column["name"]]} for column in columns]
+                if fill_results is not None:
+                    result.output["fill_missing"] = fill_results
                 result.output["calculated_column"] = calculated_column
                 if calculated_columns is not None:
                     result.output["calculated_columns"] = calculated_columns
