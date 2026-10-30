@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { DocxBlock, DocxSection } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 
@@ -27,6 +28,7 @@ export function readEditableSections(text: string): DocxSection[] | null {
 }
 
 export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]; onChange: (sections: DocxSection[]) => void }): JSX.Element {
+  const [copyNotice, setCopyNotice] = useState("");
   const update = (index: number, section: DocxSection) => onChange(value.map((item, i) => i === index ? section : item));
   const move = <T,>(items: T[], from: number, to: number): T[] => {
     const next = [...items]; [next[from], next[to]] = [next[to], next[from]]; return next;
@@ -40,6 +42,17 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
       return section;
     }));
   };
+  const copyBlock = (block: DocxBlock): DocxBlock => block.kind === "paragraph" ? { ...block } : { ...block, rows: block.rows.map((row) => [...row]) };
+  const applyCopy = (next: DocxSection[]) => {
+    const blocks = next.reduce((count, section) => count + section.blocks.length, 0);
+    const cells = next.reduce((count, section) => count + section.blocks.reduce((sum, block) => sum +
+      (block.kind === "table" ? block.rows.reduce((total, row) => total + row.length, 0) : 0), 0), 0);
+    if (next.length > 50 || next.some((section) => section.blocks.length > 100) || blocks > 100 || cells > 2000 ||
+        new TextEncoder().encode(JSON.stringify(next)).length > 256 * 1024) {
+      setCopyNotice("复制后将超过章节、内容块、单元格或草稿大小限制；原草稿未更改。"); return;
+    }
+    onChange(next); setCopyNotice("已插入副本；标题、表格、引用和内容请按需要编辑并核对。尚未生成文件。");
+  };
   return <div className="space-y-3">
     <p>按顺序编辑章节、段落和表格。选择目标章节可将内容移至该章节末尾；每章至少保留一项内容，且最多 100 项。表格为纯文本；DOCX 每表最多 100 行、20 列，PDF 另有 10 列、1000 格的限制。重复表头始终使用当前首行，移动或删除首行后请重新核对。生成不会核验内容或版式。</p>
     {value.map((section, si) => {
@@ -50,6 +63,10 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="secondary" disabled={si === 0} onClick={() => onChange(move(value, si, si - 1))}>章节上移</Button>
           <Button type="button" variant="secondary" disabled={si === value.length - 1} onClick={() => onChange(move(value, si, si + 1))}>章节下移</Button>
+          <Button type="button" variant="secondary" onClick={() => {
+            const copy = { ...section, blocks: section.blocks.map(copyBlock) };
+            applyCopy([...value.slice(0, si + 1), copy, ...value.slice(si + 1)]);
+          }}>复制此章节</Button>
           <Button type="button" variant="secondary" disabled={value.length === 1} onClick={() => onChange(value.filter((_, i) => i !== si))}>删除章节</Button>
         </div>
         {section.blocks.map((block, bi) => <div key={bi} className="space-y-1 rounded border border-line p-2">
@@ -80,6 +97,10 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="secondary" disabled={bi === 0} onClick={() => update(si, { ...section, blocks: move(section.blocks, bi, bi - 1) })}>内容上移</Button>
             <Button type="button" variant="secondary" disabled={bi === section.blocks.length - 1} onClick={() => update(si, { ...section, blocks: move(section.blocks, bi, bi + 1) })}>内容下移</Button>
+            <Button type="button" variant="secondary" onClick={() => {
+              const blocks = [...section.blocks.slice(0, bi + 1), copyBlock(block), ...section.blocks.slice(bi + 1)];
+              applyCopy(value.map((item, index) => index === si ? { ...section, blocks } : item));
+            }}>复制此内容</Button>
             <Button type="button" variant="secondary" disabled={section.blocks.length === 1} onClick={() => update(si, { ...section, blocks: section.blocks.filter((_, i) => i !== bi) })}>删除内容</Button>
             <label>移动到章节 <select aria-label={`移动章节 ${si + 1} 的内容 ${bi + 1} 到章节`} value="" disabled={section.blocks.length <= 1 || value.length <= 1 || value.every((item, i) => i === si || item.blocks.length >= 100)} onChange={(e) => {
               if (e.target.value !== "") moveBlockToSection(si, bi, Number(e.target.value));
@@ -96,5 +117,6 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
       </fieldset>;
     })}
     <Button type="button" variant="secondary" disabled={value.length >= 50} onClick={() => onChange([...value, { heading: "", blocks: [{ kind: "paragraph", text: "" }] }])}>添加章节</Button>
+    {copyNotice && <p role="status">{copyNotice}</p>}
   </div>;
 }
