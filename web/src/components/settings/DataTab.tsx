@@ -9,11 +9,11 @@
  *  - Backup: take a file-level SQLite snapshot (schema + WAL + derived
  *    indexes included) into the agent's backups directory.
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Activity, DatabaseBackup, Download, HardDriveDownload, Upload } from "lucide-react";
 import { Button, Input, Panel } from "../../ui";
 import { strings } from "../../ui/strings";
-import { typedIPC } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import type {
   DataBackupResult,
   DataBackupList,
@@ -87,6 +87,48 @@ function DataTab(): JSX.Element {
   const [diagnosing, setDiagnosing] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const connectionEpoch = useRef(0);
+  const [directoryPreferenceBusy, setDirectoryPreferenceBusy] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = ipc.onSideCar(() => {
+      connectionEpoch.current++;
+      setBackupDirectory("");
+      setBackups(null);
+      setFeedback({ kind: "error", text: "服务连接已变化，请重新核对备份目录。" });
+    });
+    return () => { connectionEpoch.current++; unsubscribe(); };
+  }, []);
+
+  const directoryPreference = async (action: "save" | "load" | "clear") => {
+    const epoch = connectionEpoch.current;
+    const directory = backupDirectory.trim();
+    setDirectoryPreferenceBusy(true);
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (connectionEpoch.current !== epoch) return;
+      if (!identity.service_id) throw new Error("无法确认服务身份");
+      const key = `minimax.backup-directory.v1.${identity.service_id}`;
+      if (action === "save") {
+        if (!directory) throw new Error("请先填写自定义备份目录");
+        localStorage.setItem(key, directory);
+        setFeedback({ kind: "ok", text: "已在此浏览器保存当前服务的目录；备份时仍需确认路径有效。" });
+      } else if (action === "load") {
+        const saved = localStorage.getItem(key);
+        if (!saved) throw new Error("此浏览器没有保存当前服务的目录");
+        setBackupDirectory(saved);
+        setBackups(null);
+        setFeedback({ kind: "ok", text: "已填入保存的目录，请核对服务和路径后再备份。" });
+      } else {
+        localStorage.removeItem(key);
+        setFeedback({ kind: "ok", text: "已清除当前服务在此浏览器保存的目录。" });
+      }
+    } catch (err) {
+      if (connectionEpoch.current === epoch) setFeedback({ kind: "error", text: `目录设置失败：${String(err)}` });
+    } finally {
+      setDirectoryPreferenceBusy(false);
+    }
+  };
 
   const onExport = async () => {
     setExporting(true);
@@ -301,20 +343,26 @@ function DataTab(): JSX.Element {
           className="mt-1"
           value={backupDirectory}
           onChange={(event) => { setBackupDirectory(event.target.value); setBackups(null); }}
-          disabled={exporting || importing || backing || diagnosing || listingBackups}
+          disabled={exporting || importing || backing || diagnosing || listingBackups || directoryPreferenceBusy}
           placeholder={strings.settings.data.backupDirectoryPlaceholder}
           aria-describedby="backup-directory-hint"
         />
         <p id="backup-directory-hint" className="mt-1 text-[11px] text-ink-2">
           {strings.settings.data.backupDirectoryHint}
         </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" disabled={directoryPreferenceBusy || backing || listingBackups || !backupDirectory.trim()} onClick={() => void directoryPreference("save")}>保存目录</Button>
+          <Button size="sm" variant="secondary" disabled={directoryPreferenceBusy || backing || listingBackups} onClick={() => void directoryPreference("load")}>填入保存的目录</Button>
+          <Button size="sm" variant="secondary" disabled={directoryPreferenceBusy || backing || listingBackups} onClick={() => void directoryPreference("clear")}>清除保存的目录</Button>
+        </div>
+        <p className="mt-1 text-[11px] text-ink-2">目录只保存在当前浏览器并按服务身份区分，不随备份迁移；克隆数据库可能复用服务身份，使用前请核对机器和路径。</p>
         <div className="mt-3">
           <Button
             size="sm"
             variant="secondary"
             data-testid="settings-data-backup"
             icon={<HardDriveDownload />}
-            disabled={exporting || importing || backing || diagnosing || listingBackups}
+            disabled={exporting || importing || backing || diagnosing || listingBackups || directoryPreferenceBusy}
             loading={backing}
             onClick={() => void onBackup()}
           >
@@ -323,7 +371,7 @@ function DataTab(): JSX.Element {
         </div>
         <div className="mt-3">
           <Button size="sm" variant="secondary" data-testid="settings-data-backup-list"
-            disabled={exporting || importing || backing || diagnosing || listingBackups}
+            disabled={exporting || importing || backing || diagnosing || listingBackups || directoryPreferenceBusy}
             loading={listingBackups} onClick={() => void onListBackups()}>
             查看已有备份
           </Button>
