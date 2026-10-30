@@ -337,6 +337,22 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             raise HandlerError(INVALID_PARAMS, "invalid service unit")
         return await _bound_host(request)
 
+    async def handle_host_reconnect_bound(params: Any, ctx: Context) -> None:
+        """Replace an owned SSH forward after verifying its saved host binding."""
+        try:
+            request = HostBindingParams.model_validate(params)
+            async with lifecycle_lock:
+                host = await _bound_host(request)
+                # This affects only the local forward, never the remote service.
+                await tunnels.disconnect(host["id"])
+                connection = await tunnels.connect(host, remote_port=request.remote_port)
+            await ctx.reply({"connection": connection})
+        except (ValidationError, HandlerError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.reconnect_bound failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Tunnel replacement was not confirmed")
+
     async def handle_host_transfer_status_bound(params: Any, ctx: Context) -> None:
         """Reconcile a journal against an explicitly bound local service and host."""
         try:
@@ -495,6 +511,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
 
+    server.register("host.reconnect_bound", handle_host_reconnect_bound)
     server.register("host.transfer_status_bound", handle_host_transfer_status_bound)
     server.register("host.service_autostart", handle_host_service_autostart)
     server.register("host.service_logs", handle_host_service_logs)

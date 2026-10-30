@@ -6,6 +6,7 @@ import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileBrowser } from "./HostFileBrowser";
 import { HostTextPreview } from "./HostTextPreview";
 import { HostServiceStart } from "./HostServiceStart";
+import { HostConnectionRecovery } from "./HostConnectionRecovery";
 import { downloadHostFile } from "../../ipc/hostDownload";
 import { uploadHostFile } from "../../ipc/hostUpload";
 
@@ -172,7 +173,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     } catch (e) { if (valid(ticket)) setMessage(`${e instanceof Error ? e.message : String(e)}；上传结果仍未知。`); }
     finally { if (valid(ticket)) setBusy(false); }
   };
-  return <><HostServiceStart host={host} /><details className="rounded border border-line p-2" onToggle={(event) => setTransferOpen(event.currentTarget.open)}><summary>上传 / 下载文件</summary>
+  return <><HostConnectionRecovery host={host} /><HostServiceStart host={host} /><details className="rounded border border-line p-2" onToggle={(event) => setTransferOpen(event.currentTarget.open)}><summary>上传 / 下载文件</summary>
     <p className="text-xs text-ink-2">本机路径指运行当前服务的机器，不是浏览器选中的文件；远端路径指此主机的 Linux 绝对路径。仅单文件、显式操作，不自动同步。传输使用独立 SSH/SFTP，服务隧道状态不代表传输可用。</p>
     <label className="block text-xs">本机文件绝对路径<Input aria-label={`${host.name} 本机传输路径`} value={local} disabled={busy} onChange={(e) => setLocal(e.target.value)} placeholder="C:\\资料\\报告.pdf" /></label>
     <label className="block text-xs">远端文件绝对路径<Input aria-label={`${host.name} 远端传输路径`} value={remote} disabled={busy} onChange={(e) => setRemote(e.target.value)} placeholder="/home/user/report.pdf" /></label>

@@ -265,12 +265,13 @@ function mockHandle(
       host.last_probe_ok = false;
       return { host, probe: { ok: false, timed_out: false, agent_version: "", os: "", python_version: "", error: "SSH is unavailable in mock mode" } };
     }
+    case "host.reconnect_bound":
     case "host.connect":
     case "host.disconnect":
     case "host.connection": {
       const { host_id } = params as { host_id: string };
       requireMockHost(host_id);
-      return { connection: { host_id, state: method === "host.connect" ? "failed" : "disconnected", local_url: null, remote_port: null, error: method === "host.connect" ? "SSH is unavailable in mock mode" : null } };
+      return { connection: { host_id, state: method === "host.connect" || method === "host.reconnect_bound" ? "failed" : "disconnected", local_url: null, remote_port: null, error: method === "host.connect" || method === "host.reconnect_bound" ? "SSH is unavailable in mock mode" : null } };
     }
     case "host.service_autostart": {
       const p = params as { host_id: string };

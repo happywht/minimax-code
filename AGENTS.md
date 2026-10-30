@@ -183,7 +183,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `crash.*` | 3 | 崩溃恢复会话 | `handlers_crash.py` |
 | `data.*` | 4 | 全量导出/导入/备份 | `handlers_data.py` |
 | `engine.*` | 2 | 引擎注册表能力卡（native/Codex 可用性探测） | `handlers_engines.py` |
-| `host.*` | 18 | 远程 Linux 主机：注册/诊断/SSH 隧道/执行/文件传输 | `handlers_hosts.py` |
+| `host.*` | 19 | 远程 Linux 主机：注册/诊断/SSH 隧道/执行/文件传输 | `handlers_hosts.py` |
 | `diag.*` | 1 | 诊断包导出 | `handlers_diag.py` |
 | `git.*` | 3 | Git 状态/差异/日志 | `handlers_git.py` |
 | `mcp.*` | 6 | MCP 服务器管理 | `handlers_mcp.py` |
