@@ -562,6 +562,9 @@ ledger accounting and interruption rules are unchanged.
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older
 run without journal entries has cursor 0. Existing `run.list` callers are unchanged.
+The scheduled target timeline reloads this snapshot after reconnection, including
+runs outside the recent list, and checks the service, session, project, workspace
+and scheduled occurrence binding before displaying it. It does not replay work.
 For session recovery, `run.list` accepts `include_active: true` with a required
 `session_id` and a recent-run `limit` from 1 to 100, without status, mode or
 offset filters. One database read returns the union of recent runs and up to

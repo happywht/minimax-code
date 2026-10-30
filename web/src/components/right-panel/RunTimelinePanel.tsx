@@ -353,8 +353,21 @@ function TargetRunTimeline({ target, onClear }: { target: TimelineTarget; onClea
   };
   useEffect(() => {
     void load();
-    const off = ipc.onSideCar(() => { ++epoch.current; setSnapshot(null); setBusy(false); setError("连接已变化，请重新读取目标运行。"); });
-    return () => { ++epoch.current; off(); };
+    const off = ipc.onSideCar((event) => {
+      ++epoch.current; setSnapshot(null); setBusy(false);
+      if (event.status === "started" && ipc.agentBaseUrl === target.host &&
+          useSessionStore.getState().currentProjectId === target.project &&
+          useSessionStore.getState().currentSessionId === target.session) {
+        setError("");
+        void load();
+      } else setError("连接已变化，等待重连或重新读取目标运行。");
+    });
+    const unsubscribe = useSessionStore.subscribe((state) => {
+      if (state.currentProjectId !== target.project || state.currentSessionId !== target.session) {
+        ++epoch.current; setSnapshot(null); setBusy(false); setError("当前项目或会话已变化，请返回原任务重新查看。");
+      }
+    });
+    return () => { ++epoch.current; off(); unsubscribe(); };
   }, [target]);
   return <div className="space-y-2 p-3 text-xs" data-testid="target-run-timeline">
     <h3 className="font-semibold">定时运行时间线</h3>
