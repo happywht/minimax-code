@@ -19,7 +19,9 @@ class NavigateCodebaseTool(Tool):
         "Navigate the indexed codebase using the scope graph. Supports "
         "go-to-definition and find-references either by symbol name or by "
         "file position. Use this when the user asks 'where is this defined' "
-        "or 'where is this used' with a specific file location."
+        "or 'where is this used' with a specific file location. Results use "
+        "an indexed name-based graph and may include unrelated same-name symbols; "
+        "the snapshot may be stale."
     )
     parameters = {
         "type": "object",
@@ -48,7 +50,7 @@ class NavigateCodebaseTool(Tool):
             "include_definition": {
                 "type": "boolean",
                 "default": False,
-                "description": "For references-by-symbol, include the definition site(s).",
+                "description": "For references, include the definition site(s).",
             },
         },
         "required": ["operation"],
@@ -85,16 +87,17 @@ class NavigateCodebaseTool(Tool):
                     )
             elif (
                 isinstance(file_path, str)
-                and isinstance(line, int)
-                and isinstance(column, int)
+                and type(line) is int
+                and type(column) is int
             ):
                 if operation == "definition":
                     result = await self._graph_index.goto_definition(
                         file_path, line, column
                     )
                 else:
-                    return ToolResult.fail(
-                        "position-based references are not yet supported; use 'symbol'"
+                    result = await self._graph_index.goto_references(
+                        file_path, line, column,
+                        include_definition=bool(kwargs.get("include_definition", False)),
                     )
             else:
                 return ToolResult.fail(

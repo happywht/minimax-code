@@ -20,7 +20,7 @@ from ..xai_codebase_graph.languages import LanguageRegistry
 from ..xai_codebase_graph.languages.registry import default_language_registry
 from ..xai_codebase_graph.manager.builder import IndexBuilder
 from ..xai_codebase_graph.navigation import NavigationError
-from .files import discover_sources
+from .files import discover_sources, source_path
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ class CodebaseGraphIndex:
         self._workspace = Path(workspace).expanduser().resolve()
         self._registry = registry or default_language_registry()
         self._navigator: Navigator | None = None
+        self._source_files: set[str] = set()
 
     async def _ensure_built(self) -> Navigator | None:
         if self._navigator is not None:
@@ -65,8 +66,10 @@ class CodebaseGraphIndex:
             supported=lambda path: self._registry.is_supported(str(path)),
             max_files=5000, max_file_size=2 * 1024 * 1024,
         )
-        return await asyncio.to_thread(builder.build_from_files, self._workspace,
-                                       [str(self._workspace / rel) for rel, _, _ in sources])
+        index = await asyncio.to_thread(builder.build_from_files, self._workspace,
+                                        [str(self._workspace / rel) for rel, _, _ in sources])
+        self._source_files = {rel for rel, _, _ in sources}
+        return index
 
     async def find_definitions(self, symbol: str) -> dict[str, Any]:
         """Return definition locations for ``symbol``.
@@ -137,7 +140,7 @@ class CodebaseGraphIndex:
         navigator = await self._ensure_built()
         if navigator is None:
             return {"symbol": None, "locations": []}
-        full_path = str(self._workspace / file_path)
+        full_path = self._position_path(file_path, line, column)
         try:
             result = navigator.goto_definition(full_path, line, column)
         except NavigationError as exc:
@@ -151,9 +154,41 @@ class CodebaseGraphIndex:
             ],
         }
 
+    def _position_path(self, file_path: str, line: int, column: int) -> str:
+        """Restrict position reads to files discovered for this graph snapshot."""
+        relative = Path(file_path)
+        if relative.is_absolute() or ".." in relative.parts or line < 1 or column < 1:
+            raise ValueError("position must identify a workspace file and positive coordinates")
+        relative_name = relative.as_posix()
+        if relative_name not in self._source_files:
+            raise ValueError("position file is not in the graph index")
+        return str(source_path(self._workspace, relative_name))
+
+    async def goto_references(
+        self, file_path: str, line: int, column: int, *, include_definition: bool = False
+    ) -> dict[str, Any]:
+        """Find graph references for the identifier at a workspace position."""
+        navigator = await self._ensure_built()
+        if navigator is None:
+            return {"symbol": None, "locations": []}
+        full_path = self._position_path(file_path, line, column)
+        try:
+            result = navigator.goto_references(full_path, line, column, include_definition)
+        except NavigationError as exc:
+            logger.debug("goto_references failed: %s", exc)
+            return {"symbol": None, "locations": []}
+        return {
+            "symbol": result.symbol,
+            "locations": [
+                {"file_path": loc.path, "line": loc.line, "symbol": loc.symbol}
+                for loc in result.locations
+            ],
+        }
+
     def invalidate(self) -> None:
         """Drop the cached navigator so the next call rebuilds."""
         self._navigator = None
+        self._source_files.clear()
 
 
 __all__ = ["CodebaseGraphIndex"]
