@@ -22,6 +22,8 @@ def register_budget_handlers(server):
     async def get(params, ctx):
         try:
             request = BudgetGetParams.model_validate(params or {})
+            if request.blockers_after and not request.day:
+                raise ValueError("A blocker cursor requires its original budget day")
             db = await database()
             dao = BudgetsDAO(db)
             family_id, budget = None, None
@@ -38,13 +40,18 @@ def register_budget_handlers(server):
             state = await dao.snapshot(family_id, day=request.day)
             attempts = await dao.attempts(family_id) if family_id else []
             blockers = await db.fetchall(
-                "SELECT a.id AS attempt_id,a.family_id,a.known_tokens,COALESCE(r.id,root.id) AS run_id,COALESCE(r.session_id,root.session_id) AS session_id "
+                "SELECT a.rowid AS cursor,a.id AS attempt_id,a.family_id,a.known_tokens,COALESCE(r.id,root.id) AS run_id,COALESCE(r.session_id,root.session_id) AS session_id "
                 "FROM budget_attempts a JOIN budget_families f ON f.id=a.family_id "
                 "LEFT JOIN agent_runs r ON r.id=a.run_id LEFT JOIN agent_runs root ON root.id=f.root_run_id "
-                "WHERE a.reservation_day=? AND a.state='unknown' ORDER BY a.rowid LIMIT 20", (state["day"]["day"],))
+                "WHERE a.reservation_day=? AND a.state='unknown' AND a.rowid>? ORDER BY a.rowid LIMIT 21",
+                (state["day"]["day"], request.blockers_after))
+            page = blockers[:20]
+            next_cursor = page[-1]["cursor"] if len(blockers) > 20 else None
             coverage = await db.fetchone("SELECT started_at FROM budget_coverage WHERE id=1")
             await ctx.reply({"budget": budget, "day": state["day"], "attempts": attempts,
-                             "day_blockers": {"total": state["day"]["unknown_attempts"], "items": [dict(row) for row in blockers]},
+                             "day_blockers": {"total": state["day"]["unknown_attempts"],
+                                 "items": [{key: value for key, value in dict(row).items() if key != "cursor"} for row in page],
+                                 "next_cursor": next_cursor},
                              "coverage_started_at": coverage["started_at"] if coverage else None})
         except (ValidationError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))

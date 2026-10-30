@@ -584,6 +584,7 @@ class BudgetGetParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     run_id: str | None = None
     day: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    blockers_after: int = Field(default=0, ge=0, le=2**53 - 1)
 
 
 class BudgetSettingsGetParams(BaseModel):

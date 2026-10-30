@@ -267,7 +267,7 @@ export interface TypedIPC {
   getRun(runId: string): Promise<RunGetResult>;
   cancelRun(runId: string, scheduleScope?: { service_id: string; job_id: string; occurrence_id: string; session_id: string; project_id: string; revision: number }): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
   resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number, scope?: { service: string; session: string; project: string | null; cursor: number }, handoff?: string): Promise<RunAdmissionResult>;
-  getBudget(runId?: string, day?: string): Promise<BudgetStateResult>;
+  getBudget(runId?: string, day?: string, blockersAfter?: number): Promise<BudgetStateResult>;
   getDailyBudgetSettings(): Promise<import("../types/ipc").DailyBudgetSettings>;
   setDailyBudgetSettings(service: string, limit: number | null, expectedSavedLimit?: number | null): Promise<import("../types/ipc").DailyBudgetSettings>;
   reconcileBudget(params: BudgetReconcileParams): Promise<{ok: boolean}>;
@@ -808,7 +808,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     cancelRun: (runId, scheduleScope) => client.request("run.cancel", { run_id: runId, ...(scheduleScope ? { schedule_scope: scheduleScope } : {}) }),
     getDailyBudgetSettings: () => client.request("budget.settings_get", {}),
     setDailyBudgetSettings: (service, limit, expectedSavedLimit) => client.request("budget.settings_set", { expected_service_id: service, limit_tokens: limit, ...(expectedSavedLimit !== undefined ? { expected_saved_limit: expectedSavedLimit } : {}) }),
-    getBudget: (runId, day) => client.request<BudgetStateResult>("budget.get", { ...(runId ? {run_id: runId} : {}), ...(day ? {day} : {}) }),
+    getBudget: (runId, day, blockersAfter) => client.request<BudgetStateResult>("budget.get", { ...(runId ? {run_id: runId} : {}), ...(day ? {day} : {}), ...(blockersAfter !== undefined ? {blockers_after: blockersAfter} : {}) }),
     reconcileBudget: (params) => client.request<{ok: boolean}>("budget.reconcile", params),
     resumeRun: (runId, idempotencyKey, reviewed = false, budgetTokens?: number, scope, handoff) =>
       client.request<RunAdmissionResult>("run.resume", {

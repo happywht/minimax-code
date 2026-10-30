@@ -2020,7 +2020,7 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 
 | 方法 | 说明 |
 |------|------|
-| `budget.get` | 读取 `{run_id?, day?}` 的预算家族、Asia/Shanghai 日账、家族 attempts、当日 day_blockers（总数及最多 20 项身份/owner run/session/已知下界）与覆盖起点 |
+| `budget.get` | 读取 `{run_id?, day?, blockers_after?}` 的预算家族、Asia/Shanghai 日账、家族 attempts、当日 day_blockers（总数及最多 20 项身份/owner run/session/已知下界）与覆盖起点；按返回的 `next_cursor` 和同一 `day` 读取后续未知请求，记录可在翻页期间变化 |
 | `budget.get` 的 `day` | `accounting_resolved` 表示当日无待核对的未知责任，活动请求仍可存在；`usage_complete` 表示指定预留日期的全家族请求均已测得或确证未发送，且无未测得历史责任。两个布尔值与日汇总同事务计算，仅证明当前快照。旧响应缺字段保持未知，不能默认为 true。 |
 | `budget.reconcile` | 核定历史/未知责任；要求明确确认、依据和不少于已知下界的累计责任 |
 | `budget.settings_get` | 读取服务身份、当前生效的日 token 限额及 Asia/Shanghai 日账快照；设置文件无效时拒绝。 |

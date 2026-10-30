@@ -1125,7 +1125,7 @@ export interface BudgetStateResult {
   day: BudgetDay;
   attempts: Array<{id: string; run_id?: string | null; state: string; estimated_tokens: number; known_tokens: number | null; liability_tokens: number | null; reason: string | null}>;
   coverage_started_at: string | null;
-  day_blockers?: {total: number; items: Array<{attempt_id: string; family_id: string; known_tokens: number | null; run_id: string | null; session_id: string | null}>};
+  day_blockers?: {total: number; next_cursor?: number | null; items: Array<{attempt_id: string; family_id: string; known_tokens: number | null; run_id: string | null; session_id: string | null}>};
 }
 
 export interface DailyBudgetSettings {

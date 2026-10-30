@@ -31,19 +31,23 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
   const [reason, setReason] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [pending, setPending] = useState(false);
+  const [pageStart, setPageStart] = useState(0), [paging, setPaging] = useState(false);
   const load = useCallback(async () => {
     const request = ++generation.current;
-    const current = () => runId.current === run.id && generation.current === request;
+    setPaging(false);
+    const host = ipc.agentBaseUrl;
+    const current = () => runId.current === run.id && generation.current === request && ipc.agentBaseUrl === host;
     try {
       const result = await typedIPC.getBudget(run.id);
-      if (current()) { setLoaded({runId: run.id, state: result}); setError(null); }
+      if (current()) { setLoaded({runId: run.id, state: result}); setPageStart(0); setError(null); }
     } catch (err) { if (current()) setError(err instanceof Error ? err.message : String(err)); }
   }, [run.id]);
   useEffect(() => {
     setLoaded(null); setError(null); setLiability(""); setReason("");
-    setAcknowledged(false); setPending(false);
+    setAcknowledged(false); setPending(false); setPageStart(0); setPaging(false);
   }, [run.id]);
   useEffect(() => { void load(); }, [load, run.status, run.completed_at]);
+  useEffect(() => ipc.onSideCar(() => { ++generation.current; setLoaded(null); setPaging(false); setError("连接已变化，请刷新预算账本。"); }), []);
   const budget = state?.budget;
   const targets: Array<{target: BudgetReconcileParams["target"]; id: string; label: string; minimum: number}> = [];
   if (state?.day.baseline_incomplete) targets.push({target: "day", id: state.day.day, label: "核定当日历史责任", minimum: state.day.historical_lower_bound});
@@ -52,6 +56,19 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
     if (attempt.state === "unknown") targets.push({target: "attempt", id: attempt.id, label: `核定请求 ${attempt.id} 责任`, minimum: attempt.known_tokens ?? 0});
   }
   const active = ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status);
+  const nextBlockers = async () => {
+    const cursor = state?.day_blockers?.next_cursor;
+    if (!state || cursor == null || paging || pending || !Number.isSafeInteger(cursor) || cursor <= pageStart) return;
+    const ticket = ++generation.current, host = ipc.agentBaseUrl, day = state.day.day;
+    setPaging(true);
+    try {
+      const result = await typedIPC.getBudget(run.id, day, cursor);
+      if (runId.current !== run.id || generation.current !== ticket || ipc.agentBaseUrl !== host) return;
+      if (result.day.day !== day) throw new Error("预算日期已变化，请刷新账本");
+      setLoaded({runId: run.id, state: result}); setPageStart(cursor); setError(null);
+    } catch (err) { if (runId.current === run.id && generation.current === ticket) setError(err instanceof Error ? err.message : String(err)); }
+    finally { if (runId.current === run.id && generation.current === ticket) setPaging(false); }
+  };
   const reconcile = async (target: typeof targets[number]) => {
     const owner = run.id;
     if (!state || runId.current !== owner) return;
@@ -126,11 +143,13 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
       </details>
     </> : !error && <p>{state ? "该旧任务没有完整预算家族；恢复前需核对历史责任。" : "正在读取，未知用量尚未确认为零。"}</p>}
     {!!state?.day_blockers?.total && <div>
-      <p>当日结果不明请求共 {state.day_blockers.total} 项，显示前 20 项；须逐项核对，核定历史日账不会清除这些请求。</p>
+      <p>当日结果不明请求共 {state.day_blockers.total} 项，每页最多 20 项；须逐项核对，核定历史日账不会清除这些请求。翻页期间记录可能变化，刷新可从头查看。</p>
       {state.day_blockers.items.filter((item) => item.family_id !== budget?.family_id).map((item) => <div key={item.attempt_id}>
         <span>请求 {item.attempt_id} · 已知下界 {item.known_tokens ?? "未知"} </span>
         {item.session_id && item.run_id ? <button type="button" onClick={() => void reviewOwner(item.session_id!, item.run_id!)}>查看责任任务 {item.run_id}</button> : <span>所属任务记录缺失，请核查数据库备份。</span>}
       </div>)}
+      {pageStart > 0 && <button type="button" disabled={paging || pending} onClick={() => void load()}>返回第一页</button>}
+      {state.day_blockers.next_cursor != null && <button type="button" disabled={paging || pending} onClick={() => void nextBlockers()}>{paging ? "读取中…" : "查看后续未知请求"}</button>}
     </div>}
     {!!targets.length && <fieldset className="space-y-1 rounded border border-minimax-border p-2">
       <legend>明确核定未确认责任</legend>
