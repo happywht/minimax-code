@@ -31,7 +31,7 @@ import {
 import type { TimelineTarget } from "./components/right-panel/RunTimelinePanel";
 import type { HistoricalReportTransfer } from "./components/panels/DeliveryWorkspace";
 import type { SettingsTab } from "./components/settings/SettingsPage";
-import type { SidecarEvent } from "./types/ipc";
+import type { Project, Session, SidecarEvent } from "./types/ipc";
 import type { CommandPaletteHandle } from "./components/layout/CommandPalette";
 import { tunnelPage } from "./ipc/tunnelPage";
 import { WorkbenchNavigator } from "./components/layout/WorkbenchNavigator";
@@ -253,6 +253,34 @@ export default function App() {
     };
     window.addEventListener("minimax:open-run-deliveries", openRunDeliveries);
     return () => window.removeEventListener("minimax:open-run-deliveries", openRunDeliveries);
+  }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
+
+  useEffect(() => {
+    const openVerifiedRunDeliveries = (event: Event) => {
+      const target = (event as CustomEvent<{ host: string; service: string; project: string; session: string; run: string;
+        originProject: string | null; originSession: string | null; verifiedSession: Session; verifiedProject: Project; result?: string }>).detail;
+      if (!target) return;
+      const current = () => target.host === ipc.agentBaseUrl && useSessionStore.getState().currentProjectId === target.originProject &&
+        useSessionStore.getState().currentSessionId === target.originSession;
+      if (!current() || !target.service || !target.run || target.verifiedProject?.id !== target.project ||
+          target.verifiedSession?.id !== target.session || target.verifiedSession.project_id !== target.project) {
+        target.result = "服务或当前范围已变化，请重新选择任务。"; return;
+      }
+      const hadAutomationEdits = automationEdited.current, hadSettingsEdits = settingsEdited.current;
+      if ((isDelivery(overlayView) && !leaveDelivery()) ||
+          ((overlayView === "settings" || overlayView === "agents") && !leaveSettings()) ||
+          ((overlayView === "scheduled" || overlayView === "workflows" || overlayView === "webhooks") && !leaveAutomation())) {
+        target.result = "已取消离开当前工作区。"; return;
+      }
+      if (!current() || !useSessionStore.getState().selectVerifiedScope(target.verifiedSession, target.verifiedProject)) {
+        automationEdited.current ||= hadAutomationEdits; settingsEdited.current ||= hadSettingsEdits;
+        target.result = "已取消范围切换，或当前范围已变化。"; return;
+      }
+      setDeliveryRunTarget({ host: target.host, service: target.service, project: target.project, session: target.session, run: target.run });
+      setOverlayView("run-artifacts"); target.result = "opened";
+    };
+    window.addEventListener("minimax:open-verified-run-deliveries", openVerifiedRunDeliveries);
+    return () => window.removeEventListener("minimax:open-verified-run-deliveries", openVerifiedRunDeliveries);
   }, [overlayView, leaveAutomation, leaveSettings, leaveDelivery]);
 
   useEffect(() => {

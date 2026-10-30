@@ -9,6 +9,7 @@ import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { useChat, usePermissionStore, useScheduleStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
+import { OpenRunDeliveries } from "../panels/OpenRunDeliveries";
 
 interface Detail { snapshot: RunStepsResult; receipt: RunGetResult; serviceId: string; scopeKey: string }
 const labels: Record<string, string> = { queued: "排队中", planning: "规划中", running: "运行中", awaiting_approval: "等待授权",
@@ -221,6 +222,9 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
       {run && view && <>
         <p>读取时运行状态：{labels[run.status] ?? run.status} · 运行 {run.id} · 服务 {view.serviceId}</p>
         {serviceId === view.serviceId && onOpenSession && <Button type="button" size="sm" variant="secondary" disabled={timelineBusy} loading={timelineBusy} onClick={() => void openTimeline()}>打开原会话时间线</Button>}
+        {project && serviceId === view.serviceId && occurrence.context.workspace && <OpenRunDeliveries
+          host={host} service={serviceId} project={project} session={occurrence.session_id} run={run.id}
+          schedule={{ job: occurrence.job_id, occurrence: occurrence.id, revision: occurrence.revision, workspace: occurrence.context.workspace }} />}
         {run.error && <p>运行错误：{run.error}</p>}
         {!sameStatus && <p>读取期间运行状态发生变化，请刷新后查看回执。</p>}
         {sameStatus && serviceId === view.serviceId && <div className="space-y-1">
