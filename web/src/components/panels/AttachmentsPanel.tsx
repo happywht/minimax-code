@@ -7,6 +7,7 @@ import { AttachmentImageOcr } from "./AttachmentImageOcr";
 import { AttachmentImagePreview } from "./AttachmentImagePreview";
 import { AttachmentDocumentReader } from "./AttachmentDocumentReader";
 import { AttachmentBatchToReport } from "./AttachmentBatchToReport";
+import { DocumentCitationDraft } from "./DocumentCitationDraft";
 import { AttachmentVersions } from "./AttachmentVersions";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
@@ -432,6 +433,24 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <div className="space-y-2 rounded border border-line p-2"><p>资料引用（最多 10 条）：在上方读取 PDF、DOCX、UTF-8 TXT 或 CSV，选中原文后加入。正文可使用 [资料1] 等编号；生成时从原件重新读取并附上位置和摘录。CSV 为原始文本，不解析表格或执行公式；扫描件、OCR 和其他格式不支持此手工选择；事实与编号需自行核对。</p>
         {documentCitations.map((item, index) => <div key={`${item.ref.attachment_id}:${item.ref.unit}:${item.ref.start}:${index}`} className="break-all">[资料{index + 1}] {item.label} · {item.ref.attachment_id} · SHA-256 {item.ref.expected_sha256}
           <Button type="button" variant="secondary" onClick={() => { setDocumentCitations(documentCitations.filter((_, i) => i !== index)); setDocumentReview(true); }}>移除此引用</Button></div>)}
+        {documentCitations.length > 0 && <DocumentCitationDraft citations={documentCitations} project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host}
+          draftVersion={JSON.stringify([docName, title, body, format, structured, sections, visualSections, excerptSection, sources, researchSources, researchRanges, documentCitations, researchNeedsReview, citationNeedsReview, documentReview])}
+          onApply={(items) => {
+            const paragraphs = ["资料研究目的与范围（待填写）", "以下为指定位置的原文摘录，不代表原件全文；内容及事实未经核验。",
+              ...items.flatMap((item) => {
+                const scope = item.kind === "pdf" ? "PDF 物理页已有文字，未 OCR" : item.kind === "docx" ? "DOCX 正文或表格段落，未 OCR" : "UTF-8 原文，CSV 不解析表格或计算公式";
+                return [`[资料${item.number}] ${item.name} · v${item.version} · ${item.id} · SHA-256 ${item.sha256} · ${item.location} · 字符 [${item.start}, ${item.end}) · ${scope}${item.truncated ? " · 此单元选段不完整" : " · 此单元读取范围未显示截断"}`,
+                  `原文摘录（空白已合并）：${item.text.replace(/\s+/g, " ").trim()} [资料${item.number}]`];
+              }), "资料不足和待核对问题（待填写）", "分析与结论（待填写；请区分原文事实、推断与不确定性）"];
+            const editable = structured ? readEditableSections(sections) : null;
+            const blocks = structured ? editable?.reduce((sum, section) => sum + section.blocks.length, 0) : body ? body.split(/\r?\n/).length : 0;
+            if (blocks === undefined || (structured && (!editable || editable.length >= 50)) || blocks + paragraphs.length + 1 + 4 * documentCitations.length > 100) {
+              setExcerptNotice("正文和资料引用附录将超过报告内容块或章节限制；请先精简。"); return false;
+            }
+            const applied = appendExcerpt(paragraphs);
+            if (applied) setDocumentReview(true);
+            return applied;
+          }} />}
         {documentReview && <div role="alert">资料引用顺序已变化或草稿已恢复，正文编号不会自动更新；请核对。<Button type="button" variant="secondary" onClick={() => setDocumentReview(false)}>已核对资料引用编号</Button></div>}
       </div>
       <ReportArtifactReuse project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host} transfer={artifactTransfer} transferRequiresRun={artifactTransferRequiresRun} onClearTransfer={onClearArtifactTransfer}
