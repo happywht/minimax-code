@@ -8,6 +8,7 @@ import { CsvSplitColumn } from "./CsvSplitColumn";
 import { CsvCombineColumns } from "./CsvCombineColumns";
 import { CsvNumericFilter } from "./CsvNumericFilter";
 import { CsvMultiFilter } from "./CsvMultiFilter";
+import { CsvMultiSort } from "./CsvMultiSort";
 import { CsvLookupJoin } from "./CsvLookupJoin";
 import type { OfficeTableSpec } from "../../types/ipc";
 import { calculateOfficeColumn, csvToOfficeSpec, type CsvTable } from "./officeCsv";
@@ -162,6 +163,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
     <CsvCombineColumns table={table} onApply={(next) => onChange(next, [...kinds, "text"])} />
     <CsvNumericFilter table={table} onApply={(next) => { onChange(next); setPage(0); }} />
     <CsvMultiFilter table={table} onApply={(next) => { onChange(next); setPage(0); }} />
+    <CsvMultiSort table={table} onApply={(next) => { onChange(next); setPage(0); }} />
     <CsvLookupJoin table={table} kinds={kinds} onApply={(next, nextKinds) => { onChange(next, nextKinds); setPage(0); }} />
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>按列排序</legend>

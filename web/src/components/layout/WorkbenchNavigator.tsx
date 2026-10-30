@@ -59,6 +59,17 @@ export function WorkbenchNavigator({ view, connection, onNavigate }: {
     </div>
     {association && <p role="status" className="mt-1 text-status-warning">{association}</p>}
     {connection !== "connected" && <p className="mt-1 text-status-warning">项目与会话为最近选择，连接恢复后请重新核对。</p>}
+    {area === "work" && session && !association && <details className="mt-1 text-ink-2">
+      <summary className="cursor-pointer">会话配置与目录</summary>
+      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 break-all">
+        <span>会话引擎：{session.engine === "codex" ? "Codex" : session.engine === "native" ? "Native" : "未记录"}</span>
+        <span>会话模型：{session.model_id || "未记录"}</span>
+        <span>工作区类型：{session.workspace_mode === "worktree" ? "独立工作树" : session.workspace_mode === "local" ? "项目工作区" : "未记录"}</span>
+        <span>会话目录：{session.workspace_path || "未单独记录"}</span>
+        <span>项目目录：{project?.root_path || "未绑定"}</span>
+      </div>
+      <p>这里显示会话及项目配置；运行中的实际模型和执行位置请查看该任务的运行详情。</p>
+    </details>}
     {area === "automation" && <p className="mt-1 text-ink-2">定时任务使用各自配置的项目；工作流和 Webhook 属于当前服务。</p>}
   </div>;
 }
