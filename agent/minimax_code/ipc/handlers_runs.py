@@ -259,12 +259,15 @@ def register_run_handlers(server: Any) -> None:
         from ..orchestrator.subagent import get_background_run
         from ..storage.dao.runs import _hydrate_run
         from ..storage.dao.text_artifacts import ArtifactDAO
+        from .host_session_gate import require_chat_session
 
         try:
             req = RunChildListParams.model_validate(params)
             dao = await _get_read_control_dao(ctx)
 
             async def binding():
+                if req.run_id is not None:
+                    await require_chat_session(req.session_id)
                 session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
                 if not session:
                     raise ValueError("Unknown parent session")
@@ -277,7 +280,8 @@ def register_run_handlers(server: Any) -> None:
                 WHERE c.mode='subagent' AND p.session_id=?
                 AND CASE WHEN json_valid(c.metadata) THEN json_extract(c.metadata,'$.parent_session_id') END=?
                 AND CASE WHEN json_valid(p.metadata) THEN json_extract(p.metadata,'$.project_id') END IS ?
-                ORDER BY c.created_at DESC,c.id DESC LIMIT 100""", (req.session_id, req.session_id, project))
+                AND (? IS NULL OR c.id=?)
+                ORDER BY c.created_at DESC,c.id DESC LIMIT 100""", (req.session_id, req.session_id, project, req.run_id, req.run_id))
             children = []
             for row in rows:
                 run = _hydrate_run(row)

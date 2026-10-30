@@ -153,6 +153,7 @@ export function SubAgentPanel({
         </div>
       </div>
       {visibleSession && <ChildResultsHandoff sessionId={visibleSession} />}
+      {visibleSession && <OlderChildLookup sessionId={visibleSession} />}
       {recoveryError && <div role="alert" className="mb-2 text-[11px] text-status-error">子任务恢复失败：{recoveryError}。请刷新后核对状态。</div>}
       {runs.length === 0 ? (
         <div
@@ -170,6 +171,47 @@ export function SubAgentPanel({
       )}
     </div>
   );
+}
+
+function OlderChildLookup({ sessionId }: { sessionId: string }): JSX.Element {
+  const project = useSessionStore((s) => s.sessions.find((item) => item.id === sessionId)?.project_id ?? null);
+  const selected = useSessionStore((s) => s.currentSessionId);
+  const selectedProject = useSessionStore((s) => s.currentProjectId);
+  const [id, setId] = useState(""), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
+  const [child, setChild] = useState<{ run_id: string; parent_run_id: string; agent_name: string; status: string; live: boolean; prompt: string; text: string; text_truncated: boolean; partial: boolean; error: string | null } | null>(null);
+  const epoch = useRef(0);
+  useEffect(() => { ++epoch.current; setChild(null); setMessage(""); setBusy(false); return () => { ++epoch.current; }; }, [sessionId, project, selected, selectedProject]);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setChild(null); setBusy(false); setMessage("连接变化，请重新查询。"); }), []);
+  const lookup = async () => {
+    const run = id.trim(); if (!run || busy || selected !== sessionId) return;
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl;
+    const current = () => ticket === epoch.current && host === ipc.agentBaseUrl && useSessionStore.getState().currentSessionId === sessionId &&
+      (useSessionStore.getState().sessions.find((s) => s.id === sessionId)?.project_id ?? null) === project &&
+      useSessionStore.getState().currentProjectId === selectedProject && (selectedProject === project || (project === null && selectedProject === "inbox"));
+    setBusy(true); setChild(null); setMessage("");
+    try {
+      const before = await typedIPC.getServiceIdentity();
+      const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string; children: Array<NonNullable<typeof child>> }>("run.child_list", { session_id: sessionId, run_id: run });
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (!before.service_id || before.service_id !== after.service_id || result.service_id !== before.service_id ||
+          result.session_id !== sessionId || result.project_id !== project || result.children.length > 1 ||
+          result.children.some((item) => item.run_id !== run || !item.parent_run_id)) throw new Error("服务或子任务归属无法确认。");
+      if (!result.children.length) { setMessage("未找到当前会话可确认归属的直接子任务。"); return; }
+      setChild(result.children[0]);
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { if (current()) setBusy(false); }
+  };
+  return <details className="mb-2 rounded border border-line p-2 text-xs"><summary>按运行 ID 查看较早子任务</summary>
+    <p>仅查询当前会话有持久父运行绑定的直接子任务；不会重新执行。</p>
+    <input aria-label="子任务运行 ID" value={id} maxLength={128} disabled={busy} onChange={(event) => { setId(event.target.value); setChild(null); }} className="w-full rounded border border-line bg-surface-0 p-1" />
+    <button type="button" disabled={busy || !id.trim() || selected !== sessionId} onClick={() => void lookup()}>查询</button>
+    {message && <p role="status">{message}</p>}
+    {child && <div className="break-all"><p>{child.agent_name || "子 Agent"} · {child.run_id} · 父运行 {child.parent_run_id}</p>
+      <p>持久状态：{child.status}{!["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(child.status) && !child.live ? " · 当前运行状态待核对" : ""}{child.partial ? " · 部分结果" : ""}</p>
+      <p>任务：{child.prompt}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{child.text || "（没有已保存的结果文本）"}</pre>
+      {child.text_truncated && <p>结果已截断。</p>}{child.error && <p>错误：{child.error}</p>}</div>}
+  </details>;
 }
 
 function SubAgentRow({
