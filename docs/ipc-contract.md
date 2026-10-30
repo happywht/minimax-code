@@ -2107,6 +2107,7 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 任务行保留 `status`（pending/running/completed/failed/cancelled/budget_paused/interrupted/requires_review），
 并返回可空 `run_id`、`execution_status`、`verification`、`cancel_supported`。关联运行的真实状态优先于旧任务缓存，
 状态筛选与计数使用相同投影。`result` 对暂停、中断、失败和取消也保留已保存的部分文本；completed 仅表示执行结束。
+关联运行显示 completed 时，任务投影及调度结算会核对持久回执的运行、会话和终态，以及版本化验证证据；缺失、损坏或矛盾时显示 requires_review 和 unknown/receipt_unconfirmed，不能以运行行单独推断回执成功。旧记录可能因此需要核对。这一规则尚未执行验证。
 
 `verification` v1 包含 `version:1`、`verdict:passed|failed|unknown|not_applicable`、`reason`、
 `requires_review`，并保留 `tool_calls`、`failed_tool_calls`、`failures` 与可选 `validation` 命令诊断。

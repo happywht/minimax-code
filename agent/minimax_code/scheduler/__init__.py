@@ -527,29 +527,12 @@ class JobScheduler:
     @staticmethod
     async def _durable_run_result(dao, run):
         """Never release a schedule lease on an unconfirmed terminal receipt."""
+        from ..verification import durable_task_result
         try:
             receipt = await dao.result_payload(run["id"])
         except (ValueError, UnicodeError):
             receipt = None
-        receipt = receipt if isinstance(receipt, dict) else {}
-        metadata = run.get("metadata") or {}
-        proofs = [receipt.get("verification"), metadata.get("verification")]
-        valid_proofs = [proof for proof in proofs if isinstance(proof, dict)
-                        and proof.get("version") == 1
-                        and isinstance(proof.get("requires_review"), bool)]
-        evidence = dict(valid_proofs[0]) if valid_proofs else {}
-        evidence["requires_review"] = any(proof["requires_review"] for proof in valid_proofs)
-        reason = None
-        if run["status"] == "completed" and (not receipt or not valid_proofs):
-            evidence["requires_review"] = True
-            reason = "Completed run has no durable receipt or verification evidence"
-        result = {**receipt, "run_id": run["id"], "run_status": run["status"],
-                  "verification": evidence}
-        if reason:
-            result["review_reason"] = reason
-        if run.get("error"):
-            result["error"] = run["error"]
-        return result
+        return durable_task_result(run, receipt)
 
 
     async def _fire(self, row: dict[str, Any], *, source: str) -> None:

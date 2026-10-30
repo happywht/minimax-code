@@ -98,17 +98,21 @@ class TasksDAO:
     async def _evidence(self, task: dict[str, Any] | None) -> dict[str, Any] | None:
         if task is None:
             return None
-        from ...verification import task_outcome
-        run = await self._db.fetchone("SELECT status,metadata,result FROM agent_runs WHERE id=?",
+        from ...verification import durable_task_result, task_outcome
+        run = await self._db.fetchone("SELECT id,session_id,status,metadata,result,error FROM agent_runs WHERE id=?",
                                      (task["run_id"],)) if task.get("run_id") else None
-        metadata = loads_json(run["metadata"]) or {} if run else {}
+        try:
+            metadata = loads_json(run["metadata"]) or {} if run else {}
+        except (ValueError, UnicodeError):
+            metadata = None
         try:
             receipt = loads_json(run["result"]) or {} if run else {}
         except (ValueError, UnicodeError):
             receipt = {}
         if not isinstance(receipt, dict):
             receipt = {}
-        evidence = metadata.get("verification") or receipt.get("verification") or {}
+        projected = durable_task_result({**dict(run), "metadata": metadata}, receipt) if run else {}
+        evidence = projected.get("verification") or {}
         if evidence.get("version") != 1:
             evidence = {**evidence, "version": 1, "verdict": "unknown", "reason": "legacy_unverified",
                         "requires_review": bool(evidence.get("requires_review"))}
@@ -116,8 +120,12 @@ class TasksDAO:
         task["execution_status"] = run["status"] if run else None
         task["cancel_supported"] = bool(run and run["status"] in {
             "queued", "planning", "running", "awaiting_approval", "waiting_input"})
+        if task.get("run_id") and not run:
+            task["status"] = "requires_review"
+            task["verification"] = {"version": 1, "verdict": "unknown",
+                                    "reason": "receipt_unconfirmed", "requires_review": True}
         if run:
-            task["status"] = task_outcome({**receipt, "run_status": run["status"], "verification": evidence})
+            task["status"] = task_outcome({**projected, "verification": evidence})
             # Schedule settlement can require review even when the underlying
             # run says completed (for example, a missing durable receipt).
             # Do not hide that decision when hydrating occurrence history.
@@ -126,7 +134,8 @@ class TasksDAO:
             )
             if occurrence and occurrence["status"] == "requires_review":
                 task["status"] = "requires_review"
-            if receipt.get("text"):
+            if (receipt.get("run_id") == run["id"] and receipt.get("session_id") == run["session_id"]
+                    and isinstance(receipt.get("text"), str) and receipt["text"]):
                 task["result"] = receipt["text"]
         return task
 

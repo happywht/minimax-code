@@ -10,6 +10,7 @@ export function VerificationBadge({ evidence }: { evidence?: VerificationEvidenc
     validation_denied: "主机验证未获授权或已超时", validation_workspace_changed: "项目或任务工作区已变化，未执行验证",
     validation_timeout: "验证超时", validation_failed: "验证命令失败", validation_passed: "验证命令通过",
     failed_tool_calls: "存在失败的工具调用", execution_truncated: "任务尚未完成",
+    receipt_unconfirmed: "持久回执或验证证据缺失、损坏或不一致，请核对原运行",
   };
   const reason = reasons[evidence?.reason ?? "legacy_unverified"] ?? "任务未正常完成，请核对保留的输出";
   return <span data-testid="verification-verdict" className={`text-[11px] ${evidence?.requires_review || verdict === "failed" ? "text-status-warning" : verdict === "passed" ? "text-status-success" : "text-ink-2"}`} title={reason}>

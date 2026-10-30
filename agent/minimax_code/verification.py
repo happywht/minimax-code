@@ -115,6 +115,56 @@ def task_outcome(result: Any) -> str:
         return "requires_review"
     return "completed"
 
+
+def durable_task_result(run: dict[str, Any], receipt: Any) -> dict[str, Any]:
+    """Project a persisted run without treating an unconfirmed receipt as success."""
+    receipt = receipt if isinstance(receipt, dict) else {}
+    metadata = run.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    proofs = [receipt.get("verification"), metadata.get("verification")]
+
+    def valid(proof: Any) -> bool:
+        if not isinstance(proof, dict) or proof.get("version") != 1:
+            return False
+        if (not isinstance(proof.get("verdict"), str)
+                or proof.get("verdict") not in {"passed", "failed", "unknown", "not_applicable"}
+                or not isinstance(proof.get("reason"), str)
+                or not isinstance(proof.get("requires_review"), bool)):
+            return False
+        if proof["verdict"] == "passed":
+            validation = proof.get("validation")
+            return (isinstance(validation, dict) and validation.get("ok") is True
+                    and type(validation.get("exit_code")) is int and validation["exit_code"] == 0
+                    and validation.get("timed_out") is False)
+        return True
+
+    valid_proofs = [proof for proof in proofs if valid(proof)]
+    evidence = dict(valid_proofs[0]) if valid_proofs else {}
+    if valid_proofs:
+        evidence["requires_review"] = any(proof["requires_review"] for proof in valid_proofs)
+    reason = None
+    if run.get("status") == "completed":
+        identity_matches = (receipt.get("run_id") == run.get("id")
+                            and receipt.get("session_id") == run.get("session_id")
+                            and receipt.get("run_status") == "completed")
+        contradictory = len(valid_proofs) == 2 and any(
+            valid_proofs[0].get(key) != valid_proofs[1].get(key)
+            for key in ("verdict", "reason", "requires_review")
+        )
+        if (not identity_matches or not valid(receipt.get("verification"))
+                or (proofs[1] is not None and not valid(proofs[1])) or contradictory
+                or receipt.get("cancelled") is True or receipt.get("budget_paused") is True):
+            evidence = {"version": 1, "verdict": "unknown", "reason": "receipt_unconfirmed",
+                        "requires_review": True}
+            reason = "Completed run receipt or verification evidence is missing, invalid or inconsistent"
+    result = {**receipt, "run_id": run.get("id"), "run_status": run.get("status"),
+              "verification": evidence}
+    if reason:
+        result["review_reason"] = reason
+    if run.get("error"):
+        result["error"] = run["error"]
+    return result
+
 # Same posture as the scheduler command payload: the ceiling keeps the
 # kill inside the caller's own timeout budget instead of leaking the
 # child behind a cancelled ``communicate()``.
