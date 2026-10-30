@@ -1,12 +1,15 @@
 /**
  * Codebase panel — index status, search, hot files and summaries (v0.11.0 Milestone 2).
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Search, RefreshCw, FileCode, Clock, TrendingUp } from "lucide-react";
 import { Button, Input, Spinner, EmptyState } from "../../ui";
 import { useCodebaseStore, startCodebaseStatusPoller } from "../../stores";
 import type { CodebaseSearchResult } from "../../types/ipc";
 import { strings } from "../../ui/strings";
+import { ipc, typedIPC } from "../../ipc";
+import { useSessionStore } from "../../stores/sessionStore";
+import { toast } from "../layout/ErrorBoundary";
 
 export interface CodebasePanelProps {
   testId?: string;
@@ -16,10 +19,14 @@ function ResultRow({
   r,
   testId,
   onClick,
+  onInsert,
+  busy,
 }: {
   r: CodebaseSearchResult;
   testId: string;
   onClick?: () => void;
+  onInsert: () => void;
+  busy: boolean;
 }): JSX.Element {
   return (
     <li
@@ -40,6 +47,7 @@ function ResultRow({
       <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-surface-2 p-1.5 text-ink-1">
         {r.snippet}
       </pre>
+      <Button size="sm" variant="subtle" disabled={busy} onClick={onInsert}>读取当前源码并加入草稿</Button>
     </li>
   );
 }
@@ -51,6 +59,9 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
     query,
     searching,
     results,
+    resultsProjectId,
+    resultsHost,
+    resultsServiceId,
     summaryPath,
     summary,
     summarizing,
@@ -64,6 +75,41 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
     summarize,
     touchFile,
   } = useCodebaseStore();
+  const [inserting, setInserting] = useState(false);
+
+  const insertCurrent = async (r: CodebaseSearchResult) => {
+    const { currentSessionId: session, currentProjectId: project, sessions } = useSessionStore.getState();
+    const host = ipc.agentBaseUrl;
+    if (!session || !project || project !== resultsProjectId || host !== resultsHost ||
+        !sessions.some((s) => s.id === session && s.project_id === project && !s.archived)) {
+      toast.error("无法加入草稿", "请在搜索所属项目中选择有效会话并重新搜索。"); return;
+    }
+    let changed = false;
+    const valid = () => {
+      const state = useSessionStore.getState();
+      return !changed && ipc.agentBaseUrl === host && state.currentSessionId === session &&
+        state.currentProjectId === project && state.sessions.some((s) => s.id === session && s.project_id === project && !s.archived);
+    };
+    const off = useSessionStore.subscribe(() => { if (!valid()) changed = true; });
+    const stop = ipc.onSideCar(() => { changed = true; });
+    setInserting(true);
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!identity.service_id || identity.service_id !== resultsServiceId || !valid()) throw new Error("服务或会话已变化，请重新搜索。");
+      const source = await typedIPC.readCurrentCodebase({ session_id: session, project_id: project,
+        expected_service_id: identity.service_id, path: r.file_path, start_line: r.start_line, end_line: r.end_line });
+      const after = await typedIPC.getServiceIdentity();
+      if (!valid() || after.service_id !== identity.service_id) throw new Error("服务或会话已变化，请重新搜索。");
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = {
+        host, project, session, text: `当前工作区源码 ${source.path} L${source.start_line}-${source.end_line}（读取时快照，可能随后变化）：\n\n\`\`\`\n${source.content}\n\`\`\`` };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      if (!detail.result) throw new Error("当前聊天输入框不可用，请打开会话后重试。");
+      if (!detail.result.startsWith("已添加")) throw new Error(detail.result);
+      toast.success("源码已加入草稿", "请审阅并手动发送。");
+    } catch (err) {
+      toast.error("无法加入草稿", err instanceof Error ? err.message : String(err));
+    } finally { off(); stop(); setInserting(false); }
+  };
 
   useEffect(() => {
     return startCodebaseStatusPoller();
@@ -169,7 +215,7 @@ export function CodebasePanel({ testId = "codebase" }: CodebasePanelProps): JSX.
       ) : (
         <ul className="flex-1 space-y-2 overflow-auto" data-testid={`${testId}-results`}>
           {results.map((r) => (
-            <ResultRow key={r.chunk_id} r={r} testId={testId} onClick={() => touchFile(r.file_path)} />
+            <ResultRow key={r.chunk_id} r={r} testId={testId} onClick={() => touchFile(r.file_path)} onInsert={() => void insertCurrent(r)} busy={inserting} />
           ))}
         </ul>
       )}

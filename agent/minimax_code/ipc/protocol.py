@@ -34,6 +34,23 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class CodebaseReadCurrentParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str
+    project_id: str
+    expected_service_id: str
+    path: str
+    start_line: int
+    end_line: int
+
+
+class CodebaseReadCurrentResult(BaseModel):
+    path: str
+    start_line: int
+    end_line: int
+    content: str
+
+
 McpTransport = Literal["stdio", "sse", "streamable_http"]
 
 

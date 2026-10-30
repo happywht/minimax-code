@@ -2262,6 +2262,22 @@ export interface CodebaseSearchResultShape {
   results: CodebaseSearchResult[];
 }
 
+export interface CodebaseReadCurrentParams {
+  session_id: string;
+  project_id: string;
+  expected_service_id: string;
+  path: string;
+  start_line: number;
+  end_line: number;
+}
+
+export interface CodebaseReadCurrentResult {
+  path: string;
+  start_line: number;
+  end_line: number;
+  content: string;
+}
+
 /** Result of `codebase.summarize`. */
 export interface CodebaseSummarizeResult {
   path: string;

@@ -7,7 +7,7 @@
  */
 
 import { create } from "zustand";
-import { typedIPC } from "../ipc";
+import { ipc, typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import { strings } from "../ui/strings";
 import { useSessionStore } from "./sessionStore";
@@ -39,6 +39,9 @@ export interface CodebaseState {
   searching: boolean;
   /** Results from the latest successful search. */
   results: CodebaseSearchResult[];
+  resultsProjectId: string | null;
+  resultsHost: string | null;
+  resultsServiceId: string | null;
 
   /** Path input for the summarize box. */
   summaryPath: string;
@@ -99,6 +102,9 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
   query: "",
   searching: false,
   results: [],
+  resultsProjectId: null,
+  resultsHost: null,
+  resultsServiceId: null,
   summaryPath: "",
   summary: null,
   summarizing: false,
@@ -134,14 +140,23 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
   search: async (q) => {
     const query = (q ?? get().query).trim();
     if (!query) {
-      set({ results: [], hotFiles: [] });
+      set({ results: [], hotFiles: [], resultsProjectId: null, resultsHost: null, resultsServiceId: null });
       return;
     }
     set({ searching: true, query });
+    const project = useSessionStore.getState().currentProjectId;
+    const host = ipc.agentBaseUrl;
     try {
-      const res = await typedIPC.searchCodebase(query, currentProjectScope());
+      let serviceId: string | null = null;
+      try { serviceId = (await typedIPC.getServiceIdentity()).service_id || null; } catch { /* Search remains usable without insertion. */ }
+      const res = await typedIPC.searchCodebase(query, project ? { project_id: project } : {});
+      try { if ((await typedIPC.getServiceIdentity()).service_id !== serviceId) serviceId = null; } catch { serviceId = null; }
+      if (useSessionStore.getState().currentProjectId !== project || ipc.agentBaseUrl !== host) {
+        set({ searching: false, results: [], hotFiles: [], resultsProjectId: null, resultsHost: null, resultsServiceId: null });
+        return;
+      }
       const hotFiles = computeHotFiles(res.results);
-      set({ results: res.results, hotFiles, searching: false });
+      set({ results: res.results, hotFiles, searching: false, resultsProjectId: project, resultsHost: host, resultsServiceId: serviceId });
       // Record every distinct matched file as recently touched.
       const touched = new Set(res.results.map((r) => r.file_path));
       const current = get().recentFiles.filter((f) => !touched.has(f));
@@ -187,6 +202,9 @@ export const useCodebaseStore = create<CodebaseState>((set, get) => ({
       query: "",
       searching: false,
       results: [],
+      resultsProjectId: null,
+      resultsHost: null,
+      resultsServiceId: null,
       summaryPath: "",
       summary: null,
       summarizing: false,

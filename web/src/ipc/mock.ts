@@ -1894,6 +1894,10 @@ function mockHandle(
       } satisfies CodebaseSearchResultShape;
     }
 
+    case "codebase.read_current": {
+      throw new Error("模拟模式无法读取当前工作区文件");
+    }
+
     case "codebase.summarize": {
       const p = params as { path: string };
       return {
