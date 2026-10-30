@@ -160,6 +160,10 @@ to call.
 | `read_artifact` | Read a file from a sub-agent run's artifact directory (`<workspace_root>/.minimax/artifacts/<run_id>/`); containment-checked against that run's directory, traversal rejected. | `run_id` | `rel_path` (default `BRIEF.md`) |
 | `collect_subagent` | Merge a finished sandboxed run's writes back into the shared workspace (v1.5.0). Three-way compare per file (the `_base/` COW snapshot vs the workspace's current bytes vs the sandbox mirror, all hashed from disk bytes); conflicts surface all three sha256 fingerprints instead of silently clobbering. Refuses while the run is in flight. On success records its receipt under `.minimax/sandboxes/.collected/<run_id>.json` (idempotence — later collects replay the first report) and prunes the sandbox tree; pruning is conservative (kept on conflicts, per-file errors, skipped files, or an unwritable receipt) and rmtree failures are advisory `prune_error`, retried self-healing by the next collect (v1.6.0). | `run_id` | `on_conflict` (`fail` / `skip` / `overwrite`, default `fail`), `prune` (default true) |
 
+For agent calls, `append_file` consults both its own permission rule and the
+`write_file` rule. A denial takes precedence over an approval request, which
+takes precedence over an allow; absent rules retain the normal default.
+
 `edit_file` computes its baseline hash from the exact bytes it decoded for the
 edit, then checks those bytes again before replacement. A change between the
 read and that check is rejected, including in an overlay. This is not an atomic

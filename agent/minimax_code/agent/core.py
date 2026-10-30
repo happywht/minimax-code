@@ -1525,6 +1525,12 @@ class AgentCore:
 
         # 1. Permission check (configurable, default-allow).
         action = _check_rule(self._permission_store, name)
+        if name == "append_file":
+            # Appending can also create or modify files. A more specific
+            # append rule must not bypass the existing write restriction.
+            actions = {action, _check_rule(self._permission_store, "write_file")}
+            action = ("deny" if "deny" in actions else "ask" if "ask" in actions
+                      else "allow" if "allow" in actions else None)
         if name in {"generate_report_docx", "generate_report_pdf", "generate_report_pair", "generate_table_xlsx", "generate_xlsx_from_csv", "generate_xlsx_from_xlsx"}:
             # Generated documents are writes: existing write_file restrictions
             # cannot be bypassed by allowing the new tool name.
