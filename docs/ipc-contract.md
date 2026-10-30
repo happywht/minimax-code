@@ -275,7 +275,7 @@ binding or an expired request.
 | `host.update` | req/res | M5 — tri-state field update incl. enable/disable and `remote_port`; connection coordinate changes disconnect an existing tunnel. |
 | `host.delete` | req/res | M5 — remove the host (its runs are history and survive). |
 | `host.probe` | req/res | M5 — SSH connection diagnosis + version handshake (uname / python3 / codex), outcome persisted (`last_probe_at` / `last_probe_ok` / `agent_version`). |
-| `host.exec` | req/res | M5 — execute one command on the remote host over ssh (BatchMode, bounded timeout); structured `{ok, exit_code, stdout, stderr, timed_out}`. Disabled hosts refuse. |
+| `host.exec` | req/res | M5 — execute one command on the remote host over ssh (BatchMode, bounded timeout); structured `{ok, exit_code, stdout, stderr, timed_out}`. Disabled hosts refuse. It applies both `exec_command` and `host.exec` rules; deny or ask blocks this non-interactive endpoint. Planning and restricted-network contexts also block it. |
 | `host.push` | req/res | M5 — stage a local file beside the remote destination, verify sha256 and destination identity, retain a verified backup, then atomically replace. Optional pre-recorded `transfer_id` supports later outcome queries; uncertain writes are never retried automatically. |
 | `host.fetch_preview` | req/res | Save a user-previewed remote file to a new absolute path on the service machine, bound to local service identity and exact host configuration. Reads at most 10 MiB with an already trusted SSH host key; requires the previewed SHA-256 and publishes only on a match and an unused destination. |
 | `host.fetch` | req/res | M5 — scp a remote file to the local machine with the same sha256 verification. |

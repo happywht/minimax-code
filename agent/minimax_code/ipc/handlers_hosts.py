@@ -25,6 +25,7 @@ from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
+    PERMISSION_DENIED,
     HostBindingParams,
     HostBoundTransferStatusParams,
     HostFetchPreviewParams,
@@ -202,6 +203,15 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
     async def handle_host_exec(params: Any, ctx: Context) -> None:
         """Execute one command on the remote host (M5 execution base)."""
         try:
+            from ..execution import ExecutionDeniedError, network_tools_restricted, require_write_access
+            from .handlers_terminal import terminal_permission_action
+
+            try:
+                require_write_access()
+                if network_tools_restricted():
+                    raise ExecutionDeniedError("Remote commands are unavailable under this task's network restriction")
+            except ExecutionDeniedError as exc:
+                raise HandlerError(PERMISSION_DENIED, str(exc)) from exc
             check_params(params, expected_keys={"host_id", "command"})
             dao_obj = await dao_factory()
             host = await dao_obj.get(str(params["host_id"]))
@@ -214,6 +224,17 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             if not command.strip():
                 raise HandlerError(INVALID_PARAMS, "command cannot be empty")
             timeout = float(params.get("timeout_s") or 300.0)
+            action = await terminal_permission_action(ctx.server, "host.exec")
+            if action != "allow":
+                raise HandlerError(PERMISSION_DENIED,
+                    "Remote command denied by permission policy" if action == "deny" else
+                    "Remote command requires approval; host.exec has no interactive approval route")
+            latest = await dao_obj.get(host["id"])
+            fields = ("hostname", "username", "port", "identity_file", "enabled")
+            if not latest or not latest.get("enabled") or any(latest.get(k) != host.get(k) for k in fields):
+                raise HandlerError(INVALID_PARAMS, "Host configuration changed; retry after review")
+            if await terminal_permission_action(ctx.server, "host.exec") != "allow":
+                raise HandlerError(PERMISSION_DENIED, "Remote command permission changed; retry after review")
             result = await run_ssh(host, command, timeout=timeout, runner=runner)
             await ctx.reply({
                 "ok": result.ok,
