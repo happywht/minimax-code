@@ -32,6 +32,7 @@ import { strings } from "../../ui/strings";
 import { useSessionStore } from "../../stores/sessionStore";
 import { ipc } from "../../ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { ChildResultsHandoff } from "./ChildResultsHandoff";
 
 export interface SubAgentPanelProps {
   testId?: string;
@@ -150,6 +151,7 @@ export function SubAgentPanel({
         )}
         </div>
       </div>
+      {visibleSession && <ChildResultsHandoff sessionId={visibleSession} />}
       {recoveryError && <div role="alert" className="mb-2 text-[11px] text-status-error">子任务恢复失败：{recoveryError}。请刷新后核对状态。</div>}
       {runs.length === 0 ? (
         <div
