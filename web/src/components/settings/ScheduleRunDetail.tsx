@@ -5,13 +5,16 @@ import type { RunGetResult, RunStepsResult, ScheduleOccurrence } from "../../typ
 import { Button } from "../../ui";
 import { RunAttachments } from "../right-panel/RunAttachments";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { useChat, usePermissionStore } from "../../stores";
+import { toast } from "../layout/ErrorBoundary";
 
 interface Detail { snapshot: RunStepsResult; receipt: RunGetResult; serviceId: string; scopeKey: string }
 const labels: Record<string, string> = { queued: "排队中", planning: "规划中", running: "运行中", awaiting_approval: "等待授权",
   waiting_input: "等待输入", completed: "执行结束", failed: "执行失败", cancelled: "已取消", interrupted: "运行中断", budget_paused: "预算暂停" };
 const cancellable = ["queued", "planning", "running", "awaiting_approval", "waiting_input"];
 
-export function ScheduleRunDetail({ occurrence, onVerified }: { occurrence: ScheduleOccurrence;
+export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, serviceId }: { occurrence: ScheduleOccurrence;
+  onOpenSession?: () => boolean | void; serviceId?: string;
   onVerified?: (value: { serviceId: string; status: string } | null) => void }): JSX.Element {
   const activeSession = useSessionStore((state) => state.currentSessionId);
   const activeProject = useSessionStore((state) => state.currentProjectId);
@@ -19,6 +22,8 @@ export function ScheduleRunDetail({ occurrence, onVerified }: { occurrence: Sche
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [cancelling, setCancelling] = useState(false), [cancelMessage, setCancelMessage] = useState("");
   const cancelInFlight = useRef(false);
+  const attentionInFlight = useRef(false);
+  const [attentionBusy, setAttentionBusy] = useState(false);
   const epoch = useRef(0);
   const project = occurrence.context?.project_id, host = ipc.agentBaseUrl;
   const scopeKey = JSON.stringify([occurrence.id, occurrence.run_id, occurrence.job_id, occurrence.revision,
@@ -62,6 +67,55 @@ export function ScheduleRunDetail({ occurrence, onVerified }: { occurrence: Sche
   const text = sameStatus && receipt && "text" in receipt && receipt.session_id === occurrence.session_id && receipt.run_id === occurrence.run_id && typeof receipt.text === "string" ? receipt.text : null;
   const linked = view?.snapshot.steps.filter((step) => step.status === "completed" && step.payload?.source === "run_attachment_v1" &&
     step.payload.project_id === project && step.payload.service_id === view.serviceId) ?? [];
+  const openRequest = async (kind: "permission" | "question", requestId: string) => {
+    if (!view || !run || !project || !serviceId || view.serviceId !== serviceId || attentionInFlight.current) return;
+    const ticket = epoch.current, runId = run.id, sessionId = occurrence.session_id;
+    const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === activeProject;
+    const matches = (snapshot: RunStepsResult) => {
+      const item = snapshot.run, schedule = item.metadata?.schedule as { occurrence_id?: string; job_id?: string; revision?: number } | undefined;
+      return item.id === runId && item.session_id === sessionId && item.metadata?.project_id === project &&
+        item.metadata?.workspace_snapshot === occurrence.context.workspace && item.metadata?.model_snapshot?.engine === "native" &&
+        schedule?.occurrence_id === occurrence.id && schedule.job_id === occurrence.job_id && schedule.revision === occurrence.revision;
+    };
+    const findRequest = (snapshot: RunStepsResult) => kind === "permission"
+      ? snapshot.pending_native_permissions?.find((item) => item.request_id === requestId && item.run_id === runId && item.session_id === sessionId && !item.tool.startsWith("codex:") && (item.remaining_ms === undefined || item.remaining_ms > 0))
+      : (snapshot.pending_ask_users ?? (snapshot.pending_ask_user ? [snapshot.pending_ask_user] : [])).find((item) => item.request_id === requestId && item.run_id === runId && item.session_id === sessionId && (item.remaining_ms === undefined || item.remaining_ms > 0));
+    attentionInFlight.current = true; setAttentionBusy(true); setError("");
+    let navigated = false;
+    try {
+      const [identity, fresh] = await Promise.all([typedIPC.getServiceIdentity(), typedIPC.getRunSteps(runId)]);
+      if (!current()) return;
+      if (identity.service_id !== serviceId || !matches(fresh) || !findRequest(fresh)) throw new Error("服务、运行或请求已变化；请刷新后核对");
+      if (onOpenSession?.() === false) return;
+      if (!useSessionStore.getState().setCurrentProject(project) || !useSessionStore.getState().setCurrent(sessionId)) return;
+      navigated = true;
+      const askVersion = useChat.getState().askRecoveryVersion();
+      const permissionVersion = usePermissionStore.getState().recoveryVersion(sessionId);
+      const [latestIdentity, latest] = await Promise.all([typedIPC.getServiceIdentity(), typedIPC.getRunSteps(runId)]);
+      if (ipc.agentBaseUrl !== host || useSessionStore.getState().currentSessionId !== sessionId || useSessionStore.getState().currentProjectId !== project) return;
+      const request = findRequest(latest);
+      if (latestIdentity.service_id !== serviceId || !matches(latest) || !request) throw new Error("请求已结束或运行关联已变化；请查看会话历史");
+      if (kind === "permission") {
+        const native = latest.pending_native_permissions;
+        if (!native || native.some((item) => item.run_id !== runId || item.session_id !== sessionId || item.tool.startsWith("codex:"))) throw new Error("授权请求快照不完整");
+        usePermissionStore.getState().reconcilePermissions(sessionId, [runId], native, null, permissionVersion);
+        const state = usePermissionStore.getState(), selected = state.pending[requestId];
+        if (!selected || selected.run_id !== runId || selected.session_id !== sessionId || state.resolving[requestId]) throw new Error("授权请求已变化");
+        window.dispatchEvent(new CustomEvent("minimax:open-run-permission", { detail: { host, session: sessionId, run: runId, request: requestId } }));
+      } else {
+        const question = (latest.pending_ask_users ?? (latest.pending_ask_user ? [latest.pending_ask_user] : [])).find((item) => item.request_id === requestId && item.run_id === runId && item.session_id === sessionId);
+        if (!question) throw new Error("问题已结束");
+        useChat.getState().reconcileAskUser(question, askVersion, sessionId);
+        if (useChat.getState().askUser?.request_id !== requestId) throw new Error("问题状态已变化，请重新读取");
+      }
+      void useSessionStore.getState().refresh({ loadCurrent: false });
+    } catch (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure);
+      if (navigated) toast.error("无法打开定时请求", message);
+      else if (current()) setError(message);
+    } finally { attentionInFlight.current = false; if (current()) setAttentionBusy(false); }
+  };
   const cancel = async () => {
     if (!view || !run || !sameStatus || !cancellable.includes(run.status) || !project || cancelInFlight.current) return;
     const ticket = epoch.current;
@@ -97,6 +151,10 @@ export function ScheduleRunDetail({ occurrence, onVerified }: { occurrence: Sche
         <p>读取时运行状态：{labels[run.status] ?? run.status} · 运行 {run.id} · 服务 {view.serviceId}</p>
         {run.error && <p>运行错误：{run.error}</p>}
         {!sameStatus && <p>读取期间运行状态发生变化，请刷新后查看回执。</p>}
+        {sameStatus && serviceId === view.serviceId && <div className="space-y-1">
+          {(view.snapshot.pending_native_permissions ?? []).filter((item) => item.run_id === run.id && item.session_id === occurrence.session_id).map((item) => <p key={item.request_id}>待授权：{item.tool} <Button type="button" size="sm" disabled={attentionBusy} onClick={() => void openRequest("permission", item.request_id)}>打开此授权请求</Button></p>)}
+          {(view.snapshot.pending_ask_users ?? (view.snapshot.pending_ask_user ? [view.snapshot.pending_ask_user] : [])).filter((item) => item.run_id === run.id && item.session_id === occurrence.session_id).map((item) => <p key={item.request_id}>待回答：{item.questions[0]?.header || item.questions[0]?.question || "Agent 提问"} <Button type="button" size="sm" disabled={attentionBusy} onClick={() => void openRequest("question", item.request_id)}>打开此问题</Button></p>)}
+        </div>}
         {sameStatus && (text !== null ? <><p>已保存的运行结果：</p><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words">{text.slice(0, 8000) || "（结果文本为空）"}</pre>{text.length > 8000 && <p>此处仅显示前 8000 字符；完整结果请打开会话。</p>}</> : <p>{["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) ? "运行尚未结束或结果尚未保存。" : "没有可确认归属于此运行的文本回执。"}</p>)}
         {linked.length ? <RunAttachments run={run} steps={view.snapshot.steps} reviewScope={{ sessionId: occurrence.session_id, projectId: project!, serviceId: view.serviceId }} /> : <p>没有已记录的任务关联成果；旧成果或未关联文件不会列在这里。</p>}
         {sameStatus && cancellable.includes(run.status) && <Button type="button" size="sm" variant="danger" disabled={busy || cancelling} loading={cancelling} onClick={() => void cancel()}>停止本次运行</Button>}

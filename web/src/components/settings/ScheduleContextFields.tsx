@@ -7,7 +7,7 @@ import { ipc, typedIPC } from "../../ipc";
 import { StreamEvent, type ScheduleContext, type ScheduleOccurrence, type ScheduleOccurrenceCursor, type ScheduledJob } from "../../types/ipc";
 import { ScheduleRunDetail } from "./ScheduleRunDetail";
 
-const labels: Record<string,string> = {ready:"已绑定",needs_rebind:"需要重新绑定",blocked:"配置受阻",requires_review:"需要核对",pending:"待接单",running:"运行中",awaiting_approval:"等待授权",completed:"执行结束",budget_paused:"预算暂停",cancelled:"已取消",failed:"执行失败",interrupted:"运行中断",superseded:"已被重新绑定替代",manual:"手动",cron:"定时",chat:"对话（可写）",execute:"执行",plan:"只读规划"};
+const labels: Record<string,string> = {ready:"已绑定",needs_rebind:"需要重新绑定",blocked:"配置受阻",requires_review:"需要核对",pending:"待接单",running:"运行中",awaiting_approval:"等待授权",waiting_input:"等待输入",completed:"执行结束",budget_paused:"预算暂停",cancelled:"已取消",failed:"执行失败",interrupted:"运行中断",superseded:"已被重新绑定替代",manual:"手动",cron:"定时",chat:"对话（可写）",execute:"执行",plan:"只读规划"};
 const label = (value: string) => labels[value] ?? value;
 // Scheduler timestamps are persisted as UTC ISO strings. Never guess the unit
 // of a legacy numeric value or silently display it in the browser's timezone.
@@ -244,7 +244,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
       <p>启用未来计划与继续原运行是不同操作。启用只允许未来按当前计划运行，不自动恢复或重放原步骤；继续原运行请打开其会话并核对后使用恢复入口。</p>
       {stale ? <p>连接状态待刷新，暂不能处理。</p> : active ? <>
         <p className="break-all">发生 {active.id} · 计划快照版本 {active.revision} · 状态 {label(status(active))} · 运行 {active.run_id ?? "尚未接单"}</p>
-        {active.run_id ? <ScheduleRunDetail occurrence={active} onVerified={(value) => { setVerified(value); setAcknowledged(false); }} /> : <p>该发生未绑定运行；请查看原因并重新绑定计划，不能在此确认运行副作用。</p>}
+        {active.run_id ? <ScheduleRunDetail occurrence={active} serviceId={serviceId} onOpenSession={onOpenSession} onVerified={(value) => { setVerified(value); setAcknowledged(false); }} /> : <p>该发生未绑定运行；请查看原因并重新绑定计划，不能在此确认运行副作用。</p>}
         {active.run_id && <Button type="button" size="sm" variant="secondary" onClick={() => open(active)}>打开原会话核对步骤</Button>}
         {verified && verified.serviceId !== serviceId && <p role="alert">服务身份不匹配，请刷新后重新核对。</p>}
         {verified && !terminalReview && <p role="status">读取的运行状态不是可核对的终态；请刷新后处理。</p>}
@@ -267,7 +267,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
     {occurrence.source === "cron" && <p>最早到期：{scheduleTime(occurrence.scheduled_for, occurrence.context?.timezone)}；合并检查截止：{scheduleTime(occurrence.coalesced_through, occurrence.context?.timezone)}。截止时间是接单时的检查边界，不表示每个周期都实际执行。</p>}
     <VerificationBadge evidence={occurrence.verification} />
     {occurrence.result && <p className="whitespace-pre-wrap">{occurrence.result}</p>}
-    {!(job.binding_state === "requires_review" && occurrence.id === active?.id) && <ScheduleRunDetail occurrence={occurrence} />}
+    {!(job.binding_state === "requires_review" && occurrence.id === active?.id) && <ScheduleRunDetail occurrence={occurrence} serviceId={serviceId} onOpenSession={onOpenSession} />}
     <Button disabled={!occurrence.context?.project_id || !occurrence.session_id} onClick={() => open(occurrence)}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
   </div>))}
     {expanded && filter === "all" && cursor && <Button type="button" size="sm" disabled={stale || loadingMore} loading={loadingMore} onClick={() => void loadMore()}>加载更早记录</Button>}
