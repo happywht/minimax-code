@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { typedIPC } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import type { AgentRun, BudgetReconcileParams, BudgetStateResult } from "../../types/ipc";
 
 const reasons: Record<string, string> = {
@@ -49,7 +49,7 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
   if (state?.day.baseline_incomplete) targets.push({target: "day", id: state.day.day, label: "核定当日历史责任", minimum: state.day.historical_lower_bound});
   if (budget?.baseline_incomplete) targets.push({target: "family", id: budget.family_id, label: "核定旧任务历史责任", minimum: budget.known_tokens});
   for (const attempt of state?.attempts ?? []) {
-    if (attempt.state === "unknown") targets.push({target: "attempt", id: attempt.id, label: `核定请求 ${attempt.id.slice(-8)} 责任`, minimum: attempt.known_tokens ?? 0});
+    if (attempt.state === "unknown") targets.push({target: "attempt", id: attempt.id, label: `核定请求 ${attempt.id} 责任`, minimum: attempt.known_tokens ?? 0});
   }
   const active = ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status);
   const reconcile = async (target: typeof targets[number]) => {
@@ -59,22 +59,46 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
     try {
       await typedIPC.reconcileBudget({target: target.target, target_id: target.id,
         liability_tokens: Number(liability), reason, acknowledged: true});
-      if (runId.current === owner) { await load(); setAcknowledged(false); }
+      if (runId.current === owner) { setLiability(""); setReason(""); setAcknowledged(false); await load(); }
     } catch (err) { if (runId.current === owner) setError(err instanceof Error ? err.message : String(err)); }
     finally { if (runId.current === owner) setPending(false); }
   };
   const reviewOwner = async (sessionId: string, ownerRunId: string) => {
+    const sourceRun = run.id;
+    const sourceHost = ipc.agentBaseUrl;
+    const ticket = ++generation.current;
     try {
       const {useSessionStore, useRunTimelineStore} = await import("../../stores");
-      if (!useSessionStore.getState().setCurrent(sessionId)) return;
+      const originSession = useSessionStore.getState().currentSessionId;
+      const originProject = useSessionStore.getState().currentProjectId;
+      const identity = await typedIPC.getServiceIdentity();
+      const [owner, snapshot] = await Promise.all([
+        typedIPC.getSession(sessionId), typedIPC.getRunSteps(ownerRunId),
+      ]);
+      const finalIdentity = await typedIPC.getServiceIdentity();
+      const current = useSessionStore.getState();
+      if (runId.current !== sourceRun || generation.current !== ticket || ipc.agentBaseUrl !== sourceHost ||
+          current.currentSessionId !== originSession || current.currentProjectId !== originProject ||
+          !identity.service_id || identity.service_id !== finalIdentity.service_id) return;
+      const project = owner.session.project_id ?? null;
+      if (owner.session.id !== sessionId || snapshot.run.id !== ownerRunId || snapshot.run.session_id !== sessionId ||
+          (snapshot.run.metadata?.project_id ?? null) !== project ||
+          !Number.isSafeInteger(snapshot.cursor) || snapshot.cursor < 0 ||
+          snapshot.steps.some((step) => step.run_id !== ownerRunId || step.session_id !== sessionId)) {
+        throw new Error("责任任务的服务、会话或项目绑定不一致，请手动核对。");
+      }
+      if (!current.setCurrentProject(project) || !useSessionStore.getState().setCurrent(sessionId)) {
+        throw new Error("当前操作阻止切换项目或会话，请先完成当前操作。");
+      }
       await useRunTimelineStore.getState().loadForSession(sessionId);
-      const snapshot = await typedIPC.getRunSteps(ownerRunId);
-      if (useSessionStore.getState().currentSessionId !== sessionId) return;
+      const selected = useSessionStore.getState();
+      if (ipc.agentBaseUrl !== sourceHost || selected.currentSessionId !== sessionId ||
+          selected.currentProjectId !== project) return;
       useRunTimelineStore.setState((previous) => ({
         runs: {...previous.runs, [ownerRunId]: {...snapshot.run, steps: snapshot.steps}},
         order: [ownerRunId, ...previous.order.filter((id) => id !== ownerRunId)],
       }));
-    } catch (err) { if (runId.current === run.id) setError(err instanceof Error ? err.message : String(err)); }
+    } catch (err) { if (runId.current === sourceRun) setError(err instanceof Error ? err.message : String(err)); }
   };
   return <div data-testid="run-budget" className="my-2 space-y-1 text-xs text-minimax-muted">
     <div className="flex justify-between"><strong>预算账本</strong><button type="button" onClick={() => void load()}>刷新额度</button></div>
@@ -92,11 +116,12 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
       {budget.pause_reason && <p role="status">{reasons[budget.pause_reason] ?? budget.pause_reason}</p>}
       <details>
         <summary>查看共享预算请求明细（{state?.attempts.length ?? 0} 项）</summary>
-        <p>展示前 50 项；预留估算和核定责任不是测得用量。旧记录缺少归属时显示未知。</p>
-        {state?.attempts.slice(0, 50).map((attempt) => <div key={attempt.id} className="mt-1 rounded border border-minimax-border p-1">
+        <p>展示全部请求；预留估算和核定责任不是测得用量。旧记录缺少归属时显示未知。</p>
+        {state?.attempts.map((attempt) => <div key={attempt.id} className="mt-1 rounded border border-minimax-border p-1">
           <p>请求 {attempt.id} · {attemptStates[attempt.state] ?? attempt.state}</p>
           <p>归属运行：{attempt.run_id ? <>{attempt.run_id}{attempt.run_id === run.id ? "（当前运行）" : "（共享预算的其他运行）"}</> : "未知"}</p>
           <p>已知用量 {attempt.known_tokens ?? "未知"} · 请求预留估算 {attempt.estimated_tokens} · 核定责任 {attempt.liability_tokens ?? "未核定"}</p>
+          {attempt.reason && <p className="break-words">记录原因：{attempt.reason}</p>}
         </div>)}
       </details>
     </> : !error && <p>{state ? "该旧任务没有完整预算家族；恢复前需核对历史责任。" : "正在读取，未知用量尚未确认为零。"}</p>}
@@ -110,8 +135,8 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
     {!!targets.length && <fieldset className="space-y-1 rounded border border-minimax-border p-2">
       <legend>明确核定未确认责任</legend>
       <p>核定额度仅授权记账，不会生成测得用量，也不会重置累计花费。核定任务或请求责任前，须等待共享预算的所有运行停止。</p>
-      <label>核定 token 责任<input aria-label="核定 token 责任" type="number" min="0" value={liability} onChange={(event) => setLiability(event.target.value)} /></label>
-      <label>核对依据<input aria-label="预算核对依据" value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+      <label>核定 token 责任<input aria-label="核定 token 责任" type="number" min="0" value={liability} onChange={(event) => { setLiability(event.target.value); setAcknowledged(false); }} /></label>
+      <label>核对依据<input aria-label="预算核对依据" value={reason} onChange={(event) => { setReason(event.target.value); setAcknowledged(false); }} /></label>
       <label><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />确认依据与责任额度</label>
       {targets.map((target) => <button key={`${target.target}:${target.id}`} type="button"
         disabled={pending || active || !acknowledged || !reason.trim() || liability === "" || !Number.isSafeInteger(Number(liability)) || Number(liability) < target.minimum}

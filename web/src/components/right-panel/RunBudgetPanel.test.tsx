@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RunBudgetPanel } from "./RunBudgetPanel";
 import type { AgentRun, BudgetStateResult } from "../../types/ipc";
 
-const api = vi.hoisted(() => ({ getBudget: vi.fn(), reconcileBudget: vi.fn(), getRunSteps: vi.fn(), setCurrent: vi.fn(), loadForSession: vi.fn(), updateTimeline: vi.fn() }));
-vi.mock("../../ipc", () => ({ typedIPC: api }));
-vi.mock("../../stores", () => ({useSessionStore: {getState: () => ({setCurrent: api.setCurrent, currentSessionId: "owner-session"})},
+const api = vi.hoisted(() => ({ getBudget: vi.fn(), reconcileBudget: vi.fn(), getRunSteps: vi.fn(), getSession: vi.fn(), getServiceIdentity: vi.fn(), setCurrent: vi.fn(), setCurrentProject: vi.fn(), loadForSession: vi.fn(), updateTimeline: vi.fn() }));
+vi.mock("../../ipc", () => ({ typedIPC: api, ipc: {agentBaseUrl: "local"} }));
+vi.mock("../../stores", () => ({useSessionStore: {getState: () => ({setCurrent: api.setCurrent, setCurrentProject: api.setCurrentProject, currentSessionId: "owner-session", currentProjectId: "project"})},
   useRunTimelineStore: {getState: () => ({loadForSession: api.loadForSession}), setState: api.updateTimeline}}));
 const run = (id: string): AgentRun => ({ id, session_id: "s", mode: "chat", status: "budget_paused", title: id, created_at: "t" });
 const state = (id: string, reactive = false): BudgetStateResult => {
@@ -66,12 +66,34 @@ describe("durable budget", () => {
     api.getBudget.mockResolvedValue({...state("clean"), day_blockers: {total: 1, items: [{attempt_id: "unknown-child", family_id: "other",
       run_id: "owner-run", session_id: "owner-session", known_tokens: null}]}});
     api.loadForSession.mockResolvedValue(undefined);
-    api.getRunSteps.mockResolvedValue({run: run("owner-run"), steps: []});
+    api.getServiceIdentity.mockResolvedValue({service_id: "service"});
+    api.getSession.mockResolvedValue({session: {id: "owner-session", project_id: "project"}});
+    api.setCurrentProject.mockReturnValue(true);
+    api.setCurrent.mockReturnValue(true);
+    api.getRunSteps.mockResolvedValue({run: {...run("owner-run"), session_id: "owner-session", metadata: {project_id: "project"}}, steps: [], cursor: 0});
     render(<RunBudgetPanel run={run("clean")} />);
     fireEvent.click(await screen.findByRole("button", {name: "查看责任任务 owner-run"}));
-    await waitFor(() => expect(api.getRunSteps).toHaveBeenCalledWith("owner-run"));
-    expect(api.setCurrent).toHaveBeenCalledWith("owner-session");
+    await waitFor(() => expect(api.setCurrent).toHaveBeenCalledWith("owner-session"));
+    expect(api.getRunSteps).toHaveBeenCalledWith("owner-run");
+    expect(api.setCurrentProject).toHaveBeenCalledWith("project");
     expect(api.reconcileBudget).not.toHaveBeenCalled();
+  });
+
+  it("shows evidence for unknown requests after the first 50 and requires a fresh acknowledgement after edits", async () => {
+    const response = state("large");
+    response.attempts = Array.from({length: 51}, (_, i) => ({id: `attempt-${i}`, state: i === 50 ? "unknown" : "settled",
+      estimated_tokens: 100, known_tokens: i === 50 ? null : 1, liability_tokens: null, reason: i === 50 ? "stream ended" : null}));
+    api.getBudget.mockResolvedValue(response);
+    render(<RunBudgetPanel run={run("large")} />);
+    await screen.findByText(/任务累计已知至少/);
+    fireEvent.click(screen.getByText(/查看共享预算请求明细/));
+    expect(screen.getByText(/请求 attempt-50 · 结果不明/)).toBeInTheDocument();
+    expect(screen.getByText("记录原因：stream ended")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("核定 token 责任"), {target: {value: "100"}});
+    fireEvent.change(screen.getByLabelText("预算核对依据"), {target: {value: "evidence"}});
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.change(screen.getByLabelText("核定 token 责任"), {target: {value: "101"}});
+    expect(screen.getByRole("button", {name: /核定请求 attempt-50 责任/})).toBeDisabled();
   });
 
   it.each([
