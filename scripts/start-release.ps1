@@ -1,4 +1,6 @@
 # Interactive entry for an installed release. No environment or data migration is performed here.
+param([string]$ProfilePath = '')
+
 $ErrorActionPreference = "Stop"
 
 function Read-ProfilePath {
@@ -60,9 +62,13 @@ function Save-LaunchProfile($path, $dataPath, $workspacePath) {
 }
 
 try {
-    $choice = Read-Host "Press Enter to enter paths, or enter L to load a saved profile"
+    $choice = if ($ProfilePath -ne '') { 'L' } else { Read-Host "Press Enter to enter paths, or enter L to load a saved profile" }
     if ($choice -ieq 'L') {
-        $profile = Read-LaunchProfile (Read-ProfilePath)
+        if ($ProfilePath -ne '') {
+            if (-not [System.IO.Path]::IsPathRooted($ProfilePath)) { throw "The profile path must be absolute." }
+            $selectedProfile = [System.IO.Path]::GetFullPath($ProfilePath)
+        } else { $selectedProfile = Read-ProfilePath }
+        $profile = Read-LaunchProfile $selectedProfile
         $dataPath = $profile.dataDir
         $workspacePath = $profile.workspace
         Write-Host "Data: $dataPath"
