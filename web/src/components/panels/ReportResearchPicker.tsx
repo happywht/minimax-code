@@ -4,10 +4,13 @@ import { useSessionStore } from "../../stores";
 import type { PageExcerptRange, ResearchSource } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 
-export function ReportResearchPicker({ project, session, service, selected, onChange, manualCount, onInsertExcerpt, ranges, onRangeChange }:
+type ExcerptItem = { source: ResearchSource; number: number; range?: PageExcerptRange };
+export function ReportResearchPicker({ project, session, service, selected, onChange, manualCount, onInsertExcerpt, onInsertExcerpts, draftVersion, ranges, onRangeChange }:
   { project: string | null; session: string | null; service: string | null; selected: ResearchSource[];
     onChange: (items: ResearchSource[]) => void; manualCount: number;
     onInsertExcerpt?: (source: ResearchSource, number: number, range?: PageExcerptRange) => void;
+    onInsertExcerpts?: (items: ExcerptItem[]) => boolean;
+    draftVersion: string;
     ranges: PageExcerptRange[]; onRangeChange: (ranges: PageExcerptRange[]) => void }): JSX.Element {
   const [query, setQuery] = useState("");
   const [detail, setDetail] = useState<ResearchSource | null>(null);
@@ -16,16 +19,21 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
   const [offset, setOffset] = useState(0);
   const [applied, setApplied] = useState("");
   const [busy, setBusy] = useState(false);
+  const [batchIds, setBatchIds] = useState<string[]>([]);
   const [error, setError] = useState("");
   const epoch = useRef(0);
+  const draft = useRef({ value: draftVersion, revision: 0 });
+  if (draft.current.value !== draftVersion) draft.current = { value: draftVersion, revision: draft.current.revision + 1 };
   const host = ipc.agentBaseUrl;
-  const selection = useRef({ service, manualCount, ids: "", rangeKey: "", onInsertExcerpt });
-  selection.current = { service, manualCount, ids: selected.map((item) => item.page_source_id).join("\n"), rangeKey: JSON.stringify(ranges), onInsertExcerpt };
+  const selection = useRef({ service, manualCount, ids: "", rangeKey: "", onInsertExcerpt, onInsertExcerpts });
+  selection.current = { service, manualCount, ids: selected.map((item) => item.page_source_id).join("\n"), rangeKey: JSON.stringify(ranges), onInsertExcerpt, onInsertExcerpts };
+  const selectedKey = selected.map((item) => item.page_source_id).join("\n");
+  useEffect(() => { const available = new Set(selectedKey.split("\n")); setBatchIds((ids) => ids.filter((id) => available.has(id))); }, [selectedKey]);
   useEffect(() => {
     const off = ipc.onSideCar(() => { epoch.current++; setRows([]); setDetail(null); setPassage(null); setBusy(false); setError("连接变化，请重新搜索来源。"); });
     return () => { epoch.current++; off(); };
   }, []);
-  useEffect(() => { epoch.current++; setRows([]); setQuery(""); setApplied(""); setOffset(0); setError(""); setBusy(false); setDetail(null); setPassage(null); }, [project, session, host, service]);
+  useEffect(() => { epoch.current++; setRows([]); setQuery(""); setApplied(""); setOffset(0); setError(""); setBusy(false); setDetail(null); setPassage(null); setBatchIds([]); }, [project, session, host, service]);
   const search = async (term: string, start: number) => {
     if (!project || !session || !service) return;
     const ticket = ++epoch.current;
@@ -62,6 +70,35 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
     } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { if (ticket === epoch.current) setBusy(false); }
   };
+  const insertBatch = async () => {
+    if (!project || !session || !service || !onInsertExcerpts || busy) return;
+    const chosen = selected.map((row, index) => ({ row, index })).filter(({ row }) => batchIds.includes(row.page_source_id));
+    if (!chosen.length || chosen.length > 10) return;
+    const ticket = ++epoch.current, expected = selection.current, expectedDraftRevision = draft.current.revision;
+    const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === session &&
+      selection.current.service === expected.service && selection.current.manualCount === expected.manualCount &&
+      selection.current.ids === expected.ids && selection.current.rangeKey === expected.rangeKey && draft.current.revision === expectedDraftRevision;
+    setBusy(true); setError("");
+    try {
+      const items: ExcerptItem[] = [];
+      for (const { row, index } of chosen) {
+        const result = await typedIPC.getResearchSource({ project_id: project, session_id: session, expected_service_id: service, page_source_id: row.page_source_id });
+        if (!current()) { if (ticket === epoch.current) setError("报告或来源已变化，请重新选择后重试；未追加内容。"); return; }
+        if (result.project_id !== project || result.session_id !== session || result.service_id !== service || result.source.page_source_id !== row.page_source_id)
+          throw new Error("来源归属已变化，请重新选择");
+        const excerpt = Array.from(result.source.excerpt ?? ""), range = ranges.find((item) => item.page_source_id === row.page_source_id);
+        if (!excerpt.length || (range && (range.start < 0 || range.end > excerpt.length || range.end <= range.start)) ||
+            !(range ? excerpt.slice(range.start, range.end) : excerpt.slice(0, 600)).join("").trim())
+          throw new Error(`来源 [${manualCount + index + 1}] 的摘录为空或选段已变化；未追加任何内容`);
+        items.push({ source: result.source, number: manualCount + index + 1, range });
+      }
+      if (!current()) { if (ticket === epoch.current) setError("报告或来源已变化，请重新选择后重试；未追加内容。"); return; }
+      if (!selection.current.onInsertExcerpts?.(items)) throw new Error("报告草稿未更改；请检查目标章节与长度限制");
+      setBatchIds([]);
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
   const openDetail = async (row: ResearchSource) => {
     if (!project || !session || !service || busy) return;
     const ticket = ++epoch.current;
@@ -93,7 +130,11 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
       <div className="flex gap-2"><Button type="button" variant="secondary" disabled={busy || offset === 0} onClick={() => void search(applied, Math.max(0, offset - 20))}>上一页</Button>
         <Button type="button" variant="secondary" disabled={busy || rows.length < 20 || offset >= 10000} onClick={() => void search(applied, offset + 20)}>下一页</Button></div>
     </>}
+    {onInsertExcerpts && selected.length > 0 && <div className="rounded border border-line p-2"><p>勾选最多 10 条来源，按当前编号顺序批量追加各自参考摘录。先逐条重新读取，任何来源不可用则不追加；正文和引用需人工核对。</p>
+      <Button type="button" variant="secondary" disabled={busy || !service || !batchIds.length} onClick={() => void insertBatch()}>批量追加所选 {batchIds.length} 条摘录到正文</Button></div>}
     {selected.map((row, i) => <div key={row.page_source_id} className="rounded border border-line p-2">
+      {onInsertExcerpts && <label><input type="checkbox" checked={batchIds.includes(row.page_source_id)} disabled={busy || (batchIds.length >= 10 && !batchIds.includes(row.page_source_id))}
+        onChange={(event) => { const checked = event.target.checked; setBatchIds((ids) => checked ? [...ids, row.page_source_id] : ids.filter((id) => id !== row.page_source_id)); }} /> 批量追加此来源摘录</label>}
       <p>[{manualCount + i + 1}] {row.title || "（页面未提供标题）"} · {row.accessed_at}</p><p className="break-all">{row.url}</p>
       <p className="whitespace-pre-wrap break-words">{row.excerpt || "（无摘录）"}</p>
       {(row.title_truncated || row.excerpt_truncated || row.truncated) && <p>标题或摘录已截断。</p>}

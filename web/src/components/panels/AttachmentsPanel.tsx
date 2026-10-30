@@ -497,6 +497,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       </div>}
       <ReportResearchPicker project={projectId} session={sessionId} service={scoped ? state.serviceId : null}
         selected={researchSources} onChange={(items) => { noteSourceChange(); setResearchSources(items); }} manualCount={sources.length}
+        draftVersion={JSON.stringify([docName, title, body, format, structured, sections, visualSections, excerptSection, sources, researchSources, researchRanges, documentCitations, researchNeedsReview, citationNeedsReview, documentReview])}
         ranges={researchRanges} onRangeChange={(ranges) => { noteSourceChange(); setResearchRanges(ranges); }}
         onInsertExcerpt={(source, number, range) => {
           const excerpt = Array.from(source.excerpt ?? "");
@@ -504,6 +505,16 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           const clipped = !!range || excerpt.length > 600 || source.excerpt_truncated || source.truncated;
           const text = chosen.join("").replace(/\s+/g, " ").trim();
           if (appendExcerpt([`来源摘录（未经核验${clipped ? "，已截断" : ""}）：${text} [${number}]`])) setCitationNeedsReview(true);
+        }} onInsertExcerpts={(items) => {
+          const paragraphs = items.map(({ source, number, range }) => {
+            const excerpt = Array.from(source.excerpt ?? "");
+            const chosen = range ? excerpt.slice(range.start, range.end) : excerpt.slice(0, 600);
+            const clipped = !!range || excerpt.length > 600 || source.excerpt_truncated || source.truncated;
+            return `来源摘录（未经核验，空白已合并${clipped ? "，已截断" : ""}）：${chosen.join("").replace(/\s+/g, " ").trim()} [${number}]`;
+          });
+          const applied = appendExcerpt(paragraphs);
+          if (applied) setCitationNeedsReview(true);
+          return applied;
         }} />
       <p className="text-xs text-ink-2">可将所选参考摘录（未选择时为开头最多 600 字）及当前编号追加到正文；请核对摘录、引用和事实。</p>
       <div className="space-y-2 rounded border border-line p-2" aria-label="正文来源编号对照">
