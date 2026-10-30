@@ -8,7 +8,7 @@ import { PdfOriginalPreview } from "../panels/PdfOriginalPreview";
 import { XlsxTablePreview } from "../panels/XlsxTablePreview";
 import { SearchableTextPreview } from "../panels/SearchableTextPreview";
 
-export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, transferPending = false }: { run: AgentRun; steps: AgentRunStep[]; reviewScope?: { sessionId: string; projectId: string; serviceId: string }; onPrepareAttachment?: (attachment: AttachmentOriginal, runId: string) => void; transferPending?: boolean }): JSX.Element | null {
+export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, transferPending = false, verifyRun = false }: { run: AgentRun; steps: AgentRunStep[]; reviewScope?: { sessionId: string; projectId: string; serviceId: string }; onPrepareAttachment?: (attachment: AttachmentOriginal, runId: string) => void; transferPending?: boolean; verifyRun?: boolean }): JSX.Element | null {
   const activeSession = useSessionStore((state) => state.currentSessionId);
   const activeProject = useSessionStore((state) => state.currentProjectId) ?? "inbox";
   const session = reviewScope?.sessionId ?? activeSession;
@@ -38,13 +38,32 @@ export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, t
     ++version.current; download.current?.abort(); setSelected(null); setPreview(""); setError(null); setLoading(false);
   }), []);
 
+  const verifyAssociation = async (ticket: number, origin: string, id: string, hash: string, service: string) => {
+    if (!verifyRun) return;
+    if (!session || !reviewScope || service !== reviewScope.serviceId) throw new Error("任务或服务范围不可确认。");
+    const [summary, snapshot] = await Promise.all([
+      typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: service, run_id: run.id }),
+      typedIPC.getRunSteps(run.id),
+    ]);
+    if (!current(ticket, origin) || summary.project_id !== project || summary.service_id !== service ||
+        summary.detail?.id !== run.id || summary.detail.session_id !== session || snapshot.run.id !== run.id ||
+        snapshot.run.session_id !== session || snapshot.run.metadata?.project_id !== project ||
+        snapshot.steps.some((item) => item.run_id !== run.id || item.session_id !== session) ||
+        !snapshot.steps.some((item) => item.status === "completed" && item.payload?.source === "run_attachment_v1" &&
+          item.payload.project_id === project && item.payload.service_id === service &&
+          item.payload.attachment_id === id && item.payload.sha256 === hash))
+      throw new Error("任务或附件关联已变化，请重新读取。");
+  };
+
   const select = async (step: AgentRunStep) => {
     if (!available || !step.payload) return;
     const id = String(step.payload.attachment_id), hash = String(step.payload.sha256), service = String(step.payload.service_id);
     const ticket = ++version.current, origin = ipc.agentBaseUrl;
     download.current?.abort(); setSelected(null); setPreview(""); setError(null); setLoading(true);
     try {
+      await verifyAssociation(ticket, origin, id, hash, service);
       const result = await typedIPC.getAttachment(project, id);
+      await verifyAssociation(ticket, origin, id, hash, service);
       if (!current(ticket, origin)) return;
       const file = result.attachment;
       if (file.id !== id || file.project_id !== project || file.service_id !== service || file.sha256 !== hash
@@ -68,7 +87,9 @@ export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, t
     const controller = new AbortController(); download.current?.abort(); download.current = controller;
     setError(null); setLoading(true);
     try {
+      await verifyAssociation(ticket, origin, file.id, file.sha256, file.service_id);
       const blob = await fetchAttachmentContent(file, origin, controller.signal);
+      await verifyAssociation(ticket, origin, file.id, file.sha256, file.service_id);
       if (!current(ticket, origin)) return;
       const url = URL.createObjectURL(blob), anchor = document.createElement("a");
       anchor.href = url; anchor.download = file.original_name.replace(/[\\/:*?"<>|]/g, "_");
@@ -78,7 +99,7 @@ export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, t
   };
 
   if (!available || !rows.length) return null;
-  return <div className="mt-2 space-y-2 text-xs"><p className="font-medium text-ink-1">关联成果 · {rows.length} 项</p><p className="text-ink-2">任务生成工具返回的关联成果（可能为幂等复用；内容未验证）</p><div className="flex flex-wrap gap-1">
+  return <div className="mt-2 space-y-2 text-xs"><p className="font-medium text-ink-1">关联成果 · {rows.length} 项</p><p className="text-ink-2">运行记录中的工具返回附件（可能复用旧成果；关联不证明由此任务生成，内容未验证）</p><div className="flex flex-wrap gap-1">
     {rows.map((step) => <Button key={step.id} size="sm" variant="secondary" disabled={loading}
       onClick={() => void select(step)}>{String(step.payload?.filename || "查看成果")}</Button>)}</div>
     {error && <p role="alert" className="break-words text-status-warning">{error}</p>}

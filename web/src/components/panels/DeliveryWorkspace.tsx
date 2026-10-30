@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
-import type { AttachmentOriginal, TextArtifact } from "../../types/ipc";
+import type { AgentRun, AgentRunStep, AttachmentOriginal, TextArtifact } from "../../types/ipc";
 import { useArtifactStore, useAttachmentStore, useRunTimelineStore, useSessionStore } from "../../stores";
 import { useOfficeDeliveryStore } from "../../stores/officeDeliveryStore";
 import { Button } from "../../ui";
@@ -122,18 +122,57 @@ function SessionDeliveries({ binding, target, onClearTarget, onPrepareReport, on
   const runs = useRunTimelineStore((s) => s.runs), order = useRunTimelineStore((s) => s.order);
   const loading = useRunTimelineStore((s) => s.loading), error = useRunTimelineStore((s) => s.error);
   const load = useRunTimelineStore((s) => s.loadForSession);
+  const [targetRun, setTargetRun] = useState<(AgentRun & { steps: AgentRunStep[] }) | null>(null);
+  const [targetBusy, setTargetBusy] = useState(false), [targetError, setTargetError] = useState("");
+  const targetEpoch = useRef(0);
   useEffect(() => { void load(binding.session); }, [binding.session, load]);
+  const targetMatches = !!target && target.host === binding.host && target.service === binding.service && target.project === binding.project && target.session === binding.session;
+  const loadTarget = useCallback(async () => {
+    if (!target || !targetMatches || !binding.session) return;
+    const ticket = ++targetEpoch.current;
+    const current = () => ticket === targetEpoch.current && ipc.agentBaseUrl === binding.host &&
+      useSessionStore.getState().currentProjectId === binding.project && useSessionStore.getState().currentSessionId === binding.session;
+    setTargetRun(null); setTargetBusy(true); setTargetError("");
+    try {
+      const [identity, snapshot, owner, summary] = await Promise.all([
+        typedIPC.getServiceIdentity(), typedIPC.getRunSteps(target.run), typedIPC.getSession(binding.session),
+        typedIPC.getProjectRunSummary({ project_id: binding.project, expected_service_id: binding.service, run_id: target.run }),
+      ]);
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (identity.service_id !== binding.service || after.service_id !== binding.service ||
+          owner.session.id !== binding.session || owner.session.project_id !== binding.project || owner.session.archived ||
+          summary.project_id !== binding.project || summary.service_id !== binding.service || summary.detail?.id !== target.run ||
+          summary.detail.session_id !== binding.session || snapshot.run.id !== target.run || snapshot.run.session_id !== binding.session ||
+          snapshot.run.metadata?.project_id !== binding.project || !Number.isSafeInteger(snapshot.cursor) || snapshot.cursor < 0 ||
+          snapshot.steps.some((step) => step.run_id !== target.run || step.session_id !== binding.session))
+        throw new Error("服务、项目、会话或运行关联已变化，请重新选择任务。");
+      setTargetRun({ ...snapshot.run, steps: snapshot.steps });
+    } catch (reason) { if (current()) setTargetError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (current()) setTargetBusy(false); }
+  }, [target, targetMatches, binding]);
+  useEffect(() => {
+    ++targetEpoch.current; setTargetRun(null); setTargetError(""); setTargetBusy(false);
+    if (targetMatches) void loadTarget();
+    return () => { ++targetEpoch.current; };
+  }, [loadTarget, targetMatches]);
+  useEffect(() => ipc.onSideCar(() => { ++targetEpoch.current; setTargetRun(null); setTargetBusy(false); setTargetError("连接已变化，请重新读取任务。"); }), []);
   const associated = order.map((id) => runs[id]).filter((run) => run && run.session_id === binding.session &&
     run.metadata?.project_id === binding.project);
-  const targetMatches = target && target.host === binding.host && target.service === binding.service && target.project === binding.project && target.session === binding.session;
-  const visible = target ? (targetMatches ? associated.filter((run) => run.id === target.run) : []) : associated;
+  const visible = target ? (targetMatches && targetRun ? [targetRun] : []) : associated;
   return <div className="space-y-3 text-sm"><h3 className="font-semibold">当前会话的任务关联成果</h3>
-    <p>列出当前项目和会话的近期运行及活动运行。附件来自已记录的工具结果；文本成果需按运行读取登记关联。关联不证明成果由该运行生成，内容均需自行核对。更早的成果可在项目成果中查找。</p>
-    {binding.session && <Button type="button" size="sm" variant="secondary" disabled={loading} onClick={() => void load(binding.session)}>刷新运行</Button>}
+    <p>默认列出当前项目和会话的近期运行及活动运行；指定任务时按 ID 单独读取，包括较早运行。附件来自已记录的工具结果；文本成果需按运行读取登记关联。关联不证明成果由该运行生成，内容均需自行核对。</p>
+    {binding.session && (target && targetMatches ? <Button type="button" size="sm" variant="secondary" disabled={targetBusy} onClick={() => void loadTarget()}>重新读取此任务</Button> :
+      <Button type="button" size="sm" variant="secondary" disabled={loading} onClick={() => void load(binding.session)}>刷新运行</Button>)}
     {target && <div><p>{targetMatches ? `正在查看任务 ${target.run}` : "目标任务的项目、会话或服务已变化，请重新选择。"}</p><Button type="button" size="sm" variant="ghost" onClick={onClearTarget}>查看全部近期运行</Button></div>}
-    {!binding.session ? <p>请先选择会话。</p> : error ? <p role="alert">无法读取运行记录：{error}</p> : loading ? <p role="status">正在读取运行记录…</p> : target && !targetMatches ? null : !visible.length ? <p>{targetMatches ? "此任务不在当前近期运行列表，请在项目任务状态中查找历史记录。" : "当前会话没有可确认项目归属的近期运行。"}</p> : visible.map((run) => <article key={run.id} className="rounded border border-line p-3">
-      <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p><RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} transferPending={attachmentTransferPending} onPrepareAttachment={(attachment, runId) => onPrepareAttachment({ attachment, runId })} />
-      <details className="mt-2"><summary>登记关联的文本成果</summary><RunTextArtifacts runId={run.id} sessionId={binding.session!} projectId={binding.project} serviceId={binding.service} onPrepareReport={onPrepareReport} /></details>
+    {!binding.session ? <p>请先选择会话。</p> : target && !targetMatches ? null : target && targetBusy ? <p role="status">正在读取并核对目标任务…</p> : target && targetError ? <p role="alert">无法读取目标任务：{targetError}</p> : !target && error ? <p role="alert">无法读取运行记录：{error}</p> : !target && loading ? <p role="status">正在读取运行记录…</p> : !visible.length ? <p>{target ? "目标任务尚未确认，请重新读取。" : "当前会话没有可确认项目归属的近期运行。"}</p> : visible.map((run) => <article key={run.id} className="rounded border border-line p-3">
+      <p>{run.title || "未命名任务"} · {run.id} · {run.status}</p>
+      {!run.steps.some((step) => step.status === "completed" && step.run_id === run.id && step.session_id === binding.session &&
+        step.payload?.source === "run_attachment_v1" && step.payload.project_id === binding.project && step.payload.service_id === binding.service &&
+        typeof step.payload.attachment_id === "string" && typeof step.payload.sha256 === "string") &&
+        <p className="text-xs text-ink-2">没有可确认的任务关联附件；未关联的项目成果不在这里显示。</p>}
+      <RunAttachments run={run} steps={run.steps} reviewScope={{ projectId: binding.project, sessionId: binding.session!, serviceId: binding.service }} verifyRun={!!target} transferPending={attachmentTransferPending} onPrepareAttachment={(attachment, runId) => onPrepareAttachment({ attachment, runId })} />
+      <details className="mt-2"><summary>登记关联的文本成果</summary><RunTextArtifacts runId={run.id} sessionId={binding.session!} projectId={binding.project} serviceId={binding.service} review={!!target} onPrepareReport={onPrepareReport} /></details>
       <FollowupRunDraft run={run} />
     </article>)}
   </div>;
