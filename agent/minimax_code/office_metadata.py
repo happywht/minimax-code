@@ -66,6 +66,38 @@ def _sheet(value: object) -> bool:
                         or ord(char) in {0xFFFE, 0xFFFF} for char in value))
 
 
+def _validate_join_processing(value: dict) -> None:
+    _require(set(value) == {"version", "operation", "sources", "keys", "counts"}
+             and type(value["version"]) is int and value["version"] == 2
+             and value["operation"] == "left_join", "Invalid join processing description")
+    sources = value["sources"]
+    _require(type(sources) is list and len(sources) == 2, "Invalid join sources")
+    for source in sources:
+        _require(type(source) is dict and set(source) == {"type", "attachment_id", "sha256", "sheet", "columns"}
+                 and type(source["type"]) is str and source["type"] in {"csv", "xlsx"}
+                 and type(source["attachment_id"]) is str and _ATTACHMENT.fullmatch(source["attachment_id"])
+                 and _hex(source["sha256"])
+                 and (source["sheet"] is None if source["type"] == "csv" else _text(source["sheet"], 31))
+                 and type(source["columns"]) is list and 1 <= len(source["columns"]) <= 20,
+                 "Invalid join source")
+        for column in source["columns"]:
+            _require(type(column) is dict and set(column) == {"source", "name", "kind", "trim", "null_values", "changed_cells"}
+                     and _text(column["source"], 80) and _text(column["name"], 80)
+                     and type(column["kind"]) is str and column["kind"] in {"text", "number", "boolean"}
+                     and type(column["trim"]) is bool and type(column["null_values"]) is list
+                     and len(column["null_values"]) <= 20
+                     and all(type(marker) is str and len(marker) <= 4096 for marker in column["null_values"])
+                     and _integer(column["changed_cells"], 0, 1000), "Invalid join column")
+    keys = value["keys"]
+    _require(type(keys) is dict and set(keys) == {"left", "right"}
+             and all(_text(keys[k], 80) for k in keys), "Invalid join keys")
+    counts = value["counts"]
+    _require(type(counts) is dict and set(counts) == {"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys"}
+             and all(_integer(counts[k], 0, 1000) for k in counts)
+             and counts["matched_rows"] + counts["unmatched_rows"] == counts["left_rows"]
+             and counts["right_blank_keys"] <= counts["right_rows"], "Invalid join counts")
+
+
 def validate_report(value: object) -> dict:
     """Return the original valid report dict, or raise ValueError."""
     _require(type(value) is dict, "Invalid Office report fields")
@@ -74,59 +106,62 @@ def validate_report(value: object) -> dict:
     _require(set(value) in (keys, keys | {"processing"}), "Invalid Office report fields")
     if "processing" in value:
         processing = value["processing"]
-        processing_keys = {
-            "version", "source", "columns", "calculated_column", "filters",
-            "deduplicate_by", "group_by", "sort_by", "summaries", "counts"
-        }
-        _require(type(processing) is dict
-                 and set(processing) in (processing_keys, processing_keys | {"calculated_columns"})
-                 and type(processing["version"]) is int and processing["version"] == 1,
-                 "Invalid Office processing description")
-        source = processing["source"]
-        _require(type(source) is dict and type(source.get("type")) is str
-                 and source["type"] in {"csv", "xlsx"}
-                 and set(source) == ({"type", "attachment_id", "sha256"} if source.get("type") == "csv"
-                                     else {"type", "attachment_id", "sha256", "sheet", "date_columns",
-                                           "percentage_columns", "currency_columns"})
-                 and type(source.get("attachment_id")) is str
-                 and _ATTACHMENT.fullmatch(source["attachment_id"]) and _hex(source.get("sha256")),
-                 "Invalid Office processing source")
-        if source["type"] == "xlsx":
-            _require(_text(source["sheet"], 31) and all(
-                type(source[key]) is list and len(source[key]) <= 20
-                and all(_text(item, 4096) for item in source[key])
-                for key in ("date_columns", "percentage_columns", "currency_columns")),
-                "Invalid Office worksheet processing source")
-        columns = processing["columns"]
-        _require(type(columns) is list and 1 <= len(columns) <= 20, "Invalid Office processing columns")
-        for column in columns:
-            _require(type(column) is dict and set(column) == {
-                "source", "name", "kind", "trim", "null_values", "changed_cells"
-            } and _text(column["source"], 80) and _text(column["name"], 80)
-                and type(column["kind"]) is str and column["kind"] in {"text", "number", "boolean"}
-                and type(column["trim"]) is bool and type(column["null_values"]) is list
-                and len(column["null_values"]) <= 20
-                and all(type(marker) is str and len(marker) <= 4096 for marker in column["null_values"])
-                and _integer(column["changed_cells"], 0, 1000), "Invalid Office processing column")
-        counts = processing["counts"]
-        _require(type(counts) is dict and set(counts) == {
-            "source_rows", "matched_rows", "removed_duplicates", "output_rows"
-        } and all(_integer(counts[key], 0, 1000) for key in counts)
-            and counts["matched_rows"] <= counts["source_rows"]
-            and counts["removed_duplicates"] <= counts["matched_rows"]
-            and counts["output_rows"] <= counts["matched_rows"] - counts["removed_duplicates"],
-            "Invalid Office processing counts")
-        _require(all(type(processing[key]) is list and len(processing[key]) <= limit
-                     for key, limit in (("filters", 10), ("deduplicate_by", 20),
-                                        ("sort_by", 3), ("summaries", 20)))
-                 and (processing["calculated_column"] is None or type(processing["calculated_column"]) is dict)
-                 and ("calculated_columns" not in processing or (
-                     processing["calculated_column"] is None
-                     and type(processing["calculated_columns"]) is list
-                     and 1 <= len(processing["calculated_columns"]) <= 10
-                     and all(type(item) is dict for item in processing["calculated_columns"])))
-                 and (processing["group_by"] is None or type(processing["group_by"]) is dict),
-                 "Invalid Office processing operations")
+        if type(processing) is dict and processing.get("version") == 2:
+            _validate_join_processing(processing)
+        else:
+            processing_keys = {
+                "version", "source", "columns", "calculated_column", "filters",
+                "deduplicate_by", "group_by", "sort_by", "summaries", "counts"
+            }
+            _require(type(processing) is dict
+                     and set(processing) in (processing_keys, processing_keys | {"calculated_columns"})
+                     and type(processing["version"]) is int and processing["version"] == 1,
+                     "Invalid Office processing description")
+            source = processing["source"]
+            _require(type(source) is dict and type(source.get("type")) is str
+                     and type(source["type"]) is str and source["type"] in {"csv", "xlsx"}
+                     and set(source) == ({"type", "attachment_id", "sha256"} if source.get("type") == "csv"
+                                         else {"type", "attachment_id", "sha256", "sheet", "date_columns",
+                                               "percentage_columns", "currency_columns"})
+                     and type(source.get("attachment_id")) is str
+                     and _ATTACHMENT.fullmatch(source["attachment_id"]) and _hex(source.get("sha256")),
+                     "Invalid Office processing source")
+            if source["type"] == "xlsx":
+                _require(_text(source["sheet"], 31) and all(
+                    type(source[key]) is list and len(source[key]) <= 20
+                    and all(_text(item, 4096) for item in source[key])
+                    for key in ("date_columns", "percentage_columns", "currency_columns")),
+                    "Invalid Office worksheet processing source")
+            columns = processing["columns"]
+            _require(type(columns) is list and 1 <= len(columns) <= 20, "Invalid Office processing columns")
+            for column in columns:
+                _require(type(column) is dict and set(column) == {
+                    "source", "name", "kind", "trim", "null_values", "changed_cells"
+                } and _text(column["source"], 80) and _text(column["name"], 80)
+                    and type(column["kind"]) is str and type(column["kind"]) is str and column["kind"] in {"text", "number", "boolean"}
+                    and type(column["trim"]) is bool and type(column["null_values"]) is list
+                    and len(column["null_values"]) <= 20
+                    and all(type(marker) is str and len(marker) <= 4096 for marker in column["null_values"])
+                    and _integer(column["changed_cells"], 0, 1000), "Invalid Office processing column")
+            counts = processing["counts"]
+            _require(type(counts) is dict and set(counts) == {
+                "source_rows", "matched_rows", "removed_duplicates", "output_rows"
+            } and all(_integer(counts[key], 0, 1000) for key in counts)
+                and counts["matched_rows"] <= counts["source_rows"]
+                and counts["removed_duplicates"] <= counts["matched_rows"]
+                and counts["output_rows"] <= counts["matched_rows"] - counts["removed_duplicates"],
+                "Invalid Office processing counts")
+            _require(all(type(processing[key]) is list and len(processing[key]) <= limit
+                         for key, limit in (("filters", 10), ("deduplicate_by", 20),
+                                            ("sort_by", 3), ("summaries", 20)))
+                     and (processing["calculated_column"] is None or type(processing["calculated_column"]) is dict)
+                     and ("calculated_columns" not in processing or (
+                         processing["calculated_column"] is None
+                         and type(processing["calculated_columns"]) is list
+                         and 1 <= len(processing["calculated_columns"]) <= 10
+                         and all(type(item) is dict for item in processing["calculated_columns"])))
+                     and (processing["group_by"] is None or type(processing["group_by"]) is dict),
+                     "Invalid Office processing operations")
     checks = (("cell_check", "passed"), ("chart_reference_check", "passed")) if chart else (
         ("formula_count", 0), ("external_relationship_count", 0),
         ("macro_count", 0), ("structure_status", "passed"))
