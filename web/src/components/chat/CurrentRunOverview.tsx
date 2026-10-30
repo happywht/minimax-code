@@ -94,6 +94,10 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       <span className="font-medium text-status-warning">{run?.status === "awaiting_approval" ? "当前任务等待授权" : "当前任务等待回答"}</span>
       <Button type="button" size="sm" variant="secondary" onClick={openRequest}>{run?.status === "awaiting_approval" ? "查看授权请求" : "回答问题"}</Button>
     </div>}
+    {!stale && run && ["budget_paused", "failed", "interrupted", "cancelled"].includes(run.status) && <div className="mb-2 flex flex-wrap items-center justify-between gap-2" role="status">
+      <span className="text-status-warning">{labels[run.status]} · 请核对记录和可用操作</span>
+      <Button type="button" size="sm" variant="secondary" onClick={onOpenTimeline}>查看任务记录与下一步</Button>
+    </div>}
     <details data-testid="current-run-overview">
     <summary className="cursor-pointer font-medium text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">任务概览 · {stale ? "状态待刷新" : run ? labels[run.status] ?? run.status : loading ? "正在读取" : "暂无运行记录"}</summary>
     {stale && <p role="status" className="mt-1 text-status-warning">连接或运行记录未确认；以下为最近快照，操作前请刷新。</p>}
