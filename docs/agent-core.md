@@ -98,7 +98,12 @@ the same run, and associates command excerpts and file-tool results with calls
 by tool call ID. Explicit assistant pending-work statements are retained as
 possibly stale excerpts. Write requests and reported tool success or failure are
 not proof of the current file state; command excerpts are not independent
-verification. Excerpts can be truncated or omitted.
+verification. Constraint excerpts are ordered newest first, and the runtime
+wrapper is removed from mid-run user input before excerpting. Sentence splitting
+preserves dots inside filenames. Captured-output references are included only
+when their recorded run ID matches the active durable run; a missing identity
+means no references are included. This does not guarantee that an output still
+exists or is readable. Excerpts can be truncated or omitted.
 
 If protected recent turns alone exceed the estimated target, a long latest
 Native turn can also be compacted at a completed tool-round boundary. Its user

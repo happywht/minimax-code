@@ -806,6 +806,10 @@ class AgentCore:
         """Original turn body; ``run`` wraps it with budget scoping."""
         self._current_session_id = session_id
 
+        from ..budget_ledger import current_handle
+
+        handle = current_handle()
+        current_run_id = handle.run_id if handle is not None else None
         history: list[Message] = []
         if self._history_provider is not None:
             history = list(await self._history_provider(session_id) or [])
@@ -822,6 +826,7 @@ class AgentCore:
                 )
                 history = compact_history(
                     history, max_tokens=threshold, keep_recent=4,
+                    current_run_id=current_run_id,
                 )
 
         system_prompt = build_system_prompt(
@@ -940,7 +945,8 @@ class AgentCore:
 
                     target = int(self.config.context_window * 0.5)
                     compacted = compact_history(
-                        messages, max_tokens=target, keep_recent=4
+                        messages, max_tokens=target, keep_recent=4,
+                        current_run_id=current_run_id,
                     )
                     if compacted != messages and sum(estimate_tokens(str(m)) for m in compacted) < sum(estimate_tokens(str(m)) for m in messages):
                         logger.info(
@@ -1065,7 +1071,6 @@ class AgentCore:
                 # break the run or daily limit, pause at this clean
                 # boundary. The projection reuses the last real prompt
                 # usage plus the configured output cap.
-                from ..budget_ledger import current_handle
                 if self.budget is not None and current_handle() is None:
                     from ..budget import projected_call_tokens
 

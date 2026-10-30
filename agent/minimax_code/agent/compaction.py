@@ -55,6 +55,7 @@ def compact_history(
     *,
     max_tokens: int,
     keep_recent: int = 4,
+    current_run_id: str | None = None,
 ) -> list[Message]:
     """Compact conversation history to fit within a token budget.
 
@@ -73,6 +74,9 @@ def compact_history(
         Target maximum token count for the output.
     keep_recent:
         Number of recent turns to preserve verbatim.
+    current_run_id:
+        Durable run identity for retaining readable captured-output references.
+        References are omitted if no identity is available.
 
     Returns
     -------
@@ -123,7 +127,9 @@ def compact_history(
     # Compact old turns into a summary.
     available = max(0, max_tokens - sum(_message_tokens(m) for m in system_msgs + recent_msgs)
                     - estimate_tokens("[Conversation summary (compacted)]\n"))
-    summary, state = _summarise_old_turns([turns[i:j] for i, j in old_turns], available)
+    summary, state = _summarise_old_turns(
+        [turns[i:j] for i, j in old_turns], available, current_run_id=current_run_id
+    )
 
     result = system_msgs.copy()
     if summary:
@@ -195,7 +201,9 @@ def _long_turn_split(
     return start, round_starts[-4]
 
 
-def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tuple[str, dict[str, Any]]:
+def _summarise_old_turns(
+    turn_groups: list[list[Message]], available: int, *, current_run_id: str | None = None,
+) -> tuple[str, dict[str, Any]]:
     """Extract bounded, explicitly incomplete context without a model call."""
 
     # --- pass 1: collect raw material across all old turns ------------
@@ -223,19 +231,21 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                 write_results.extend(state.get("write_results", []))
                 verification_lines.extend(state.get("commands", []))
                 changed_paths.extend(state.get("paths", []))
-                captured_output_refs.extend(state.get("captured_output_refs", []))
+                if current_run_id and state.get("output_refs_run_id") == current_run_id:
+                    captured_output_refs.extend(state.get("captured_output_refs", []))
                 continue
             role = msg.get("role", "")
             content = _msg_text(msg)
 
             if role == "user":
+                content = _user_excerpt_text(content)
                 if not first_user_text:
                     first_user_text = content
                 elif content.strip():
                     later_user_messages.append(_clip(content.strip(), 300))
                 for sentence in _split_sentences(content):
                     if _is_constraint(sentence):
-                        constraint_sentences.append(sentence)
+                        constraint_sentences.append(_constraint_excerpt(sentence))
             elif role == "assistant":
                 for sentence in _split_sentences(content):
                     if _is_decision(sentence):
@@ -247,7 +257,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                     if path and path not in changed_paths:
                         changed_paths.append(path)
             elif role == "tool":
-                reference = _captured_output_ref(content)
+                reference = _captured_output_ref(content, current_run_id)
                 if reference:
                     captured_output_refs.append(reference)
                 write_call = _matching_call(msg, group, ("write_file", "edit_file", "append_file"))
@@ -262,7 +272,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
                     verification_lines.append(f"{call['name']} result: {excerpt}; command: {command}")
 
     objective = (first_user_text or "").strip()
-    constraints = _dedupe(constraint_sentences)
+    constraints = list(reversed(_dedupe(list(reversed(constraint_sentences)))))
     if len(constraints) > 6:
         constraints = constraints[:3] + ["[other constraints omitted]"] + constraints[-3:]
     commands = verification_lines[-4:]
@@ -276,7 +286,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     state = {"objective": _clip(objective, 500), "constraints": constraints, "decisions": decisions,
              "commands": commands, "pending_items": pending_items, "write_results": write_results,
              "paths": changed_paths, "later_user_messages": later_user_messages,
-             "captured_output_refs": captured_output_refs,
+             "captured_output_refs": captured_output_refs, "output_refs_run_id": current_run_id,
              "later_messages_omitted": later_messages_omitted}
     later_excerpt = "\n".join(f"- {message}" for message in reversed(later_user_messages))
     if later_messages_omitted:
@@ -287,7 +297,7 @@ def _summarise_old_turns(turn_groups: list[list[Message]], available: int) -> tu
     parts = []
     for title, value, fraction in (
         ("Task objective", objective, .12),
-        ("User constraints", "; ".join(constraints), .14),
+        ("Constraints (newest first; may be superseded)", "\n".join(reversed(constraints)), .14),
         ("Later user messages (newest first; excerpts)", later_excerpt, .14),
         ("Assistant decisions (unverified)", "\n".join(reversed(decisions)), .12),
         ("Assistant pending-work excerpts (may be stale)", "\n".join(reversed(pending_items)), .10),
@@ -316,14 +326,15 @@ def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:max(0, limit - 12)] + " [truncated]"
 
 
-def _captured_output_ref(content: str) -> str:
+def _captured_output_ref(content: str, current_run_id: str | None) -> str:
     """Extract only the opaque reference, never the captured output or preview."""
     try:
         payload = json.loads(content)
     except (TypeError, ValueError):
         return ""
     output = payload.get("output") if isinstance(payload, dict) else None
-    if not isinstance(output, dict) or output.get("_spilled") is not True:
+    if (not current_run_id or not isinstance(output, dict)
+            or output.get("_spilled") is not True or output.get("run_id") != current_run_id):
         return ""
     ref = output.get("output_ref")
     return ref if isinstance(ref, str) and re.fullmatch(r"output_[0-9a-f]{32}", ref) else ""
@@ -354,17 +365,36 @@ _CONSTRAINT_MARKERS = (
 )
 
 
+def _user_excerpt_text(content: str) -> str:
+    """Remove the known runtime wrapper so steer text gets the excerpt budget."""
+    prefix = "The user sent a message while you are working:\n<user_query>\n"
+    suffix = "\n</user_query>"
+    if content.startswith(prefix) and content.endswith(suffix):
+        return content[len(prefix):-len(suffix)]
+    return content
+
+
 def _split_sentences(text: str) -> list[str]:
     """Split on CJK and Latin sentence terminators."""
     import re as _re
 
-    raw = _re.split(r"[。！？；\n.!?;]", text)
+    raw = _re.split(r"[。！？；\n!?;]|\.(?=\s|$)", text)
     return [s.strip() for s in raw if s.strip()]
+
+
+def _constraint_excerpt(sentence: str) -> str:
+    """Keep the marker visible when a long sentence is clipped."""
+    lowered = sentence.lower()
+    positions = [lowered.find(marker) for marker in _CONSTRAINT_MARKERS]
+    position = min(pos for pos in positions if pos >= 0)
+    if position > 200:
+        return "[earlier text omitted] " + _clip(sentence[max(0, position - 80):], 275)
+    return _clip(sentence, 300)
 
 
 def _is_constraint(sentence: str) -> bool:
     lowered = sentence.lower()
-    return len(sentence) <= 200 and any(m in lowered for m in _CONSTRAINT_MARKERS)
+    return any(m in lowered for m in _CONSTRAINT_MARKERS)
 
 
 _DECISION_MARKERS = (
