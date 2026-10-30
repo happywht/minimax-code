@@ -26,6 +26,7 @@ from .types import (
     CallToolResult,
     GetPromptResult,
     ListPromptsResult,
+    ListResourceTemplatesResult,
     ListResourcesResult,
     ListToolsResult,
     ReadResourceResult,
@@ -310,6 +311,9 @@ class SDKMCPClient:
 
     async def list_resources(self) -> ListResourcesResult:
         return await self._list("list_resources", "resources", ListResourcesResult)
+
+    async def list_resource_templates(self) -> ListResourceTemplatesResult:
+        return await self._list("list_resource_templates", "resourceTemplates", ListResourceTemplatesResult)
 
     async def list_prompts(self) -> ListPromptsResult:
         return await self._list("list_prompts", "prompts", ListPromptsResult)

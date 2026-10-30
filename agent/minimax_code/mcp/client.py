@@ -34,6 +34,7 @@ from .types import (
     Implementation,
     InitializeResult,
     ListPromptsResult,
+    ListResourceTemplatesResult,
     ListResourcesResult,
     ListToolsResult,
     ReadResourceResult,
@@ -149,6 +150,10 @@ class MCPClient:
     async def list_resources(self) -> ListResourcesResult:
         raw = await self._request(protocol.METHOD_RESOURCES_LIST, {})
         return ListResourcesResult.model_validate(raw)
+
+    async def list_resource_templates(self) -> ListResourceTemplatesResult:
+        raw = await self._request(protocol.METHOD_RESOURCES_TEMPLATES_LIST, {})
+        return ListResourceTemplatesResult.model_validate(raw)
 
     async def read_resource(self, uri: str) -> ReadResourceResult:
         raw = await self._request(protocol.METHOD_RESOURCES_READ, {"uri": uri})

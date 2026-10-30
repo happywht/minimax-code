@@ -282,6 +282,14 @@ function McpServersTab(): JSX.Element {
                   </label>
                   <label className="mb-3 flex items-start gap-2 text-[11px] text-ink-2">
                     <Checkbox
+                      checked={server.tool_states?.["$minimax.resource_templates"] === true}
+                      disabled={server.tool_states?.["$minimax.resources"] !== true}
+                      onChange={(e) => toggleTool(server, "$minimax.resource_templates", e.target.checked)}
+                    />
+                    <span>允许 Agent 使用此服务器的受限资源模板（需先启用资源，且仍受权限规则或审批约束）</span>
+                  </label>
+                  <label className="mb-3 flex items-start gap-2 text-[11px] text-ink-2">
+                    <Checkbox
                       checked={server.tool_states?.["$minimax.prompts"] === true}
                       onChange={(e) => toggleTool(server, "$minimax.prompts", e.target.checked)}
                     />

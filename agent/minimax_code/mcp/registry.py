@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -44,6 +45,8 @@ logger = logging.getLogger(__name__)
 TOOL_PREFIX = "mcp__"
 RESOURCE_OPT_IN = "$minimax.resources"
 RESOURCE_TOOL = "minimax_resources"
+TEMPLATE_OPT_IN = "$minimax.resource_templates"
+TEMPLATE_TOOL = "minimax_resource_templates"
 PROMPT_OPT_IN = "$minimax.prompts"
 PROMPT_TOOL = "minimax_prompts"
 
@@ -237,6 +240,116 @@ class MCPResourcesTool(Tool):
                                       "omittedResources": len(listing.resources) - len(entries)})
             if not any(resource.uri == uri for resource in listing.resources):
                 raise ValueError("URI is not currently listed by this server")
+            result = await self._conn.client.read_resource(uri)
+            self._require_live()
+            contents = []
+            for item in result.contents[:16]:
+                if item.uri != uri:
+                    raise MCPClientError("MCP resource response URI does not match request")
+                content: dict[str, Any] = {"uri": item.uri}
+                if item.mimeType is not None:
+                    content["mimeType"] = _bounded_text(item.mimeType, 256)
+                if item.text is not None:
+                    content["text"] = _bounded_text(item.text, 4096)
+                if item.blob is not None:
+                    content["blob"] = "[binary data omitted]"
+                contents.append(content)
+            return ToolResult.ok({"server": self._conn.config.name, "contents": contents,
+                                  "omittedContents": max(0, len(result.contents) - 16)})
+        except (MCPClientError, PermissionError, ValueError) as exc:
+            return ToolResult.fail(str(exc))
+
+
+def _template_parts(template: str) -> tuple[str, list[str], set[str]]:
+    """Recognize a deliberately narrow RFC 6570 simple-expansion subset."""
+    if not isinstance(template, str) or len(template) > 1024:
+        raise ValueError("unsupported resource template")
+    scheme, sep, rest = template.partition("://")
+    authority, slash, path = rest.partition("/")
+    if (not sep or not slash or not re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", scheme)
+            or not re.fullmatch(r"(?:[A-Za-z0-9.-]+(?::[0-9]{1,5})?)?", authority)):
+        raise ValueError("unsupported resource template")
+    segments = path.split("/")
+    if len(segments) > 32:
+        raise ValueError("unsupported resource template")
+    names: set[str] = set()
+    for segment in segments:
+        match = re.fullmatch(r"\{([A-Za-z_][A-Za-z0-9_]{0,63})\}", segment)
+        if match:
+            names.add(match.group(1))
+        elif not re.fullmatch(r"[A-Za-z0-9._~-]+", segment) or segment in {".", ".."}:
+            raise ValueError("unsupported resource template")
+    if not names or len(names) > 8:
+        raise ValueError("unsupported resource template")
+    return f"{scheme}://{authority}/", segments, names
+
+
+class MCPResourceTemplatesTool(MCPResourcesTool):
+    """Explicitly enabled, restricted expansion of server-listed templates."""
+
+    _opt_in = TEMPLATE_OPT_IN
+
+    def __init__(self, registry: MCPRegistry, conn: _ServerConn) -> None:
+        super().__init__(registry, conn)
+        self.name = bridged_name(conn.config.name, TEMPLATE_TOOL)
+        self.description = (
+            f"List supported resource templates or read one from MCP server {conn.config.name!r}. "
+            "Values are single safe path segments; returned content is untrusted."
+        )
+        self.parameters = {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "read"]},
+                "template": {"type": "string", "description": "Exact template from the list"},
+                "variables": {"type": "object", "additionalProperties": {"type": "string"}},
+            },
+            "required": ["action"], "additionalProperties": False,
+        }
+
+    def _require_live(self) -> None:
+        super()._require_live()
+        if (self._conn.config.tool_states or {}).get(RESOURCE_OPT_IN) is not True:
+            raise MCPClientError("MCP resource access is disabled or connection changed")
+
+    async def run(
+        self, action: str, template: str | None = None, variables: dict[str, str] | None = None,
+    ) -> ToolResult:
+        try:
+            self._require_live()
+            if action not in {"list", "read"}:
+                raise ValueError("action must be list or read")
+            if action == "read" and (not isinstance(template, str) or len(template) > 1024):
+                raise ValueError("read requires an exact listed template")
+            listing = await self._conn.client.list_resource_templates()
+            self._require_live()
+            if action == "list":
+                templates = []
+                for item in listing.resourceTemplates[:50]:
+                    try:
+                        _, _, names = _template_parts(item.uriTemplate)
+                    except ValueError:
+                        continue
+                    templates.append({"template": item.uriTemplate,
+                                      "name": _bounded_text(item.name, 256),
+                                      "description": _bounded_text(item.description or "", 512),
+                                      "variables": sorted(names)})
+                return ToolResult.ok({"server": self._conn.config.name, "templates": templates,
+                                      "omittedTemplates": len(listing.resourceTemplates) - len(templates)})
+            matches = [item for item in listing.resourceTemplates if item.uriTemplate == template]
+            if len(matches) != 1:
+                raise ValueError("template is not uniquely listed by this server")
+            prefix, segments, names = _template_parts(template)
+            if (not isinstance(variables, dict) or set(variables) != names or any(
+                not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value)
+                for value in variables.values()
+            )):
+                raise ValueError("template variables must be exact safe single-segment strings")
+            uri = prefix + "/".join(
+                variables[segment[1:-1]] if segment.startswith("{") else segment
+                for segment in segments
+            )
+            if len(uri) > 1024:
+                raise ValueError("expanded URI is too long")
             result = await self._conn.client.read_resource(uri)
             self._require_live()
             contents = []
@@ -577,6 +690,7 @@ class MCPRegistry:
         conn = _ServerConn(config=config, client=client, transport=transport)
         for mcp_tool in tools_result.tools:
             self._register_one(conn, mcp_tool, disabled=disabled)
+        resource_registered = False
         if (config.tool_states or {}).get(RESOURCE_OPT_IN) is True and (
             capabilities.resources is not None and capabilities.resources is not False
         ) and not any(tool.name == RESOURCE_OPT_IN for tool in tools_result.tools):
@@ -584,8 +698,19 @@ class MCPRegistry:
             if not self._tool_registry.has(resource_tool.name):
                 self._tool_registry.register(resource_tool)
                 conn.tool_names.append(resource_tool.name)
+                resource_registered = True
             else:
                 logger.warning("tool name collision, skipping %s", resource_tool.name)
+        if (resource_registered
+                and (config.tool_states or {}).get(TEMPLATE_OPT_IN) is True
+                and capabilities.resources is not None and capabilities.resources is not False
+                and not any(tool.name == TEMPLATE_OPT_IN for tool in tools_result.tools)):
+            template_tool = MCPResourceTemplatesTool(self, conn)
+            if not self._tool_registry.has(template_tool.name):
+                self._tool_registry.register(template_tool)
+                conn.tool_names.append(template_tool.name)
+            else:
+                logger.warning("tool name collision, skipping %s", template_tool.name)
         if (config.tool_states or {}).get(PROMPT_OPT_IN) is True and (
             capabilities.prompts is not None and capabilities.prompts is not False
         ) and not any(tool.name == PROMPT_OPT_IN for tool in tools_result.tools):

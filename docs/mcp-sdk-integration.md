@@ -120,11 +120,27 @@ and ask rules take precedence, and planning/restricted dispatch stays blocked.
 The tool lists up to 50 resources or reads an exact URI in a fresh listing from
 the same live connection. It returns up to 16 matching content entries, each
 text bounded to 4096 UTF-8 bytes, and omits blobs. A changed or disabled
-connection is rejected before and after network operations. Resource templates,
-subscriptions, binary processing and URIs not listed by the server are not
+connection is rejected before and after network operations. Subscriptions,
+binary processing and URIs not listed by the server are not
 supported; returned content is untrusted. Name collisions prevent registration.
 The reserved opt-in state key is `$minimax.resources`; a server tool with that
 exact name also prevents resource-tool registration.
+
+Resource templates require both the resource switch and the separate, default-off
+`$minimax.resource_templates` switch. The template tool applies its own, resource,
+and network permission rules; deny and ask take precedence. It lists supported
+templates and reads only an exact, uniquely advertised template after a fresh
+listing from the same active connection. Only a narrow RFC 6570 subset is accepted:
+fixed scheme and authority, literal path segments, and simple `{name}` expressions
+occupying whole path segments. Values must be nonempty ASCII letters, digits,
+underscore or hyphen, at most 128 characters; every variable must be supplied.
+Operators, queries, fragments, percent encoding, dot segments, and variable
+authorities are rejected. The generated URI is bounded to 1024 characters, and
+returned content uses the same URI check, text bounds and binary omission as
+resource reads. At most 50 advertised templates are inspected for listing;
+unsupported or omitted templates are counted. Name collisions or a remote tool
+named `$minimax.resource_templates` prevent registration. This is not general
+RFC 6570 support. See the [official SDK template reference](https://py.sdk.modelcontextprotocol.io/servers/uri-templates/).
 
 The separate `$minimax.prompts` switch is off by default. When enabled and
 advertised, `mcp__<server>__minimax_prompts` lists prompt names and argument
