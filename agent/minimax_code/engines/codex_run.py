@@ -113,7 +113,7 @@ class CodexApprovalGate:
 
 
 async def drive_codex_run(
-    job: Any, *, emit: Any, prompt: str, resume_thread_id: str | None = None,
+    job: Any, *, emit: Any, prompt: str | list[dict[str, Any]], resume_thread_id: str | None = None,
     codex_cmd: list[str] | None = None, approval_gate: CodexApprovalGate | None = None,
     mode: str = "chat", conversation: Any = None, post_turn: Any = None, input_server: Any = None,
 ) -> dict[str, Any]:
@@ -620,8 +620,10 @@ async def drive_codex_run(
             await conversation.bind(result)
             await conversation.begin_attempt()
         turn_requested = True
+        from .codex_multimodal import codex_input
+        input_parts, _ = codex_input(prompt)
         turn = await conn.request("turn/start", {
-            "threadId": thread_id, "input": [{"type": "text", "text": prompt}], "cwd": workspace,
+            "threadId": thread_id, "input": input_parts, "cwd": workspace,
             "approvalPolicy": cwd_params["approvalPolicy"], "approvalsReviewer": "user",
             "sandboxPolicy": ({"type": "readOnly", "networkAccess": False} if mode == "plan"
                 else {"type": "workspaceWrite", "writableRoots": [workspace], "networkAccess": False,

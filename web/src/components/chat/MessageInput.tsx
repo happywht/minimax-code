@@ -122,14 +122,19 @@ export function MessageInput({
     if (!hasText && !hasImages) return;
 
     if (codex) {
-      if (hasImages) {
-        useChat.setState({ error: "Codex 当前仅支持纯文本，不能发送图片。" });
+      const images = attachments.attachedImages;
+      const totalBytes = images.reduce((total, image) => total + Math.floor(image.data.length * 3 / 4) - (image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0), 0);
+      if (images.some((image) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(image.media_type)) || totalBytes > 4 * 1024 * 1024) {
+        useChat.setState({ error: "Codex 支持 PNG、JPEG、GIF、WebP，最多 5 张、总计 4 MiB；请移除不符合要求的图片。" });
         return;
       }
+      const content: string | ContentPart[] = hasImages
+        ? [...(hasText ? [{ type: "text" as const, text: rawText.trim() }] : []), ...images]
+        : rawText;
       draft.clear();
       attachments.clearAll();
       mention.closePicker();
-      await send(rawText, budgetNumber);
+      await send(content, budgetNumber);
       return;
     }
     // Resolve @repo / #file mentions into codebase context.
@@ -282,7 +287,6 @@ export function MessageInput({
           <IconButton
             aria-label={strings.chat.input.attachImage}
             data-testid="message-image-btn"
-            disabled={codex}
             onClick={() => attachments.imageInputRef.current?.click()}
             title={strings.chat.input.attachAnImage}
             className="h-8 w-8"
@@ -292,11 +296,10 @@ export function MessageInput({
           <input
             ref={attachments.imageInputRef}
             type="file"
-            accept="image/*"
+            accept={codex ? "image/png,image/jpeg,image/gif,image/webp" : "image/*"}
             multiple
             className="hidden"
             data-testid="message-image-input"
-            disabled={codex}
             onChange={attachments.handleImageSelect}
           />
           <input
@@ -370,7 +373,7 @@ export function MessageInput({
             </>
           )}
         </div>
-        {codex && <p className="px-2.5 text-[11px] text-ink-2">文本文件内容会插入草稿并作为纯文本发送；移除文件标签不会删除已插入的文字。@ 和 # 按普通文本发送，不触发 Native 提及功能。图片不支持。</p>}
+        {codex && <p className="px-2.5 text-[11px] text-ink-2">文本文件内容会插入草稿；移除文件标签不会删除文字。图片最多 5 张、总计 4 MiB，随请求持久保存在本地数据库及 Codex 线程中；模型是否支持图片由 Codex 决定。@ 和 # 按普通文本发送。</p>}
         {!codex && <MentionPickerDropdown
           picker={mention.picker}
           filtered={mention.filtered}

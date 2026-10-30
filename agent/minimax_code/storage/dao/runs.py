@@ -205,10 +205,12 @@ class AgentRunsDAO:
                 await conn.execute("UPDATE schedule_occurrences SET run_id=?,status='running',updated_at=? WHERE id=?", (run_id, ts, occurrence["id"]))
                 await conn.execute("UPDATE tasks SET run_id=? WHERE id=?", (run_id, occurrence["task_id"]))
             if codex:
+                from ...engines.codex_multimodal import codex_input
+                _, display_content = codex_input(request["content"])
                 user_id = f"msg_{uuid.uuid4().hex}"
                 await conn.execute(
                     "INSERT INTO messages(id,session_id,role,content,created_at,metadata) VALUES(?,?,'user',?,?,?)",
-                    (user_id, session_id, request["content"], ts,
+                    (user_id, session_id, display_content, ts,
                      dumps_json({"run_id": run_id, "engine": "codex", "request_key": request_key})))
                 await link_run_message(conn, run_id, session_id, user_id, "user")
                 run["user_message_id"] = user_id

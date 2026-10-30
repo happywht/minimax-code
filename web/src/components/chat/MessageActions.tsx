@@ -3,7 +3,7 @@
  * bubble corner, and the failed-message footer with the retry button.
  */
 import { Check, Copy, RefreshCw } from "lucide-react";
-import { useChat } from "../../stores";
+import { useChat, useSessionStore } from "../../stores";
 import type { Message } from "../../types/ipc";
 import { Button, IconButton } from "../../ui";
 import { strings } from "../../ui/strings";
@@ -55,13 +55,14 @@ export function MessageCopyOverlay({
 
 export function FailedMessageFooter({ message }: { message: Message }): JSX.Element {
   const retryMessage = useChat((s) => s.retryMessage);
+  const codex = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId)?.engine === "codex");
 
   return (
     <div className="mt-2 flex items-center justify-between gap-3 border-t border-status-error/20 pt-2">
       <span className="text-[11px] text-status-error/80">
         {message.error ?? message.text}
       </span>
-      <Button
+      {codex ? <span className="text-[11px] text-ink-2">若任务已接收，请在时间线核对并恢复；未接收时可重新选择图片发送。图片不会自动重发。</span> : <Button
         variant="danger"
         size="sm"
         data-testid={`message-retry-${message.id}`}
@@ -69,7 +70,7 @@ export function FailedMessageFooter({ message }: { message: Message }): JSX.Elem
         onClick={() => void retryMessage(message.id)}
       >
         {strings.chat.actions.retry}
-      </Button>
+      </Button>}
     </div>
   );
 }

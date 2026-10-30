@@ -751,7 +751,6 @@ export const useChat = create<ChatState>((set, get) => ({
 
       const pinned = useSessionStore.getState().sessions.find((session) => session.id === sessionId)?.engine ?? "native";
       if (pinned === "codex" && restrictNetworkTools) throw new Error("工具联网限制仅支持 Native 任务。");
-      if (pinned === "codex" && parts) throw new Error("Codex 当前仅支持纯文本，请移除附件后重试。");
       const requestKey = crypto.randomUUID();
       const userMessage: Message = {
         id: `user-${Date.now()}`,
@@ -1083,6 +1082,11 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   retryMessage: async (messageId: string) => {
+    const session = useSessionStore.getState();
+    if (session.sessions.find((item) => item.id === session.currentSessionId)?.engine === "codex") {
+      set({ error: "请先核对任务时间线；未接收时可重新选择图片发送。图片不会自动重发。" });
+      return;
+    }
     const state = get();
     const idx = state.messages.findIndex((m) => m.id === messageId);
     if (idx < 0) return;

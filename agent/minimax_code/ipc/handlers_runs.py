@@ -592,7 +592,7 @@ def register_run_handlers(server: Any) -> None:
         try:
             request = RunStartParams.model_validate(params)
         except ValidationError:
-            await ctx.reply_error(INVALID_PARAMS, "run.start requires a session, input and idempotency key; only native is currently supported")
+            await ctx.reply_error(INVALID_PARAMS, "run.start requires a session, valid input and idempotency key")
             return
         try:
             from ..app import get_db, init_runtime

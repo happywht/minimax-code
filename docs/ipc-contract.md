@@ -859,10 +859,19 @@ selection on `session.create` accepts `native` (default) or `codex` and is immut
 The `engine` parameter of `run.start` is optional and must match the session's pinned engine when supplied.
 `agent.send_message` rejects Codex sessions. Empty-session reuse requires the same engine.
 Session responses include `engine`, nullable `engine_thread_id`, and versioned `engine_state`;
-generic `session.update` cannot write these fields. Codex supports text input, persistent
+generic `session.update` cannot write these fields. Codex supports text and inline image input, persistent
 same-thread turns, reviewed recovery and in-flight steering (see `run.steer`). The chat
 composer can insert a local text file's contents into the editable draft; the resulting
-string is sent as `content`, not as a file attachment. Codex does not accept image parts;
+string is sent as `content`, not as a file attachment. `run.start` also accepts a list of
+text parts and up to five image parts `{type: "image", media_type, data}` (base64 PNG,
+JPEG, GIF or WebP, at most 4 MiB decoded in total). It validates the encoding and basic
+file signature, then sends inline data URLs through the pinned App Server protocol.
+Model/provider image support is not guaranteed. The full image data is retained in the
+local run request for idempotency and queueing and may be included in data exports; Codex
+also receives it in the external thread. Persisted message history displays a text label
+and image count, not image previews. Recovery sends a reviewed text handoff and does not
+blindly resend the original image. The input projection does not copy image data into
+event or message text.
 `@` and `#` are ordinary text in its composer and do not invoke Native mention features.
 Native model/permission
 controls do not configure Codex, whose actual returned model/provider/effort are saved and

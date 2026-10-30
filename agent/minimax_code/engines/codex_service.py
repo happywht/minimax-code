@@ -8,6 +8,7 @@ from typing import Any
 from ..ipc.handler_utils import HandlerError
 from ..storage.dao.runs import AgentRunsDAO
 from .codex_persistence import CodexConversation
+from .codex_multimodal import codex_input
 
 
 async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None = None,
@@ -21,8 +22,10 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
     from . import get_engine
     from .codex_run import CodexApprovalGate, drive_codex_run
 
-    if not isinstance(request.content, str) or not request.content.strip():
-        raise HandlerError(-32602, "Codex supports text only; attachments and multimodal input are unsupported")
+    try:
+        _, display_content = codex_input(request.content)
+    except ValueError as exc:
+        raise HandlerError(-32602, str(exc)) from exc
     await init_runtime()
     db = get_db()
     if db is None:
@@ -30,7 +33,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
     sessions = get_sessions_dao()
     session = await sessions.get(request.session_id)
     if session is None:
-        session = await sessions.create(id=request.session_id, title=request.content.strip()[:32], engine="codex")
+        session = await sessions.create(id=request.session_id, title=display_content[:32], engine="codex")
     if session.get("engine") != "codex":
         raise HandlerError(-32602, "Codex requires a pinned Codex session")
     payload = {"session_id": request.session_id, "engine": "codex", "mode": request.mode,
@@ -190,7 +193,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         await _notify_run(ctx, "run.completed", {"run": run})
 
     run, job, created = await service.admit(dao=dao, session_id=request.session_id, request=payload,
-        request_key=request.idempotency_key, title=request.content.strip()[:32],
+        request_key=request.idempotency_key, title=display_content[:32],
         metadata={"engine": "codex", "engine_card": info.to_dict(), "reviewed": reviewed,
                   "workspace_snapshot": workspace,
                   "project_id": project_id,
