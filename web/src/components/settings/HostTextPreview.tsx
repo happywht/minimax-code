@@ -4,6 +4,7 @@ import { downloadHostFile } from "../../ipc/hostDownload";
 import type { RemoteHost } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { HostPreviewAttachment } from "./HostPreviewAttachment";
 
 const PREVIEW_BYTES = 64 * 1024;
 const validPath = (value: string) => value.startsWith("/") && value !== "/" && value.length <= 4096 &&
@@ -11,7 +12,7 @@ const validPath = (value: string) => value.startsWith("/") && value !== "/" && v
 
 /** A temporary text preview obtained through the authenticated, checked download path. */
 export function HostTextPreview({ host, path, active }: { host: RemoteHost; path: string; active: boolean }): JSX.Element {
-  const [preview, setPreview] = useState<{ path: string; text: string; truncated: boolean; filtered: boolean; sha256: string; serviceId: string } | null>(null);
+  const [preview, setPreview] = useState<{ path: string; text: string; truncated: boolean; filtered: boolean; sha256: string; serviceId: string; blob: Blob } | null>(null);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [destination, setDestination] = useState("");
   const saving = useRef(false);
@@ -55,7 +56,7 @@ export function HostTextPreview({ host, path, active }: { host: RemoteHost; path
       if (!current()) return;
       if (after.service_id !== identity.service_id) throw new Error("服务身份已变化，请重新预览。");
       const safe = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
-      if (current()) setPreview({ path, text: safe, truncated: bytes.length > PREVIEW_BYTES, filtered: safe !== text, sha256, serviceId: identity.service_id });
+      if (current()) setPreview({ path, text: safe, truncated: bytes.length > PREVIEW_BYTES, filtered: safe !== text, sha256, serviceId: identity.service_id, blob });
     } catch (error) {
       if (current()) setMessage(error instanceof Error ? error.message : "读取失败");
     } finally {
@@ -97,5 +98,6 @@ export function HostTextPreview({ host, path, active }: { host: RemoteHost; path
       <label className="block">保存到运行当前服务的机器上的新文件（绝对路径）<Input aria-label={`${host.name} 预览版本保存路径`} value={destination} disabled={busy} onChange={(event) => setDestination(event.target.value)} /></label>
       <Button type="button" size="sm" variant="secondary" disabled={busy || !/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(destination.trim())} onClick={() => void save()}>保存预览版本</Button>
       <p>保存时重新读取完整文件，仅哈希一致且目标不存在时创建；目标路径属于运行当前服务的机器。</p></div>}
+    <HostPreviewAttachment host={host} preview={preview} active={active} />
   </div>;
 }

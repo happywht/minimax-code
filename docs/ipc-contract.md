@@ -1880,6 +1880,8 @@ document the migration in this file.
 
 ### attachment.* — 项目附件原件（Schema043）
 
+远端预览的“保存到项目附件”复用现有认证 `POST /attachments`，不新增 RPC：客户端提交已校验的完整预览快照，前后核对服务、主机和会话项目，并核对返回的附件大小和 SHA-256。上传不是幂等操作；提交结果不明时须检查原项目附件，标签页内的待核对记录不是持久或跨标签页去重机制。
+
 | 方法 | 参数 | 返回 |
 |------|------|------|
 | `attachment.generate_report_pair` | `{project_id, expected_service_id, filename, title, paragraphs?, sections?, formats?}` | `{status, results}`，共享内容逐格式保存并返回各自状态 |
