@@ -23,7 +23,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ...execution import ExecutionDeniedError, policy_workspace, require_write_access
+from ...execution import (ExecutionDeniedError, network_tools_restricted, policy_workspace,
+                          require_write_access)
 from ...workspace_ctx import (
     WorkspaceUnavailableError,
     current_root,
@@ -452,6 +453,12 @@ class WriteFileTool(Tool):
         except PathSecurityError as exc:
             return ToolResult.fail(str(exc))
 
+        # Restricted research runs may create only text deliverables. Keep the
+        # normal write_file permission and workspace checks; do not grant a
+        # separate tool identity that could bypass those permissions.
+        if network_tools_restricted() and target.suffix.lower() not in {".md", ".txt"}:
+            return ToolResult.fail("Restricted tasks can create only .md or .txt files.")
+
         # v1.5.1 — cross-run write awareness. Register this run's claim
         # on the *workspace* path (the merge target for sandboxed runs)
         # and surface any rival in-flight run as an advisory warning.
@@ -478,6 +485,10 @@ class WriteFileTool(Tool):
             return ToolResult.fail(f"path is an existing directory: {target}")
 
         existed = read_target.exists()
+        if network_tools_restricted() and existed:
+            return ToolResult.fail(
+                "Restricted tasks cannot overwrite files; choose a new .md or .txt path."
+            )
 
         # v1.5.0 CAS — optimistic lock. Hash the on-disk bytes *before*
         # the write; if the caller's last-read fingerprint no longer

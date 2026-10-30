@@ -65,15 +65,21 @@ def execution_scope(policy: ExecutionPolicy) -> Iterator[None]:
         _policy.reset(token)
 
 
+def network_tools_restricted() -> bool:
+    policy = _policy.get()
+    return policy is not None and policy.restrict_network_tools
+
+
 def require_offline_tool(tool: Any) -> None:
     """Only explicitly reviewed implementations may run under this task policy."""
     policy = _policy.get()
     if policy is None or not policy.restrict_network_tools:
         return
     from .agent.tools.ask_user import AskUserTool
+    from .agent.tools.file_ops import WriteFileTool
     from .agent.tools.public_research import GetResearchSourceTool, ListResearchSourcesTool
 
-    if type(tool) not in (AskUserTool, GetResearchSourceTool, ListResearchSourcesTool):
+    if type(tool) not in (AskUserTool, GetResearchSourceTool, ListResearchSourcesTool, WriteFileTool):
         raise ExecutionDeniedError(
             f"Tool {tool.name!r} is unavailable under this task's network tool restriction."
         )

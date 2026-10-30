@@ -260,7 +260,7 @@ export function MessageInput({
             mention.closePicker();
             draft.ref.current?.focus();
           }} />}
-        {!codex && <label className="block px-2.5 py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制此任务的联网工具（仅允许已审计的来源读取及提问；禁用 shell、MCP 和其他工具）。模型服务可能联网；不提供系统网络隔离。</label>}
+        {!codex && <label className="block px-2.5 py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制此任务的联网工具（允许读取已保存来源、提问及按写入权限新建 Markdown/TXT 文件；禁用 shell、MCP 和其他工具）。模型服务可能联网；不提供系统网络隔离。</label>}
         <ProjectAttachmentImport sessionId={sessionId} projectId={projectId} host={budgetHost} />
         <AttachmentRows
           attachedFiles={attachments.attachedFiles}

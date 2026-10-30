@@ -75,7 +75,7 @@ export function ResearchTaskTemplate({ project, session, host, disabled, onPrepa
   const field = "rounded border border-line bg-surface-0 p-1";
   return <details className="border-b border-line/60 px-2.5 py-2 text-xs text-ink-1">
     <summary className="cursor-pointer">专题研究工作流</summary>
-    <p className="my-2 text-ink-2">填写问题，可选择已保存的项目来源。准备草稿不会联网或调用模型；来源摘录有界且未核验。未勾选时为该草稿启用工具联网限制；这会禁用 shell 和未经审计的工具。模型服务仍可能联网，这不是操作系统网络隔离。</p>
+    <p className="my-2 text-ink-2">填写问题，可选择已保存的项目来源。准备草稿不会联网或调用模型；来源摘录有界且未核验。未勾选时为该草稿启用工具联网限制；可按写入权限新建 Markdown/TXT 文件；禁用 shell 和未经审计的工具。模型服务仍可能联网，这不是操作系统网络隔离。</p>
     <label className="block">研究问题<textarea aria-label="研究问题" value={question} maxLength={2000} disabled={busy || disabled} onChange={(event) => setQuestion(event.target.value)} className="mt-1 block w-full rounded border border-line bg-surface-0 p-1" /></label>
     <label className="mt-2 block">范围、时间和用途（可选）<input aria-label="研究范围、时间和用途" value={scope} maxLength={1000} disabled={busy || disabled} onChange={(event) => setScope(event.target.value)} className={`mt-1 block w-full ${field}`} /></label>
     <label className="mt-2 block"><input type="checkbox" checked={online} disabled={busy || disabled} onChange={(event) => setOnline(event.target.checked)} /> 允许现有工具联网规则，并请求尝试搜索和读取公开网页（依赖配置与权限）</label>
