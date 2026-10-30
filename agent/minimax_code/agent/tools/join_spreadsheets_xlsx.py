@@ -26,7 +26,8 @@ class JoinSpreadsheetTool(Tool):
         "Key lists must have equal length and corresponding types; text is case-sensitive. "
         "A key combination with any blank never matches; duplicate complete right combinations "
         "reject the request. Left rows and order are preserved; "
-        "unmatched fields are blank. CSV identifiers should be text to preserve leading zeros. "
+        "unmatched fields are blank. Optional join_mode selects all left rows, matched rows only, "
+        "or unmatched left rows only for reconciliation. CSV identifiers should be text to preserve leading zeros. "
         "Per-column trim and null_values are explicit; no fuzzy matching or inferred values. "
         "XLSX requires an exact visible sheet and rejects formulas and complex sheets. "
         "Retry identical inputs with the same request_key; use a new key for changes. "
@@ -44,6 +45,8 @@ class JoinSpreadsheetTool(Tool):
     parameters = {"type": "object", "properties": {
         "left": _source, "right": _source, "filename": {"type": "string"},
         "request_key": {"type": "string"}, "sheet_name": {"type": "string"},
+        "join_mode": {"type": "string", "enum": ["left", "matched", "unmatched"],
+                      "description": "Rows to deliver; default left"},
     }, "required": ["left", "right", "filename", "request_key", "sheet_name"],
         "additionalProperties": False}
 
@@ -95,9 +98,12 @@ class JoinSpreadsheetTool(Tool):
                        "changed_cells": counts[c["name"]]} for c in config["columns"]]}
         return spec, source
 
-    async def run(self, left: dict, right: dict, filename: str, request_key: str, sheet_name: str) -> ToolResult:
+    async def run(self, left: dict, right: dict, filename: str, request_key: str,
+                  sheet_name: str, join_mode: str = "left") -> ToolResult:
         try:
             require_write_access()
+            if not isinstance(join_mode, str) or join_mode not in {"left", "matched", "unmatched"}:
+                raise ValueError("join_mode must be left, matched or unmatched")
             if not self.project_id:
                 raise ValueError("Current session has no project")
             if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_key):
@@ -138,24 +144,31 @@ class JoinSpreadsheetTool(Tool):
                 key = tuple(row[i] for i in li)
                 hit = lookup.get(key) if all(value is not None for value in key) else None
                 matched += hit is not None
-                rows.append([*row, *([hit[i] for i in fields] if hit is not None else [None] * len(fields))])
+                if join_mode == "left" or (join_mode == "matched") == (hit is not None):
+                    rows.append([*row, *([hit[i] for i in fields] if hit is not None else [None] * len(fields))])
             output = XlsxSpec.model_validate({"sheet_name": sheet_name,
                 "columns": [*left_spec["columns"], *[right_spec["columns"][i] for i in fields]],
                 "rows": rows}).model_dump()
-            counts = {"left_rows": len(rows), "right_rows": len(right_spec["rows"]),
-                      "matched_rows": matched, "unmatched_rows": len(rows) - matched,
+            counts = {"left_rows": len(left_spec["rows"]), "right_rows": len(right_spec["rows"]),
+                      "matched_rows": matched, "unmatched_rows": len(left_spec["rows"]) - matched,
                       "right_blank_keys": blank_keys}
             legacy = "key" in left and "key" in right
             actual_keys = {"left": left["key"], "right": right["key"]} if legacy else {
                 "left": left_keys, "right": right_keys}
             processing = {"version": 2 if legacy else 3, "operation": "left_join",
                           "sources": [left_source, right_source], "keys": actual_keys, "counts": counts}
+            if join_mode != "left":
+                processing = {"version": 4, "operation": "left_join",
+                              "sources": [left_source, right_source],
+                              "keys": {"left": left_keys, "right": right_keys},
+                              "counts": counts, "join_mode": join_mode}
             bound_key = "join_" + hashlib.sha256(canonical(request_key)).hexdigest()
             result = await self.generator.run(filename, bound_key, output, processing=processing)
             if result.success:
                 result.output.update({"request_key": request_key, "sources": [left_source, right_source],
-                                      "join_keys": actual_keys, "join_counts": counts,
-                                      "source_notice": "Left rows preserved; unmatched fields are blank. Originals were not modified; business quality is unverified."})
+                                      "join_keys": actual_keys, "join_counts": counts, "join_mode": join_mode,
+                                      "output_rows": len(rows),
+                                      "source_notice": "Output retains left-side order; unmatched fields are blank. Originals were not modified; business quality is unverified."})
             return result
         except (ValueError, OSError, ValidationError) as error:
             return ToolResult.fail(f"Spreadsheet join failed: {error}")

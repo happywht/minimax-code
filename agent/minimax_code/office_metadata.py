@@ -67,8 +67,12 @@ def _sheet(value: object) -> bool:
 
 
 def _validate_join_processing(value: dict) -> None:
-    _require(set(value) == {"version", "operation", "sources", "keys", "counts"}
-             and type(value["version"]) is int and value["version"] in {2, 3}
+    _require(set(value) == ({"version", "operation", "sources", "keys", "counts", "join_mode"}
+                            if value.get("version") == 4 else
+                            {"version", "operation", "sources", "keys", "counts"})
+             and type(value["version"]) is int and value["version"] in {2, 3, 4}
+             and (value["version"] != 4 or (type(value["join_mode"]) is str
+                  and value["join_mode"] in {"matched", "unmatched"}))
              and value["operation"] == "left_join", "Invalid join processing description")
     sources = value["sources"]
     _require(type(sources) is list and len(sources) == 2, "Invalid join sources")
@@ -124,7 +128,7 @@ def validate_report(value: object) -> dict:
                  and any(notes[key].strip() for key in notes), "Invalid operator notes")
     if "processing" in value:
         processing = value["processing"]
-        if type(processing) is dict and processing.get("version") in (2, 3):
+        if type(processing) is dict and processing.get("version") in (2, 3, 4):
             _validate_join_processing(processing)
         else:
             processing_keys = {
