@@ -494,14 +494,28 @@ class RunService:
         jobs = {job for queue in self._jobs.values() for job in queue}
         admissions = await asyncio.gather(*list(self._admissions), return_exceptions=True)
         jobs.update(job for queue in self._jobs.values() for job in queue)
+        # An admission can return an existing or newly accepted job that has
+        # already finished and removed itself while another admission awaited
+        # SQLite. Retain it so its teardown outcome is still observed.
+        for admission in admissions:
+            if not isinstance(admission, BaseException) and admission[1] is not None:
+                jobs.add(admission[1])
         for job in jobs:
             self._cancel(job)
-        results = await asyncio.gather(*(job.task for job in jobs if job.task), return_exceptions=True)
+        active_jobs = [job for job in jobs if job.task]
+        results = await asyncio.gather(*(job.task for job in active_jobs), return_exceptions=True)
         failures = [value for value in admissions
                     if isinstance(value, BaseException)
-                    and not isinstance(value, (asyncio.CancelledError, RunServiceClosing))]
-        failures.extend(value for value in results if isinstance(value, BaseException)
-                        and not isinstance(value, asyncio.CancelledError))
+                    and not isinstance(value, RunServiceClosing)]
+        for job, value in zip(active_jobs, results, strict=True):
+            if isinstance(value, asyncio.CancelledError):
+                # A cancellation is safe only when requested through this
+                # service and its finalizer actually finished. A second or
+                # external cancellation can interrupt durable cleanup.
+                if not job.cancel_requested or not job.cleanup_completed:
+                    failures.append(value)
+            elif isinstance(value, BaseException):
+                failures.append(value)
         if failures:
             raise RunShutdownError("Run cleanup ended with an error") from failures[0]
 
