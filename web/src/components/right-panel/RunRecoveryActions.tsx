@@ -24,8 +24,9 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   const selectedProject = useSessionStore((state) => state.currentProjectId);
   const host = ipc.agentBaseUrl;
   const codex = run.metadata?.engine === "codex";
-  const scheduledContinuation = run.status === "completed" && run.metadata?.truncated === true && !!run.metadata?.schedule;
-  const resumable = scheduledContinuation || ["interrupted", "failed", "cancelled", "budget_paused"].includes(run.status);
+  const continuation = !codex && run.status === "completed" && run.metadata?.truncated === true;
+  const scheduledContinuation = continuation && !!run.metadata?.schedule;
+  const resumable = continuation || ["interrupted", "failed", "cancelled", "budget_paused"].includes(run.status);
   const active = ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status);
   useEffect(() => {
     ++epoch.current; setReview(null); setAttempt(null); setFoundRun(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens(""); setChangeBudget(false); setHandoff("");
@@ -148,6 +149,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   return <div className="mt-2 space-y-2 text-xs text-ink-1" data-testid="run-recovery-actions">
     {resumable ? <>
       <p>恢复会创建关联的新运行，不会自动重放工具步骤，也不是从精确执行位置继续。请先核对记录、当前文件和可能的外部副作用。</p>
+      {continuation && !scheduledContinuation && <p>此运行达到迭代上限后尚未完成；核对后可在原累计预算下继续剩余工作。</p>}
       {scheduledContinuation && <p>此定时运行达到迭代上限后未完成。核对后可在原发生记录和原预算下继续；后续定时触发仍需按任务状态处理。</p>}
       <Button type="button" size="sm" variant="secondary" disabled={loading || pending || !sameProject || session !== run.session_id} loading={loading} onClick={() => void loadReview()}>读取中断记录并核对</Button>
       {!sameProject && <p>请切换到运行所属项目后核对。</p>}

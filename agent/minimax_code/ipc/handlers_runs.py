@@ -693,14 +693,15 @@ def register_run_handlers(server: Any) -> None:
             await require_public_recovery(None, request.run_id)
             run = await dao.get_run(request.run_id)
             metadata = (run or {}).get("metadata") or {}
-            scheduled_continuation = bool(run and run["status"] == "completed"
-                                          and metadata.get("truncated") is True
-                                          and metadata.get("schedule"))
+            continuation = bool(run and run["status"] == "completed"
+                                and metadata.get("truncated") is True
+                                and metadata.get("engine") != "codex")
+            scheduled_continuation = bool(continuation and metadata.get("schedule"))
             if run is None or (run["status"] not in {"interrupted", "failed", "cancelled", "budget_paused"}
-                               and not scheduled_continuation):
+                               and not continuation):
                 raise HandlerError(INVALID_PARAMS, "Only interrupted, failed, cancelled or budget-paused runs can be resumed")
-            if scheduled_continuation and not request.reviewed:
-                raise HandlerError(INVALID_PARAMS, "Review the scheduled run and workspace before continuing")
+            if continuation and not request.reviewed:
+                raise HandlerError(INVALID_PARAMS, "Review the run and workspace before continuing")
             if scheduled_continuation and request.budget_tokens is not None:
                 raise HandlerError(INVALID_PARAMS, "Scheduled continuation must retain its original cumulative budget")
             if run.get("mode") == "team":
@@ -783,7 +784,11 @@ def register_run_handlers(server: Any) -> None:
             if request.handoff.strip():
                 note += "\n\nUser recovery handoff (reviewed by the user):\n" + request.handoff
             content = previous["content"]
-            if isinstance(content, list):
+            if continuation:
+                content = (f"[Continue truncated run {run['id']}. Inspect the existing workspace and "
+                           "prior conversation, verify what has already happened, and continue only "
+                           "unfinished work. Do not blindly repeat unconfirmed writes.]" + note)
+            elif isinstance(content, list):
                 content = [*content, {"type": "text", "text": note}]
             else:
                 content += note
@@ -811,7 +816,7 @@ def register_run_handlers(server: Any) -> None:
                  "budget_tokens": budget_override,
                  "restrict_network_tools": metadata.get("restrict_network_tools", False)},
                 ctx, wait=False, resumed_from_id=run["id"],
-                continuation=scheduled_continuation,
+                continuation=continuation,
                 required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"],
                 required_permission_rules=metadata.get("permission_rules_snapshot"),
                 internal_schedule=saved_schedule, internal_skill=saved_skill, internal_agent=saved_agent)

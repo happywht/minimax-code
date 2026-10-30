@@ -228,7 +228,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
         <RunTextArtifacts key={`${service}:${detail.id}:${detail.session_id}`} runId={detail.id} sessionId={detail.session_id} projectId={project!} serviceId={service} review onPrepareReport={(row) => void prepareHistoricalReport(row)} />
         <FollowupRunDraft key={`${service}:${detail.id}:${activeSession}`} run={snapshot.run} allowOtherSession />
         {(["interrupted", "failed", "cancelled", "budget_paused"].includes(snapshot.run.status) ||
-          (snapshot.run.status === "completed" && snapshot.run.metadata?.truncated === true && !!snapshot.run.metadata?.schedule)) &&
+          (snapshot.run.status === "completed" && snapshot.run.metadata?.truncated === true && snapshot.run.metadata?.engine !== "codex")) &&
           <div className="mt-2 rounded border border-line p-2" aria-label="历史运行接续">
             <p className="text-sm font-medium">核对并接续此运行</p>
             {activeSession !== detail.session_id ? <Button type="button" size="sm" variant="secondary" onClick={() => {

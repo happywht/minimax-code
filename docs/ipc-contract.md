@@ -2287,7 +2287,7 @@ schedule.occurrences 返回不可变 prompt/context/revision/source/时间区间
 
 `run.resume` 可附带完整的 `expected_service_id`、`expected_session_id`、`expected_project_id` 和 `expected_cursor`，服务在接单前对照持久运行快照；缺项或已变化时拒绝。调用者仍须审阅外部副作用，运行和文件可能在校验后继续变化；这不是 OS 沙盒或精确恢复。
 
-达到迭代上限的定时运行若记录为 `completed` 且 `truncated`，可在运行时间线核对记录和工作区后通过 `run.resume` 手动继续。此路径要求 `reviewed=true`，沿用该发生的冻结上下文、权限、累计预算和租约，创建关联的新运行；不自动重放工具或未知结果的写操作。定时发生的状态由调度器根据新运行的持久终态进行协调，执行结束不等于验收通过。
+达到迭代上限的 Native 运行若记录为 `completed` 且 `truncated`，可在运行时间线核对记录和工作区后通过 `run.resume` 手动继续。此路径要求 `reviewed=true`，保留原模型、工作区、权限快照和累计预算，创建关联的新运行；不自动重放工具或未知结果的写操作。定时运行另沿用该发生的冻结上下文和租约，其状态由调度器根据新运行的持久终态进行协调。执行结束不等于验收通过。
 
 
 `attachment.ocr_image` 仅接受 `eng`、`chi_sim` 或 `eng+chi_sim`，仅处理声明与识别类型一致的 PNG/JPEG。操作者需自行安装 Pillow、tesserocr、Tesseract 和所选语言数据，必要时在启动服务前设置 `TESSDATA_PREFIX` 指向 tessdata 目录；不会自动下载或安装。附件最多 10 MiB、1200 万像素且仅单帧；处理复用单并发解析进程、512 MiB 内存和 15 秒墙钟限制，返回最多 16000 字符，结果不会保存或自动进入对话。原件经 SHA-256 校验、不修改。结果未经核验，可能漏字、错字或丢失布局。该实现不进行网络请求，但解析进程的资源限制并非操作系统网络或文件系统沙箱；第三方原生库的安全仍依赖安装来源。GIF 和 WebP 当前不支持 OCR。

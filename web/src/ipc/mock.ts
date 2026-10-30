@@ -825,13 +825,15 @@ function mockHandle(
       if (p.handoff !== undefined && (typeof p.handoff !== "string" || p.handoff.length > 4000)) throw new Error("Invalid recovery handoff");
       const entry = mockRuns.get(p.run_id);
       const original = mockRunRequests.get(p.run_id);
-      if (!entry || !original || !["interrupted", "failed", "cancelled"].includes(entry.run.status)) {
+      const continuation = !!entry && entry.run.status === "completed" && entry.run.metadata?.truncated === true && entry.run.metadata?.engine !== "codex";
+      if (!entry || !original || (!continuation && !["interrupted", "failed", "cancelled"].includes(entry.run.status))) {
         throw new Error("Run cannot be resumed; start a new task");
       }
-      if (entry.run.started_at && !p.reviewed) throw new Error("Review prior steps and workspace before resuming");
+      if ((continuation || entry.run.started_at) && !p.reviewed) throw new Error("Review prior steps and workspace before resuming");
       const note = `\n\n[Runtime recovery context: prior run ${entry.run.id} ended as ${entry.run.status}. Continue the original task after inspecting the existing workspace and prior conversation. Verify which actions already took effect before repeating a write. No tool step has been automatically retried.]`;
       const handoff = p.handoff?.trim() ? `\n\nUser recovery handoff (reviewed by the user):\n${p.handoff}` : "";
-      const content = typeof original.content === "string" ? original.content + note + handoff
+      const content = continuation ? `[Continue truncated run ${entry.run.id}. Inspect the existing workspace and prior conversation, verify what has already happened, and continue only unfinished work. Do not blindly repeat unconfirmed writes.]${note}${handoff}`
+        : typeof original.content === "string" ? original.content + note + handoff
         : [...original.content, { type: "text" as const, text: note + handoff }];
       const result = mockHandle("run.start", { ...original, content, idempotency_key: p.idempotency_key }, client, id) as import("../types/ipc").RunAdmissionResult;
       mockRuns.get(result.run.id)!.run.resumed_from_id = p.run_id;
