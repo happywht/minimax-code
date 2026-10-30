@@ -14,6 +14,7 @@ import { DraftFileControl } from "./DraftFileControl";
 import type { ReportTableTransfer } from "./DeliveryWorkspace";
 import { OfficeFollowupDraft } from "./OfficeFollowupDraft";
 import { OfficeDeliveryReuse } from "./OfficeDeliveryReuse";
+import { OfficeDeliveryPackage } from "./OfficeDeliveryPackage";
 import { OfficeReportTableTransfer } from "./OfficeReportTableTransfer";
 
 const example = JSON.stringify({ sheet_name: "清单", columns: [
@@ -212,6 +213,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         {([ ["输入来源", state.selected.delivery.validation_report.operator_notes.source], ["变换口径", state.selected.delivery.validation_report.operator_notes.method], ["限制与待核对事项", state.selected.delivery.validation_report.operator_notes.limitations] ] as const).map(([label, value]) => value && <div key={label}><p>{label}：</p><p className="whitespace-pre-wrap break-words">{value}</p></div>)}
       </details>}
       {state.selected.delivery.validation_report.scope === "xlsx_plain_cells_v1" && <OfficeFollowupDraft selected={state.selected} />}
+      <OfficeDeliveryPackage key={`package:${state.selected.delivery.id}:${state.selected.attachment.sha256}`} selected={state.selected} project={project} session={session} service={state.serviceId} host={host} />
       {state.selected.delivery.validation_report.scope === "xlsx_plain_cells_v1" && <OfficeDeliveryReuse key={`${state.selected.delivery.id}:${state.selected.attachment.sha256}`}
         selected={state.selected} project={project} session={session} service={state.serviceId} host={host}
         draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, filePending])} filePending={filePending}
