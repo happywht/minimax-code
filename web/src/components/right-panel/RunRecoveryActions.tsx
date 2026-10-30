@@ -6,12 +6,26 @@ import { Button } from "../../ui";
 import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
 import { CodexRecoveryInput } from "./CodexRecoveryInput";
 
+export type RetainedRecoveryDraft = { handoff: string; changeBudget: boolean; budgetTokens: string };
+const retainedRecoveryDrafts = new Map<string, RetainedRecoveryDraft>();
+let recoveryUnloadGuard = false;
+const warnRecoveryUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+export const recoveryDraftKey = (host: string, service: string, project: string, session: string, run: string) => JSON.stringify([host, service, project, session, run]);
+export const readRetainedRecovery = (key: string): RetainedRecoveryDraft | undefined => retainedRecoveryDrafts.get(key);
+export const discardRetainedRecovery = (key: string): void => retainRecovery(key, null);
+function retainRecovery(key: string | null, draft: RetainedRecoveryDraft | null) {
+  if (!key) return;
+  if (draft && (draft.handoff.trim() || draft.changeBudget || draft.budgetTokens)) retainedRecoveryDrafts.set(key, draft);
+  else retainedRecoveryDrafts.delete(key);
+  if (retainedRecoveryDrafts.size && !recoveryUnloadGuard) { window.addEventListener("beforeunload", warnRecoveryUnload); recoveryUnloadGuard = true; }
+  if (!retainedRecoveryDrafts.size && recoveryUnloadGuard) { window.removeEventListener("beforeunload", warnRecoveryUnload); recoveryUnloadGuard = false; }
+}
 type Review = { snapshot: RunStepsResult; service: string; host: string; project: string | null };
 type Attempt = { key: string; run: string; session: string; project: string | null; service: string; host: string; cursor: number; budget: number | null; handoff: string; reviewed: true };
 const retryStorage = (item: Pick<Attempt, "host" | "service" | "session" | "run">) =>
   `minimax:resume:${encodeURIComponent(item.host)}:${encodeURIComponent(item.service)}:${encodeURIComponent(item.session)}:${encodeURIComponent(item.run)}`;
 
-export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: () => Promise<void> }): JSX.Element | null {
+export function RunRecoveryActions({ run, refresh, expectedService, onEditingChange }: { run: AgentRun; refresh: () => Promise<void>; expectedService?: string; onEditingChange?: (editing: boolean) => void }): JSX.Element | null {
   const [reviewed, setReviewed] = useState(false), [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null), [cancelRequested, setCancelRequested] = useState(false);
   const [resumed, setResumed] = useState(false), [budgetTokens, setBudgetTokens] = useState("");
@@ -24,16 +38,21 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
   const project = useSessionStore((state) => state.sessions.find((item) => item.id === session)?.project_id ?? null);
   const selectedProject = useSessionStore((state) => state.currentProjectId);
   const host = ipc.agentBaseUrl;
+  const draftKey = expectedService && session && project ? recoveryDraftKey(host, expectedService, project, session, run.id) : null;
+  const saveEditing = (patch: Partial<RetainedRecoveryDraft>) => retainRecovery(draftKey, { handoff, changeBudget, budgetTokens, ...patch });
   const codex = run.metadata?.engine === "codex";
   const continuation = !codex && run.status === "completed" && run.metadata?.truncated === true;
   const scheduledContinuation = continuation && !!run.metadata?.schedule;
   const resumable = continuation || ["interrupted", "failed", "cancelled", "budget_paused"].includes(run.status);
   const active = ["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status);
   useEffect(() => {
-    ++epoch.current; setReview(null); setAttempt(null); setFoundRun(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens(""); setChangeBudget(false); setHandoff("");
+    const saved = draftKey ? retainedRecoveryDrafts.get(draftKey) : undefined;
+    ++epoch.current; setReview(null); setAttempt(null); setFoundRun(null); setReviewed(false); setError(null); setLoading(false); setPending(false); setResumed(false); setCancelRequested(false); setBudgetTokens(saved?.budgetTokens ?? ""); setChangeBudget(saved?.changeBudget ?? false); setHandoff(saved?.handoff ?? "");
     return () => { ++epoch.current; };
-  }, [run.id, run.status, session, project, selectedProject, host]);
+  }, [run.id, run.status, session, project, selectedProject, host, draftKey]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setReview(null); setAttempt(null); setReviewed(false); setPending(false); setLoading(false); setError("连接变化，请重新读取运行和待确认请求。"); }), []);
+  useEffect(() => { onEditingChange?.(!!handoff.trim() || changeBudget || !!budgetTokens || reviewed); }, [handoff, changeBudget, budgetTokens, reviewed, onEditingChange]);
+  useEffect(() => () => onEditingChange?.(false), [onEditingChange]);
   if (!resumable && !active) return null;
   const hasWorkspace = typeof run.metadata?.workspace_snapshot === "string" && !!run.metadata.workspace_snapshot;
   const missingContext = [
@@ -65,7 +84,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
       const snapshot = await typedIPC.getRunSteps(run.id);
       const finalIdentity = await typedIPC.getServiceIdentity();
       if (!current(ticket)) return;
-      if (!identity.service_id || finalIdentity.service_id !== identity.service_id || snapshot.run.id !== run.id ||
+      if (!identity.service_id || (expectedService && identity.service_id !== expectedService) || finalIdentity.service_id !== identity.service_id || snapshot.run.id !== run.id ||
           snapshot.run.session_id !== session || snapshot.run.status !== run.status ||
           (snapshot.run.metadata?.project_id ?? null) !== project || !Number.isSafeInteger(snapshot.cursor) || snapshot.cursor < 0 ||
           snapshot.steps.some((step) => step.run_id !== run.id || step.session_id !== session)) throw new Error("运行、项目或服务绑定已变化，请刷新");
@@ -114,7 +133,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
         { service: payload.service, session: payload.session, project: payload.project, cursor: payload.cursor }, payload.handoff);
       if (!current(ticket)) return;
       if (result.run.session_id !== session || result.run.resumed_from_id !== run.id) throw new Error("接续运行归属不匹配，请在时间线核对");
-      localStorage.removeItem(retryStorage(payload)); setAttempt(null); setResumed(true); await refresh();
+      localStorage.removeItem(retryStorage(payload)); retainRecovery(draftKey, null); setAttempt(null); setResumed(true); await refresh();
     } catch (failure) { if (current(ticket)) setError(`恢复结果未确认：${failure instanceof Error ? failure.message : String(failure)}。请先核对时间线；重试将使用同一请求。`); }
     finally { inFlight.current = false; if (current(ticket)) setPending(false); }
   };
@@ -143,7 +162,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
         item.request_key === attempt.key && (item.metadata?.project_id ?? null) === project);
       if (matches.length !== 1) throw new Error("未能确认此请求是否已接收；请检查完整时间线，保留待确认记录");
       setFoundRun(matches[0]);
-      localStorage.removeItem(retryStorage(attempt)); setAttempt(null); setResumed(true);
+      localStorage.removeItem(retryStorage(attempt)); retainRecovery(draftKey, null); setAttempt(null); setResumed(true);
       await refresh();
     } catch (failure) { if (current(ticket)) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { inFlight.current = false; if (current(ticket)) setPending(false); }
@@ -175,7 +194,7 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
               <Button type="button" size="sm" variant="secondary" disabled={pending || !!attempt} onClick={() => {
                 const addition = `${handoff.trim() ? "\n\n" : ""}待核对的运行中补充（是否生效未知）：\n${text}`;
                 if (handoff.length + addition.length > 4000) { setError("交接超过 4000 字，请手动摘录需要的内容。"); return; }
-                setHandoff(handoff + addition); setError(null);
+                setHandoff(handoff + addition); saveEditing({ handoff: handoff + addition }); setError(null);
               }}>加入恢复交接草稿</Button>
             </div>;
           })}
@@ -185,18 +204,20 @@ export function RunRecoveryActions({ run, refresh }: { run: AgentRun; refresh: (
           cursor={review.snapshot.cursor} disabled={pending || !!attempt} onAdd={(text) => {
             const addition = `${handoff.trim() ? "\n\n" : ""}原任务文字摘录（请核对是否已被处理）：\n${text}`;
             if (handoff.length + addition.length > 4000) return "交接超过 4000 字，请缩短摘录或已有交接。";
-            setHandoff(handoff + addition); setReviewed(false);
+            setHandoff(handoff + addition); saveEditing({ handoff: handoff + addition }); setReviewed(false);
             return "已加入恢复交接；请再次审阅并确认。";
           }} />}
         <label className="flex items-start gap-2"><input type="checkbox" checked={reviewed} disabled={pending} onChange={(event) => setReviewed(event.target.checked)} />已核对记录、当前文件及可能的外部副作用。</label>
         <label className="block">恢复交接（可选）：记录已核实的操作、仍不确定的结果和剩余事项
-          <textarea aria-label="恢复交接" className="mt-1 block w-full rounded border border-line bg-surface-1 p-2" maxLength={4000} value={handoff} disabled={pending || !!attempt} onChange={(event) => setHandoff(event.target.value)} />
+          <textarea aria-label="恢复交接" className="mt-1 block w-full rounded border border-line bg-surface-1 p-2" maxLength={4000} value={handoff} disabled={pending || !!attempt} onChange={(event) => { setHandoff(event.target.value); saveEditing({ handoff: event.target.value }); }} />
         </label>
         <p>交接内容会随恢复请求保存并发送给模型；不要填写不应发送的秘密。</p>
+        {draftKey && <div><p>未提交的交接和预算编辑按服务、项目、会话与运行保留在当前页面内存中；刷新或关闭页面会丢失。重新打开后仍需重新核对并勾选。</p>
+          <Button type="button" size="sm" variant="ghost" disabled={pending || !!attempt} onClick={() => { if (window.confirm("放弃此运行未提交的恢复交接和预算编辑？")) { retainRecovery(draftKey, null); setHandoff(""); setChangeBudget(false); setBudgetTokens(""); setReviewed(false); } }}>放弃恢复编辑</Button></div>}
         {canChangeBudget && <div className="space-y-1">
-          <label className="flex items-center gap-2"><input type="checkbox" checked={changeBudget} disabled={pending || !!attempt} onChange={(event) => setChangeBudget(event.target.checked)} />修改累计 token 上限</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={changeBudget} disabled={pending || !!attempt} onChange={(event) => { setChangeBudget(event.target.checked); saveEditing({ changeBudget: event.target.checked }); }} />修改累计 token 上限</label>
           <p>默认保留原运行的累计上限（包括未设置上限）。可保留或提高已有上限；不清除已用额度或未知责任。日额度及账本检查仍然生效；请先核对上方共享预算账本。</p>
-          {changeBudget && <label className="block">恢复 token 上限（累计含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} disabled={pending || !!attempt} onChange={(event) => setBudgetTokens(event.target.value)} /></label>}
+          {changeBudget && <label className="block">恢复 token 上限（累计含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} disabled={pending || !!attempt} onChange={(event) => { setBudgetTokens(event.target.value); saveEditing({ budgetTokens: event.target.value }); }} /></label>}
         </div>}
         {attempt && <p>存在待确认恢复请求；重试保留原请求 ID 和预算，不会创建新的重试身份。请先核对时间线。</p>}
         {foundRun && <p role="status" className="break-all">已找到该请求接收的关联运行 {foundRun.id}，当前记录状态：{foundRun.status}。请在时间线查看其结果。</p>}

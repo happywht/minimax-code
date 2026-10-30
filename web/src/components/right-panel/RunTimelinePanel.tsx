@@ -16,7 +16,7 @@ import { PermissionPatchPreview } from "../modals/PermissionPatchPreview";
 import { CodexFileChangePreview, permissionArgsWithoutCodexPreview } from "../modals/CodexFileChangePreview";
 import { strings } from "../../ui/strings";
 import { Button } from "../../ui";
-import { RunRecoveryActions } from "./RunRecoveryActions";
+import { RunRecoveryActions, recoveryDraftKey, readRetainedRecovery, discardRetainedRecovery } from "./RunRecoveryActions";
 import { RunBudgetPanel } from "./RunBudgetPanel";
 import { VerificationBadge } from "../chat/VerificationBadge";
 import { VerificationDetails } from "../chat/VerificationDetails";
@@ -33,6 +33,8 @@ import { CodexInputImages } from "./CodexInputImages";
 import { CodexInputDraft } from "./CodexInputDraft";
 import { PlanRunDraft } from "./PlanRunDraft";
 import { RunReferenceExport, RunReferenceRecovery, type Reference } from "./RunReferenceRecovery";
+import { ProjectRunBudget } from "../panels/ProjectRunBudget";
+import { RunTextArtifacts } from "./RunTextArtifacts";
 
 export type TimelineTarget = { host: string; service: string; project: string; session: string; run: string;
   job: string; occurrence: string; revision: number; workspace: string };
@@ -283,6 +285,7 @@ export function RunTimelinePanel({
 }
 
 function ReferenceTargetTimeline({ target, onClear }: { target: Reference & { host: string }; onClear: () => void }): JSX.Element {
+  const editing = useRef(false);
   const [snapshot, setSnapshot] = useState<RunStepsResult | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const epoch = useRef(0);
@@ -290,7 +293,8 @@ function ReferenceTargetTimeline({ target, onClear }: { target: Reference & { ho
     const ticket = ++epoch.current;
     const current = () => ticket === epoch.current && ipc.agentBaseUrl === target.host &&
       useSessionStore.getState().currentProjectId === target.project_id && useSessionStore.getState().currentSessionId === target.session_id;
-    setSnapshot(null); setBusy(true); setError("");
+    if (!editing.current) setSnapshot(null);
+    setBusy(true); setError("");
     try {
       const check = async () => {
         const info = await typedIPC.getProjectRunSummary({ project_id: target.project_id, expected_service_id: target.service_id, run_id: target.run_id });
@@ -307,22 +311,25 @@ function ReferenceTargetTimeline({ target, onClear }: { target: Reference & { ho
     } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "无法读取目标运行"); }
     finally { if (current()) setBusy(false); }
   };
-  useEffect(() => { void load(); const off = ipc.onSideCar(() => { epoch.current++; setSnapshot(null); setBusy(false); setError("连接已变化，请重新读取目标运行。"); }); return () => { epoch.current++; off(); }; }, [target]);
+  useEffect(() => { void load(); const off = ipc.onSideCar(() => { epoch.current++; if (!editing.current) setSnapshot(null); setBusy(false); setError("连接已变化，请重新读取目标运行；恢复交接会保留，状态变化时需重新核对。"); }); return () => { epoch.current++; off(); }; }, [target]);
   return <div className="space-y-2 p-3 text-xs" data-testid="reference-run-timeline">
     <h3 className="font-semibold">已定位的运行时间线</h3><p className="break-all">运行：{target.run_id} · 会话：{target.session_id}</p>
     <div className="flex gap-2"><Button size="sm" variant="secondary" disabled={busy} onClick={() => void load()}>刷新此运行</Button><Button size="sm" variant="ghost" onClick={onClear}>返回近期时间线</Button></div>
     {busy && <p role="status">正在核对并读取运行…</p>}{error && <p role="alert" className="break-words text-status-warning">{error}</p>}
-    {snapshot && <article className="space-y-2"><p>{snapshot.run.title || "未命名运行"} · 读取时状态 {snapshot.run.status}</p>
-      <p>此视图只读取记录；运行状态可能变化，不会自动执行或迁移任务。</p>
+    {(!!error || (snapshot && !supportsTargetRecovery(snapshot))) && <RetainedTargetRecovery host={target.host} service={target.service_id} project={target.project_id} session={target.session_id} run={target.run_id} />}
+    {snapshot && <fieldset disabled={busy || !!error} hidden={busy || !!error} className="space-y-2"><article className="space-y-2"><p>{snapshot.run.title || "未命名运行"} · 读取时状态 {snapshot.run.status}</p>
+      <p>运行状态可能变化；恢复需核对并明确确认，不会自动执行或迁移任务。</p>
       <ol className="space-y-1.5">{[...snapshot.steps].sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id)).map((step) => <TimelineStep key={step.id} step={step} runStatus={snapshot.run.status} />)}</ol>
       {!snapshot.steps.length && <p>暂无已记录步骤。</p>}
-      <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: target.session_id, projectId: target.project_id, serviceId: target.service_id }} />
+      <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: target.session_id, projectId: target.project_id, serviceId: target.service_id }} verifyRun />
       <RunTimelineTextArtifacts run={snapshot.run} />
-    </article>}
+      <TargetRecoveryEvidence snapshot={snapshot} host={target.host} service={target.service_id} project={target.project_id} session={target.session_id} refresh={load} onEditingChange={(value) => { editing.current = value; }} />
+    </article></fieldset>}
   </div>;
 }
 
 function TargetRunTimeline({ target, onClear }: { target: TimelineTarget; onClear?: () => void }): JSX.Element {
+  const editing = useRef(false);
   const [snapshot, setSnapshot] = useState<RunStepsResult | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const epoch = useRef(0);
@@ -330,7 +337,8 @@ function TargetRunTimeline({ target, onClear }: { target: TimelineTarget; onClea
     const ticket = ++epoch.current;
     const current = () => ticket === epoch.current && ipc.agentBaseUrl === target.host &&
       useSessionStore.getState().currentProjectId === target.project && useSessionStore.getState().currentSessionId === target.session;
-    setSnapshot(null); setBusy(true); setError("");
+    if (!editing.current) setSnapshot(null);
+    setBusy(true); setError("");
     try {
       const [before, result, session] = await Promise.all([
         typedIPC.getServiceIdentity(), typedIPC.getRunSteps(target.run), typedIPC.getSession(target.session),
@@ -340,7 +348,7 @@ function TargetRunTimeline({ target, onClear }: { target: TimelineTarget; onClea
       const run = result.run;
       const schedule = run.metadata?.schedule as { job_id?: string; occurrence_id?: string; revision?: number } | undefined;
       if (!target.service || before.service_id !== target.service || after.service_id !== target.service ||
-          session.session.id !== target.session || session.session.project_id !== target.project ||
+          session.session.id !== target.session || session.session.project_id !== target.project || session.session.archived ||
           run.id !== target.run || run.session_id !== target.session || run.metadata?.project_id !== target.project ||
           run.metadata?.workspace_snapshot !== target.workspace || run.metadata?.model_snapshot?.engine !== "native" ||
           schedule?.job_id !== target.job || schedule.occurrence_id !== target.occurrence || schedule.revision !== target.revision ||
@@ -354,13 +362,13 @@ function TargetRunTimeline({ target, onClear }: { target: TimelineTarget; onClea
   useEffect(() => {
     void load();
     const off = ipc.onSideCar((event) => {
-      ++epoch.current; setSnapshot(null); setBusy(false);
-      if (event.status === "started" && ipc.agentBaseUrl === target.host &&
+      ++epoch.current; if (!editing.current) setSnapshot(null); setBusy(false);
+      if (event.status === "started" && !editing.current && ipc.agentBaseUrl === target.host &&
           useSessionStore.getState().currentProjectId === target.project &&
           useSessionStore.getState().currentSessionId === target.session) {
         setError("");
         void load();
-      } else setError("连接已变化，等待重连或重新读取目标运行。");
+      } else setError("连接已变化，请重新读取目标运行；恢复交接会保留，状态变化时需重新核对。");
     });
     const unsubscribe = useSessionStore.subscribe((state) => {
       if (state.currentProjectId !== target.project || state.currentSessionId !== target.session) {
@@ -376,12 +384,72 @@ function TargetRunTimeline({ target, onClear }: { target: TimelineTarget; onClea
       <Button type="button" size="sm" variant="ghost" onClick={onClear}>返回近期时间线</Button></div>
     {busy && <p role="status">正在核对并读取目标运行…</p>}
     {error && <p role="alert" className="break-words text-status-warning">{error}</p>}
-    {snapshot && <article className="space-y-2"><p className="break-words font-medium">{snapshot.run.title || "未命名运行"} · {snapshot.run.status}</p>
-      <p>读取时的步骤快照；运行状态和结果可能变化。此视图只用于核对；较早运行可能不在近期时间线中。</p>
+    {(!!error || (snapshot && !supportsTargetRecovery(snapshot))) && <RetainedTargetRecovery host={target.host} service={target.service} project={target.project} session={target.session} run={target.run} />}
+    {snapshot && <fieldset disabled={busy || !!error} hidden={busy || !!error} className="space-y-2"><article className="space-y-2"><p className="break-words font-medium">{snapshot.run.title || "未命名运行"} · {snapshot.run.status}</p>
+      <p>读取时的步骤快照；运行状态和结果可能变化。较早运行可能不在近期时间线中。</p>
       {snapshot.run.error && <p className="break-words text-status-warning">{snapshot.run.error}</p>}
       {!snapshot.steps.length ? <p>暂无已记录步骤。</p> : <ol className="space-y-1.5">{[...snapshot.steps].sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id)).map((step) => <TimelineStep key={step.id} step={step} runStatus={snapshot.run.status} />)}</ol>}
-    </article>}
+      <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: target.session, projectId: target.project, serviceId: target.service }} verifyRun />
+      <details><summary>登记关联的文本成果</summary><RunTextArtifacts runId={target.run} sessionId={target.session} projectId={target.project} serviceId={target.service} review /></details>
+      <TargetRecoveryEvidence snapshot={snapshot} host={target.host} service={target.service} project={target.project} session={target.session} refresh={load} onEditingChange={(value) => { editing.current = value; }} />
+    </article></fieldset>}
   </div>;
+}
+
+function supportsTargetRecovery(snapshot: RunStepsResult): boolean {
+  const run = snapshot.run;
+  return ["interrupted", "failed", "cancelled", "budget_paused"].includes(run.status) ||
+    (run.status === "completed" && run.metadata?.engine !== "codex" && run.metadata?.truncated === true);
+}
+
+function RetainedTargetRecovery({ host, service, project, session, run }: { host: string; service: string; project: string; session: string; run: string }): JSX.Element | null {
+  const key = recoveryDraftKey(host, service, project, session, run), [, setRevision] = useState(0);
+  const [verified, setVerified] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const epoch = useRef(0);
+  useEffect(() => { ++epoch.current; setVerified(false); setError(""); return () => { ++epoch.current; }; }, [key]);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setVerified(false); setBusy(false); setError("连接变化，请重新核对服务。"); }), []);
+  useEffect(() => useSessionStore.subscribe((state) => {
+    if (state.currentProjectId !== project || state.currentSessionId !== session || ipc.agentBaseUrl !== host) {
+      ++epoch.current; setVerified(false); setBusy(false);
+    }
+  }), [host, project, session]);
+  const draft = readRetainedRecovery(key);
+  if (!draft) return null;
+  const verify = async () => {
+    const ticket = ++epoch.current;
+    setBusy(true); setError(""); setVerified(false);
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (ticket !== epoch.current || ipc.agentBaseUrl !== host || useSessionStore.getState().currentProjectId !== project ||
+          useSessionStore.getState().currentSessionId !== session) return;
+      if (!service || identity.service_id !== service) throw new Error("当前服务与原服务身份不一致。");
+      setVerified(true);
+    } catch (reason) { if (ticket === epoch.current) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
+  return <div className="space-y-1 rounded border border-status-warning/30 p-2 text-xs">
+    <p>此运行有页面内保留的未提交恢复编辑；核对原服务后可查看并复制。</p>
+    <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void verify()}>核对服务并查看编辑</Button>
+    {error && <p role="alert">{error}</p>}
+    {verified && <><textarea aria-label="保留的恢复交接" readOnly className="block w-full rounded border border-line bg-surface-0 p-1" value={draft.handoff} />
+      <p>预算编辑：{draft.changeBudget ? draft.budgetTokens || "未填写" : "未启用"}</p></>}
+    <Button type="button" size="sm" variant="ghost" onClick={() => { if (window.confirm("放弃此运行保留的恢复编辑？")) { discardRetainedRecovery(key); setRevision((value) => value + 1); } }}>放弃恢复编辑</Button>
+  </div>;
+}
+
+function TargetRecoveryEvidence({ snapshot, host, service, project, session, refresh, onEditingChange }: {
+  snapshot: RunStepsResult; host: string; service: string; project: string; session: string; refresh: () => Promise<void>; onEditingChange: (editing: boolean) => void;
+}): JSX.Element {
+  const run = snapshot.run;
+  const recoverable = supportsTargetRecovery(snapshot);
+  return <section className="space-y-2 border-t border-line pt-2" aria-label="运行验证和恢复">
+    <h4 className="font-medium">验证、预算与后续操作</h4>
+    <VerificationBadge evidence={run.metadata?.verification as VerificationEvidence | undefined} />
+    <VerificationDetails evidence={run.metadata?.verification as VerificationEvidence | undefined} />
+    {run.status === "budget_paused" && <ProjectRunBudget host={host} service={service} project={project} session={session} run={run.id} />}
+    {recoverable && <RunRecoveryActions run={run} refresh={refresh} expectedService={service} onEditingChange={onEditingChange} />}
+    <p>只显示已保存记录；未知费用不是零，恢复需重新核对记录与副作用，并遵循原预算和权限。</p>
+  </section>;
 }
 
 function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: string }): JSX.Element {
