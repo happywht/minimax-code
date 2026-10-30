@@ -13,6 +13,7 @@ import { usePermissionStore } from "./permissionStore";
 export interface RunTimelineEntry extends AgentRun {
   steps: AgentRunStep[];
   queuedInput?: RunStepsResult["queued_input"];
+  pendingQuestions?: NonNullable<RunStepsResult["pending_ask_users"]>;
 }
 
 export interface RunTimelineState {
@@ -73,7 +74,7 @@ async function catchUp(runId: string, sessionId: string, refresh: boolean): Prom
       cursor = event.seq;
     }
     if (result.next_seq !== cursor || (result.has_more && cursor === entry.cursor)) return full();
-    entry = validateSnapshot({ run, steps: [...steps.values()], cursor,
+    entry = validateSnapshot({ ...entry, run, steps: [...steps.values()], cursor,
       queued_input: run.started_at ? null : entry.queued_input }, runId, sessionId);
     if (!result.has_more) return entry;
   }
@@ -107,6 +108,7 @@ async function drain(): Promise<void> {
         next[entry.run.id] = {
           ...entry.run,
           queuedInput: entry.queued_input,
+          pendingQuestions: entry.pending_ask_users ?? (entry.pending_ask_user ? [entry.pending_ask_user] : []),
           steps: [...entry.steps].sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id)),
         };
       }

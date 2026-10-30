@@ -21,7 +21,8 @@ import { useChat } from "../../stores/chat";
 import { useSessionStore } from "../../stores/sessionStore";
 import { strings } from "../../ui/strings";
 import { Button } from "../../ui";
-import { ipc } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
+import { useRunTimelineStore } from "../../stores/runStore";
 
 // In-memory only: a draft belongs to one live request on one host.
 const drafts = new Map<string, { selections: string[][]; others: Array<string | null> }>();
@@ -35,6 +36,16 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
   const submit = useChat((s) => s.submitAskUser);
   const skip = useChat((s) => s.skipAskUser);
   const sessionId = useSessionStore((s) => s.currentSessionId);
+  const runs = useRunTimelineStore((s) => s.runs);
+  const [selecting, setSelecting] = useState(false);
+  const [selectionError, setSelectionError] = useState("");
+  const selectionEpoch = useRef(0);
+  useEffect(() => { ++selectionEpoch.current; setSelecting(false); setSelectionError(""); }, [sessionId]);
+  useEffect(() => ipc.onSideCar(() => { ++selectionEpoch.current; setSelecting(false); setSelectionError("连接变化，请刷新待答问题。"); }), []);
+  const alternatives = useMemo(() => Object.values(runs)
+    .filter((run) => run.session_id === sessionId)
+    .flatMap((run) => run.pendingQuestions ?? [])
+    .filter((item) => item.request_id !== askUser?.request_id), [runs, sessionId, askUser?.request_id]);
   const cardRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const open = (event: Event) => {
@@ -157,6 +168,31 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
     }
   };
 
+  const selectQuestion = async (requestId: string, runId: string) => {
+    if (selecting || !sessionId) return;
+    const ticket = ++selectionEpoch.current, host = ipc.agentBaseUrl;
+    const version = useChat.getState().askRecoveryVersion();
+    const current = () => ticket === selectionEpoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === sessionId;
+    setSelecting(true); setSelectionError("");
+    try {
+      const before = await typedIPC.getServiceIdentity();
+      const snapshot = await typedIPC.getRunSteps(runId);
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      const requests = snapshot.pending_ask_users ?? (snapshot.pending_ask_user ? [snapshot.pending_ask_user] : []);
+      const question = requests.find((item) => item.request_id === requestId);
+      if (!before.service_id || before.service_id !== after.service_id || snapshot.run.id !== runId ||
+          snapshot.run.session_id !== sessionId || !question || question.run_id !== runId ||
+          question.session_id !== sessionId || (question.remaining_ms !== undefined && question.remaining_ms <= 0)) {
+        throw new Error("问题已结束或服务、会话归属已变化，请刷新。");
+      }
+      if (useChat.getState().askRecoveryVersion() !== version) throw new Error("待答问题已变化，请重试。");
+      useChat.getState().reconcileAskUser(question, version, sessionId);
+    } catch (error) { if (current()) setSelectionError(error instanceof Error ? error.message : String(error)); }
+    finally { if (current()) setSelecting(false); }
+  };
+
   return (
     <section
       ref={cardRef}
@@ -187,6 +223,18 @@ export function AskUserCard({ testId = "ask-user-card" }: AskUserCardProps): JSX
           </p>
         </div>
       </header>
+
+      {alternatives.length > 0 && <details className="mb-3 rounded border border-line p-2 text-xs">
+        <summary>其他待答问题（{alternatives.length}）</summary>
+        <p>切换前会重新确认问题仍在等待；当前草稿保留在本页面。</p>
+        <ul>{alternatives.map((item) => <li key={item.request_id} className="mt-1">
+          <button type="button" className="text-left underline" disabled={selecting || submitting || !item.run_id}
+            onClick={() => item.run_id && void selectQuestion(item.request_id, item.run_id)}>
+            {item.agent_name ? `子 Agent ${item.agent_name}` : `运行 ${item.run_id ?? "未知"}`} · {item.questions[0]?.question ?? "待答问题"}
+          </button>
+        </li>)}</ul>
+        {selectionError && <p role="alert">{selectionError}</p>}
+      </details>}
 
       <div data-testid={`${testId}-questions`} className="space-y-3.5">
         {askUser.questions.map((q, qi) => (
