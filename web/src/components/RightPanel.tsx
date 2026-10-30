@@ -22,11 +22,14 @@ import { InspectorContent } from "./right-panel/InspectorContent";
 import { InspectorHeader } from "./right-panel/InspectorHeader";
 import { InspectorTabBar } from "./right-panel/InspectorTabBar";
 import type { InspectorTab } from "./right-panel/tabs";
+import type { TimelineTarget } from "./right-panel/RunTimelinePanel";
 import { useAgentTeam } from "./right-panel/useAgentTeam";
 import { useInspectorFollow } from "./right-panel/useInspectorFollow";
 
 export interface RightPanelProps {
   testId?: string;
+  timelineTarget?: TimelineTarget | null;
+  onClearTimelineTarget?: () => void;
   /** When true, render the panel pre-collapsed. Mainly for tests. */
   defaultCollapsed?: boolean;
   /** Initial inspector tab. Mainly for tests and future deep links. */
@@ -39,6 +42,7 @@ export interface RightPanelProps {
 
 export function RightPanel({
   testId = "right-panel",
+  timelineTarget, onClearTimelineTarget,
   defaultCollapsed = false,
   defaultTab = "timeline",
   initialAgents,
@@ -46,6 +50,9 @@ export function RightPanel({
 }: RightPanelProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
   const { activeTab, followRun, selectTab, resumeFollow } = useInspectorFollow(defaultTab);
+  useEffect(() => {
+    if (timelineTarget) { setCollapsed(false); selectTab("timeline"); }
+  }, [timelineTarget, selectTab]);
   useEffect(() => {
     const openTimeline = () => { setCollapsed(false); selectTab("timeline"); };
     window.addEventListener("minimax:open-timeline", openTimeline);
@@ -81,6 +88,8 @@ export function RightPanel({
           fetchAgents={fetchAgents}
           testId={testId}
           onOpenReviewRun={() => selectTab("timeline")}
+          timelineTarget={timelineTarget}
+          onClearTimelineTarget={onClearTimelineTarget}
         />
       </div>
     </aside>

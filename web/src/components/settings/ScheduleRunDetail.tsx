@@ -143,9 +143,11 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
           session.session.id !== sessionId || session.session.project_id !== project)
         throw new Error("服务、运行或会话归属已变化，请重新读取。");
       if (onOpenSession() === false) return;
-      if (!useSessionStore.getState().setCurrentProject(project) || !useSessionStore.getState().setCurrent(sessionId)) return;
+      const scope = useSessionStore.getState();
+      if (scope.currentProjectId !== project && !scope.setCurrentProject(project)) return;
+      if (useSessionStore.getState().currentSessionId !== sessionId && !useSessionStore.getState().setCurrent(sessionId)) return;
       void useSessionStore.getState().refresh({ loadCurrent: false });
-      window.dispatchEvent(new CustomEvent("minimax:open-session-timeline", { detail: { host, project, session: sessionId } }));
+      window.dispatchEvent(new CustomEvent("minimax:open-session-timeline", { detail: { host, service: serviceId, project, session: sessionId, run: runId, job: occurrence.job_id, occurrence: occurrence.id, revision: occurrence.revision, workspace: occurrence.context.workspace! } }));
     } catch (failure) { if (current()) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { timelineInFlight.current = false; if (current()) setTimelineBusy(false); }
   };

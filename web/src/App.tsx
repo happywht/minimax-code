@@ -28,6 +28,7 @@ import {
   useProviderStore,
   useSessionStore,
 } from "./stores";
+import type { TimelineTarget } from "./components/right-panel/RunTimelinePanel";
 import type { HistoricalReportTransfer } from "./components/panels/DeliveryWorkspace";
 import type { SettingsTab } from "./components/settings/SettingsPage";
 import type { SidecarEvent } from "./types/ipc";
@@ -101,6 +102,10 @@ export default function App() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("models");
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [timelineTarget, setTimelineTarget] = useState<TimelineTarget | null>(null);
+  useEffect(() => useSessionStore.subscribe((scope) => {
+    setTimelineTarget((target) => target && (target.host !== ipc.agentBaseUrl || target.project !== scope.currentProjectId || target.session !== scope.currentSessionId) ? null : target);
+  }), []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -221,12 +226,12 @@ export default function App() {
 
   useEffect(() => {
     const openSessionTimeline = (event: Event) => {
-      const target = (event as CustomEvent<{ host: string; project: string; session: string }>).detail;
+      const target = (event as CustomEvent<TimelineTarget>).detail;
       const scope = useSessionStore.getState();
       if (!target || target.host !== ipc.agentBaseUrl || target.project !== scope.currentProjectId ||
-          target.session !== scope.currentSessionId) return;
+          target.session !== scope.currentSessionId || !target.service || !target.run || !target.job || !target.occurrence || !target.workspace) return;
       // The caller has already obtained permission to close its workspace.
-      setView("chat"); setInspectorOpen(true);
+      setTimelineTarget(target); setView("chat"); setInspectorOpen(true);
       window.dispatchEvent(new Event("minimax:open-timeline"));
     };
     window.addEventListener("minimax:open-session-timeline", openSessionTimeline);
@@ -438,7 +443,7 @@ export default function App() {
               <>
                 <ChatPanel
                   connectionState={connState}
-                  onOpenTimeline={() => { setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline")); }}
+                  onOpenTimeline={() => { setTimelineTarget(null); setInspectorOpen(true); window.dispatchEvent(new Event("minimax:open-timeline")); }}
                   onOpenProviderSettings={() => openSettings("providers")}
                   onOpenModelSettings={() => openSettings("models")}
                 />
@@ -471,10 +476,10 @@ export default function App() {
             )}
           </main>
           <div className="hidden lg:block">
-            <RightPanel />
+            <RightPanel timelineTarget={timelineTarget} onClearTimelineTarget={() => setTimelineTarget(null)} />
           </div>
           <InspectorDrawer open={inspectorOpen} onClose={() => setInspectorOpen(false)}>
-            <RightPanel />
+            <RightPanel timelineTarget={timelineTarget} onClearTimelineTarget={() => setTimelineTarget(null)} />
           </InspectorDrawer>
           <ToastViewport />
           <PermissionRequestModal connectionState={connState} />

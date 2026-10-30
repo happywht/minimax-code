@@ -10,7 +10,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { usePermissionStore, useRunTimelineStore, useSessionStore } from "../../stores";
-import type { AgentRunStep, AgentRunStepKind, AgentRunStepStatus } from "../../types/ipc";
+import type { AgentRunStep, AgentRunStepKind, AgentRunStepStatus, RunStepsResult } from "../../types/ipc";
 import { buildPermissionPatchFiles } from "../../lib/permissionPatchPreview";
 import { PermissionPatchPreview } from "../modals/PermissionPatchPreview";
 import { CodexFileChangePreview, permissionArgsWithoutCodexPreview } from "../modals/CodexFileChangePreview";
@@ -25,19 +25,24 @@ import { NativeSteerInput } from "./NativeSteerInput";
 import { RunAttachments } from "./RunAttachments";
 import { FollowupRunDraft } from "./FollowupRunDraft";
 import type { VerificationEvidence } from "../../types/ipc";
-import { ipc } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import { StreamEvent } from "../../types/ipc";
 import { OutputStorage } from "./OutputStorage";
 import { RunTimelineTextArtifacts } from "./RunTimelineTextArtifacts";
 import { CodexInputImages } from "./CodexInputImages";
 import { CodexInputDraft } from "./CodexInputDraft";
 
+export type TimelineTarget = { host: string; service: string; project: string; session: string; run: string;
+  job: string; occurrence: string; revision: number; workspace: string };
+
 export interface RunTimelinePanelProps {
   testId?: string;
+  target?: TimelineTarget | null;
+  onClearTarget?: () => void;
 }
 
 export function RunTimelinePanel({
-  testId = "run-timeline-panel",
+  testId = "run-timeline-panel", target, onClearTarget,
 }: RunTimelinePanelProps): JSX.Element {
   const init = useRunTimelineStore((s) => s.init);
   const loadForSession = useRunTimelineStore((s) => s.loadForSession);
@@ -46,6 +51,7 @@ export function RunTimelinePanel({
   const runs = useRunTimelineStore((s) => s.runs);
   const order = useRunTimelineStore((s) => s.order);
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
+  const currentProjectId = useSessionStore((s) => s.currentProjectId);
   const pendingPermissions = usePermissionStore((s) => s.pending);
   const resolvePermission = usePermissionStore((s) => s.resolve);
 
@@ -126,6 +132,10 @@ export function RunTimelinePanel({
         onClick={() => void loadForSession(currentSessionId)}>{strings.common.retry}</Button>
     </div>
   ) : null;
+
+  if (target && target.host === ipc.agentBaseUrl && target.project === currentProjectId && target.session === currentSessionId) {
+    return <TargetRunTimeline key={JSON.stringify(target)} target={target} onClear={onClearTarget} />;
+  }
 
   if (visibleRuns.length === 0 && pending.length === 0) {
     return (
@@ -256,6 +266,55 @@ export function RunTimelinePanel({
       )}
     </div>
   );
+}
+
+function TargetRunTimeline({ target, onClear }: { target: TimelineTarget; onClear?: () => void }): JSX.Element {
+  const [snapshot, setSnapshot] = useState<RunStepsResult | null>(null);
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const epoch = useRef(0);
+  const load = async () => {
+    const ticket = ++epoch.current;
+    const current = () => ticket === epoch.current && ipc.agentBaseUrl === target.host &&
+      useSessionStore.getState().currentProjectId === target.project && useSessionStore.getState().currentSessionId === target.session;
+    setSnapshot(null); setBusy(true); setError("");
+    try {
+      const [before, result, session] = await Promise.all([
+        typedIPC.getServiceIdentity(), typedIPC.getRunSteps(target.run), typedIPC.getSession(target.session),
+      ]);
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      const run = result.run;
+      const schedule = run.metadata?.schedule as { job_id?: string; occurrence_id?: string; revision?: number } | undefined;
+      if (!target.service || before.service_id !== target.service || after.service_id !== target.service ||
+          session.session.id !== target.session || session.session.project_id !== target.project ||
+          run.id !== target.run || run.session_id !== target.session || run.metadata?.project_id !== target.project ||
+          run.metadata?.workspace_snapshot !== target.workspace || run.metadata?.model_snapshot?.engine !== "native" ||
+          schedule?.job_id !== target.job || schedule.occurrence_id !== target.occurrence || schedule.revision !== target.revision ||
+          !Number.isSafeInteger(result.cursor) || result.cursor < 0 ||
+          result.steps.some((step) => step.run_id !== target.run || step.session_id !== target.session))
+        throw new Error("服务、运行或会话归属已变化，请返回定时任务重新选择。");
+      setSnapshot(result);
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { if (current()) setBusy(false); }
+  };
+  useEffect(() => {
+    void load();
+    const off = ipc.onSideCar(() => { ++epoch.current; setSnapshot(null); setBusy(false); setError("连接已变化，请重新读取目标运行。"); });
+    return () => { ++epoch.current; off(); };
+  }, [target]);
+  return <div className="space-y-2 p-3 text-xs" data-testid="target-run-timeline">
+    <h3 className="font-semibold">定时运行时间线</h3>
+    <p className="break-all">运行：{target.run} · 发生：{target.occurrence}</p>
+    <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void load()}>刷新此运行</Button>
+      <Button type="button" size="sm" variant="ghost" onClick={onClear}>返回近期时间线</Button></div>
+    {busy && <p role="status">正在核对并读取目标运行…</p>}
+    {error && <p role="alert" className="break-words text-status-warning">{error}</p>}
+    {snapshot && <article className="space-y-2"><p className="break-words font-medium">{snapshot.run.title || "未命名运行"} · {snapshot.run.status}</p>
+      <p>读取时的步骤快照；运行状态和结果可能变化。此视图只用于核对；较早运行可能不在近期时间线中。</p>
+      {snapshot.run.error && <p className="break-words text-status-warning">{snapshot.run.error}</p>}
+      {!snapshot.steps.length ? <p>暂无已记录步骤。</p> : <ol className="space-y-1.5">{[...snapshot.steps].sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id)).map((step) => <TimelineStep key={step.id} step={step} runStatus={snapshot.run.status} />)}</ol>}
+    </article>}
+  </div>;
 }
 
 function TimelineStep({ step, runStatus }: { step: AgentRunStep; runStatus: string }): JSX.Element {

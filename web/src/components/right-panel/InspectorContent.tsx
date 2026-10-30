@@ -4,7 +4,7 @@
  * initial bundle only pays for the timeline view.
  */
 import { lazy, Suspense } from "react";
-import { RunTimelinePanel } from "./RunTimelinePanel";
+import { RunTimelinePanel, type TimelineTarget } from "./RunTimelinePanel";
 import type { AgentInfo } from "../../types/ipc";
 import { AgentTeamPanel } from "./AgentTeamPanel";
 import { PanelFallback } from "./PanelFallback";
@@ -46,6 +46,8 @@ export interface InspectorContentProps {
   fetchAgents: () => Promise<void>;
   testId: string;
   onOpenReviewRun?: () => void;
+  timelineTarget?: TimelineTarget | null;
+  onClearTimelineTarget?: () => void;
 }
 
 export function InspectorContent({
@@ -56,12 +58,13 @@ export function InspectorContent({
   fetchAgents,
   testId,
   onOpenReviewRun,
+  timelineTarget, onClearTimelineTarget,
 }: InspectorContentProps): JSX.Element {
   switch (activeTab) {
     case "timeline":
       return (
         <section id={`${testId}-timeline-panel`} role="tabpanel" data-testid={`${testId}-timeline-body`}>
-          <RunTimelinePanel testId={`${testId}-timeline-panel`} />
+          <RunTimelinePanel testId={`${testId}-timeline-panel`} target={timelineTarget} onClearTarget={onClearTimelineTarget} />
         </section>
       );
     case "diff":
