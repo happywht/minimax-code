@@ -19,7 +19,7 @@ from minimax_code.mcp import sdk_client as sdk_module
 from minimax_code.mcp.client import MCPClientError
 from minimax_code.mcp.registry import MCPRegistry, MCPServerConfig
 from minimax_code.mcp.sdk_client import SDKMCPClient
-from minimax_code.mcp.transport import StdioTransport, make_in_process_pair
+from minimax_code.mcp.transport import MCPTransportError, StdioTransport, make_in_process_pair
 from minimax_code.mcp.types import CallToolResult, tool_result_payload
 from minimax_code.permissions import PermissionStore
 
@@ -278,6 +278,76 @@ async def test_cancel_connect_and_repeated_close_settle_owner():
         await start
     await asyncio.gather(*(client.close() for _ in range(100)))
     assert client._owner.done() and not client.is_initialized
+
+
+async def test_stdio_close_owns_pending_spawn_and_concurrent_starts(monkeypatch):
+    from minimax_code.mcp import transport as transport_module
+
+    entered, release_spawn, entered_cleanup, release_cleanup = (asyncio.Event() for _ in range(4))
+    process = object()
+    calls = []
+
+    async def spawn(*args, **kwargs):
+        calls.append(args)
+        entered.set()
+        await release_spawn.wait()
+        return process
+
+    async def terminate(proc):
+        assert proc is process
+        entered_cleanup.set()
+        await release_cleanup.wait()
+
+    monkeypatch.setattr(transport_module, "spawn_exec", spawn)
+    monkeypatch.setattr(transport_module, "terminate_tree", terminate)
+    pipe = StdioTransport(["fixture"])
+    first = asyncio.create_task(pipe.start())
+    await entered.wait()
+    second = asyncio.create_task(pipe.start())
+    closing = asyncio.create_task(pipe.close())
+    await asyncio.sleep(0)
+    release_spawn.set()
+    await entered_cleanup.wait()
+    assert len(calls) == 1 and not closing.done()
+    assert not first.done() and not second.done()
+    release_cleanup.set()
+    await closing
+    for task in (first, second):
+        with pytest.raises(MCPTransportError, match="closed"):
+            await task
+
+
+async def test_stdio_cancel_start_waits_for_owned_cleanup(monkeypatch):
+    from minimax_code.mcp import transport as transport_module
+
+    entered, release_spawn, entered_cleanup, release_cleanup = (asyncio.Event() for _ in range(4))
+    process = object()
+
+    async def spawn(*args, **kwargs):
+        entered.set()
+        await release_spawn.wait()
+        return process
+
+    async def terminate(proc):
+        assert proc is process
+        entered_cleanup.set()
+        await release_cleanup.wait()
+
+    monkeypatch.setattr(transport_module, "spawn_exec", spawn)
+    monkeypatch.setattr(transport_module, "terminate_tree", terminate)
+    pipe = StdioTransport(["fixture"])
+    starting = asyncio.create_task(pipe.start())
+    await entered.wait()
+    starting.cancel()
+    release_spawn.set()
+    await entered_cleanup.wait()
+    starting.cancel()
+    await asyncio.sleep(0)
+    assert not starting.done()
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+    await pipe.close()
 
 
 async def test_eof_clears_initialized_and_completes_owner():

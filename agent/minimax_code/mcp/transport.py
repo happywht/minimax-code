@@ -39,7 +39,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from ..execution import spawn_exec, terminate_tree
+from ..execution import _finish_owned, spawn_exec, terminate_tree
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,7 @@ class StdioTransport(MCPTransport):
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._start_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
 
     @property
@@ -110,8 +111,18 @@ class StdioTransport(MCPTransport):
     async def start(self) -> None:
         if self._closed:
             raise MCPTransportError("transport closed")
-        if self._proc is not None:
-            return  # idempotent
+        if self._start_task is None:
+            self._start_task = asyncio.create_task(self._start_owned())
+        try:
+            await asyncio.shield(self._start_task)
+        except BaseException:
+            await _finish_owned(self._begin_close())
+            raise
+        if self._closed:
+            await self.close()
+            raise MCPTransportError("transport closed")
+
+    async def _start_owned(self) -> None:
         try:
             self._proc = await spawn_exec(
                 *self._command,
@@ -123,6 +134,8 @@ class StdioTransport(MCPTransport):
             )
         except (OSError, FileNotFoundError) as exc:
             raise MCPTransportError(f"failed to spawn MCP server: {exc}") from exc
+        if self._closed:
+            return  # The retained close task will reap the recovered handle.
         self._reader_task = asyncio.create_task(self._read_loop())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         logger.debug("started MCP server %s pid=%s", self._command[0], self._proc.pid)
@@ -174,20 +187,27 @@ class StdioTransport(MCPTransport):
             yield item
 
     async def close(self) -> None:
-        if self._close_task is None:
-            self._closed = True
-            self._close_task = asyncio.create_task(self._finish_close())
+        closing = self._begin_close()
         cancelled = False
-        while not self._close_task.done():
+        while not closing.done():
             try:
-                await asyncio.shield(self._close_task)
+                await asyncio.shield(closing)
             except asyncio.CancelledError:
                 cancelled = True
-        self._close_task.result()
+        closing.result()
         if cancelled:
             raise asyncio.CancelledError
 
+    def _begin_close(self) -> asyncio.Task[None]:
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._finish_close())
+        return self._close_task
+
     async def _finish_close(self) -> None:
+        if self._start_task is not None:
+            # A pending spawn can return a process after close has begun.
+            await asyncio.gather(self._start_task, return_exceptions=True)
         if self._reader_task is not None:
             self._reader_task.cancel()
             try:
