@@ -291,6 +291,28 @@ def calculate_spec(spec: dict, calculated_column: dict) -> dict:
                     {"name": config.name, "kind": "number"}], "rows": rows}).model_dump()
 
 
+def calculate_columns_spec(spec: dict, calculated_column: dict | None,
+                           calculated_columns: list[dict] | None) -> tuple[dict, dict | None, list[dict] | None]:
+    """Apply ordered calculations; keep the legacy single-column representation unchanged."""
+    if calculated_column is not None and calculated_columns is not None:
+        raise ValueError("calculated_column and calculated_columns cannot be combined")
+    if calculated_columns is not None and (not isinstance(calculated_columns, list)
+                                            or not 1 <= len(calculated_columns) <= 10):
+        raise ValueError("calculated_columns must contain 1–10 calculations")
+    operations = calculated_columns if calculated_columns is not None else (
+        [calculated_column] if calculated_column is not None else [])
+    normalized = []
+    for operation in operations:
+        spec = calculate_spec(spec, operation)
+        item = dict(operation)
+        if item["operation"] == "divide":
+            item["decimals"] = item.get("decimals", 2)
+        normalized.append(item)
+    if calculated_columns is not None:
+        return spec, None, normalized
+    return spec, normalized[0] if normalized else None, None
+
+
 def sort_spec(spec: dict, sort_by: list[dict[str, Any]]) -> dict:
     """Stable typed multi-column ordering, with blanks last in either direction."""
     source = XlsxSpec.model_validate(spec)
@@ -328,7 +350,7 @@ class GenerateXlsxFromCsvTool(Tool):
         "For each column, optional trim removes surrounding Unicode whitespace and null_values maps explicit "
         "exact markers to blank before type conversion; markers are matched after trimming. "
         "Optional filters use output column names and typed values; all conditions must match. "
-        "Append an optional calculated numeric column before filters; add, subtract, multiply or divide two numeric columns. Division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors. Blank operands yield blank; results are static. "
+        "Use calculated_column or calculated_columns (1–10 ordered calculations), not both, before filters. Each may reference earlier numeric results. Add, subtract, multiply or divide numeric columns; division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors. Blank operands yield blank; results are static. "
         "Apply filters, optional deduplicate_by, optional group_by, then optional sort_by before summaries and chart. "
         "deduplicate_by uses exact output-column values and keeps the first matching row; blanks match blanks. "
         "Sort uses up to three output columns, typed values, stable ties and blanks last. "
@@ -357,6 +379,7 @@ class GenerateXlsxFromCsvTool(Tool):
                 "decimals": {"type": "integer", "minimum": 0, "maximum": 8,
                              "description": "Division precision, default 2; ignored for other operations"},
             }, "required": ["name", "left", "right", "operation"], "additionalProperties": False},
+            "calculated_columns": {"type": "array", "minItems": 1, "maxItems": 10, "items": {}},
             "filters": {"type": "array", "maxItems": 10, "items": {"type": "object", "properties": {
                 "column": {"type": "string"},
                 "operator": {"type": "string", "enum": ["eq", "ne", "gt", "gte", "lt", "lte"]},
@@ -386,13 +409,15 @@ class GenerateXlsxFromCsvTool(Tool):
         "additionalProperties": False,
     }
 
+    parameters["properties"]["calculated_columns"]["items"] = parameters["properties"]["calculated_column"]
+
     def __init__(self, db: Any, session_id: str, project_id: str | None):
         self.db, self.session_id, self.project_id = db, session_id, project_id
         self.originals = AttachmentService(db, db.path.parent)
         self.generator = GenerateTableXlsxTool(db, session_id, project_id)
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None) -> ToolResult:
+                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -410,10 +435,8 @@ class GenerateXlsxFromCsvTool(Tool):
                 raise ValueError("CSV attachment is not a valid UTF-8 CSV")
             cleaning_counts: dict[str, int] = {}
             spec = csv_to_spec(data, sheet_name, columns, cleaning_counts)
-            if calculated_column is not None:
-                spec = calculate_spec(spec, calculated_column)
-                if calculated_column["operation"] == "divide":
-                    calculated_column = {**calculated_column, "decimals": calculated_column.get("decimals", 2)}
+            spec, calculated_column, calculated_columns = calculate_columns_spec(
+                spec, calculated_column, calculated_columns)
             source_row_count = len(spec["rows"])
             spec = filter_spec(spec, filters)
             matched_row_count = len(spec["rows"])
@@ -440,6 +463,8 @@ class GenerateXlsxFromCsvTool(Tool):
                            "removed_duplicates": removed_duplicate_count,
                            "output_rows": len(spec["rows"])},
             }
+            if calculated_columns is not None:
+                processing["calculated_columns"] = calculated_columns
             bound_key = hashlib.sha256(canonical([request_key, attachment_id, original["sha256"]])).hexdigest()
             result = await self.generator.run(filename, bound_key, spec, summaries=summaries, chart=chart,
                                               processing=processing)
@@ -451,6 +476,8 @@ class GenerateXlsxFromCsvTool(Tool):
                     "trim": column.get("trim", False), "null_values": column.get("null_values", []),
                     "changed_cells": cleaning_counts[column["name"]]} for column in columns]
                 result.output["calculated_column"] = calculated_column
+                if calculated_columns is not None:
+                    result.output["calculated_columns"] = calculated_columns
                 result.output["filter_conditions"] = filters or []
                 result.output["sort_by"] = sort_by or []
                 result.output["source_row_count"] = source_row_count

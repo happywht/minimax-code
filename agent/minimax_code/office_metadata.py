@@ -74,10 +74,13 @@ def validate_report(value: object) -> dict:
     _require(set(value) in (keys, keys | {"processing"}), "Invalid Office report fields")
     if "processing" in value:
         processing = value["processing"]
-        _require(type(processing) is dict and set(processing) == {
+        processing_keys = {
             "version", "source", "columns", "calculated_column", "filters",
             "deduplicate_by", "group_by", "sort_by", "summaries", "counts"
-        } and type(processing["version"]) is int and processing["version"] == 1,
+        }
+        _require(type(processing) is dict
+                 and set(processing) in (processing_keys, processing_keys | {"calculated_columns"})
+                 and type(processing["version"]) is int and processing["version"] == 1,
                  "Invalid Office processing description")
         source = processing["source"]
         _require(type(source) is dict and type(source.get("type")) is str
@@ -117,6 +120,11 @@ def validate_report(value: object) -> dict:
                      for key, limit in (("filters", 10), ("deduplicate_by", 20),
                                         ("sort_by", 3), ("summaries", 20)))
                  and (processing["calculated_column"] is None or type(processing["calculated_column"]) is dict)
+                 and ("calculated_columns" not in processing or (
+                     processing["calculated_column"] is None
+                     and type(processing["calculated_columns"]) is list
+                     and 1 <= len(processing["calculated_columns"]) <= 10
+                     and all(type(item) is dict for item in processing["calculated_columns"])))
                  and (processing["group_by"] is None or type(processing["group_by"]) is dict),
                  "Invalid Office processing operations")
     checks = (("cell_check", "passed"), ("chart_reference_check", "passed")) if chart else (
