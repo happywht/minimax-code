@@ -1598,6 +1598,13 @@ class AgentCore:
         tool_call_id = call.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
         call_log = {**call, "id": tool_call_id, "name": name, "args": args}
 
+        if self.cancelled:
+            cancelled = ToolResult.fail(f"tool '{name}' cancelled before approval")
+            await self._maybe_emit_tool_call(call_log, None)
+            await self._maybe_emit_tool_result(call_log, cancelled)
+            await self._record_audit(call_log, "blocked", permission="cancelled", duration_ms=0)
+            return _PreparedToolCall(call_log, name, args, "cancelled", None, cancelled)
+
         action = self._tool_permission_action(name, args)
         if action == "deny":
             denied = ToolResult.fail(
@@ -1630,27 +1637,44 @@ class AgentCore:
             # M2 — the durable run row reflects why the run is idle
             # while the consent modal is open.
             await self._notify_run_state("awaiting_approval")
-            allowed = await self._permission_gater.request_consent(
-                tool=name, args=args, session_id=self._current_session_id or None
-            )
+            allowed = False
+            if not self.cancelled:
+                consent = asyncio.create_task(self._permission_gater.request_consent(
+                    tool=name, args=args, session_id=self._current_session_id or None
+                ))
+                cancelled_wait = asyncio.create_task(self._cancel.wait())
+                try:
+                    done, _ = await asyncio.wait((consent, cancelled_wait), return_when=asyncio.FIRST_COMPLETED)
+                    if consent in done and not self.cancelled:
+                        allowed = consent.result()
+                finally:
+                    for task in (consent, cancelled_wait):
+                        if not task.done():
+                            task.cancel()
+                    from ..budget_ledger import owned_cleanup
+                    async def cleanup_consent() -> None:
+                        await asyncio.gather(consent, cancelled_wait, return_exceptions=True)
+                    await owned_cleanup(cleanup_consent())
             await self._notify_run_state("running")
             if not allowed:
+                was_cancelled = self.cancelled
+                reason = "cancelled" if was_cancelled else "user_deny"
                 denied = ToolResult.fail(
-                    f"tool '{name}' denied by user",
-                    output={"permission": "user_deny", "tool": name, "args": args},
-                    permission="user_deny",
+                    f"tool '{name}' cancelled before approval" if was_cancelled else f"tool '{name}' denied by user",
+                    output={"permission": reason, "tool": name, "args": args},
+                    permission=reason,
                 )
                 await self._maybe_emit_tool_result(call_log, denied)
                 await self._emit_status(
-                    "permission_denied",
-                    {"tool": name, "tool_call_id": tool_call_id, "by": "user"},
+                    "tool_cancelled" if was_cancelled else "permission_denied",
+                    {"tool": name, "tool_call_id": tool_call_id, **({} if was_cancelled else {"by": "user"})},
                 )
                 # Audit: denied by user.
                 await self._record_audit(
-                    call_log, "denied", permission="user_deny", duration_ms=0,
+                    call_log, "denied", permission=reason, duration_ms=0,
                 )
                 return _PreparedToolCall(
-                    call_log, name, args, "user_deny", None, denied,
+                    call_log, name, args, reason, None, denied,
                 )
 
         # 1b. pre_tool_use hooks — policy gate (fail-open). Runs only
