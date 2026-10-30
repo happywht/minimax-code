@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ..budget import BudgetExhausted, BudgetState
-from .codex import AppServerConnection
+from .codex import AppServerConnection, UnsupportedServerRequest
 
 logger = logging.getLogger(__name__)
 
@@ -429,7 +429,7 @@ async def drive_codex_run(
     def on_server_request(req: dict[str, Any]) -> Any:
         method = req.get("method", "")
         if method not in _APPROVAL_METHODS:
-            return {}  # unhandled server requests default-allow nothing
+            return UnsupportedServerRequest()
         params = req.get("params") or {}
         if method == "item/permissions/requestApproval":
             # Do not translate a boolean consent into an additional permission

@@ -576,6 +576,10 @@ session and still-live connection. A new internal request ID is bound to each
 external request; the original JSON-RPC response retains its original ID.
 Closing, cancellation, timeout and process loss invalidate the wait. Recovering
 a request never auto-approves it; neither projection survives a process restart.
+The pinned App Server's `item/tool/requestUserInput` is not yet supported by
+this adapter. Unsupported server requests receive a JSON-RPC method-not-found
+error instead of an empty successful result; no answer is supplied. This does
+not provide an interactive question or guarantee how Codex handles the error.
 For `codex:item/fileChange/requestApproval`, `args.grantRoot` carries the
 requested extra write root when supplied. `args.file_change_preview` contains
 bounded `changes` entries (`path`, `diff`) matched to the same thread, turn,

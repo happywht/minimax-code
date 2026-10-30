@@ -48,6 +48,10 @@ _CAPABILITIES = {"streaming": True, "resume": True, "cancel": True,
                  "approvals": True, "usage": True, "steer": True}
 
 
+class UnsupportedServerRequest:
+    """Signal that a server request has no implemented response mapping."""
+
+
 def _codex_environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """Build a child environment from trusted service configuration only.
 
@@ -243,9 +247,12 @@ class AppServerConnection:
             # a human). The reply is written back when it settles.
             handler = self.on_server_request
             if handler is None:
-                self._send_response(obj["id"], {})
+                self._send_error(obj["id"], -32601, "Server request is not supported")
                 return
             result = handler(obj)
+            if isinstance(result, UnsupportedServerRequest):
+                self._send_error(obj["id"], -32601, "Server request is not supported")
+                return
             if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
                 async def _settle(awaitable: Any, req_id: Any) -> None:
                     try:
@@ -270,6 +277,12 @@ class AppServerConnection:
         assert self._proc is not None and self._proc.stdin is not None
         line = json.dumps({"jsonrpc": "2.0", "id": req_id,
                            "result": params}, ensure_ascii=False) + "\n"
+        self._proc.stdin.write(line.encode("utf-8"))
+
+    def _send_error(self, req_id: Any, code: int, message: str) -> None:
+        assert self._proc is not None and self._proc.stdin is not None
+        line = json.dumps({"jsonrpc": "2.0", "id": req_id,
+                           "error": {"code": code, "message": message}}, ensure_ascii=False) + "\n"
         self._proc.stdin.write(line.encode("utf-8"))
 
     async def request(self, method: str, params: dict[str, Any] | None = None,
