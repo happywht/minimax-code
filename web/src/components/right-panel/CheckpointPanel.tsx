@@ -11,7 +11,7 @@ import { typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
-import type { Checkpoint } from "../../types/ipc";
+import type { Checkpoint, CheckpointDiffResult } from "../../types/ipc";
 import { strings } from "../../ui/strings";
 
 export interface CheckpointPanelProps {
@@ -32,6 +32,8 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   const [legacyPaths, setLegacyPaths] = useState<Record<string, string>>({});
   const [legacyConfirmed, setLegacyConfirmed] = useState<Record<string, boolean>>({});
   const [restoreDetails, setRestoreDetails] = useState<Record<string, string[]>>({});
+  const [previews, setPreviews] = useState<Record<string, NonNullable<CheckpointDiffResult["untracked_preview"]>>>({});
+  const [restoring, setRestoring] = useState(false);
   const [rebindPaths, setRebindPaths] = useState<Record<string, string>>({});
   const [rebindTrusted, setRebindTrusted] = useState<Record<string, boolean>>({});
   const [rebinding, setRebinding] = useState<string | null>(null);
@@ -105,25 +107,57 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     }
   };
 
-  const handleRestore = async (ckpt: Checkpoint) => {
-    if (!legacyReady(ckpt)) return;
+  const handleApplyCheckpoint = async (ckpt: Checkpoint) => {
+    if (!legacyReady(ckpt) || restoring || !previews[ckpt.id]) return;
     const accepted = await requestConfirmation({
-      title: strings.rightPanel.checkpoint.restoreTitle(ckpt.label),
-      description: strings.rightPanel.checkpoint.restoreDescription,
-      confirmLabel: strings.rightPanel.checkpoint.restoreConfirm,
+      title: `应用检查点「${ckpt.label}」`,
+      description: "这会尝试应用 Git stash 并复制未跟踪文件，不是精确撤销。请先保护当前修改；预检不会锁定工作区，并发修改或 Git 冲突可能导致部分结果。已有未跟踪文件不会被覆盖。",
+      confirmLabel: "应用检查点",
     });
     if (!accepted) return;
+    setRestoring(true);
     try {
       const { result } = await typedIPC.restoreCheckpoint(ckpt.id, legacyOptions(ckpt));
       const details = [...result.warnings];
       if (result.skipped_existing.length) details.push(`未覆盖已有文件：${result.skipped_existing.join(", ")}`);
       if (!result.restored) details.unshift("没有文件被恢复；检查点可能为空或所需内容不可用。");
       setRestoreDetails((prev) => ({ ...prev, [ckpt.id]: details }));
-      if (details.length) toast.error("恢复未确认完整", "请查看检查点下方的详情。");
-      else toast.success(strings.rightPanel.checkpoint.restored, ckpt.label);
+      if (details.length) toast.error("应用未确认完整", "请查看检查点下方的详情。");
+      else toast.success("检查点已应用", ckpt.label);
+      setPreviews((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+      setExpandedDiff(null);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast.error(strings.rightPanel.checkpoint.restoreFailed, msg);
+      toast.error("检查点应用失败", err instanceof Error ? err.message : String(err));
+      setPreviews((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  const handleRestoreFile = async (ckpt: Checkpoint, path: string) => {
+    if (!legacyReady(ckpt) || restoring) return;
+    const accepted = await requestConfirmation({
+      title: `恢复文件 ${path}`,
+      description: "仅创建当前不存在的文件；已有文件不会被覆盖。预览后文件状态可能发生变化，恢复时会再次检查。",
+      confirmLabel: "恢复此文件",
+    });
+    if (!accepted) return;
+    setRestoring(true);
+    try {
+      const { result } = await typedIPC.restoreCheckpoint(ckpt.id, { ...legacyOptions(ckpt), untracked_file: path });
+      const details = [...result.warnings];
+      if (result.skipped_existing.length) details.push(`目标已存在，未覆盖：${result.skipped_existing.join(", ")}`);
+      if (!result.restored && !details.length) details.push("没有文件被恢复。");
+      setRestoreDetails((prev) => ({ ...prev, [ckpt.id]: details }));
+      if (details.length) toast.error("文件未恢复", details.join("；"));
+      else toast.success("文件已恢复", path);
+      setPreviews((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+      setExpandedDiff(null);
+    } catch (err) {
+      toast.error("文件恢复失败", err instanceof Error ? err.message : String(err));
+      setPreviews((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -144,6 +178,8 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
       setCheckpoints((prev) => prev.map((row) => row.id === ckpt.id ? checkpoint : row));
       setRebindTrusted((prev) => ({ ...prev, [ckpt.id]: false }));
       setDiffs((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+      setPreviews((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+      setExpandedDiff(null);
       toast.success("检查点已重新绑定", ckpt.label);
     } catch (err) {
       toast.error("检查点重新绑定失败", err instanceof Error ? err.message : String(err));
@@ -159,7 +195,6 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
       return;
     }
     setExpandedDiff(ckpt.id);
-    if (diffs[ckpt.id] !== undefined) return;
     setDiffLoading((prev) => ({ ...prev, [ckpt.id]: true }));
     try {
       const result = await typedIPC.diffCheckpoint(ckpt.id, legacyOptions(ckpt));
@@ -167,12 +202,19 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
         ...prev,
         [ckpt.id]: result.available ? result.patch : strings.rightPanel.checkpoint.noDiff,
       }));
+      setPreviews((prev) => {
+        const next = { ...prev };
+        if (result.untracked_preview) next[ckpt.id] = result.untracked_preview;
+        else delete next[ckpt.id];
+        return next;
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setDiffs((prev) => ({
         ...prev,
         [ckpt.id]: strings.rightPanel.checkpoint.diffLoadError(msg),
       }));
+      setPreviews((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
     } finally {
       setDiffLoading((prev) => ({ ...prev, [ckpt.id]: false }));
     }
@@ -265,6 +307,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                               setLegacyPaths((prev) => ({ ...prev, [ckpt.id]: event.target.value }));
                               setLegacyConfirmed((prev) => ({ ...prev, [ckpt.id]: false }));
                               setDiffs((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
+                              setPreviews((prev) => { const next = { ...prev }; delete next[ckpt.id]; return next; });
                             }} />
                         </label>
                         <label><input type="checkbox" checked={Boolean(legacyConfirmed[ckpt.id])}
@@ -325,15 +368,6 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => void handleRestore(ckpt)}
-                      disabled={!legacyReady(ckpt)}
-                      data-testid={`${testId}-restore-${ckpt.id}`}
-                    >
-                      <RotateCcw size={10} />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
                       onClick={() => void handleDelete(ckpt)}
                       data-testid={`${testId}-delete-${ckpt.id}`}
                     >
@@ -353,10 +387,23 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                         className="max-h-40 overflow-auto rounded bg-minimax-bg p-2"
                         data-testid={`${testId}-diff-body-${ckpt.id}`}
                       >
+                        <p className="text-[11px] text-minimax-muted">已跟踪文件显示的是检查点捕获的补丁，不是当前工作区的撤销预览。未跟踪文件状态可能随时变化，恢复时会重新检查。</p>
                         <DiffLines
                           text={diffs[ckpt.id] ?? ""}
                           emptyText={strings.rightPanel.checkpoint.noDiff}
                         />
+                        <Button size="sm" variant="secondary" disabled={restoring || !previews[ckpt.id]} data-testid={`${testId}-restore-${ckpt.id}`} onClick={() => void handleApplyCheckpoint(ckpt)}>应用检查点（非精确撤销）</Button>
+                        <div className="mt-2 text-[11px]">
+                          <p>未跟踪文件恢复预览（关闭后重新打开可刷新）：</p>
+                          {previews[ckpt.id]?.map(({ path, status }) => (
+                            <div key={path} className="flex items-center justify-between gap-2">
+                              <span className="break-all">{path} — {status === "available" ? "目标不存在" : status === "existing" ? "目标已存在" : status === "missing_snapshot" ? "快照缺失" : "路径不安全"}</span>
+                              {status === "available" && <Button size="sm" variant="secondary" disabled={restoring} onClick={() => void handleRestoreFile(ckpt, path)}><RotateCcw size={10} />恢复此文件</Button>}
+                            </div>
+                          ))}
+                          {previews[ckpt.id]?.length === 0 && <p>没有未跟踪文件。</p>}
+                          {!previews[ckpt.id] && <p>未取得文件状态，无法恢复。请重新打开预览。</p>}
+                        </div>
                       </div>
                     )}
                   </div>

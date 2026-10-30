@@ -222,7 +222,15 @@ def register_checkpoint_handlers(
             # session decides the project-scoped root (v1.3.0).
             workdir = await _resolve_checkpoint_cwd(p, row)
             mgr = await manager_factory()
-            result = await mgr.restore(workdir, _row_to_checkpoint(row))
+            checkpoint = _row_to_checkpoint(row)
+            if "untracked_file" in p:
+                relative = _string_required(p, "untracked_file")
+                try:
+                    result = mgr.restore_untracked_file(workdir, checkpoint, relative)
+                except ValueError as exc:
+                    raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+            else:
+                result = await mgr.restore(workdir, checkpoint)
             await ctx.reply({"result": _result_to_dict(result)})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
@@ -254,6 +262,7 @@ def register_checkpoint_handlers(
                     "available": diff.available,
                     "patch": diff.patch,
                     "files": diff.files,
+                    "untracked_preview": mgr.preview_untracked(workdir, _row_to_checkpoint(row)),
                 }
             )
         except HandlerError as exc:

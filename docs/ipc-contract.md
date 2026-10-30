@@ -1965,7 +1965,7 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 |------|------|
 | `checkpoint.create` | 创建工作区快照 |
 | `checkpoint.list` | 列出快照 |
-| `checkpoint.diff` | 快照与当前工作区对比 |
+| `checkpoint.diff` | 已跟踪快照补丁及未跟踪文件目标状态预览 |
 | `checkpoint.restore` | 恢复到指定快照 |
 | `checkpoint.rebind` | 经显式确认和只读验证后，将检查点绑定到当前会话工作区内的新仓库根 |
 | `checkpoint.delete` | 删除快照 |
@@ -1973,6 +1973,8 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 新检查点记录解析后的仓库根 `source_root`，恢复和差异操作须匹配该路径且保持在当前会话工作区内；路径匹配不能证明仓库未被替换。旧记录的 `source_root` 为 null，默认拒绝恢复和差异：确认原始工作目录后，调用 `checkpoint.restore` 或 `checkpoint.diff` 时显式提供 `cwd` 和 `legacy_source_confirmed: true`。该确认由用户承担，系统无法验证旧来源；旧 cwd 可以是会话范围内仓库的子目录。快照文件及 Git stash 对象不包含在数据库备份或 JSON 导出中；bundle v11 保存数据库所列未跟踪文件副本和 Git stash 可达对象包；Git 对象不会自动导入，须使用离线显式导入命令并核实来源。路径和共同基底不证明仓库身份。
 
 恢复已跟踪快照前，会检查已跟踪工作树和暂存区无改动或冲突，且当前 HEAD 等于 stash 的第一父提交；检查失败或无法读取状态时不应用 stash，并在 `warnings` 中说明。通过检查后使用 `git stash apply --index` 恢复快照中的暂存和未暂存状态。检查不包括未跟踪文件，也不会锁定工作区：检查后其他进程仍可能修改文件，Git 应用失败也可能留下部分结果。未跟踪快照另行复制，已有目标会跳过。恢复是尝试应用快照而非精确撤销，应先保护当前工作并审阅差异。
+
+`checkpoint.diff` 的 `untracked_preview` 列出每个记录路径及当前状态：`available`（副本存在且目标不存在）、`existing`、`missing_snapshot` 或 `unsafe_path`。这是状态预览，不展示文件内容，也不锁定工作区。`checkpoint.restore` 可选 `untracked_file` 指定一个记录的未跟踪路径，只恢复该文件，不应用 Git stash 或恢复其他文件；目标已存在时跳过，原子创建竞争失败时返回警告，不覆盖现有目标。面板先显示预览并要求单文件确认；关闭后重新打开可刷新。旧的无 `untracked_file` RPC 仍尝试整体应用快照，带上述 Git 并发风险；面板提供整体应用入口，预览后需明确确认。副本可能缺失或被外部修改，此流程不验证副本内容的原始性；文件模式和元数据也不保证还原。
 
 迁移后可调用 `checkpoint.rebind`，参数为 `checkpoint_id`、绝对仓库根 `cwd`、`confirm_rebind: true` 和 `confirm_trusted_bundle: true`。用户须先将会话绑定到新工作区并导入可信 v11 包的 Git 对象。服务端校验会话工作区边界、仓库根和 Git 对象存储、pack 和完整闭包、对象格式、HEAD 与 stash 基底，并只更新仍匹配的检查点 `source_root`。规划只读、文件沙箱或受限 host 会话不得执行；Git worktree 的 common 目录位于会话工作区之外时拒绝。原来源未知的旧检查点不能安全重绑定。该操作不修改项目、会话、Git refs、index 或工作区；目录与提交匹配不能证明仓库身份，外部 Git/GC 并发不受锁保护。失败时不重新绑定。
 

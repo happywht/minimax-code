@@ -54,6 +54,19 @@ class ResearchConfigSetParams(BaseModel):
     clear_brave_key: bool = False
 
 
+class CheckpointRestoreParams(_Base):
+    """Optional file selection leaves Git and other snapshot files untouched."""
+    checkpoint_id: str = Field(min_length=1)
+    cwd: str | None = None
+    legacy_source_confirmed: bool | None = None
+    untracked_file: str | None = Field(default=None, min_length=1)
+
+
+class CheckpointUntrackedPreview(_Base):
+    path: str
+    status: Literal["available", "existing", "missing_snapshot", "unsafe_path"]
+
+
 class CheckpointRebindParams(BaseModel):
     """Explicit user-authorized checkpoint migration target."""
     model_config = ConfigDict(extra="forbid", strict=True)

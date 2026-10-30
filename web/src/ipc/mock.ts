@@ -2202,9 +2202,10 @@ function mockHandle(
     }
 
     case "checkpoint.restore": {
-      const p = params as { checkpoint_id: string };
+      const p = params as { checkpoint_id: string; untracked_file?: string };
       const checkpoint = mockCheckpoints.get(p.checkpoint_id);
       if (!checkpoint) throw new Error(`unknown checkpoint: ${p.checkpoint_id}`);
+      if (p.untracked_file !== undefined) throw new Error("模拟模式无法恢复实际文件");
       return {
         result: {
           checkpoint_id: checkpoint.id,
@@ -2235,6 +2236,7 @@ function mockHandle(
         available: true,
         patch: `diff --git a/src/example.ts b/src/example.ts\n@@ -1,1 +1,2 @@\n old\n+new`,
         files: ["src/example.ts"],
+        untracked_preview: checkpoint.untracked_files.map((path) => ({ path, status: "missing_snapshot" as const })),
       } satisfies CheckpointDiffResult;
     }
 

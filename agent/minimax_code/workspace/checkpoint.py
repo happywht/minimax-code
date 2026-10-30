@@ -223,6 +223,44 @@ class CheckpointManager:
             warnings=warnings,
         )
 
+    def preview_untracked(self, cwd: str | Path, checkpoint: Checkpoint) -> list[dict[str, str]]:
+        """Describe current destinations without modifying the workspace.
+
+        The preview is advisory; restore always rechecks and atomically creates.
+        """
+        root = require_directory(cwd)
+        snapshot = self.snapshot_dir(checkpoint.id)
+        result: list[dict[str, str]] = []
+        for rel in checkpoint.untracked_files:
+            try:
+                src = _checkpoint_file(snapshot, rel)
+                dst = _checkpoint_file(root, rel)
+                if not checkpoint.has_untracked_snapshot or not src.is_file():
+                    status = "missing_snapshot"
+                elif dst.exists() or dst.is_symlink():
+                    status = "existing"
+                else:
+                    status = "available"
+            except (OSError, ValueError):
+                status = "unsafe_path"
+            result.append({"path": rel, "status": status})
+        return result
+
+    def restore_untracked_file(
+        self, cwd: str | Path, checkpoint: Checkpoint, relative: str
+    ) -> CheckpointRestoreResult:
+        """Restore one recorded untracked file, never replacing a destination."""
+        require_write_access()
+        if relative not in checkpoint.untracked_files or not checkpoint.has_untracked_snapshot:
+            raise ValueError("File is not present in this checkpoint snapshot")
+        cwd_str = str(require_directory(cwd))
+        warnings: list[str] = []
+        restored, skipped = self._restore_untracked(cwd_str, checkpoint.id, [relative], warnings)
+        return CheckpointRestoreResult(
+            checkpoint_id=checkpoint.id, restored=bool(restored), applied_stash=False,
+            restored_untracked=restored, skipped_existing=skipped, warnings=warnings,
+        )
+
     # ------------------------------------------------------------------
     # diff
     # ------------------------------------------------------------------
