@@ -24,6 +24,7 @@ import { MentionPickerDropdown } from "./MentionPickerDropdown";
 import { ComposerToolbar } from "./ComposerToolbar";
 import { TaskTemplates } from "./TaskTemplates";
 import { DocumentTaskTemplate } from "./DocumentTaskTemplate";
+import { SpreadsheetTaskTemplate } from "./SpreadsheetTaskTemplate";
 import { QueuedTaskInput } from "./QueuedTaskInput";
 import { ProjectAttachmentImport } from "./ProjectAttachmentImport";
 import { strings } from "../../ui/strings";
@@ -222,6 +223,12 @@ export function MessageInput({
           }}
         />
         {!codex && <DocumentTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
+          onPrepare={(text) => {
+            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
+            mention.closePicker();
+            draft.ref.current?.focus();
+          }} />}
+        {!codex && <SpreadsheetTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
           onPrepare={(text) => {
             draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
             mention.closePicker();
