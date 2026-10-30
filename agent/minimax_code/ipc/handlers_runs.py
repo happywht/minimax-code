@@ -295,7 +295,8 @@ def register_run_handlers(server: Any) -> None:
                         def resolve():
                             with execution_scope(ExecutionPolicy(workspace=root)):
                                 return resolve_child_text(child, req.path, req.content,
-                                    entry["parent_sha256"], entry["child_sha256"])
+                                    entry["parent_sha256"], entry["child_sha256"],
+                                    expected_parent_identity=tuple(reviewed["parent_identity"]))
                         task = asyncio.create_task(asyncio.to_thread(resolve))
                         try:
                             result = await asyncio.shield(task)
@@ -310,7 +311,8 @@ def register_run_handlers(server: Any) -> None:
                     # Cancellation must not leave an unobserved writer running.
                     def collect():
                         with execution_scope(ExecutionPolicy(workspace=root)):
-                            return collect_child(child, on_conflict=req.on_conflict)
+                            return collect_child(child, on_conflict=req.on_conflict,
+                                expected_parent_identity=tuple(reviewed["parent_identity"]))
                     task = asyncio.create_task(asyncio.to_thread(collect))
                     try:
                         report = await asyncio.shield(task)

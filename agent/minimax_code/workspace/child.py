@@ -373,8 +373,20 @@ def read_resolution_backup(child: ChildWorkspace, attempt_id: str) -> dict[str, 
     return {"attempt_id": attempt_id, "path": relative, "sha256": expected, "content": content}
 
 
-def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[str, Any]:
+def _check_parent_identity(parent: Path, expected: tuple[int, int]) -> None:
+    resolved = require_directory(parent)
+    info = resolved.stat()
+    if resolved != parent or (info.st_dev, info.st_ino) != expected:
+        raise ValueError("Parent workspace changed; review it again before writing")
+
+
+def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
+                  expected_parent_identity: tuple[int, int] | None = None) -> dict[str, Any]:
     require_write_access()
+    if expected_parent_identity is None:
+        info = require_directory(child.parent).stat()
+        expected_parent_identity = (info.st_dev, info.st_ino)
+    _check_parent_identity(child.parent, expected_parent_identity)
     if active_child():
         raise ValueError("Only the parent workspace may collect child changes")
     if on_conflict not in {"fail", "skip"}:
@@ -418,6 +430,7 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
                                "status": "in_progress", "pending_path": None, "report": report}
 
     def save_attempt() -> None:
+        _check_parent_identity(child.parent, expected_parent_identity)
         atomic_write_text(journal, json.dumps(attempt, ensure_ascii=False, indent=2),
                           baseline_path=journal,
                           baseline_sha256=_digest(journal, max_bytes=1024 * 1024))
@@ -428,6 +441,7 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
             # A crash anywhere after this save leaves this path explicitly uncertain.
             attempt["pending_path"] = relative
             save_attempt()
+            _check_parent_identity(child.parent, expected_parent_identity)
             target = _path(child.parent, relative)
             if current is not None:
                 backup = _path(child.base, "backups/" + relative)
@@ -438,6 +452,7 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
                 elif _digest(backup) != current:
                     raise ValueError("Existing collection backup differs from the current file; review it before collecting")
             target.parent.mkdir(parents=True, exist_ok=True)
+            _check_parent_identity(child.parent, expected_parent_identity)
             atomic_copy_file(_path(child.root, relative), target, baseline_sha256=current,
                              expected_source_sha256=final[relative])
             report["merged"].append({"path": relative, "sha256": final[relative]})
@@ -445,6 +460,7 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
             save_attempt()
         report["complete"] = not conflicts
         if report["complete"]:
+            _check_parent_identity(child.parent, expected_parent_identity)
             child.record.update(state="collected", receipt=report)
             child.save()
         attempt["status"] = "complete" if report["complete"] else "partial"
@@ -461,9 +477,14 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
 
 
 def resolve_child_text(child: ChildWorkspace, relative: str, content: str,
-                       parent_sha: str, child_sha: str) -> dict[str, Any]:
+                       parent_sha: str, child_sha: str, *,
+                       expected_parent_identity: tuple[int, int] | None = None) -> dict[str, Any]:
     """Record a user-authored merge with a durable backup and uncertain-write journal."""
     require_write_access()
+    if expected_parent_identity is None:
+        info = require_directory(child.parent).stat()
+        expected_parent_identity = (info.st_dev, info.st_ino)
+    _check_parent_identity(child.parent, expected_parent_identity)
     if active_child() or child.record["state"] not in {"completed", "failed", "cancelled"}:
         raise ValueError("Child workspace cannot be resolved in its current state")
     if len(content.encode("utf-8")) > 16384:
@@ -491,6 +512,7 @@ def resolve_child_text(child: ChildWorkspace, relative: str, content: str,
                "path": relative, "parent_sha256": parent_sha}
 
     def save_attempt() -> None:
+        _check_parent_identity(child.parent, expected_parent_identity)
         atomic_write_text(journal, json.dumps(attempt, ensure_ascii=False, indent=2),
                           baseline_path=journal, baseline_sha256=_digest(journal, max_bytes=1024 * 1024))
 
@@ -500,8 +522,10 @@ def resolve_child_text(child: ChildWorkspace, relative: str, content: str,
         atomic_copy_file(parent, backup, baseline_sha256=None, expected_source_sha256=parent_sha)
         if _digest(source) != child_sha:
             raise ValueError("Child file changed since review")
+        _check_parent_identity(child.parent, expected_parent_identity)
         atomic_write_text(parent, content, baseline_path=parent, baseline_sha256=parent_sha)
         merged_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        _check_parent_identity(child.parent, expected_parent_identity)
         child.record.setdefault("resolutions", {})[relative] = {
             "parent_sha256": merged_sha, "child_sha256": child_sha, "attempt_id": attempt_id}
         child.save()
