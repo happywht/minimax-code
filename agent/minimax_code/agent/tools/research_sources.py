@@ -25,6 +25,9 @@ class ResearchSources:
         return identity
 
     async def remember_page(self, page):
+        from ...execution import require_write_access
+
+        require_write_access()
         if self.db is None:
             return self.remember(page)
         from ...storage.dao._base import dumps_json, loads_json, now_iso
@@ -58,8 +61,10 @@ class ResearchSources:
 
     async def remember_manual_page(self, page, expected_service_id):
         """Commit a user-initiated read as its own completed, explicitly labelled run."""
+        from ...execution import require_write_access
         from ...storage.dao._base import dumps_json, now_iso
         from ...storage.dao.runs import _append_event, _fetchone, _hydrate_run, _hydrate_step
+        require_write_access()
         if await self._binding() != expected_service_id:
             raise ValueError("Research service identity changed")
         run_id, ident, now = "run_" + uuid.uuid4().hex, "page_" + uuid.uuid4().hex, now_iso()
