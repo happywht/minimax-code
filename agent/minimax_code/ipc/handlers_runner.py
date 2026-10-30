@@ -17,7 +17,7 @@ from typing import Any
 
 from ..execution import capture_output, spawn_exec, spawn_shell
 from .handler_utils import HandlerError
-from .handlers_terminal import _cwd_and_root_from_params, start_terminal_command
+from .handlers_terminal import _cwd_and_root_from_params, start_terminal_command, terminal_permission_action
 from .host_session_gate import require_host_session
 from .protocol import INVALID_PARAMS
 from .server import Context
@@ -41,11 +41,13 @@ def _shell_command(args: list[str]) -> str:
 
 
 async def _run_probe(
-    path: str, args: list[str], *, chat_session_id: str | None = None,
+    path: str, args: list[str], *, chat_session_id: str | None = None, permission_server: Any = None,
 ) -> tuple[bool, str | None, str | None]:
     command = [path, *args]
     await require_host_session(chat_session_id)
     try:
+        if permission_server is not None and await terminal_permission_action(permission_server, "runner.start") != "allow":
+            return False, None, "Version probe requires an allow rule for runner.start and exec_command"
         is_cmd = Path(path).suffix.lower() in {".cmd", ".bat"}
         streams = {"stdout": asyncio.subprocess.PIPE, "stderr": asyncio.subprocess.PIPE}
         proc = (await spawn_shell(_shell_command(command), **streams) if is_cmd
@@ -70,6 +72,7 @@ async def _runner_entry(
     version_args: list[str] | None,
     supports_prompt: bool,
     chat_session_id: str | None = None,
+    permission_server: Any = None,
 ) -> dict[str, Any]:
     if command_name is None:
         return {
@@ -98,6 +101,7 @@ async def _runner_entry(
         }
     ok, version, reason = await _run_probe(
         path, version_args or ["--version"], chat_session_id=chat_session_id,
+        permission_server=permission_server,
     )
     return {
         "id": id,
@@ -112,7 +116,7 @@ async def _runner_entry(
     }
 
 
-async def _runner_catalog(*, chat_session_id: str | None = None) -> list[dict[str, Any]]:
+async def _runner_catalog(*, chat_session_id: str | None = None, permission_server: Any = None) -> list[dict[str, Any]]:
     return list(await asyncio.gather(
         _runner_entry(
             id="native",
@@ -128,6 +132,7 @@ async def _runner_catalog(*, chat_session_id: str | None = None) -> list[dict[st
             version_args=["--version"],
             supports_prompt=True,
             chat_session_id=chat_session_id,
+            permission_server=permission_server,
         ),
         _runner_entry(
             id="claude-code-cli",
@@ -136,6 +141,7 @@ async def _runner_catalog(*, chat_session_id: str | None = None) -> list[dict[st
             version_args=["--version"],
             supports_prompt=True,
             chat_session_id=chat_session_id,
+            permission_server=permission_server,
         ),
     ))
 
@@ -251,7 +257,7 @@ def register_runner_handlers(server: Any) -> None:
         try:
             if params is not None and (not isinstance(params, dict) or params):
                 raise HandlerError(INVALID_PARAMS, "runner.list accepts no parameters")
-            await ctx.reply({"runners": await _runner_catalog()})
+            await ctx.reply({"runners": await _runner_catalog(permission_server=ctx.server)})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:
@@ -268,7 +274,7 @@ def register_runner_handlers(server: Any) -> None:
                 runner = await _runner_entry(id="native", label="Native shell", command_name=None,
                                              version_args=None, supports_prompt=False)
             else:
-                runner = next(item for item in await _runner_catalog(chat_session_id=chat_session_id)
+                runner = next(item for item in await _runner_catalog(chat_session_id=chat_session_id, permission_server=ctx.server)
                               if item["id"] == runner_id)
             if runner_id != "native" and not runner["available"]:
                 raise HandlerError(
@@ -289,6 +295,8 @@ def register_runner_handlers(server: Any) -> None:
                 chat_session_id=chat_session_id,
                 emit=ctx.emit,
                 workspace_root=workspace_root,
+                permission_server=ctx.server,
+                permission_tool="runner.start",
             )
             await ctx.reply({"runner": runner, "session": session.to_wire()})
         except HandlerError as exc:

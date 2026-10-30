@@ -1418,6 +1418,11 @@ Runner safety options:
 
 All runner starts return a terminal session and use the same stdout,
 stderr, cancel, timeout, and run timeline plumbing as `terminal.start`.
+Both entries check `exec_command` and their own `terminal.start` or `runner.start`
+permission rule. A denial blocks execution; an ask waits for an explicit one-time
+decision. They recheck policy and session binding before spawning. Runner version
+probes have no interactive approval channel and run only when these rules permit
+them without asking; otherwise the external runner is shown as unavailable.
 When `cwd` is omitted, runners use the same workspace-root default as
 `terminal.start`.
 

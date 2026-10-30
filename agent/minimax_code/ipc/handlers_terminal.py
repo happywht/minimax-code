@@ -75,6 +75,8 @@ class TerminalSession:
     process_cleanup_attempted: bool = False
     tracking_error: str | None = None
     task: asyncio.Task[None] | None = None
+    permission_server: Any = field(default=None, repr=False)
+    permission_tool: str = "terminal.start"
     chunks: list[TerminalChunk] = field(default_factory=list)
     next_seq: int = 1
     output_chars: int = 0
@@ -463,6 +465,18 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
     await terminate_tree(proc)
 
 
+async def terminal_permission_action(server: Any, tool: str) -> str:
+    """Apply both the shell rule and the direct entry point's rule."""
+    from .handlers_permissions import _ensure_permission_store
+
+    store = await _ensure_permission_store(server)
+    if store is None:
+        raise HandlerError(_TERMINAL_ERROR, "Execution permission policy is unavailable")
+    actions = {str((store.lookup(name) or {}).get("action") or "").lower()
+               for name in ("exec_command", tool)}
+    return "deny" if "deny" in actions else "ask" if "ask" in actions else "allow"
+
+
 async def _run_session(
     session: TerminalSession,
     timeout_s: float,
@@ -474,6 +488,34 @@ async def _run_session(
         await require_host_session(session.chat_session_id)
         await _create_run_tracking(session, emit)
         await require_host_session(session.chat_session_id)
+        approved = False
+        if session.permission_server is not None:
+            action = await terminal_permission_action(session.permission_server, session.permission_tool)
+            if action == "deny":
+                raise ExecutionDeniedError("Terminal execution is denied by permission policy")
+            if action == "ask":
+                if not session.chat_session_id or not session.run_id:
+                    raise ExecutionDeniedError(
+                        "Terminal approval requires a bound session and confirmed run record; "
+                        "select a session and try again"
+                    )
+                from ..perm_consent import PermissionGater, register_gater, unregister_gater
+
+                gater = PermissionGater(emit=emit, run_id=session.run_id, explicit_once=True)
+                register_gater(session.permission_server, session.id, gater)
+                try:
+                    allowed = await gater.request_consent(tool=session.permission_tool, args={
+                        "command": session.command, "cwd": session.cwd,
+                        "scope": "host shell; unrestricted filesystem and network"},
+                        session_id=session.chat_session_id)
+                finally:
+                    unregister_gater(session.permission_server, session.id)
+                if not allowed:
+                    raise ExecutionDeniedError("Terminal execution was not approved")
+                approved = True
+                if await terminal_permission_action(session.permission_server, session.permission_tool) == "deny":
+                    raise ExecutionDeniedError("Terminal execution is now denied by permission policy")
+                await require_host_session(session.chat_session_id)
         if session.chat_session_id is not None and session.workspace_root is not None:
             # The session may have been rebound while this command was queued
             # or while its run record was created. Do not execute in the old root.
@@ -482,6 +524,10 @@ async def _run_session(
                 raise ExecutionDeniedError(
                     "Terminal session workspace has changed; start the command again."
                 )
+        if session.permission_server is not None:
+            action = await terminal_permission_action(session.permission_server, session.permission_tool)
+            if action == "deny" or (action == "ask" and not approved):
+                raise ExecutionDeniedError("Terminal execution requires a new permission decision")
         scope = (execution_scope(ExecutionPolicy(workspace=Path(session.workspace_root)))
                  if session.workspace_root is not None else contextlib.nullcontext())
         with scope:
@@ -578,9 +624,17 @@ async def start_terminal_command(
     chat_session_id: str | None,
     emit: Callable[[str, dict[str, Any]], Awaitable[None]],
     workspace_root: str | None = None,
+    permission_server: Any = None,
+    permission_tool: str = "terminal.start",
 ) -> TerminalSession:
     """Start a lightweight command session and return its in-memory row."""
     await require_host_session(chat_session_id)
+    if permission_server is not None:
+        action = await terminal_permission_action(permission_server, permission_tool)
+        if action == "deny":
+            raise HandlerError(_TERMINAL_ERROR, "Terminal execution is denied by permission policy")
+        if action == "ask" and not chat_session_id:
+            raise HandlerError(_TERMINAL_ERROR, "Terminal approval requires a bound session; select a session and try again")
     if _TERMINAL_CLOSING:
         raise HandlerError(_TERMINAL_ERROR, "Terminal service is closing")
     session = TerminalSession(
@@ -589,6 +643,8 @@ async def start_terminal_command(
         cwd=cwd,
         workspace_root=workspace_root,
         chat_session_id=chat_session_id,
+        permission_server=permission_server,
+        permission_tool=permission_tool,
     )
     _SESSIONS[session.id] = session
     session.task = asyncio.create_task(_run_session(session, timeout_s, emit))
@@ -626,6 +682,7 @@ def register_terminal_handlers(server: Any) -> None:
                 chat_session_id=chat_session_id,
                 emit=ctx.emit,
                 workspace_root=workspace_root,
+                permission_server=ctx.server,
             )
             await ctx.reply({"session": session.to_wire()})
         except HandlerError as exc:

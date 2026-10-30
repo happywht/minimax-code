@@ -181,8 +181,8 @@ class PermissionGater:
         if self.run_id:
             payload["run_id"] = self.run_id
             payload["remaining_ms"] = max(0, int((deadline - loop.time()) * 1000))
-            if self.explicit_once or explicit_once:
-                payload["approval_policy"] = "explicit_once"
+        if self.explicit_once or explicit_once:
+            payload["approval_policy"] = "explicit_once"
 
         try:
             try:
