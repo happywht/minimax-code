@@ -32,6 +32,7 @@ let unsubs: (() => void)[] = [];
 let session: string | null = null;
 let generation = 0;
 let snapshots = new Map<string, RunStepsResult>();
+let snapshotService: string | null = null;
 let pending = false;
 let forceSnapshot = false;
 let worker: Promise<void> | null = null;
@@ -86,13 +87,18 @@ async function drain(): Promise<void> {
     pending = false;
     const current = session;
     const epoch = generation;
+    const host = ipc.agentBaseUrl;
+    const project = useSessionStore.getState().currentProjectId;
     const refresh = forceSnapshot;
     const askVersion = useChat.getState().askRecoveryVersion();
     forceSnapshot = false;
     if (!current) continue;
     const permissionVersion = usePermissionStore.getState().recoveryVersion(current);
-    const isCurrent = () => epoch === generation && current === useSessionStore.getState().currentSessionId;
+    const isCurrent = () => epoch === generation && ipc.agentBaseUrl === host &&
+      current === useSessionStore.getState().currentSessionId && project === useSessionStore.getState().currentProjectId;
     try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!identity.service_id) throw new Error("Service identity is unavailable; timeline was not refreshed.");
       const { runs, active_truncated } = await typedIPC.listRuns({ session_id: current, limit: MAX_RUNS, include_active: true });
       if (active_truncated !== false) {
         throw new Error("Run recovery is incomplete or unsupported; timeline was not refreshed.");
@@ -100,9 +106,13 @@ async function drain(): Promise<void> {
       if (runs.some((run) => run.session_id !== current)) {
         throw new Error("Invalid run list; refresh the timeline.");
       }
-      const entries = await Promise.all(runs.map((run) => catchUp(run.id, current, refresh)));
+      const fullRefresh = refresh || snapshotService !== identity.service_id;
+      const entries = await Promise.all(runs.map((run) => catchUp(run.id, current, fullRefresh)));
+      const identityAfter = await typedIPC.getServiceIdentity();
       if (!isCurrent()) continue;
+      if (identityAfter.service_id !== identity.service_id) throw new Error("Service changed while recovering runs; retry the timeline.");
       snapshots = new Map(entries.map((entry) => [entry.run.id, entry]));
+      snapshotService = identity.service_id;
       const next: Record<string, RunTimelineEntry> = {};
       for (const entry of entries) {
         next[entry.run.id] = {
@@ -115,18 +125,18 @@ async function drain(): Promise<void> {
       useRunTimelineStore.setState({ runs: next, order: entries.map((entry) => entry.run.id), error: null });
       const active = entries.some((entry) => !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(entry.run.status));
       useChat.getState().reconcileActiveStatus(current, active);
-      if (refresh) {
+      if (fullRefresh) {
         for (const entry of entries) if (entry.live_stream && !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(entry.run.status)) {
           useChat.getState().reconcileLiveStream(entry.run, entry.live_stream);
         }
       }
-      if (refresh && entries.every((entry) => "pending_ask_user" in entry)) {
+      if (fullRefresh && entries.every((entry) => "pending_ask_user" in entry)) {
         const questions = entries.flatMap((entry) => entry.pending_ask_users ?? (entry.pending_ask_user ? [entry.pending_ask_user] : []));
         const currentQuestionId = useChat.getState().askUser?.request_id;
         const question = questions.find((value) => value.request_id === currentQuestionId) ?? questions[0] ?? null;
         useChat.getState().reconcileAskUser(question, askVersion, current);
       }
-      if (refresh) {
+      if (fullRefresh) {
         const native = entries.every((entry) => "pending_native_permissions" in entry)
           ? entries.flatMap((entry) => entry.pending_native_permissions ?? []) : null;
         const codex = entries.every((entry) => "pending_codex_permissions" in entry)
@@ -135,10 +145,10 @@ async function drain(): Promise<void> {
           entries.map((entry) => entry.run.id), native, codex, permissionVersion);
       }
       const stamp = entries.map((entry) => `${entry.run.id}:${entry.cursor}`).join("|");
-      if (refresh || stamp !== conversationStamp) {
+      if (fullRefresh || stamp !== conversationStamp) {
         conversationStamp = stamp;
         void useChat.getState().reconcileRuns(entries.map((entry) => entry.run),
-          () => isCurrent() && (active || conversationStamp === stamp), refresh);
+          () => isCurrent() && (active || conversationStamp === stamp), fullRefresh);
       }
     } catch (err) {
       if (isCurrent()) useRunTimelineStore.setState({ error: err instanceof Error ? err.message : String(err) });
@@ -151,6 +161,7 @@ function requestSync(sessionId: string | null, refresh = false): Promise<void> {
     session = sessionId;
     generation++;
     snapshots.clear();
+    snapshotService = null;
     conversationStamp = "";
     useRunTimelineStore.setState({ runs: {}, order: [], error: null });
     refresh = true;
@@ -201,6 +212,11 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
           const current = useSessionStore.getState().currentSessionId;
           if (current) useChat.getState().restartHistoryOnReconnect(current);
           void requestSync(current, true);
+        } else {
+          // Invalidate reads started before the connection was lost. They must
+          // not make the timeline look current while a reconnect is pending.
+          generation++;
+          if (session) useRunTimelineStore.setState({ error: "连接已中断，等待重新同步运行记录。" });
         }
       }),
     ];
@@ -214,6 +230,7 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
     generation++;
     session = null;
     snapshots.clear();
+    snapshotService = null;
     conversationStamp = "";
     pending = false;
     forceSnapshot = false;

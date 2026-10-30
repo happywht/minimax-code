@@ -13,6 +13,7 @@ const active = new Set(["planning", "running", "awaiting_approval", "waiting_inp
 type Connection = "connecting" | "connected" | "disconnected" | "error";
 export function CurrentRunOverview({ connection, onOpenTimeline }: { connection: Connection; onOpenTimeline: () => void }): JSX.Element | null {
   const session = useSessionStore((state) => state.currentSessionId);
+  const project = useSessionStore((state) => state.currentProjectId);
   const runs = useRunTimelineStore((state) => state.runs), order = useRunTimelineStore((state) => state.order);
   const loading = useRunTimelineStore((state) => state.loading), error = useRunTimelineStore((state) => state.error);
   const loadRuns = useRunTimelineStore((state) => state.loadForSession);
@@ -26,7 +27,7 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
   const generation = useRef(0), runRef = useRef<string | null>(null);
   runRef.current = run?.id ?? null;
   const host = ipc.agentBaseUrl, scope = JSON.stringify([host, session, run?.id]);
-  useEffect(() => { void loadRuns(session); }, [session, loadRuns]);
+  useEffect(() => { void loadRuns(session); }, [session, project, loadRuns]);
   const refreshBudget = useCallback(async () => {
     if (!run || !session || connection !== "connected") return;
     const ticket = ++generation.current, id = run.id;
@@ -101,6 +102,8 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
     <details data-testid="current-run-overview">
     <summary className="cursor-pointer font-medium text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">任务概览 · {stale ? "状态待刷新" : run ? labels[run.status] ?? run.status : loading ? "正在读取" : "暂无运行记录"}</summary>
     {stale && <p role="status" className="mt-1 text-status-warning">连接或运行记录未确认；以下为最近快照，操作前请刷新。</p>}
+    {error && <p role="alert" className="mt-1 break-words text-status-warning">运行记录同步失败：{error}</p>}
+    <Button type="button" size="sm" variant="ghost" disabled={connection !== "connected" || loading} onClick={() => void loadRuns(session)}>刷新运行记录</Button>
     {!run ? <p className="mt-1 text-ink-2">{error ? "无法读取当前会话的运行记录。" : loading ? "正在读取运行记录。" : "此会话尚无可显示的任务运行。"}</p> : <div className="mt-2 space-y-1 text-ink-1">
       <p className="break-all">{active.has(run.status) ? "当前活动运行" : run.status === "queued" ? "已接收的排队任务" : "最近运行"}：{run.title || "未命名"} · {run.id}</p>
       <p>状态：{labels[run.status] ?? run.status}{run.status === "awaiting_approval" ? !stale && permission ? ` · 请求 ${permission.tool}` : " · 请求详情待同步或已结束" : ""}{run.status === "waiting_input" ? !stale && awaitingQuestion ? " · 问题卡片在聊天下方" : " · 问题详情待同步或已结束" : ""}</p>
