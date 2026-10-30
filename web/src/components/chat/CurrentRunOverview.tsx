@@ -143,6 +143,11 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       <p className="break-all">服务地址：{host} · 执行主机/容器：未记录</p>
       <p className="break-all">执行目录（服务侧记录）：{workspace}</p>
       <p>引擎：{engine} · 模型：{model}</p>
+      {codex && <div className="space-y-1" data-testid="codex-usage">
+        <p>Codex 引擎报告的本运行用量：{md?.codex_usage ? `输入 ${md.codex_usage.input_tokens} · 输出 ${md.codex_usage.output_tokens} · 合计 ${md.codex_usage.total_tokens}` : "尚无用量报告"}</p>
+        <p>{md?.usage_certainty === "observed" ? "已收到引擎用量更新；运行结束前仍可能增加。" : md?.usage_certainty === "recovery_interval" ? "包含恢复期间的用量变化，不能精确归属到单次运行。" : md?.usage_certainty === "uncertain" ? "用量水位异常，当前数字不完整；请核对预算账本。" : "用量尚未确认，不能按零计算。"}</p>
+        <p>这是引擎报告，不是费用或严格预算保证；共享预算请查看预算账本。</p>
+      </div>}
       {codex && md?.codex_plan && <div className="space-y-1" data-testid="codex-plan">
         <p className="font-medium">Codex 计划（引擎报告）</p>
         {md.codex_plan.explanation && <p className="whitespace-pre-wrap break-words">{md.codex_plan.explanation}</p>}

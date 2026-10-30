@@ -369,6 +369,9 @@ async def drive_codex_run(
                 budget.used_tokens = int(observed.get("totalTokens") or 0)
                 if conversation.budget_handle is not None:
                     ledger_exceeded = await conversation.budget_exceeded()
+                # The persisted watermark is now visible to the owning run's
+                # UI without waiting for another status change or completion.
+                await emit("run.updated", {"run": await job.dao.get_run(job.run_id)})
             else:
                 keys = ("inputTokens", "outputTokens", "totalTokens")
                 if not all(type(info.get(k)) is int and info[k] >= 0 for k in keys):

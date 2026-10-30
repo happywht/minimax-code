@@ -379,7 +379,7 @@ export function ChatPanel({
       <MessageList searchQuery={searchOpen ? searchQuery : undefined} />
       {recovery && <div className="px-4 py-2"><RunRecoveryActions key={recovery.id} run={recovery}
         refresh={() => useRunTimelineStore.getState().loadForSession(currentId)} /></div>}
-      {current?.engine === "codex" && <p className="px-4 text-xs text-ink-2">Codex 会话使用独立模型配置，仅支持文本。历史与外部线程绑定；如需修改历史，请新建会话并交接上下文。</p>}
+      {current?.engine === "codex" && <p className="px-4 text-xs text-ink-2">Codex 会话使用独立模型配置，支持文字和最多 5 张图片（合计 4 MiB）；模型是否支持图片由 Codex 决定。历史与外部线程绑定；如需修改历史，请新建会话并交接上下文。</p>}
       {handoff && <EngineHandoff sessionId={handoff.source} target={handoff.target} onClose={() => setHandoff(null)} />}
       {/* Inline questionnaire while the agent is suspended in ask_user */}
       <AskUserCard key={`${currentId}:${questionKey}`} />

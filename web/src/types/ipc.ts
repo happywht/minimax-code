@@ -1016,7 +1016,9 @@ export interface AgentRun {
   started_at?: string | null;
   completed_at?: string | null;
   error?: string | null;
-  metadata?: (Record<string, unknown> & { model_snapshot?: NativeModelSnapshot | null; codex_plan?: CodexPlan }) | null;
+  metadata?: (Record<string, unknown> & { model_snapshot?: NativeModelSnapshot | null; codex_plan?: CodexPlan;
+    codex_usage?: { input_tokens: number; output_tokens: number; total_tokens: number } | null;
+    usage_certainty?: "unknown" | "observed" | "uncertain" | "recovery_interval" }) | null;
 }
 
 export interface AgentRunStep {

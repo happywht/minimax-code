@@ -550,6 +550,14 @@ the same idempotency key returns that record and never resends it. Check the
 task before submitting again with a new key. Run, session, project and session
 host policy are checked.
 
+For Codex `thread/tokenUsage/updated`, the current run persists and emits
+`run.updated` with `metadata.codex_usage` (`input_tokens`, `output_tokens`,
+`total_tokens`) and `metadata.usage_certainty`. The values are observed
+engine-reported increments for this run, not a cost or strict budget guarantee;
+`recovery_interval` may include usage from an unobserved interval. Missing usage
+is null/unknown; `uncertain` does not establish complete usage. Existing budget
+ledger accounting and interruption rules are unchanged.
+
 `run.steps({run_id})` now returns `{run, steps, cursor}` from one database
 transaction. `cursor` is the highest persisted sequence for that run; an older
 run without journal entries has cursor 0. Existing `run.list` callers are unchanged.

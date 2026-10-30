@@ -205,7 +205,11 @@ class CodexConversation:
                   "external_turn_id": self.turn_id, "codex_protocol": SUPPORTED_PROTOCOL_PIN,
                   "workspace_snapshot": self.job.workspace, "codex_settings": {
                       k: self.state[k] for k in ("model", "modelProvider", "reasoningEffort") if k in self.state},
-                  "usage_certainty": self.certainty}
+                  "usage_certainty": self.certainty,
+                  "codex_usage": ({"input_tokens": self.usage["inputTokens"],
+                                    "output_tokens": self.usage["outputTokens"],
+                                    "total_tokens": self.usage["totalTokens"]}
+                                   if self.usage is not None else None)}
             if self.plan is not None:
                 md["codex_plan"] = self.plan
             if result is not None:
