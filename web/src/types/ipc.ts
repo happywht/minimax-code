@@ -2317,7 +2317,7 @@ export interface CheckpointDiffResult {
   available: boolean;
   patch: string;
   files: string[];
-  untracked_preview?: { path: string; status: "available" | "existing" | "missing_snapshot" | "unsafe_path" }[];
+  untracked_preview?: { path: string; status: "available" | "existing" | "missing_snapshot" | "unsafe_path"; sha256?: string }[];
 }
 
 /** Result of `checkpoint.delete`. */

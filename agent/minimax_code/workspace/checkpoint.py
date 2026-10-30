@@ -27,9 +27,12 @@ a different concern cited only as design reference.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
 import re
 import shutil
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -231,7 +234,9 @@ class CheckpointManager:
         root = require_directory(cwd)
         snapshot = self.snapshot_dir(checkpoint.id)
         result: list[dict[str, str]] = []
+        remaining = 32 * 1024 * 1024
         for rel in checkpoint.untracked_files:
+            digest = None
             try:
                 src = _checkpoint_file(snapshot, rel)
                 dst = _checkpoint_file(root, rel)
@@ -241,13 +246,35 @@ class CheckpointManager:
                     status = "existing"
                 else:
                     status = "available"
+                    info = src.lstat()
+                    if stat.S_ISREG(info.st_mode) and info.st_size <= min(16 * 1024 * 1024, remaining):
+                        remaining -= info.st_size
+                        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+                        fd = os.open(src, flags)
+                        with os.fdopen(fd, "rb") as stream:
+                            opened = os.fstat(stream.fileno())
+                            identity = lambda s: (s.st_dev, s.st_ino, s.st_mode, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+                            if identity(info) != identity(opened) or not stat.S_ISREG(opened.st_mode):
+                                raise ValueError("Snapshot changed during preview")
+                            hasher = hashlib.sha256()
+                            total = 0
+                            while chunk := stream.read(min(65536, info.st_size - total + 1)):
+                                total += len(chunk)
+                                if total > info.st_size:
+                                    raise ValueError("Snapshot grew during preview")
+                                hasher.update(chunk)
+                            value = hasher.hexdigest()
+                            if identity(opened) != identity(os.fstat(stream.fileno())) or identity(opened) != identity(src.lstat()):
+                                raise ValueError("Snapshot changed during preview")
+                            digest = value
             except (OSError, ValueError):
                 status = "unsafe_path"
-            result.append({"path": rel, "status": status})
+            result.append({"path": rel, "status": status, **({"sha256": digest} if digest else {})})
         return result
 
     def restore_untracked_file(
-        self, cwd: str | Path, checkpoint: Checkpoint, relative: str
+        self, cwd: str | Path, checkpoint: Checkpoint, relative: str,
+        *, expected_sha256: str | None = None,
     ) -> CheckpointRestoreResult:
         """Restore one recorded untracked file, never replacing a destination."""
         require_write_access()
@@ -255,7 +282,8 @@ class CheckpointManager:
             raise ValueError("File is not present in this checkpoint snapshot")
         cwd_str = str(require_directory(cwd))
         warnings: list[str] = []
-        restored, skipped = self._restore_untracked(cwd_str, checkpoint.id, [relative], warnings)
+        restored, skipped = self._restore_untracked(cwd_str, checkpoint.id, [relative], warnings,
+                                                    expected_sha256=expected_sha256)
         return CheckpointRestoreResult(
             checkpoint_id=checkpoint.id, restored=bool(restored), applied_stash=False,
             restored_untracked=restored, skipped_existing=skipped, warnings=warnings,
@@ -470,6 +498,7 @@ class CheckpointManager:
         checkpoint_id: str,
         files: list[str],
         warnings: list[str],
+        *, expected_sha256: str | None = None,
     ) -> tuple[list[str], list[str]]:
         src_root = self.snapshot_dir(checkpoint_id)
         restored: list[str] = []
@@ -485,7 +514,7 @@ class CheckpointManager:
                     skipped.append(rel)
                     continue
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                atomic_copy_file(src, dst, baseline_sha256=None)
+                atomic_copy_file(src, dst, baseline_sha256=None, expected_source_sha256=expected_sha256)
                 restored.append(rel)
             except (OSError, ValueError) as exc:
                 warnings.append(f"restore {rel}: {exc}")

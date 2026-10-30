@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -225,11 +226,16 @@ def register_checkpoint_handlers(
             checkpoint = _row_to_checkpoint(row)
             if "untracked_file" in p:
                 relative = _string_required(p, "untracked_file")
+                expected = p.get("expected_sha256")
+                if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+                    raise HandlerError(INVALID_PARAMS, "expected_sha256 must be a lowercase SHA-256 digest")
                 try:
-                    result = mgr.restore_untracked_file(workdir, checkpoint, relative)
+                    result = mgr.restore_untracked_file(workdir, checkpoint, relative, **({"expected_sha256": expected} if expected is not None else {}))
                 except ValueError as exc:
                     raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             else:
+                if "expected_sha256" in p:
+                    raise HandlerError(INVALID_PARAMS, "expected_sha256 requires untracked_file")
                 result = await mgr.restore(workdir, checkpoint)
             await ctx.reply({"result": _result_to_dict(result)})
         except HandlerError as exc:
@@ -262,7 +268,7 @@ def register_checkpoint_handlers(
                     "available": diff.available,
                     "patch": diff.patch,
                     "files": diff.files,
-                    "untracked_preview": mgr.preview_untracked(workdir, _row_to_checkpoint(row)),
+                    "untracked_preview": await asyncio.to_thread(mgr.preview_untracked, workdir, _row_to_checkpoint(row)),
                 }
             )
         except HandlerError as exc:

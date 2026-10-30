@@ -112,7 +112,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     if (!legacyReady(ckpt) || restoring || !previews[ckpt.id]) return;
     const accepted = await requestConfirmation({
       title: `应用检查点「${ckpt.label}」`,
-      description: "这会尝试应用 Git stash 并复制未跟踪文件，不是精确撤销。请先保护当前修改；预检不会锁定工作区，并发修改或 Git 冲突可能导致部分结果。已有未跟踪文件不会被覆盖。",
+      description: "这会尝试应用 Git stash 并复制未跟踪文件，不是精确撤销。整体应用不核对各副本的预览摘要；请先保护当前修改。预检不会锁定工作区，并发修改或 Git 冲突可能导致部分结果。已有未跟踪文件不会被覆盖。",
       confirmLabel: "应用检查点",
     });
     if (!accepted) return;
@@ -135,17 +135,17 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     }
   };
 
-  const handleRestoreFile = async (ckpt: Checkpoint, path: string) => {
+  const handleRestoreFile = async (ckpt: Checkpoint, path: string, sha256: string) => {
     if (!legacyReady(ckpt) || restoring) return;
     const accepted = await requestConfirmation({
       title: `恢复文件 ${path}`,
-      description: "仅创建当前不存在的文件；已有文件不会被覆盖。预览后文件状态可能发生变化，恢复时会再次检查。",
+      description: `仅创建当前不存在的文件；已有文件不会被覆盖。恢复时核对当前预览的快照 SHA-256：${sha256}。摘要不能证明快照的原始性。`,
       confirmLabel: "恢复此文件",
     });
     if (!accepted) return;
     setRestoring(true);
     try {
-      const { result } = await typedIPC.restoreCheckpoint(ckpt.id, { ...legacyOptions(ckpt), untracked_file: path });
+      const { result } = await typedIPC.restoreCheckpoint(ckpt.id, { ...legacyOptions(ckpt), untracked_file: path, expected_sha256: sha256 });
       const details = [...result.warnings];
       if (result.skipped_existing.length) details.push(`目标已存在，未覆盖：${result.skipped_existing.join(", ")}`);
       if (!result.restored && !details.length) details.push("没有文件被恢复。");
@@ -397,10 +397,10 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                         <Button size="sm" variant="secondary" disabled={restoring || !previews[ckpt.id]} data-testid={`${testId}-restore-${ckpt.id}`} onClick={() => void handleApplyCheckpoint(ckpt)}>应用检查点（非精确撤销）</Button>
                         <div className="mt-2 text-[11px]">
                           <p>未跟踪文件恢复预览（关闭后重新打开可刷新）：</p>
-                          {previews[ckpt.id]?.map(({ path, status }) => (
+                          {previews[ckpt.id]?.map(({ path, status, sha256 }) => (
                             <div key={path} className="flex items-center justify-between gap-2">
-                              <span className="break-all">{path} — {status === "available" ? "目标不存在" : status === "existing" ? "目标已存在" : status === "missing_snapshot" ? "快照缺失" : "路径不安全"}</span>
-                              {status === "available" && <Button size="sm" variant="secondary" disabled={restoring} onClick={() => void handleRestoreFile(ckpt, path)}><RotateCcw size={10} />恢复此文件</Button>}
+                              <span className="break-all">{path} — {status === "available" ? "目标不存在" : status === "existing" ? "目标已存在" : status === "missing_snapshot" ? "快照缺失" : "路径不安全"}{status === "available" ? sha256 ? ` · SHA-256 ${sha256}` : " · 未取得摘要，请手动处理" : ""}</span>
+                              {status === "available" && sha256 && <Button size="sm" variant="secondary" disabled={restoring} onClick={() => void handleRestoreFile(ckpt, path, sha256)}><RotateCcw size={10} />恢复此文件</Button>}
                             </div>
                           ))}
                           {previews[ckpt.id]?.length === 0 && <p>没有未跟踪文件。</p>}
