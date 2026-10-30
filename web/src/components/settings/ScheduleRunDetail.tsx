@@ -4,6 +4,7 @@ import { useSessionStore } from "../../stores/sessionStore";
 import type { RunGetResult, RunStepsResult, ScheduleOccurrence } from "../../types/ipc";
 import { Button } from "../../ui";
 import { RunAttachments } from "../right-panel/RunAttachments";
+import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { useChat, usePermissionStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
@@ -157,6 +158,12 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
         </div>}
         {sameStatus && (text !== null ? <><p>已保存的运行结果：</p><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words">{text.slice(0, 8000) || "（结果文本为空）"}</pre>{text.length > 8000 && <p>此处仅显示前 8000 字符；完整结果请打开会话。</p>}</> : <p>{["queued", "planning", "running", "awaiting_approval", "waiting_input"].includes(run.status) ? "运行尚未结束或结果尚未保存。" : "没有可确认归属于此运行的文本回执。"}</p>)}
         {linked.length ? <RunAttachments run={run} steps={view.snapshot.steps} reviewScope={{ sessionId: occurrence.session_id, projectId: project!, serviceId: view.serviceId }} /> : <p>没有已记录的任务关联成果；旧成果或未关联文件不会列在这里。</p>}
+        {sameStatus && ["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(run.status) && serviceId === view.serviceId && <div className="mt-2 space-y-1 rounded border border-line p-2">
+          <p>将本次结果用于后续任务：目标是当前会话，必须属于同一项目；草稿不会自动发送，后续运行使用当前配置、预算和授权。</p>
+          {activeProject !== project || !activeSession ? <p>请先选择该计划所属项目的目标会话，再返回这里准备草稿。</p> :
+            <FollowupRunDraft run={run} allowOtherSession scheduleScope={{ serviceId: view.serviceId, jobId: occurrence.job_id,
+              occurrenceId: occurrence.id, revision: occurrence.revision, workspace: occurrence.context.workspace! }} />}
+        </div>}
         {sameStatus && cancellable.includes(run.status) && <Button type="button" size="sm" variant="danger" disabled={busy || cancelling} loading={cancelling} onClick={() => void cancel()}>停止本次运行</Button>}
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void load()}>刷新本次运行</Button>
       </>}

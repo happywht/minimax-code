@@ -15,7 +15,8 @@ type Prepared = { text: string; service: string; artifacts: TextArtifact[]; more
 type SelectedArtifact = { row: TextArtifact; preview: string; truncated: boolean };
 
 /** Prepares editable context from a persisted run; it never sends a task. */
-export function FollowupRunDraft({ run, allowOtherSession = false }: { run: AgentRun; allowOtherSession?: boolean }): JSX.Element | null {
+export function FollowupRunDraft({ run, allowOtherSession = false, scheduleScope }: { run: AgentRun; allowOtherSession?: boolean;
+  scheduleScope?: { serviceId: string; jobId: string; occurrenceId: string; revision: number; workspace: string } }): JSX.Element | null {
   const session = useSessionStore((s) => s.currentSessionId);
   const project = useSessionStore((s) => s.currentProjectId);
   const host = ipc.agentBaseUrl;
@@ -25,7 +26,7 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
   const [includeVerification, setIncludeVerification] = useState(false);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const epoch = useRef(0);
-  useEffect(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setIncludeVerification(false); setMessage(""); setBusy(false); return () => { ++epoch.current; }; }, [run.id, session, project, host]);
+  useEffect(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setIncludeVerification(false); setMessage(""); setBusy(false); return () => { ++epoch.current; }; }, [run.id, session, project, host, scheduleScope?.serviceId, scheduleScope?.jobId, scheduleScope?.occurrenceId, scheduleScope?.revision, scheduleScope?.workspace]);
   useEffect(() => ipc.onSideCar(() => { ++epoch.current; setPrepared(null); setSelected(null); setOutput(null); setIncludeVerification(false); setBusy(false); setMessage("连接变化，请重新准备草稿。"); }), []);
   const sourceSession = run.session_id;
   const available = !!project && !!session && (allowOtherSession || sourceSession === session) && run.metadata?.project_id === project && terminal.has(run.status);
@@ -46,7 +47,11 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
       typedIPC.listArtifacts(project, run.id).then((value) => ({ value }), () => ({ value: null })),
     ]);
     const [after, targetAfter, sourceAfter] = await Promise.all([typedIPC.getServiceIdentity(), typedIPC.getSession(session), typedIPC.getSession(sourceSession)]);
+    const schedule = snapshot.run.metadata?.schedule as { job_id?: string; occurrence_id?: string; revision?: number } | undefined;
     if (!isCurrent(ticket) || after.service_id !== identity.service_id || attachments.service_id !== identity.service_id ||
+        (scheduleScope && (identity.service_id !== scheduleScope.serviceId ||
+          snapshot.run.metadata?.workspace_snapshot !== scheduleScope.workspace || snapshot.run.metadata?.model_snapshot?.engine !== "native" ||
+          schedule?.job_id !== scheduleScope.jobId || schedule.occurrence_id !== scheduleScope.occurrenceId || schedule.revision !== scheduleScope.revision)) ||
         (artifacts.value !== null && (artifacts.value.service_id !== identity.service_id ||
           artifacts.value.artifacts.some((item) => item.project_id !== project || item.service_id !== identity.service_id || item.run_id !== run.id))) ||
         target.session.id !== session || target.session.project_id !== project || target.session.archived ||
@@ -64,6 +69,7 @@ export function FollowupRunDraft({ run, allowOtherSession = false }: { run: Agen
     const lines = ["请基于以下已记录运行准备后续任务（目标请补充；请先核对原记录与文件）：",
       `来源会话：${sourceSession} · 运行：${saved.id} · ${clip(saved.title || "未命名", 240)}`, `运行状态：${statuses[saved.status] ?? saved.status}（不代表业务验收）`,
       `验证记录：${evidence ? verdicts[evidence.verdict ?? "unknown"] ?? "未知" : "历史记录未提供验证证据"}`];
+    if (scheduleScope) lines.push(`定时计划：${scheduleScope.jobId} · 发生：${scheduleScope.occurrenceId} · 版本：${scheduleScope.revision} · 本地 Native`, `原工作区：${scheduleScope.workspace}`);
     const detail = summary.value?.detail;
     if (!detail) lines.push("运行文本回执：无法读取；请打开所属会话核对。其他已确认的记录仍列于下方。");
     else if (detail.text === null) lines.push("运行文本回执：没有可确认属于此运行的已保存文本。");
