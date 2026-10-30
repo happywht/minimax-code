@@ -198,7 +198,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"job_id"})
             job_id = str(params["job_id"])
-            if set(params) - {"job_id", "idempotency_key", "expected_revision"}:
+            if set(params) - {"job_id", "idempotency_key", "expected_revision", "expected_service_id"}:
                 raise HandlerError(INVALID_PARAMS, "Unexpected manual trigger payload")
             # We don't await the fire — the cron task is fire-and-
             # forget. The IPC reply just confirms the kick. The
@@ -206,7 +206,7 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             from ..scheduler import SchedulerError
 
             try:
-                ack = await sched.run_now(job_id, idempotency_key=params.get("idempotency_key"), expected_revision=params.get("expected_revision"))
+                ack = await sched.run_now(job_id, idempotency_key=params.get("idempotency_key"), expected_revision=params.get("expected_revision"), **({"expected_service_id": params["expected_service_id"]} if "expected_service_id" in params else {}))
             except SchedulerError as exc:
                 raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             await ctx.reply({"ok": True, **ack})

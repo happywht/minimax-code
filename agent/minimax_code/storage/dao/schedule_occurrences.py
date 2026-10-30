@@ -96,11 +96,15 @@ class ScheduleOccurrencesDAO:
         coalesced_through=None,
         next_due=None,
         allow_new=True,
+        expected_service_id=None,
     ):
         fingerprint = hashlib.sha256(
             json.dumps({"expected_revision": expected_revision}, sort_keys=True).encode()
         ).hexdigest()
         async with self.db.transaction() as conn:
+            if expected_service_id is not None:
+                from .scheduled_jobs import ScheduledJobsDAO
+                await ScheduledJobsDAO._check_service(conn, expected_service_id)
             job = await fetch(conn, "SELECT * FROM scheduled_jobs WHERE id=?", (job_id,))
             if source == "manual":
                 prior = await fetch(

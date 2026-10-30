@@ -366,6 +366,7 @@ class ScheduleRunNowParams(BaseModel):
     job_id: str
     idempotency_key: str = Field(min_length=1, max_length=128)
     expected_revision: int = Field(gt=0)
+    expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class ScheduleOccurrence(_Base):

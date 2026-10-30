@@ -356,7 +356,7 @@ export interface TypedIPC {
   deleteJob(jobId: string): Promise<{ ok: true }>;
   enableJob(jobId: string, acknowledgeOccurrenceId?: string, expectedRevision?: number, expectedService?: string): Promise<{ job: ScheduledJob }>;
   disableJob(jobId: string, scope?: { expected_revision: number; expected_service_id: string; expected_occurrence_id: string }): Promise<{ job: ScheduledJob }>;
-  runNowJob(jobId: string, idempotencyKey: string, expectedRevision: number): Promise<ScheduleTriggerResult>;
+  runNowJob(jobId: string, idempotencyKey: string, expectedRevision: number, expectedService?: string): Promise<ScheduleTriggerResult>;
 
   // agent (multi-agent)
   listAgents(): Promise<ListAgentsResult>;
@@ -922,8 +922,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       const result = await client.request<{ job: WireScheduledJob }>("schedule.disable", { job_id: jid, ...scope });
       return { job: normalizeScheduledJob(result.job) };
     },
-    runNowJob: (jid, idempotencyKey, expectedRevision) =>
-      client.request<ScheduleTriggerResult>("schedule.run_now", { job_id: jid, idempotency_key: idempotencyKey, expected_revision: expectedRevision }),
+    runNowJob: (jid, idempotencyKey, expectedRevision, expectedService) =>
+      client.request<ScheduleTriggerResult>("schedule.run_now", { job_id: jid, idempotency_key: idempotencyKey, expected_revision: expectedRevision, ...(expectedService ? { expected_service_id: expectedService } : {}) }),
 
     listAgents: () => client.request<ListAgentsResult>("agent.list", {}),
     spawnSubagent: (opts) => client.request<SpawnSubagentResult>("agent.spawn_subagent", agentIntent(opts)),

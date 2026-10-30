@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Copy,
   Pencil,
-  Play,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -22,6 +21,7 @@ import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { InlineCode, TabHeader } from "./fields";
 import { emptyScheduleContext, validScheduleContext, ScheduleContextFields, ScheduleSnapshot, ScheduleHistory } from "./ScheduleContextFields";
 import { ScheduleCronBuilder } from "./ScheduleCronBuilder";
+import { ScheduleManualTrigger } from "./ScheduleManualTrigger";
 import { ipc } from "../../ipc";
 import { StreamEvent } from "../../types/ipc";
 
@@ -53,7 +53,6 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
   const remove = useScheduleStore((s) => s.remove);
   const update = useScheduleStore((s) => s.update);
   const setEnabled = useScheduleStore((s) => s.setEnabled);
-  const runNow = useScheduleStore((s) => s.runNow);
   const loading = useScheduleStore((s) => s.loading);
   const projects = useSessionStore((s) => s.projects);
   const currentProject = useSessionStore((s) => s.currentProjectId);
@@ -278,7 +277,6 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
               });
               if (accepted) await remove(j.id);
             }}
-            onRunNow={() => void runNow(j.id)}
             onCopy={() => void copyToDraft(j)}
             onUpdate={async (revision, name, cron, prompt, context, expectedService) => {
               const result = await update(j.id, revision, { name, cron, prompt, context }, expectedService);
@@ -292,12 +290,12 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
   );
 }
 
-function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onCopy, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId, hidden }: {
+function ScheduledJobRow({ job, onToggle, onDelete, onCopy, onUpdate, onOpenSession, serviceId, draftKey, targetJob, targetOccurrenceId, hidden }: {
   hidden?: boolean;
   targetJob?: boolean; targetOccurrenceId?: string;
   onOpenSession?: () => boolean | void;
   job: ScheduledJob; serviceId?: string; draftKey?: string; onToggle: (enabled: boolean) => void;
-  onDelete: () => void; onRunNow: () => void;
+  onDelete: () => void;
   onCopy: () => void;
   onUpdate: (revision: number, name: string, cron: string, prompt: string, context: ScheduleContext, expectedService: string) => Promise<{ job: ScheduledJob | null; error?: string }>;
 }): JSX.Element {
@@ -408,14 +406,6 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onCopy, onUpdate, 
           <Pencil />
         </IconButton>
         <IconButton
-          data-testid={`settings-job-run-now-${job.id}`}
-          onClick={onRunNow}
-          disabled={!job.enabled || job.binding_state !== "ready" || !!job.active_occurrence_id}
-          aria-label={strings.settings.scheduled.runNowAria}
-        >
-          <Play />
-        </IconButton>
-        <IconButton
           data-testid={`settings-job-delete-${job.id}`}
           onClick={onDelete}
           aria-label={strings.settings.scheduled.deleteAria}
@@ -424,6 +414,7 @@ function ScheduledJobRow({ job, onToggle, onDelete, onRunNow, onCopy, onUpdate, 
         </IconButton>
       </div>
       <ScheduleSnapshot job={job} />
+      <ScheduleManualTrigger job={job} serviceId={serviceId} />
 
       {editing && (
         <div data-testid={`settings-job-edit-form-${job.id}`} className="border-t border-line px-3 py-2">

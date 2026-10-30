@@ -308,13 +308,15 @@ class JobScheduler:
         await self._reconcile_occurrences()
         return await self._dao.list_all()
 
-    async def run_now(self, job_id: str, *, idempotency_key: str, expected_revision: int):
+    async def run_now(self, job_id: str, *, idempotency_key: str, expected_revision: int, expected_service_id: str | None = None):
         _require_revision(expected_revision)
         if not isinstance(idempotency_key,str) or not idempotency_key.strip() or len(idempotency_key)>128:
             raise SchedulerError("A stable client idempotency_key is required")
+        if expected_service_id is not None and (not isinstance(expected_service_id, str) or not expected_service_id or len(expected_service_id) > 128):
+            raise SchedulerError("Invalid expected service identity")
         try:
             async with self._admission_lock:
-                occurrence, created = await self._occurrences.claim(job_id, source="manual", manual_key=idempotency_key, expected_revision=expected_revision, allow_new=not self._stopping)
+                occurrence, created = await self._occurrences.claim(job_id, source="manual", manual_key=idempotency_key, expected_revision=expected_revision, allow_new=not self._stopping, **({"expected_service_id": expected_service_id} if expected_service_id is not None else {}))
         except ValueError as exc:
             raise SchedulerError(str(exc)) from exc
         owner = await self._dao.get(job_id)
