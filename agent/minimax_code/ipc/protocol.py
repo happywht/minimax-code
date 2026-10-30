@@ -776,6 +776,10 @@ class HostServiceStartParams(HostBindingParams):
     unit: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service$")
 
 
+class HostServiceStopParams(HostServiceStartParams):
+    acknowledge_interrupt: bool
+
+
 class HostServiceStatusParams(HostServiceStartParams):
     """Same explicit host and service binding as service start."""
 

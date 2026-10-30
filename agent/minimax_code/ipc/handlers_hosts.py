@@ -34,6 +34,7 @@ from .protocol import (
     HostServiceLogsParams,
     HostServiceStartParams,
     HostServiceStatusParams,
+    HostServiceStopParams,
     HostTransferStatusParams,
 )
 from .server import Context
@@ -534,6 +535,27 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             logger.exception("host.service_autostart failed")
             await ctx.reply_error(INTERNAL_ERROR, "host.service_autostart failed; outcome may be unknown")
 
+    async def handle_host_service_stop(params: Any, ctx: Context) -> None:
+        """Stop one confirmed existing user unit without disabling or restarting it."""
+        from ..execution import require_write_access
+
+        try:
+            request = HostServiceStopParams.model_validate(params)
+            if request.acknowledge_interrupt is not True:
+                raise HandlerError(INVALID_PARAMS, "Explicit interruption acknowledgement is required")
+            require_write_access()
+            async with lifecycle_lock:
+                host = await _bound_service_host(request)
+                result = await run_ssh(
+                    host, f"systemctl --user --no-ask-password stop -- {shlex.quote(request.unit)}",
+                    timeout=90, runner=runner, strict_host_key=True)
+            await ctx.reply({"ok": result.ok, "timed_out": result.timed_out})
+        except (ValidationError, HandlerError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.service_stop failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.service_stop failed; outcome may be unknown")
+
     async def handle_host_service_start(params: Any, ctx: Context) -> None:
         """Explicitly start one already installed user unit; never install or restart it."""
         from ..execution import require_write_access
@@ -595,6 +617,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
     server.register("host.service_autostart", handle_host_service_autostart)
     server.register("host.service_logs", handle_host_service_logs)
     server.register("host.service_status", handle_host_service_status)
+    server.register("host.service_stop", handle_host_service_stop)
     server.register("host.service_start", handle_host_service_start)
     server.register("host.connect", handle_host_connect)
     server.register("host.disconnect", handle_host_disconnect)

@@ -166,6 +166,7 @@ export interface TypedIPC {
   setHostServiceAutostart(params: import("../types/ipc").HostServiceStartParams & { enabled: boolean }): Promise<{ ok: boolean; timed_out: boolean }>;
   getHostServiceLogs(params: import("../types/ipc").HostServiceStartParams): Promise<import("../types/ipc").HostServiceLogsResult>;
   getHostServiceStatus(params: import("../types/ipc").HostServiceStartParams): Promise<import("../types/ipc").HostServiceStatusResult>;
+  stopHostService(params: import("../types/ipc").HostServiceStopParams): Promise<{ ok: boolean; timed_out: boolean }>;
   startHostService(params: import("../types/ipc").HostServiceStartParams): Promise<{ ok: boolean; exit_code: number | null; stderr: string; timed_out: boolean }>;
   execHost(params: { host_id: string; command: string; timeout_s?: number }): Promise<import("../types/ipc").HostExecResult>;
   pushHostFile(params: import("../types/ipc").HostPushParams): Promise<import("../types/ipc").HostTransferResult>;
@@ -699,6 +700,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     setHostServiceAutostart: (params) => client.request("host.service_autostart", params),
     getHostServiceLogs: (params) => client.request("host.service_logs", params),
     getHostServiceStatus: (params) => client.request("host.service_status", params),
+    stopHostService: (params) => client.request("host.service_stop", params),
     startHostService: (params) => client.request("host.service_start", params),
     execHost: (params) => client.request("host.exec", params),
     pushHostFile: (params) => client.request("host.push", params),

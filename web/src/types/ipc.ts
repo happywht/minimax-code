@@ -186,6 +186,10 @@ export interface HostServiceStartParams extends HostBindingParams {
   unit: string;
 }
 
+export interface HostServiceStopParams extends HostServiceStartParams {
+  acknowledge_interrupt: true;
+}
+
 export interface HostServiceStatus {
   LoadState: string; ActiveState: string; SubState: string; Result: string;
   ExecMainStatus: string; MainPID: string; UnitFileState?: string;

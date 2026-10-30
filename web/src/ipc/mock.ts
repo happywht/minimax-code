@@ -293,6 +293,11 @@ function mockHandle(
       if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");
       return { ok: false, reason: "unavailable", status: null };
     }
+    case "host.service_stop": {
+      const p = params as { host_id: string };
+      if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");
+      return { ok: false, timed_out: false };
+    }
     case "host.service_start": {
       const p = params as { host_id: string };
       if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");

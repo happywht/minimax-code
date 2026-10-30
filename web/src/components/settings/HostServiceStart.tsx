@@ -10,16 +10,17 @@ export function HostServiceStart({ host }: { host: RemoteHost }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState<{ unit: string; snapshot: HostServiceStatus } | null>(null);
+  const [stopAck, setStopAck] = useState(false);
   const [logs, setLogs] = useState<{ unit: string; text: string; truncated: boolean } | null>(null);
   const epoch = useRef(0);
-  const inFlight = useRef(false);
+  const inFlight = useRef(false), stopping = useRef(false);
   const signature = JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file, host.remote_port, host.enabled]);
-  useEffect(() => { epoch.current++; setMessage(""); setStatus(null); setLogs(null); return () => { epoch.current++; }; }, [signature]);
-  useEffect(() => ipc.onSideCar(() => { epoch.current++; setStatus(null); setLogs(null); setMessage("服务连接已变化，请重新核对主机。"); }), []);
+  useEffect(() => { epoch.current++; setMessage(""); setStatus(null); setLogs(null); setStopAck(false); return () => { epoch.current++; }; }, [signature]);
+  useEffect(() => ipc.onSideCar(() => { epoch.current++; setStatus(null); setLogs(null); setStopAck(false); setMessage(stopping.current ? "连接已变化，停止结果可能未知；请先核对服务及任务状态。" : "服务连接已变化，请重新核对主机。"); }), []);
 
   const inspect = async () => {
     if (inFlight.current || !host.enabled || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service$/.test(unit)) return;
-    inFlight.current = true; setBusy(true); setMessage(""); setStatus(null);
+    inFlight.current = true; setBusy(true); setMessage(""); setStatus(null); setStopAck(false);
     const ticket = epoch.current, base = ipc.agentBaseUrl, requestedUnit = unit;
     const current = () => ticket === epoch.current && base === ipc.agentBaseUrl;
     try {
@@ -85,6 +86,31 @@ export function HostServiceStart({ host }: { host: RemoteHost }): JSX.Element {
     finally { inFlight.current = false; setBusy(false); }
   };
 
+  const stop = async () => {
+    if (inFlight.current || !host.enabled || !stopAck || !status || status.unit !== unit || status.snapshot.LoadState !== "loaded") return;
+    inFlight.current = true; setBusy(true); setMessage("");
+    const ticket = epoch.current, base = ipc.agentBaseUrl, requestedUnit = unit;
+    const current = () => ticket === epoch.current && base === ipc.agentBaseUrl;
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      const accepted = await requestConfirmation({ title: "停止远端用户服务？", description: `将在 ${host.username}@${host.hostname}:${host.port} 停止 ${requestedUnit}。正在运行、排队或清理的任务可能被中断，连接可能断开；请先核对并保存需要的结果。此操作不禁用自启动或重新启动服务。`, confirmLabel: "确认停止" });
+      if (!accepted || !current()) return;
+      setStatus(null); setStopAck(false); setLogs(null); stopping.current = true;
+      setMessage("停止请求处理中；请勿重复提交。连接中断时结果可能未知。");
+      const result = await typedIPC.stopHostService({ host_id: host.id, expected_service_id: identity.service_id,
+        hostname: host.hostname, username: host.username, port: host.port, identity_file: host.identity_file,
+        remote_port: host.remote_port, unit: requestedUnit, acknowledge_interrupt: true });
+      if (!current()) return;
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (after.service_id !== identity.service_id) throw new Error("服务身份已变化");
+      setMessage(result.ok ? "停止命令已返回成功。请重新查询服务状态并核对原任务；命令成功不代表任务已完成或清理已结束。" :
+        "停止未确认，结果可能未知；请先查询服务和任务状态，不要盲目重试。");
+    } catch { if (current()) setMessage("停止未确认；请求可能已发出，请先核对服务及任务状态。"); }
+    finally { stopping.current = false; inFlight.current = false; setBusy(false); }
+  };
+
   const start = async () => {
     if (inFlight.current || !host.enabled || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service$/.test(unit)) return;
     inFlight.current = true; setBusy(true); setMessage(""); setStatus(null);
@@ -105,10 +131,10 @@ export function HostServiceStart({ host }: { host: RemoteHost }): JSX.Element {
     finally { inFlight.current = false; setBusy(false); }
   };
 
-  return <details className="rounded border border-line p-2" onToggle={(event) => { if (!event.currentTarget.open) { epoch.current++; setLogs(null); setStatus(null); setMessage(""); } }}>
+  return <details className="rounded border border-line p-2" onToggle={(event) => { if (!event.currentTarget.open) { epoch.current++; setLogs(null); setStatus(null); setStopAck(false); setMessage(""); } }}>
     <summary>Linux 用户服务管理</summary>
     <p className="text-xs text-ink-2">使用已信任主机密钥和当前 SSH 用户执行 systemctl --user start。需要远端用户服务管理器可用；自启动设置不立即启动或停止服务，也不设置 linger 或保证机器重启后的运行。</p>
-    <label className="block text-xs">服务 unit<Input aria-label={`${host.name} 服务 unit`} value={unit} disabled={busy} onChange={(event) => { setUnit(event.target.value); setStatus(null); setLogs(null); setMessage(""); }} /></label>
+    <label className="block text-xs">服务 unit<Input aria-label={`${host.name} 服务 unit`} value={unit} disabled={busy} onChange={(event) => { setUnit(event.target.value); setStatus(null); setLogs(null); setStopAck(false); setMessage(""); }} /></label>
     <div className="flex flex-wrap gap-2">
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service$/.test(unit)} onClick={() => void inspect()}>查询服务状态</Button>
       <Button type="button" size="sm" disabled={busy || !host.enabled || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service$/.test(unit)} onClick={() => void start()}>启动服务</Button>
@@ -120,6 +146,11 @@ export function HostServiceStart({ host }: { host: RemoteHost }): JSX.Element {
       <p>服务结果：{status.snapshot.Result} · 主进程退出状态：{status.snapshot.ExecMainStatus} · 主进程 PID：{status.snapshot.MainPID} · unit 文件：{status.snapshot.UnitFileState ?? "未知"}</p>
       <p>这是一次服务快照，不表示任务成功或服务持续健康；不读取日志。</p>
     </div>}
+    <div className="space-y-1 rounded border border-line p-2 text-xs">
+      <p>停止服务可能中断正在执行、排队或清理的任务。先查询服务状态并自行核对任务；状态快照不能证明服务空闲。</p>
+      <label className="flex items-start gap-2"><input type="checkbox" checked={stopAck} disabled={busy || !status || status.unit !== unit || status.snapshot.LoadState !== "loaded"} onChange={(event) => setStopAck(event.target.checked)} />我已核对目标主机和 unit，理解停止可能中断任务。</label>
+      <Button type="button" size="sm" variant="danger" disabled={busy || !host.enabled || !stopAck || !status || status.unit !== unit || status.snapshot.LoadState !== "loaded"} onClick={() => void stop()}>停止服务</Button>
+    </div>
     <p className="text-xs text-ink-2">日志可能包含凭据和敏感内容，未做凭据脱敏；仅在主动请求时读取，请按需查看并谨慎分享。最多读取最近 100 条中的前 16 KiB，不自动采集或上传。</p>
     <div className="flex flex-wrap gap-2">
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service$/.test(unit)} onClick={() => void readLogs()}>读取服务日志</Button>
