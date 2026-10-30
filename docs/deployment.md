@@ -143,7 +143,9 @@ Linux 同样使用该命令和本机绝对路径；新目录不能已存在，�
 
 #### Linux 用户服务升级事务的恢复
 
-Linux 服务升级工具留下的 `upgrade-*` 事务与手工升级备份格式不同：它包含 `state.json`、`old.service` 和（在备份创建后）`data-vault.zip`，但**没有持久记录备份摘要或旧版本清单身份**。先停止相关服务和其他写入者，独立确认该事务、数据包和旧版本来源；查看 `old.service`，核对旧版目录和该版环境中的 Python。只有另行保留了可信的 `data-vault.zip` SHA-256，才能使用下列命令：
+Linux 服务升级工具留下的 `upgrade-*` 事务包含 `state.json`、`old.service` 和数据包。新的升级工具只有在旧版创建、验证及摘要复核均完成后，才在 `state.json` 写入 `backup_evidence`：备份 SHA-256、字节数、包格式/schema、旧版 Python 路径、项目版本和源码文件摘要；若为带清单的安装版，也记录清单提交、版本及摘要。旧版目录无安装清单时仍记录项目版本与源码摘要。升级与恢复均从指定旧版本源码路径调用 bundle，以减少意外使用其他环境中同名模块的可能。
+
+先停止相关服务和其他写入者，独立确认事务来源；查看 `old.service` 并核对旧版目录和 Python。对于包含完整 `backup_evidence` 的新事务：
 
 ```bash
 python3 scripts/restore-upgrade-backup.py \
@@ -151,11 +153,12 @@ python3 scripts/restore-upgrade-backup.py \
   --old-release /absolute/releases/old \
   --old-python /absolute/releases/old/agent/.venv/bin/python \
   --new-data-dir /absolute/restores/old-data \
-  --linux-service-transaction --expected-sha256 "<独立记录的64位小写摘要>" \
-  --confirm-stopped --confirm-trusted-source --confirm-old-unit
+  --linux-service-transaction --confirm-stopped --confirm-trusted-source --confirm-old-unit
 ```
 
-命令只在 Linux 接受此事务；核对记录的旧版本路径、保存的旧 unit 文件存在且稳定，拒绝尚未到达停止阶段的记录，然后比较操作者提供的摘要，用选定旧版的 bundle 工具校验和恢复到不存在的新目录。`failed-before-switch` 或 `stopped` 不代表备份已完成；即使接受这些阶段，也必须通过完整包验证。没有独立摘要、无法核对旧 unit 或不确定旧版来源时，不应使用此自动入口。自行对现有文件计算摘要只能记录当前字节，不能证明它是当时验证过的备份或证明来源。脚本不能从 `old.service` 自动证明 Python/包与当时执行的代码一致；操作者需核对，尤其该升级工具当时调用已安装环境中的模块。摘要、路径和 unit 都不是签名。其余私有父目录、排除项、保留暂存和不自动切换服务的限制与上节相同。尚未运行真实恢复或跨机演练。
+旧的 Linux 事务**没有持久记录备份摘要或旧版清单身份**，须另行保留可信的 `data-vault.zip` SHA-256，并在同一命令中附加 `--expected-sha256 "<独立记录的64位小写摘要>"`。自行对现有文件计算摘要只能记录当前字节，不能证明它是当时验证过的备份或证明来源。无独立摘要、不确定旧 unit 或旧版来源时，不应使用旧事务的自动入口。若新事务的证据字段存在但无效，命令拒绝恢复，不能降级成旧事务路径；手动提供摘要时必须与已有记录一致。
+
+命令只在 Linux 接受此事务；核对旧版路径、保存的旧 unit 和相应备份信息，并重新用选定旧版的 bundle 校验、恢复到不存在的新目录。早期或失败状态不保证备份完整，必须通过完整包验证。对新事务会核对记录的旧版源码文件、项目元数据、Python 路径及可用清单；这些不覆盖全部依赖、解释器二进制或外部状态，不能证明源代码未在采样之间变化。摘要和清单不是签名，操作员仍须独立核实来源。其余私有父目录、排除项、保留暂存和不自动切换服务的限制与上节相同。尚未运行真实恢复或跨机演练。
 
 ### Linux 用户服务配置生成（实验）
 

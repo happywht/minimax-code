@@ -22,6 +22,12 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location('unit_generator', Path(__file__).with_name('generate-linux-user-service.py'))
 generator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(generator)
+prepare_spec = importlib.util.spec_from_file_location('upgrade_prepare', Path(__file__).with_name('prepare-release-upgrade.py'))
+prepare = importlib.util.module_from_spec(prepare_spec)
+prepare_spec.loader.exec_module(prepare)
+evidence_spec = importlib.util.spec_from_file_location('service_evidence', Path(__file__).with_name('service-upgrade-evidence.py'))
+evidence = importlib.util.module_from_spec(evidence_spec)
+evidence_spec.loader.exec_module(evidence)
 
 
 def command(args: list[str], timeout: int = 90) -> str:
@@ -151,6 +157,8 @@ def upgrade(args: argparse.Namespace) -> Path:
         candidate = Path(os.path.abspath(path))
         if not Path(path).is_absolute() or not inside(candidate.parent.resolve() / candidate.name, root):
             raise ValueError('release Python and frontend paths must belong to their release')
+    old_python = Path(os.path.abspath(args.old_python))
+    old_source = evidence.source_identity(old_root, old_python)
     protected = [data.resolve(), Path(args.workspace).resolve(), old_root, new_root]
     if any(inside(backups.resolve(), p) or inside(p, backups.resolve()) for p in protected):
         raise ValueError('backup directory must not overlap data, workspace, or releases')
@@ -188,6 +196,11 @@ def upgrade(args: argparse.Namespace) -> Path:
                 out.flush()
                 os.fsync(out.fileno())
             os.replace(temp, transaction / 'state.json')
+            directory_fd = os.open(transaction, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         (transaction / 'old.service').write_bytes(old_unit)
         record('prepared')
         print(f'Transaction: {transaction}', flush=True)
@@ -201,8 +214,19 @@ def upgrade(args: argparse.Namespace) -> Path:
                 raise RuntimeError(f'service did not stop cleanly: {active}')
             record('stopped')
             bundle = transaction / 'data-vault.zip'
-            command([args.old_python, '-m', 'minimax_code.bundle', 'create', '--data-dir', args.data, '--output', str(bundle)], timeout=3600)
-            command([args.old_python, '-m', 'minimax_code.bundle', 'verify', '--bundle', str(bundle)], timeout=3600)
+            created = prepare.bundle_command(old_python, old_root / 'agent', 'create', '--data-dir', args.data, '--output', str(bundle))
+            before_sha, before_size = evidence.digest_file(bundle, 2 * 1024 * 1024 * 1024)
+            verified = prepare.bundle_command(old_python, old_root / 'agent', 'verify', '--bundle', str(bundle))
+            after_sha, after_size = evidence.digest_file(bundle, 2 * 1024 * 1024 * 1024)
+            if (type(created.get('schema_version')) is not int or type(created.get('format_version')) is not int
+                    or verified.get('schema_version') != created['schema_version']
+                    or verified.get('format_version') != created['format_version']
+                    or (before_sha, before_size) != (after_sha, after_size)
+                    or evidence.source_identity(old_root, old_python) != old_source):
+                raise RuntimeError('Backup receipts, source identity or bundle bytes changed')
+            state['backup_evidence'] = {'version': 1, 'backup_sha256': before_sha, 'bytes': before_size,
+                'schema_version': verified['schema_version'], 'format_version': verified['format_version'],
+                'old_source': old_source}
             record('backup-verified')
             # A changed unit is never silently overwritten.
             current = unit_path.stat()

@@ -29,6 +29,7 @@ def _load(name: str, filename: str):
 
 prepare = _load("upgrade_prepare", "prepare-release-upgrade.py")
 copy = _load("upgrade_copy", "copy-upgrade-backup.py")
+evidence = _load("service_evidence", "service-upgrade-evidence.py")
 
 
 def _json_file(path: Path) -> dict:
@@ -65,8 +66,6 @@ def restore(args: argparse.Namespace) -> Path:
             raise ValueError("Linux service transactions must be restored on Linux")
         if not getattr(args, "confirm_old_unit", False):
             raise ValueError("Review old.service and explicitly supply --confirm-old-unit")
-        if not isinstance(getattr(args, "expected_sha256", None), str) or not re.fullmatch(r"[0-9a-f]{64}", args.expected_sha256):
-            raise ValueError("An independently recorded --expected-sha256 is required")
         state = _json_file(source / "state.json")
         # Earlier service transactions contain neither a backup digest nor a
         # release manifest identity. Refuse early phases and require the operator
@@ -85,7 +84,30 @@ def restore(args: argparse.Namespace) -> Path:
         recorded_old = state.get("old_release")
         if not isinstance(recorded_old, str) or not Path(recorded_old).is_absolute() or Path(recorded_old) != release:
             raise ValueError("Old release path differs from the Linux transaction")
-        expected = args.expected_sha256
+        saved_evidence = state.get("backup_evidence")
+        recorded_source = None
+        expected_size = None
+        if "backup_evidence" in state:
+            if (not isinstance(saved_evidence, dict) or saved_evidence.get("version") != 1
+                    or not isinstance(saved_evidence.get("backup_sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", saved_evidence["backup_sha256"])
+                    or type(saved_evidence.get("bytes")) is not int
+                    or not 0 < saved_evidence["bytes"] <= 2 * 1024 * 1024 * 1024
+                    or type(saved_evidence.get("schema_version")) is not int
+                    or type(saved_evidence.get("format_version")) is not int
+                    or not isinstance(saved_evidence.get("old_source"), dict)):
+                raise ValueError("Recorded backup evidence is invalid")
+            expected = saved_evidence["backup_sha256"]
+            expected_schema, expected_format = saved_evidence["schema_version"], saved_evidence["format_version"]
+            expected_size = saved_evidence["bytes"]
+            recorded_source = saved_evidence["old_source"]
+            if getattr(args, "expected_sha256", None) is not None and args.expected_sha256 != expected:
+                raise ValueError("Supplied digest differs from recorded backup evidence")
+        else:
+            if not isinstance(getattr(args, "expected_sha256", None), str) or not re.fullmatch(r"[0-9a-f]{64}", args.expected_sha256):
+                raise ValueError("Legacy Linux transactions require independently recorded --expected-sha256")
+            expected = args.expected_sha256
+            expected_schema, expected_format = None, None
         data_value = state.get("data")
         if not isinstance(data_value, str):
             raise ValueError("Recorded original data path is missing")
@@ -94,8 +116,9 @@ def restore(args: argparse.Namespace) -> Path:
         if not isinstance(new_value, str):
             raise ValueError("Recorded new release path is missing")
         new_release = Path(new_value)
-        expected_schema, expected_format = None, None
     else:
+        recorded_source = None
+        expected_size = None
         if getattr(args, "expected_sha256", None) is not None or getattr(args, "confirm_old_unit", False):
             raise ValueError("Linux transaction flags require --linux-service-transaction")
         if (source / ".COPY-COMPLETE").is_file() and not (source / ".COPY-COMPLETE").is_symlink():
@@ -141,6 +164,8 @@ def restore(args: argparse.Namespace) -> Path:
         raise ValueError("Python must belong to the old release environment")
     if not (release / "agent" / "minimax_code" / "bundle.py").is_file():
         raise ValueError("Old release bundle implementation is missing")
+    if recorded_source is not None and evidence.source_identity(release, python) != recorded_source:
+        raise ValueError("Old release source or Python path differs from recorded backup evidence")
 
     stage = Path(tempfile.mkdtemp(prefix=".minimax-restore-", dir=parent))
     staged = stage / "data-vault.zip"
@@ -165,20 +190,23 @@ def restore(args: argparse.Namespace) -> Path:
             staged_identity = os.fstat(output.fileno())
         if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
                 (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-                or size != before.st_size or digest.hexdigest() != expected):
+                or size != before.st_size or (expected_size is not None and size != expected_size)
+                or digest.hexdigest() != expected):
             raise ValueError("Backup changed or does not match the recorded digest")
         verified = prepare.bundle_command(python, release / "agent", "verify", "--bundle", str(staged))
         if (type(verified.get("schema_version")) is not int or type(verified.get("format_version")) is not int
                 or (expected_schema is not None and verified["schema_version"] != expected_schema)
                 or (expected_format is not None and verified["format_version"] != expected_format)
-                or prepare.file_sha256(staged) != expected):
+                or prepare.file_sha256(staged) != expected
+                or (recorded_source is not None and evidence.source_identity(release, python) != recorded_source)):
             raise ValueError("Verified backup differs from the recorded format, schema or digest")
         restored = prepare.bundle_command(python, release / "agent", "restore", "--bundle", str(staged),
                                           "--new-data-dir", str(destination))
         if (restored.get("schema_version") != verified["schema_version"] or
                 restored.get("format_version") != verified["format_version"] or
-                prepare.file_sha256(staged) != expected):
-            raise RuntimeError("Restore receipt or staged backup changed; inspect destination before use")
+                prepare.file_sha256(staged) != expected or
+                (recorded_source is not None and evidence.source_identity(release, python) != recorded_source)):
+            raise RuntimeError("Restore receipt, source or staged backup changed; inspect destination before use")
         # Remove only the exact staging file and directory that this invocation owns.
         current = stage.lstat()
         if ((current.st_dev, current.st_ino) != (stage_identity.st_dev, stage_identity.st_ino)
@@ -201,7 +229,7 @@ def main() -> int:
     parser.add_argument("--confirm-stopped", action="store_true")
     parser.add_argument("--confirm-trusted-source", action="store_true")
     parser.add_argument("--linux-service-transaction", action="store_true", help="restore a Linux user-service upgrade transaction")
-    parser.add_argument("--expected-sha256", help="independently recorded data-vault.zip SHA-256 for a Linux transaction")
+    parser.add_argument("--expected-sha256", help="independently recorded SHA-256; required for legacy Linux transactions")
     parser.add_argument("--confirm-old-unit", action="store_true", help="operator reviewed old.service and selected its matching old release and Python")
     args = parser.parse_args()
     try:

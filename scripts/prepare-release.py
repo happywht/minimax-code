@@ -28,7 +28,7 @@ MAX_FILES = 10000
 WEB_EXTENSIONS = {".html", ".js", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".woff", ".woff2", ".ttf"}
 GIT_PATHS = ["package.json", "agent/pyproject.toml", "agent/uv.lock", "agent/README.md",
              "agent/minimax_code", "agent/skills", "scripts/start-production.mjs"]
-OPTIONAL_PATHS = ["scripts/generate-linux-user-service.py", "scripts/install-linux-user-service.py", "scripts/install-release.py", "scripts/start-release.mjs", "scripts/start-release.ps1", "Start-Installed-Release.cmd", "scripts/diagnose-release.ps1", "Diagnose-Installed-Release.cmd", "scripts/prepare-release-upgrade.py", "scripts/copy-upgrade-backup.py", "scripts/restore-upgrade-backup.py", "scripts/restore-snapshot.ps1", "Restore-Snapshot.cmd", "scripts/copy-backup.ps1", "Copy-Backup.cmd", "scripts/data-vault-backup.ps1", "Data-Vault-Backup.cmd"]
+OPTIONAL_PATHS = ["scripts/generate-linux-user-service.py", "scripts/install-linux-user-service.py", "scripts/install-release.py", "scripts/start-release.mjs", "scripts/start-release.ps1", "Start-Installed-Release.cmd", "scripts/diagnose-release.ps1", "Diagnose-Installed-Release.cmd", "scripts/prepare-release-upgrade.py", "scripts/copy-upgrade-backup.py", "scripts/restore-upgrade-backup.py", "scripts/service-upgrade-evidence.py", "scripts/upgrade-linux-user-service.py", "scripts/restore-snapshot.ps1", "Restore-Snapshot.cmd", "scripts/copy-backup.ps1", "Copy-Backup.cmd", "scripts/data-vault-backup.ps1", "Data-Vault-Backup.cmd"]
 
 
 def git(*args: str) -> bytes:
