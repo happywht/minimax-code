@@ -565,6 +565,34 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
     finally { if (current()) setBusy(false); }
   };
+  const addValidationFollowup = async () => {
+    if (!validation?.result || !receipt || !projectId || busy) return;
+    const saved = validation, expected = receipt, ticket = ++generation.current, host = ipc.agentBaseUrl;
+    const current = () => ticket === generation.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === sessionId && useSessionStore.getState().currentProjectId === projectId;
+    setBusy(true); setMessage("");
+    try {
+      const before = await ipc.request<{ service_id: string }>("runtime.service_identity", {});
+      const fresh = await ipc.request<{ run: { id: string; session_id: string; status: string; metadata?: Record<string, unknown> }; result?: Record<string, unknown> | null }>("run.get", { run_id: saved.id });
+      const after = await ipc.request<{ service_id: string }>("runtime.service_identity", {});
+      if (!current()) return;
+      const md = fresh.run.metadata;
+      if (before.service_id !== expected.service || after.service_id !== expected.service || fresh.run.id !== saved.id ||
+          fresh.run.session_id !== sessionId || md?.project_id !== projectId || md?.workspace_snapshot !== expected.root ||
+          md?.manual_team_validation !== true || (md?.team_run_id ?? null) !== (teamRunId ?? null) || md?.child_run_id !== runId ||
+          fresh.run.status !== saved.status || JSON.stringify(fresh.result) !== JSON.stringify(saved.result))
+        throw new Error("验证记录或服务归属已变化，请刷新并重新审阅。");
+      const evidence = JSON.stringify(fresh.result?.verification ?? fresh.result, null, 2);
+      const excerpt = evidence.slice(0, 4500);
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = {
+        host, project: projectId, session: sessionId,
+        text: `子任务收集后的项目验证记录（请审阅后编辑）：\n子任务：${runId}${teamRunId ? ` · 团队：${teamRunId}` : ""}\n验证运行：${saved.id} · 状态：${saved.status}\n父目录：${expected.root}\n\n${excerpt}${evidence.length > excerpt.length ? "\n（记录已截断，请查看原运行）" : ""}\n\n这只反映当次命令的已保存结果，不代表当前文件未变化或验收通过；请核对输出与未确认事项。`,
+      };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      setMessage(detail.result ?? "聊天输入区未打开，请先打开当前会话。");
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { if (current()) setBusy(false); }
+  };
   return <div className="space-y-2 border-t border-line pt-2 text-xs">
     <button type="button" disabled={busy} onClick={() => void invoke(false)}>查看子任务工作区结果</button>
     {message && <p role="status" className="break-words text-ink-1">{message}</p>}
@@ -582,6 +610,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
         <p>验证运行 {validation.id} · {validation.status}</p>
         {validation.result ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(validation.result.verification ?? validation.result, null, 2)}</pre> : <p>结果尚未读取或仍未知。</p>}
         <button type="button" disabled={busy} onClick={() => void refreshValidation(false)}>刷新结果</button>{" "}
+        {validation.result && <button type="button" disabled={busy || !projectId} onClick={() => void addValidationFollowup()}>将验证记录加入后续草稿</button>}{" "}
         {["queued", "running", "planning"].includes(validation.status) && <button type="button" disabled={busy} onClick={() => void refreshValidation(true)}>停止验证</button>}
       </div>}
     </div>}
