@@ -391,6 +391,73 @@ async def handle_mcp_invoke_tool(params: Any, ctx: Context) -> None:
         await ctx.reply_error(INTERNAL_ERROR, "mcp.invoke_tool failed")
 
 
+async def handle_mcp_resources(params: Any, ctx: Context) -> None:
+    """User-initiated, session-bound access to the existing resource capability."""
+    try:
+        from ..agent.core import _check_rule
+        from ..app import ensure_db, get_sessions_dao
+        from ..mcp.registry import MCPResourcesTool, RESOURCE_TOOL
+        from ..storage.dao.text_artifacts import ArtifactDAO
+        from .handlers_permissions import _ensure_permission_store
+        from .host_session_gate import require_chat_session
+        from .protocol import McpResourcesParams
+
+        req = McpResourcesParams.model_validate(params)
+        registry = _registry()
+        if registry is None:
+            raise HandlerError(INTERNAL_ERROR, "MCP registry is unavailable")
+        conn = registry._get_conn(req.server_name)
+        if conn is None or (req.connection_id is not None and req.connection_id != conn.connection_id):
+            raise HandlerError(INVALID_PARAMS, "MCP connection changed; list resources again")
+        if req.action == "read" and (not req.connection_id or not req.uri):
+            raise HandlerError(INVALID_PARAMS, "Read requires a listed URI and connection identity")
+        name = bridged_name(req.server_name, RESOURCE_TOOL)
+        try:
+            tool = registry._tool_registry.get(name)
+        except KeyError as exc:
+            raise HandlerError(PERMISSION_DENIED, "MCP resources are not enabled") from exc
+        if type(tool) is not MCPResourcesTool or tool._conn is not conn:
+            raise HandlerError(PERMISSION_DENIED, "MCP resource capability changed")
+        db = await ensure_db()
+
+        async def binding():
+            await require_chat_session(req.session_id)
+            dao = get_sessions_dao()
+            session = await dao.get(req.session_id) if dao else None
+            if (not session or session.get("archived") or session.get("project_id") != req.project_id
+                    or await ArtifactDAO(db).service_id() != req.expected_service_id):
+                raise HandlerError(INVALID_PARAMS, "Service, project or session changed")
+
+        async def authorize():
+            store = await _ensure_permission_store(ctx.server)
+            if store is None:
+                raise HandlerError(PERMISSION_DENIED, "Permission policy is unavailable")
+            actions = {_check_rule(store, name), _check_rule(store, "network")}
+            if "deny" in actions or "ask" in actions or "allow" not in actions:
+                raise HandlerError(PERMISSION_DENIED, "Resource or network permission requires approval; this action has no approval route")
+
+        await binding()
+        await authorize()
+        result = await tool.run(action=req.action, uri=req.uri)
+        if not result.success:
+            raise HandlerError(INVALID_PARAMS, result.error or "MCP resource request failed")
+        await authorize()
+        await binding()
+        tool._require_live()
+        await ctx.reply({"server_name": req.server_name, "connection_id": conn.connection_id,
+                         "session_id": req.session_id, "project_id": req.project_id,
+                         "service_id": req.expected_service_id, "data": result.output})
+    except HandlerError as exc:
+        await ctx.reply_error(exc.code, exc.message, exc.data)
+    except Exception as exc:
+        from pydantic import ValidationError
+        if isinstance(exc, ValidationError):
+            await ctx.reply_error(INVALID_PARAMS, "Invalid MCP resource request")
+        else:
+            logger.exception("mcp.resources failed")
+            await ctx.reply_error(INTERNAL_ERROR, "MCP resource request failed")
+
+
 def register_mcp_handlers(server: Any) -> None:
     """Register ``mcp.*`` handlers on ``server``."""
     server.register("mcp.list_servers", handle_mcp_list_servers)
@@ -399,3 +466,4 @@ def register_mcp_handlers(server: Any) -> None:
     server.register("mcp.remove_server", handle_mcp_remove_server)
     server.register("mcp.list_tools", handle_mcp_list_tools)
     server.register("mcp.invoke_tool", handle_mcp_invoke_tool)
+    server.register("mcp.resources", handle_mcp_resources)

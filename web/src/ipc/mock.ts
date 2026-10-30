@@ -1873,6 +1873,10 @@ function mockHandle(
       } satisfies CodebaseStatusResult;
     }
 
+    case "mcp.resources": {
+      throw new Error("模拟模式没有已连接的 MCP 资源");
+    }
+
     case "codebase.search": {
       const p = params as { query: string; file_pattern?: string; limit?: number; offset?: number };
       return {

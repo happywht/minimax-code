@@ -2278,6 +2278,17 @@ export interface CodebaseReadCurrentResult {
   content: string;
 }
 
+export interface McpResourcesParams {
+  server_name: string; session_id: string; project_id: string; expected_service_id: string;
+  action: "list" | "read"; connection_id?: string; uri?: string;
+}
+export interface McpResourcesResult {
+  server_name: string; connection_id: string; session_id: string; project_id: string; service_id: string;
+  data: { resources?: Array<{ uri: string; name: string; description: string; mimeType: string }>;
+    omittedResources?: number; contents?: Array<{ uri: string; mimeType?: string; text?: string; blob?: string }>;
+    omittedContents?: number };
+}
+
 /** Result of `codebase.summarize`. */
 export interface CodebaseSummarizeResult {
   path: string;

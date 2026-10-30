@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -120,6 +121,7 @@ class _ServerConn:
     client: MCPClient | SDKMCPClient
     transport: MCPTransport | None
     tool_names: list[str] = field(default_factory=list)
+    connection_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 # ---------------------------------------------------------------------------

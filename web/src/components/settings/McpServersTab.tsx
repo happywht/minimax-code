@@ -21,6 +21,7 @@ import { strings } from "../../ui/strings";
 import { Field, TabHeader } from "./fields";
 import { McpServerForm, serverToFormValues } from "./McpServerForm";
 import type { McpServerFormOptions } from "./McpServerForm";
+import { McpResourceBrowser } from "./McpResourceBrowser";
 
 export { McpServersTab };
 
@@ -280,6 +281,7 @@ function McpServersTab(): JSX.Element {
                     />
                     <span>允许 Agent 列出并读取此服务器列出的 MCP 资源（需权限规则或交互批准；二进制不送入模型）</span>
                   </label>
+                  {server.enabled && server.connected && server.tool_states?.["$minimax.resources"] === true && <McpResourceBrowser serverName={server.name} />}
                   <label className="mb-3 flex items-start gap-2 text-[11px] text-ink-2">
                     <Checkbox
                       checked={server.tool_states?.["$minimax.resource_templates"] === true}
