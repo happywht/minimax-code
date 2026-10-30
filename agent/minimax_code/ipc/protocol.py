@@ -588,6 +588,7 @@ class RunProjectSummaryParams(BaseModel):
     run_id: str | None = Field(default=None, min_length=1, max_length=128)
     history_query: str | None = Field(default=None, max_length=200)
     history_offset: int = Field(default=0, ge=0, le=10000)
+    history_status: Literal["all", "attention", "active", "failed", "completed"] | None = None
 
 
 class RunResearchSearchParams(BaseModel):

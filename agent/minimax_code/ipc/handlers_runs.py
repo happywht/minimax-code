@@ -1058,17 +1058,35 @@ def register_run_handlers(server: Any) -> None:
                 AND COALESCE(json_extract(r.metadata,'$.manual_research'),0)!=1"""
             fields = "r.id,r.session_id,r.title,r.status,r.created_at,r.completed_at,s.title AS session_title"
             live_service = get_run_service(ctx.server)
-            if request.run_id and (request.history_query is not None or request.history_offset):
+            if request.run_id and (
+                request.history_query is not None or request.history_offset
+                or request.history_status is not None
+            ):
                 raise ValueError("History search cannot be combined with run detail")
+            if request.history_query is None and (
+                request.history_offset or request.history_status is not None
+            ):
+                raise ValueError("History filters require a history query")
             if request.history_query is not None:
                 # LIKE metacharacters are escaped so the query is a literal substring.
                 term = request.history_query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 pattern = f"%{term}%"
+                status_groups = {
+                    None: ("completed", "failed", "cancelled", "interrupted"),
+                    "all": ("queued", "planning", "running", "awaiting_approval", "waiting_input",
+                            "budget_paused", "completed", "failed", "cancelled", "interrupted"),
+                    "attention": ("awaiting_approval", "waiting_input", "budget_paused", "interrupted"),
+                    "active": ("queued", "planning", "running"),
+                    "failed": ("failed", "cancelled", "interrupted"),
+                    "completed": ("completed",),
+                }
+                statuses = status_groups[request.history_status]
+                placeholders = ",".join("?" for _ in statuses)
                 rows = await dao._db.fetchall(
-                    f"SELECT {fields} {base} AND r.status IN ('completed','failed','cancelled','interrupted') "
+                    f"SELECT {fields} {base} AND r.status IN ({placeholders}) "
                     "AND (r.title LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' OR r.id LIKE ? ESCAPE '\\') "
                     "ORDER BY COALESCE(r.completed_at,r.created_at) DESC,r.id DESC LIMIT 26 OFFSET ?",
-                    (request.project_id, request.project_id, pattern, pattern, pattern, request.history_offset),
+                    (request.project_id, request.project_id, *statuses, pattern, pattern, pattern, request.history_offset),
                 )
                 items = []
                 allowed_sessions = {}
@@ -1081,7 +1099,12 @@ def register_run_handlers(server: Any) -> None:
                         except HandlerError:
                             allowed_sessions[sid] = False
                     if allowed_sessions[sid]:
-                        items.append({**dict(row), "live": None})
+                        job = live_service.get_job(row["id"])
+                        active = row["status"] in {
+                            "queued", "planning", "running", "awaiting_approval", "waiting_input"
+                        }
+                        items.append({**dict(row),
+                                      "live": bool(job and job.session_id == sid) if active else None})
                 await check_scope()
                 await ctx.reply({"project_id": request.project_id, "service_id": request.expected_service_id,
                     "history": {"items": items, "offset": request.history_offset, "has_more": len(rows) > 25}})

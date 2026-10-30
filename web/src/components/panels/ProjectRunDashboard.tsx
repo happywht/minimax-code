@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
-import { StreamEvent, type ProjectRunSummaryItem, type ProjectRunSummaryResult, type RunStepsResult, type VerificationEvidence, type TextArtifact } from "../../types/ipc";
+import { StreamEvent, type ProjectRunSummaryItem, type ProjectRunSummaryResult, type ProjectRunHistoryStatus, type RunStepsResult, type VerificationEvidence, type TextArtifact } from "../../types/ipc";
 import { Button } from "../../ui";
 import { VerificationBadge } from "../chat/VerificationBadge";
 import { VerificationDetails } from "../chat/VerificationDetails";
@@ -15,6 +15,13 @@ import { RunDeliverySummary } from "./RunDeliverySummary";
 import { ProjectRunAttention } from "./ProjectRunAttention";
 
 type Group = "attention" | "active" | "recent";
+type SearchStatus = ProjectRunHistoryStatus;
+const searchLabels: Record<SearchStatus, string> = { all: "全部状态", attention: "等待处理", active: "运行与排队", failed: "失败、取消或中断", completed: "执行结束" };
+const searchStatuses: Record<SearchStatus, string[]> = {
+  all: ["queued", "planning", "running", "awaiting_approval", "waiting_input", "budget_paused", "completed", "failed", "cancelled", "interrupted"],
+  attention: ["awaiting_approval", "waiting_input", "budget_paused", "interrupted"], active: ["queued", "planning", "running"],
+  failed: ["failed", "cancelled", "interrupted"], completed: ["completed"],
+};
 const groupLabels: Record<Group, string> = { attention: "等待处理", active: "运行与排队", recent: "最近结果" };
 const cancellable = new Set(["queued", "planning", "running", "awaiting_approval", "waiting_input"]);
 const statusLabels: Record<string, string> = { queued: "排队中", planning: "规划中", running: "运行中", awaiting_approval: "等待授权",
@@ -30,12 +37,15 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
   const [snapshot, setSnapshot] = useState<RunStepsResult | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [revision, setRevision] = useState(0);
   const [query, setQuery] = useState(""), [appliedQuery, setAppliedQuery] = useState("");
+  const [searchStatus, setSearchStatus] = useState<SearchStatus>("all"), [appliedStatus, setAppliedStatus] = useState<SearchStatus>("all");
   const [history, setHistory] = useState<ProjectRunSummaryResult["history"]>(undefined);
+  const [historyStale, setHistoryStale] = useState(false);
+  const historyService = useRef<string | null>(null);
   const generation = useRef(0), actionEpoch = useRef(0), actionLock = useRef(false), timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preserveDetailForSession = useRef<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null), [stopNotice, setStopNotice] = useState("");
   const [requested, setRequested] = useState<Set<string>>(() => new Set());
-  useEffect(() => { preserveDetailForSession.current = null; generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setQuery(""); setAppliedQuery(""); setError(""); setBusy(false); }, [project, host]);
+  useEffect(() => { preserveDetailForSession.current = null; generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setHistoryStale(false); historyService.current = null; setQuery(""); setAppliedQuery(""); setSearchStatus("all"); setAppliedStatus("all"); setError(""); setBusy(false); }, [project, host]);
   useEffect(() => { generation.current++; actionEpoch.current++; setStopping(null); setStopNotice(""); setRequested(new Set()); if (preserveDetailForSession.current !== activeSession) { preserveDetailForSession.current = null; setDetail(undefined); setSnapshot(null); } setBusy(false); }, [activeSession]);
   const refresh = useCallback(async () => {
     if (!project) return;
@@ -53,15 +63,17 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
       setService(scope.service_id); setGroups(result.groups);
       if (preserveDetailForSession.current === activeSession && service === scope.service_id) preserveDetailForSession.current = null;
       else { preserveDetailForSession.current = null; setDetail(undefined); setSnapshot(null); }
-      setHistory(undefined);
-    } catch (e) { if (current()) { setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setError(e instanceof Error ? e.message : String(e)); } }
+      if (historyService.current && historyService.current !== scope.service_id) {
+        setHistory(undefined); historyService.current = null;
+      } else if (historyService.current) setHistoryStale(true);
+    } catch (e) { if (current()) { setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); historyService.current = null; setError(e instanceof Error ? e.message : String(e)); } }
     finally { if (current()) setBusy(false); }
   }, [project, host, activeSession]);
   useEffect(() => { void refresh(); return () => { generation.current++; }; }, [refresh, revision]);
   useEffect(() => {
-    const wake = () => { if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => setRevision((n) => n + 1), 250); };
+    const wake = () => { setHistoryStale(true); if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => setRevision((n) => n + 1), 250); };
     const unsubs = [StreamEvent.RunCreated, StreamEvent.RunUpdated, StreamEvent.RunCompleted].map((event) => ipc.on(event, wake));
-    unsubs.push(ipc.onSideCar((event) => { generation.current++; actionEpoch.current++; setStopping(null); setRequested(new Set()); setStopNotice("连接变化；若已发送停止请求，请刷新运行状态确认结果。"); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setBusy(false);
+    unsubs.push(ipc.onSideCar((event) => { generation.current++; actionEpoch.current++; setStopping(null); setRequested(new Set()); setStopNotice("连接变化；若已发送停止请求，请刷新运行状态确认结果。"); setService(null); setGroups(undefined); setDetail(undefined); setSnapshot(null); setHistory(undefined); setHistoryStale(false); historyService.current = null; setBusy(false);
       if (event.status === "started") wake(); else setError("连接中断，运行状态待刷新。"); }));
     return () => { generation.current++; actionEpoch.current++; if (timer.current) clearTimeout(timer.current); unsubs.forEach((off) => off()); };
   }, []);
@@ -84,8 +96,8 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
             steps.steps.some((step) => step.run_id !== item.id || step.session_id !== item.session_id)) throw new Error("运行、项目或服务身份不匹配");
       }
       if (open) {
-        if (!useSessionStore.getState().setCurrentProject(project)) return;
-        if (!useSessionStore.getState().setCurrent(item.session_id)) return;
+        if (useSessionStore.getState().currentProjectId !== project && !useSessionStore.getState().setCurrentProject(project)) return;
+        if (useSessionStore.getState().currentSessionId !== item.session_id && !useSessionStore.getState().setCurrent(item.session_id)) return;
         void useSessionStore.getState().refresh({ loadCurrent: false });
         onOpenSession();
       } else { setDetail(result.detail); setSnapshot(steps); }
@@ -118,17 +130,17 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
     } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { if (current()) setBusy(false); }
   };
-  const searchHistory = async (term: string, offset: number) => {
+  const searchHistory = async (term: string, offset: number, status: SearchStatus) => {
     if (!project || !service || busy) return;
     const ticket = ++generation.current, expected = service;
     const current = () => ticket === generation.current && ipc.agentBaseUrl === host && useSessionStore.getState().currentProjectId === project && useSessionStore.getState().currentSessionId === activeSession;
     setBusy(true); setError(""); setHistory(undefined); setDetail(undefined); setSnapshot(null);
     try {
-      const result = await typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: expected, history_query: term, history_offset: offset });
+      const result = await typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: expected, history_query: term, history_offset: offset, history_status: status });
       if (!current()) return;
       if (result.project_id !== project || result.service_id !== expected || !result.history || result.history.offset !== offset ||
-          !Array.isArray(result.history.items) || result.history.items.length > 25 || typeof result.history.has_more !== "boolean") throw new Error("历史运行归属不匹配");
-      setAppliedQuery(term); setHistory(result.history);
+          !Array.isArray(result.history.items) || result.history.items.length > 25 || result.history.items.some((item) => !searchStatuses[status].includes(item.status)) || typeof result.history.has_more !== "boolean") throw new Error("历史运行归属不匹配");
+      setAppliedQuery(term); setAppliedStatus(status); historyService.current = expected; setHistoryStale(false); setHistory(result.history);
     } catch (e) { if (current()) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (current()) setBusy(false); }
   };
@@ -172,26 +184,30 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
     <p className="text-sm text-ink-1">按持久运行记录分组，不按会话计数。每组最多显示最近 25 条；已归档会话、未绑定项目的旧记录和内部子任务不在此列表。等待状态不代表审批或问题仍有效。</p>
     <div className="flex flex-wrap gap-2">{(Object.keys(groupLabels) as Group[]).map((id) => <Button key={id} type="button" size="sm" variant={group === id ? "primary" : "secondary"} aria-pressed={group === id} onClick={() => { setGroup(id); setDetail(undefined); setSnapshot(null); }}>{groupLabels[id]}</Button>)}
       <Button type="button" size="sm" variant="ghost" disabled={busy || !project} onClick={() => void refresh()}>刷新</Button></div>
-    <form className="flex flex-wrap items-end gap-2 rounded border border-line p-2" onSubmit={(event) => { event.preventDefault(); void searchHistory(query.trim(), 0); }}>
-      <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">查找历史运行
+    <form className="flex flex-wrap items-end gap-2 rounded border border-line p-2" onSubmit={(event) => { event.preventDefault(); void searchHistory(query.trim(), 0, searchStatus); }}>
+      <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">查找项目运行
         <input className="rounded border border-line bg-surface-0 p-1" value={query} maxLength={200} onChange={(event) => setQuery(event.target.value)} placeholder="运行标题、会话标题或运行 ID" />
       </label>
+      <label className="flex flex-col gap-1 text-sm">状态范围<select aria-label="任务搜索状态" className="rounded border border-line bg-surface-0 p-1" value={searchStatus} onChange={(event) => setSearchStatus(event.target.value as SearchStatus)}>
+        {(Object.keys(searchLabels) as SearchStatus[]).map((status) => <option key={status} value={status}>{searchLabels[status]}</option>)}
+      </select></label>
       <Button type="submit" size="sm" variant="secondary" disabled={busy || !service}>查找</Button>
-      {history && <Button type="button" size="sm" variant="ghost" onClick={() => setHistory(undefined)}>关闭搜索结果</Button>}
-      <p className="w-full text-xs text-ink-2">搜索已结束、失败、取消或中断的持久运行；空关键词浏览历史。已归档会话和未绑定项目的旧记录不包含在内。</p>
+      {history && <Button type="button" size="sm" variant="ghost" onClick={() => { setHistory(undefined); historyService.current = null; }}>关闭搜索结果</Button>}
+      <p className="w-full text-xs text-ink-2">按状态和关键词搜索项目持久运行；空关键词浏览所选状态。等待处理包括授权、输入、预算暂停和中断；已归档会话和未绑定项目的旧记录不包含在内。</p>
     </form>
-    {history && <div className="space-y-2 rounded border border-line p-2" aria-label="历史运行搜索结果">
-      <p className="text-sm">搜索：{appliedQuery || "全部"} · 从第 {history.offset + 1} 条记录开始</p>
+    {history && <div className="space-y-2 rounded border border-line p-2" aria-label="项目运行搜索结果">
+      <p className="text-sm">搜索：{appliedQuery || "全部关键词"} · {searchLabels[appliedStatus]} · 从第 {history.offset + 1} 条记录开始</p>
+      {historyStale && <p role="status" className="text-status-warning">运行记录已变化，此页是旧快照；打开结果会重新核对。<Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void searchHistory(appliedQuery, history.offset, appliedStatus)}>刷新此页</Button></p>}
       {!history.items.length && <p>本页没有可显示的运行；主机边界可能隐藏部分记录。</p>}
       <ul className="space-y-2">{history.items.map((item) => <li key={item.id} className="rounded bg-surface-2 p-2">
         <p className="font-medium">{item.title || "未命名运行"}</p>
         <p className="break-all text-xs text-ink-2">会话：{item.session_title || item.session_id} · 运行：{item.id}</p>
-        <p className="text-xs">记录状态：{statusLabels[item.status] ?? item.status} · {item.completed_at ?? item.created_at}</p>
+        <p className="text-xs">记录状态：{statusLabels[item.status] ?? item.status}{item.live === false ? " · 当前服务无法确认仍在执行" : ""} · {item.completed_at ?? item.created_at}</p>
         <div className="mt-1 flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void select(item, false)}>查看结果</Button>
           <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void select(item, true)}>打开所属会话</Button></div>
       </li>)}</ul>
-      <div className="flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy || history.offset === 0} onClick={() => void searchHistory(appliedQuery, Math.max(0, history.offset - 25))}>上一页</Button>
-        <Button type="button" size="sm" variant="secondary" disabled={busy || !history.has_more || history.offset >= 10000} onClick={() => void searchHistory(appliedQuery, history.offset + 25)}>下一页</Button></div>
+      <div className="flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy || history.offset === 0} onClick={() => void searchHistory(appliedQuery, Math.max(0, history.offset - 25), appliedStatus)}>上一页</Button>
+        <Button type="button" size="sm" variant="secondary" disabled={busy || !history.has_more || history.offset >= 10000} onClick={() => void searchHistory(appliedQuery, history.offset + 25, appliedStatus)}>下一页</Button></div>
       {history.has_more && history.offset >= 10000 && <p className="text-xs">已到浏览上限，请缩小搜索范围。</p>}
       <p className="text-xs text-ink-2">记录可能在翻页时变化，页码不是固定快照；主机不可访问的记录不会显示。</p>
     </div>}

@@ -1063,6 +1063,8 @@ export interface ProjectRunSummaryItem {
   id: string; session_id: string; title: string; session_title: string; status: AgentRunStatus;
   created_at: string; completed_at: string | null; live: boolean | null;
 }
+export type ProjectRunHistoryStatus = "all" | "attention" | "active" | "failed" | "completed";
+
 export interface ProjectRunSummaryResult {
   project_id: string; service_id: string;
   groups?: Record<"attention" | "active" | "recent", { items: ProjectRunSummaryItem[]; truncated: boolean }>;

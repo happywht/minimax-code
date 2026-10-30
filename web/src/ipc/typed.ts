@@ -266,7 +266,7 @@ export interface TypedIPC {
   summarizeCodebasePath(path: string, opts?: { project_id?: string; session_id?: string }): Promise<CodebaseSummarizeResult>;
   readCurrentCodebase(params: import("../types/ipc").CodebaseReadCurrentParams): Promise<import("../types/ipc").CodebaseReadCurrentResult>;
 
-  getProjectRunSummary(params: { project_id: string; expected_service_id: string; run_id?: string; history_query?: string; history_offset?: number }): Promise<import("../types/ipc").ProjectRunSummaryResult>;
+  getProjectRunSummary(params: { project_id: string; expected_service_id: string; run_id?: string; history_query?: string; history_offset?: number; history_status?: import("../types/ipc").ProjectRunHistoryStatus }): Promise<import("../types/ipc").ProjectRunSummaryResult>;
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number; include_active?: boolean; recovery_lookup?: RunRecoveryLookup }): Promise<ListRunsResult>;
   startRun(params: RunStartParams): Promise<RunAdmissionResult>;
   getRunInputImage(params: { run_id: string; session_id: string; project_id: string | null; expected_service_id: string; index: number }): Promise<import("../types/ipc").RunInputImage>;
