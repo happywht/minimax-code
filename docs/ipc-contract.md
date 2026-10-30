@@ -222,6 +222,7 @@ binding or an expired request.
 | `run.child_workspace` | req/res | Review or explicitly collect a directly owned child workspace with binding and conflict checks. |
 | `run.child_list` | req/res | Recover recent direct child runs scoped to the parent session, parent runs, project and service. |
 | `run.output_page` | req/res | Read a bounded page of captured tool output bound to a run, session, project and service. |
+| `run.input_image` | req/res | Read one saved Codex input image, bound to its run, session, project and service. |
 | `run.output_inventory` | req/res | Inspect global usage and current-session captured-output records. |
 | `run.output_clear` | req/res | Explicitly clear one finished run's captured output, retaining a tombstone. |
 | `run.research_list` | req/res | List current project's recorded page sources with session and service binding. |
@@ -869,7 +870,7 @@ file signature, then sends inline data URLs through the pinned App Server protoc
 Model/provider image support is not guaranteed. The full image data is retained in the
 local run request for idempotency and queueing and may be included in data exports; Codex
 also receives it in the external thread. Persisted message history displays a text label
-and image count, not image previews. Recovery sends a reviewed text handoff and does not
+and image count; the task timeline can load the saved images on demand. Recovery sends a reviewed text handoff and does not
 blindly resend the original image. The input projection does not copy image data into
 event or message text.
 `@` and `#` are ordinary text in its composer and do not invoke Native mention features.
@@ -1890,6 +1891,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 `run.child_list({session_id})` 返回同一父会话及其持久父运行、当前项目绑定的最近 100 条直接子运行，包含 `service_id` 和真实持久 `status`。`live` 仅表示服务内可确认的后台任务，缺失不能证明同步子任务已停止；活动状态但 `live=false` 时客户端应显示待核对，不应推断仍在运行。历史缺少父运行绑定的记录不包含在内。
 
 `run.output_page({run_id,session_id,output_ref,expected_service_id,offset?,limit?})` 按字符分页读取该运行的捕获输出 JSON；最多 8000 字符，返回当前/下一偏移、总字符数和绑定标识。输出仅包含工具捕获到的内容，命令捕获上限和截断标记仍然适用；引用不跨项目、会话或服务使用。
+
+`run.input_image({run_id,session_id,project_id,expected_service_id,index})` 按需读取原 Codex 任务请求的一张图片，返回相同绑定、零基 `index`、图片总数、`media_type` 与 base64 `data`。运行和当前会话项目必须匹配接单时项目，且输入须符合 Codex 的五张、总计 4 MiB 和格式校验。旧记录或无图片时返回错误；数据不进入事件，接口不发送或修改草稿。项目、服务或会话变动时客户端丢弃在途结果和预览。
 
 `run.output_inventory({session_id,offset?})` 返回全库与当前会话逻辑用量、当前会话按页 50 条已绑定的输出记录及服务身份；全库统计包括其他会话和不可访问的旧记录，但不暴露其详情。`run.output_clear({run_id,session_id,output_ref,expected_service_id,expected_sha256})` 仅清理明确指定、已终结且不再清理中的运行的正文，保留不可读取的清理标记；调用不会删除运行、摘要或原文件，重试同一记录幂等。清理与新读请求按数据库事务排序，已取出的并发页可能仍被返回；通知供客户端清除已显示或在途页面。数据库文件、旧备份与存储介质可能保留原始字节，并非安全擦除。
 

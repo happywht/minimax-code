@@ -17,6 +17,7 @@ from .protocol import (
     RunCancelParams,
     RunEventsParams,
     RunIdParams,
+    RunInputImageParams,
     RunOutputClearParams,
     RunOutputInventoryParams,
     RunOutputPageParams,
@@ -64,6 +65,62 @@ def register_run_handlers(server: Any) -> None:
     """Register run timeline read APIs."""
 
     child_review_lock = asyncio.Lock()
+
+    async def handle_input_image(params: Any, ctx: Context) -> None:
+        from ..engines.codex_multimodal import MAX_IMAGE_BYTES, codex_input
+        from ..storage.dao._base import loads_json
+        from ..storage.dao.text_artifacts import ArtifactDAO
+        from .host_session_gate import require_chat_session
+
+        try:
+            req = RunInputImageParams.model_validate(params)
+            await require_chat_session(req.session_id)
+            dao = await _get_read_control_dao(ctx)
+            await ArtifactDAO(dao._db).service_id()
+            async with dao._db.transaction() as conn:
+                async with conn.execute("SELECT service_id FROM artifact_service WHERE singleton=1") as cursor:
+                    identity = await cursor.fetchone()
+                async with conn.execute(
+                    "SELECT r.session_id,r.metadata,r.request,s.project_id,s.engine "
+                    "FROM agent_runs r JOIN sessions s ON s.id=r.session_id WHERE r.id=?", (req.run_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if (not identity or identity[0] != req.expected_service_id or not row
+                        or row["session_id"] != req.session_id or row["project_id"] != req.project_id
+                        or row["engine"] != "codex"):
+                    raise ValueError("Image run, session, project or service binding changed")
+                metadata = loads_json(row["metadata"]) or {}
+                if metadata.get("engine") != "codex" or metadata.get("project_id") != req.project_id:
+                    raise ValueError("Image run binding is unavailable")
+                raw = row["request"]
+                if not isinstance(raw, str) or len(raw) > MAX_IMAGE_BYTES * 2 + 200_000:
+                    raise ValueError("Saved input is unavailable or exceeds the preview limit")
+                request = loads_json(raw)
+                if not isinstance(request, dict) or request.get("engine") != "codex" or request.get("session_id") != req.session_id:
+                    raise ValueError("Saved Codex input is unavailable")
+                content = request.get("content")
+                codex_input(content)  # Enforce the same input format and total bound as admission.
+                images = [part for part in content if part.get("type") == "image"] if isinstance(content, list) else []
+                if req.index >= len(images):
+                    raise ValueError("No saved input image at this index")
+                image = images[req.index]
+                result = {"run_id": req.run_id, "session_id": req.session_id,
+                          "project_id": req.project_id, "service_id": identity[0],
+                          "index": req.index, "count": len(images),
+                          "media_type": image["media_type"], "data": image["data"]}
+            await require_chat_session(req.session_id)
+            current = await dao._db.fetchone(
+                "SELECT s.project_id,s.engine,r.session_id FROM sessions s JOIN agent_runs r ON r.session_id=s.id WHERE r.id=?",
+                (req.run_id,))
+            if (not current or current["session_id"] != req.session_id or current["project_id"] != req.project_id
+                    or current["engine"] != "codex" or await ArtifactDAO(dao._db).service_id() != req.expected_service_id):
+                raise ValueError("Image binding changed while reading")
+            await ctx.reply(result)
+        except (ValidationError, ValueError, HandlerError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("Codex input image unavailable")
+            await ctx.reply_error(INTERNAL_ERROR, "Codex input image unavailable")
 
     async def handle_output_inventory(params: Any, ctx: Context) -> None:
         from ..tool_outputs import inventory
@@ -1047,6 +1104,7 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.verify_collected", handle_verify_collected)
     server.register("run.child_list", handle_child_list)
     server.register("run.output_page", handle_output_page)
+    server.register("run.input_image", handle_input_image)
     server.register("run.output_inventory", handle_output_inventory)
     server.register("run.output_clear", handle_output_clear)
 

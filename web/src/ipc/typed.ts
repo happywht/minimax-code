@@ -259,6 +259,7 @@ export interface TypedIPC {
   getProjectRunSummary(params: { project_id: string; expected_service_id: string; run_id?: string; history_query?: string; history_offset?: number }): Promise<import("../types/ipc").ProjectRunSummaryResult>;
   listRuns(opts?: { session_id?: string; status?: string; limit?: number; offset?: number; include_active?: boolean; recovery_lookup?: RunRecoveryLookup }): Promise<ListRunsResult>;
   startRun(params: RunStartParams): Promise<RunAdmissionResult>;
+  getRunInputImage(params: { run_id: string; session_id: string; project_id: string | null; expected_service_id: string; index: number }): Promise<import("../types/ipc").RunInputImage>;
   getRun(runId: string): Promise<RunGetResult>;
   cancelRun(runId: string, scheduleScope?: { service_id: string; job_id: string; occurrence_id: string; session_id: string; project_id: string; revision: number }): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
   resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number, scope?: { service: string; session: string; project: string | null; cursor: number }, handoff?: string): Promise<RunAdmissionResult>;
@@ -797,6 +798,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     listRuns: (opts) =>
       client.request<ListRunsResult>("run.list", opts ?? {}),
     startRun: (params) => client.request<RunAdmissionResult>("run.start", params),
+    getRunInputImage: (params) => client.request("run.input_image", params),
     getRun: (runId) => client.request<RunGetResult>("run.get", { run_id: runId }),
     cancelRun: (runId, scheduleScope) => client.request("run.cancel", { run_id: runId, ...(scheduleScope ? { schedule_scope: scheduleScope } : {}) }),
     getDailyBudgetSettings: () => client.request("budget.settings_get", {}),

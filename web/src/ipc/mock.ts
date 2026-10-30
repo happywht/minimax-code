@@ -786,6 +786,8 @@ function mockHandle(
       throw new Error("演示模式没有真实子任务工作区");
     case "run.verify_collected":
       throw new Error("演示模式不能运行项目验证命令");
+    case "run.input_image":
+      throw new Error("演示模式没有已保存的 Codex 输入图片");
     case "run.output_page":
       throw new Error("演示模式没有已保存的工具输出");
     case "run.output_inventory":

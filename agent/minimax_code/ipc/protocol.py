@@ -405,6 +405,15 @@ class RunIdParams(BaseModel):
     run_id: str = Field(min_length=1)
 
 
+class RunInputImageParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str | None
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    index: int = Field(ge=0, le=4)
+
+
 class ScheduledRunCancelScope(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     service_id: str = Field(min_length=1)

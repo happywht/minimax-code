@@ -1171,6 +1171,17 @@ export interface RunStartParams extends SendMessageParams {
   engine?: "native" | "codex";
 }
 
+export interface RunInputImage {
+  run_id: string;
+  session_id: string;
+  project_id: string | null;
+  service_id: string;
+  index: number;
+  count: number;
+  media_type: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  data: string;
+}
+
 export interface RunAdmissionResult { run: AgentRun; created: boolean }
 export interface RunGetResult {
   run: AgentRun;
