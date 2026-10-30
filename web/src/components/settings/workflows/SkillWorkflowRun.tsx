@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../../ipc";
 import { useSessionStore } from "../../../stores/sessionStore";
 import { useChat } from "../../../stores/chat";
@@ -26,6 +26,8 @@ export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntr
   const [run, setRun] = useState<AgentRun | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<{ index: number; runId: string; text: string; warning: string | null; scope: string } | null>(null);
+  const previewInput = useRef<HTMLTextAreaElement>(null);
   const storageKey = `minimax:workflow-intent:${encodeURIComponent(workflow.id)}`;
   const supported = workflow.steps.length > 0 && workflow.steps.every((s) => s.type === "action" && s.action_type === "run-skill");
   const step = supported ? workflow.steps[index] : null;
@@ -33,6 +35,11 @@ export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntr
   const projectId = session?.project_id ?? null;
   const matches = !!sessionId && !!session && session.engine === "native" && (project === projectId || (!projectId && project === "inbox"));
   const validBudget = /^[1-9]\d*$/.test(budget) && Number.isSafeInteger(Number(budget));
+  const viewScope = JSON.stringify([ipc.agentBaseUrl, service, sessionId, projectId, project, mode, workflow.id, workflow.steps, key, index]);
+  const currentViewScope = useRef(viewScope);
+  currentViewScope.current = viewScope;
+
+  useEffect(() => { setPreview(null); setChain([]); }, [viewScope]);
 
   useEffect(() => {
     let live = true;
@@ -53,7 +60,7 @@ export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntr
     } catch { setMessage("无法读取待确认请求，请先查看运行记录。"); }
     return () => { live = false; };
   }, [storageKey, sessionId, projectId]);
-  useEffect(() => ipc.onSideCar(() => { setService(null); setRun(null); setMessage("服务连接已变化，请关闭并重新打开运行入口，先检查原运行记录。"); }), []);
+  useEffect(() => ipc.onSideCar(() => { setService(null); setRun(null); setPreview(null); setChain([]); setMessage("服务连接已变化，请关闭并重新打开运行入口，先检查原运行记录。"); }), []);
 
   const sameScope = (value: Pending) => value.workflow === workflow.id && value.host === ipc.agentBaseUrl &&
     value.intent.session_id === sessionId && value.intent.expected_service_id === service &&
@@ -106,9 +113,58 @@ export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntr
         !(current.currentProjectId === projectId || (!projectId && current.currentProjectId === "inbox"))) throw new Error("运行绑定已变化");
       setChain(result.skill_chain);
       sessionStorage.setItem(`${storageKey}:key`, key);
-      setMessage("已读取持久步骤状态。completed 只表示运行结束，请检查结果后再继续。");
+      setMessage(result.definition_matches ? "已读取持久步骤状态。completed 只表示运行结束，请检查结果后再继续。" : "原链步骤与当前工作流不一致，不能继续；请查看原运行记录。");
     } catch (e) { setMessage(`无法读取步骤状态：${String(e)}`); }
     finally { setBusy(false); }
+  };
+  const viewResult = async (sourceIndex: number) => {
+    if (!service || !sessionId || !matches || !key.trim() || busy || sourceIndex >= index) return;
+    const scope = viewScope, host = ipc.agentBaseUrl;
+    const chainScope = { idempotency_key: key, session_id: sessionId, expected_service_id: service, expected_project_id: projectId };
+    const assertScope = async () => {
+      const identity = await typedIPC.getServiceIdentity();
+      const current = useSessionStore.getState();
+      if (currentViewScope.current !== scope || host !== ipc.agentBaseUrl || identity.service_id !== service ||
+          current.currentSessionId !== sessionId || current.sessions.find((s) => s.id === sessionId)?.engine !== "native" ||
+          (current.sessions.find((s) => s.id === sessionId)?.project_id ?? null) !== projectId ||
+          !(current.currentProjectId === projectId || (!projectId && current.currentProjectId === "inbox"))) {
+        throw new Error("链、服务、会话或项目已变化，请重新查询");
+      }
+    };
+    setBusy(true); setPreview(null);
+    try {
+      await assertScope();
+      const before = await typedIPC.getWorkflowSkillChain(workflow.id, chainScope);
+      const source = before.skill_chain.find((item) => item.index === sourceIndex);
+      if (!source?.run) throw new Error("该步骤尚无持久运行");
+      const detail = await typedIPC.getRun(source.run.id);
+      const after = await typedIPC.getWorkflowSkillChain(workflow.id, chainScope);
+      await assertScope();
+      const confirmed = after.skill_chain.find((item) => item.index === sourceIndex);
+      const profile = detail.run.metadata?.skill_execution as { skill_id?: string; project_id?: string | null } | undefined;
+      if (!before.definition_matches || !after.definition_matches || !confirmed?.run || confirmed.run.id !== source.run.id || detail.run.id !== source.run.id ||
+          detail.run.session_id !== sessionId || confirmed.run.session_id !== sessionId ||
+          confirmed.skill_id !== source.skill_id || profile?.skill_id !== source.skill_id || profile.project_id !== projectId) {
+        throw new Error("步骤运行归属无法确认，请重新查询");
+      }
+      const receipt = detail.result as unknown as Record<string, unknown> | null;
+      if (!receipt || typeof receipt.text !== "string" || receipt.run_id !== detail.run.id || receipt.session_id !== sessionId || receipt.skill_id !== source.skill_id) {
+        throw new Error("持久文本结果不可用或归属未知，请查看原运行记录");
+      }
+      const warning = confirmed.continuation_blocked_reason || (detail.run.status !== "completed" ? `运行状态为 ${detail.run.status}` : null);
+      setChain(after.skill_chain);
+      setPreview({ index: sourceIndex, runId: detail.run.id, text: receipt.text, warning, scope });
+      setMessage("已读取持久文本。请核对内容；运行完成不代表结果已验收。");
+    } catch (e) { setMessage(`无法确认步骤结果：${String(e)}`); }
+    finally { setBusy(false); }
+  };
+  const insertResult = (all: boolean) => {
+    if (!preview || preview.warning || preview.scope !== currentViewScope.current || busy || pending) return;
+    const field = previewInput.current;
+    const selected = all ? preview.text : field?.value.slice(field.selectionStart, field.selectionEnd) ?? "";
+    if (!selected) { setMessage("请先在结果中选择文本，或使用插入全文。"); return; }
+    setRequest((old) => `${old}${old ? "\n\n" : ""}[工作流步骤 ${preview.index} 的持久文本，运行 ${preview.runId}]\n${selected}`);
+    setMessage("文本已加入可编辑请求；请检查后自行决定是否提交。");
   };
   const refreshRun = async () => {
     if (!run || !service || !sessionId) return;
@@ -137,7 +193,13 @@ export function SkillWorkflowRun({ workflow, onClose }: { workflow: WorkflowEntr
         <label className="block">Token 上限<input className="ml-2 rounded border border-line bg-surface-0 p-1" inputMode="numeric" value={budget} disabled={busy || !!pending} onChange={(e) => setBudget(e.target.value)} /></label>
         <label className="block">整条链的触发幂等键<input className="ml-2 rounded border border-line bg-surface-0 p-1" value={key} disabled={busy || !!pending} maxLength={128} onChange={(e) => { setKey(e.target.value); setChain([]); }} /></label>
         <button type="button" disabled={busy || !key.trim()} onClick={() => void refreshChain()}>查询链步骤状态</button>
-        {chain.length > 0 && <ul>{chain.map((item) => <li key={item.index}>#{item.index} · {item.skill_id} · {item.run ? `${item.run.status} (${item.run.id})` : "尚未接单"}{item.continuation_blocked_reason ? ` · 不可继续：${item.continuation_blocked_reason}` : ""}</li>)}</ul>}
+        {chain.length > 0 && <ul>{chain.map((item) => <li key={item.index}>#{item.index} · {item.skill_id} · {item.run ? `${item.run.status} (${item.run.id})` : "尚未接单"}{item.continuation_blocked_reason ? ` · 不可继续：${item.continuation_blocked_reason}` : ""}{item.run && item.index < index && <> <button type="button" disabled={busy} onClick={() => void viewResult(item.index)}>查看持久文本</button></>}</li>)}</ul>}
+        {preview && <div className="space-y-1 rounded border border-line p-2"><p>步骤 #{preview.index} · 运行 {preview.runId}{preview.warning ? ` · 不可继续：${preview.warning}` : ""}</p>
+          <textarea ref={previewInput} aria-label="前序步骤持久文本" className="w-full rounded border border-line bg-surface-0 p-2" rows={6} readOnly value={preview.text} />
+          {preview.warning ? <p>结果可能不完整或需要核对，不能附带到下一步。</p> : <><p>选择文本后插入，或插入全文；插入后仍可编辑，不会自动提交。</p>
+            <button type="button" disabled={busy || !!pending} onClick={() => insertResult(false)}>插入选中文本</button>{" "}
+            <button type="button" disabled={busy || !!pending || !preview.text} onClick={() => insertResult(true)}>插入全文</button></>}
+        </div>}
         <button type="button" disabled={busy || !!pending || !skillId.trim() || !request.trim() || !validBudget || !key.trim()} onClick={() => void submit()}>提交运行</button>
         {pending && <div><p>存在未确认请求：{pending.intent.idempotency_key}。同一请求重试使用原键，不会自动重放。</p>
           <button type="button" disabled={busy || !sameScope(pending)} onClick={() => void submit(pending)}>重试同一请求</button>{" "}

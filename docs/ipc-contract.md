@@ -2179,7 +2179,8 @@ the authorized skill execution boundary; non-push or empty-commit events are ski
 工作区及权限边界处理。返回 `skill_admission: {run, created}`；接单不代表完成。
 同一链同一步同请求可重试，变更请求会冲突；编辑定义或更换绑定不能用同一键继续。
 传入 `skill_status`（包含触发 `idempotency_key`、`session_id`、`expected_service_id`、
-`expected_project_id`）可查询持久快照及各步骤关联运行，即使工作流已删除；运行结果可通过
+`expected_project_id`）可查询持久快照及各步骤关联运行，即使工作流已删除；`definition_matches`
+表明当前定义是否与快照一致。运行结果可通过
 `run.get` 查看。技能步骤不计入 `steps_completed`，其他旧工作流按原路径执行。旧版单技能
 运行在链账本建立前没有快照；若其键用于新的多步链，会拒绝并要求先检查旧运行。
 

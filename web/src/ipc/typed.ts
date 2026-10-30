@@ -486,7 +486,7 @@ export interface TypedIPC {
   enableWorkflow(id: string): Promise<WorkflowEntry>;
   disableWorkflow(id: string): Promise<WorkflowEntry>;
   triggerWorkflow(id: string, context?: Record<string, unknown>, skillExecution?: { skill_id: string; session_id: string; request: string; budget_tokens: number; idempotency_key: string; expected_service_id: string; expected_project_id: string | null; step_index?: number }): Promise<{ ok: boolean; steps_completed: number; steps_failed: number; errors?: { step: number; message: string }[]; skill_admission?: import("../types/ipc").RunAdmissionResult }>;
-  getWorkflowSkillChain(id: string, scope: { idempotency_key: string; session_id: string; expected_service_id: string; expected_project_id: string | null }): Promise<{ skill_chain: { index: number; skill_id: string; run: AgentRun | null; continuation_blocked_reason: string | null }[] }>;
+  getWorkflowSkillChain(id: string, scope: { idempotency_key: string; session_id: string; expected_service_id: string; expected_project_id: string | null }): Promise<{ definition_matches: boolean; skill_chain: { index: number; skill_id: string; run: AgentRun | null; continuation_blocked_reason: string | null }[] }>;
 
   // team (v0.8.0) — drive the Settings page's Teams tab.
   listTeams(): Promise<ListTeamsResult>;

@@ -256,10 +256,13 @@ async def handle_workflow_trigger(params: dict[str, Any], ctx: Context) -> dict[
             raise HandlerError(-32602, "Explicit chain identity is required")
         db = dao._db
         await _chain_scope(db, status["session_id"], status["expected_service_id"], status["expected_project_id"])
-        chain = await db.fetchone("SELECT session_id,service_id,project_id FROM workflow_skill_chains WHERE workflow_id=? AND trigger_key=?", (wid, status["idempotency_key"]))
+        chain = await db.fetchone("SELECT session_id,service_id,project_id,steps_json FROM workflow_skill_chains WHERE workflow_id=? AND trigger_key=?", (wid, status["idempotency_key"]))
         if not chain or (chain["session_id"], chain["service_id"], chain["project_id"]) != (status["session_id"], status["expected_service_id"], status["expected_project_id"]):
             raise HandlerError(-32002, "Workflow skill chain not found in this scope")
-        return {"skill_chain": await _chain_status(db, wid, status["idempotency_key"], status["session_id"])}
+        current_workflow = await dao.get(wid)
+        current_steps = json.dumps(current_workflow.get("steps") or [], sort_keys=True, ensure_ascii=False, separators=(",", ":")) if current_workflow else None
+        return {"skill_chain": await _chain_status(db, wid, status["idempotency_key"], status["session_id"]),
+                "definition_matches": current_steps == chain["steps_json"]}
     workflow = await dao.get(wid)
     if workflow is None:
         raise HandlerError(-32002, f"Workflow '{wid}' not found")
