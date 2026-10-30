@@ -281,6 +281,69 @@ function noteStreamActivity(data: { run_id?: string }): void {
   if (!data.run_id || !reconcilingRunIds.has(data.run_id)) ++_viewRevision;
 }
 
+/** Add saved rows around common anchors without replacing anything in the live view. */
+function mergeHistory(saved: Message[], current: Message[], initiallyEmpty: boolean): { messages: Message[]; incomplete: boolean } {
+  const match = (row: Message, existing: Message): boolean => {
+    if (row.id === existing.id) return true;
+    const a = row.metadata, b = existing.metadata;
+    if (a?.run_id && b?.run_id && a.run_id !== b.run_id) return false;
+    if (row.role === "user" && existing.role === "user" && a?.request_key && a.request_key === b?.request_key) return true;
+    return row.role === "tool" && existing.role === "tool" && !!row.tool_call_id
+      && row.tool_call_id === existing.tool_call_id && !existing.id.startsWith("tc-");
+  };
+  const anchors = saved.map((row) => current.findIndex((existing) => match(row, existing)));
+  let last = -1;
+  for (const index of anchors) {
+    if (index < 0) continue;
+    if (index <= last) return { messages: current, incomplete: true };
+    last = index;
+  }
+  const hasAnchor = last >= 0;
+  const lastSaved = saved[saved.length - 1];
+  const firstCurrent = current[0];
+  const historyPrecedesLive = initiallyEmpty && lastSaved?.role === "user"
+    && !!lastSaved.metadata?.run_id && lastSaved.metadata.run_id === firstCurrent?.metadata?.run_id
+    && firstCurrent.role === "assistant";
+  const uncertainInput = current.some((row) => row.role === "user" && !!row.metadata?.request_key
+    && !saved.some((item) => match(item, row)));
+  const buckets = new Map<number, Message[]>();
+  let previous = -1;
+  let incomplete = false;
+  const seen = new Set<string>();
+  for (let i = 0; i < saved.length; i++) {
+    const row = saved[i];
+    if (anchors[i] >= 0) { previous = anchors[i]; continue; }
+    if (seen.has(row.id) || localMessageEdits.has(row.id)) continue;
+    seen.add(row.id);
+    // An unconfirmed input and an unkeyed saved user row cannot be
+    // identified as the same submission safely.
+    const next = anchors.slice(i + 1).find((index) => index >= 0);
+    const end = next ?? current.length;
+    if ((!hasAnchor && current.length > 0 && !historyPrecedesLive)
+        || (hasAnchor && end > previous + 1)
+        || (uncertainInput && row.role === "user" && !row.metadata?.request_key)) {
+      incomplete = true;
+      continue;
+    }
+    const position = next ?? (previous >= 0 ? previous + 1 : 0);
+    const bucket = buckets.get(position) ?? [];
+    bucket.push(row);
+    buckets.set(position, bucket);
+  }
+  const additions = [...buckets.values()].reduce((count, rows) => count + rows.length, 0);
+  let skip = Math.max(0, additions - Math.max(0, MAX_MESSAGES - current.length));
+  if (skip) incomplete = true;
+  const merged: Message[] = [];
+  for (let i = 0; i <= current.length; i++) {
+    for (const row of buckets.get(i) ?? []) {
+      if (skip > 0) skip--;
+      else merged.push(row);
+    }
+    if (i < current.length) merged.push(current[i]);
+  }
+  return { messages: merged, incomplete };
+}
+
 function ensureMessage(
   messages: Message[],
   patch: Partial<Message> & { id: string },
@@ -1164,8 +1227,10 @@ export const useChat = create<ChatState>((set, get) => ({
           && message.metadata?.request_key === run.request_key);
         if (local) prior.set(run.user_message_id, local);
       }
-      const saved: Message[] = (result.messages ?? []).map((m) => {
+      const saved: Message[] = (result.messages ?? []).filter((m) =>
+        !localMessageEdits.has(m.id) || prior.has(m.id)).map((m) => {
         const local = prior.get(m.id);
+        if (local && localMessageEdits.has(m.id)) return local;
         return {
           ...m, text: m.text ?? m.content ?? "", streaming: false, status: m.status ?? "completed",
           // Keep the measured virtual row and component state when a provisional
@@ -1215,20 +1280,13 @@ export const useChat = create<ChatState>((set, get) => ({
     // previous session is silently discarded.
     const seq = ++_loadSeq;
     const revision = _viewRevision;
+    const initiallyEmpty = get().messages.length === 0;
     set({ loadingMessages: true });
     try {
       const result = await typedIPC.listMessages(sessionId);
       // Stale response — the user has already switched away.
       if (seq !== _loadSeq) return;
-      const currentSessionId = useSessionStore.getState().currentSessionId;
-      const activeStatus = get().status;
-      if (
-        currentSessionId === sessionId &&
-        (revision !== _viewRevision || activeStatus === "sending" || activeStatus === "streaming" || activeStatus === "cancelling")
-      ) {
-        set({ loadingMessages: false });
-        return;
-      }
+      if (useSessionStore.getState().currentSessionId !== sessionId) return;
       // Convert backend rows (content → text, add streaming: false)
       const msgs: Message[] = (result.messages ?? []).map((m) => ({
         id: m.id,
@@ -1242,7 +1300,12 @@ export const useChat = create<ChatState>((set, get) => ({
         tool_name: m.tool_name,
         tool_args: m.tool_args,
       }));
-      set({ messages: trimArray(msgs, MAX_MESSAGES), status: "idle", error: null, loadingMessages: false });
+      const state = get();
+      const merged = mergeHistory(msgs, state.messages, initiallyEmpty);
+      const active = state.status === "sending" || state.status === "streaming" || state.status === "cancelling";
+      set({ messages: merged.messages, loadingMessages: false,
+        ...(!active && revision === _viewRevision ? { status: "idle" as const, error: null } : {}) });
+      if (merged.incomplete) toast.info("部分历史暂未合并", "当前内容已保留，请在任务结束后刷新历史。" );
     } catch (err) {
       // Stale — skip error toast for abandoned requests.
       if (seq !== _loadSeq) return;
