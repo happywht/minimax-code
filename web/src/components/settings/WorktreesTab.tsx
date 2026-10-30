@@ -163,6 +163,7 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
   const [value, setValue] = useState<{ working: string; staged: string; untracked: string[]; excluded: number; service: string } | null>(null);
   const [file, setFile] = useState<{ path: string; content: string; end: number } | null>(null);
   const [committed, setCommitted] = useState<WorktreeCommittedReview | null>(null);
+  const [mergeResult, setMergeResult] = useState<string>("");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const epoch = useRef(0);
   useEffect(() => { const stop = ipc.onSideCar(() => { ++epoch.current; setValue(null); setFile(null); setCommitted(null); setBusy(false); setError("连接变化，请重新读取。"); }); return () => { ++epoch.current; stop(); }; }, []);
@@ -227,6 +228,26 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
     } catch (failure) { if (ticket === epoch.current) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { if (ticket === epoch.current) setBusy(false); }
   };
+  const mergeReviewed = async () => {
+    if (!committed || !session.project_id || busy) return;
+    const snapshot = committed, host = ipc.agentBaseUrl;
+    if (!window.confirm(`将已审阅的提交合并到 ${snapshot.target_branch}？\n目标：${snapshot.target}\n工作树：${snapshot.source_head}\n目标 HEAD：${snapshot.target_head}\n如项目配置了验证命令，将先运行该命令。`)) return;
+    const ticket = ++epoch.current;
+    setBusy(true); setError(""); setMergeResult("");
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
+      if (identity.service_id !== snapshot.service_id) throw new Error("服务已变化，请重新比较。");
+      const result = await typedIPC.mergeReviewedWorktree({
+        session_id: session.id, run_validate: true,
+        review: { service_id: snapshot.service_id, project_id: session.project_id, source_head: snapshot.source_head, target_head: snapshot.target_head, target_branch: snapshot.target_branch },
+      });
+      if (ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
+      setCommitted(null);
+      setMergeResult(JSON.stringify(result, null, 2));
+    } catch (failure) { if (ticket === epoch.current) setError(`合并请求未确认，请先查看仓库状态：${failure instanceof Error ? failure.message : String(failure)}`); }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
   return <div className="space-y-2 rounded border border-line p-3 text-xs" aria-label="工作树未提交差异">
     <p className="break-all">工作树会话：{session.id} · {session.workspace_path}</p>
     <p>分别显示已跟踪文件差异和未跟踪文件路径，不包含已提交变更，不能作为完整合并预览。读取不会添加、合并、提交或验证。</p>
@@ -238,7 +259,9 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
       <p className="break-all">工作树 HEAD：{committed.source_head} · 共同祖先：{committed.merge_base}</p>
       <p>这是共同祖先到工作树 HEAD 的提交差异，目标分支可能也有自己的提交；不包含未提交文件，不预测冲突，也不是验证通过。</p>
       <details><summary>提交摘要（{committed.commits.length}{committed.commits_truncated ? "，已截断" : ""}）</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{committed.commits.join("\n") || "无独有提交"}</pre></details>
-      <details open><summary>已提交差异</summary><div className="max-h-80 overflow-auto"><DiffLines text={committed.diff} emptyText="无已提交差异" /></div></details></div>}
+      <details open><summary>已提交差异</summary><div className="max-h-80 overflow-auto"><DiffLines text={committed.diff} emptyText="无已提交差异" /></div></details>
+      <Button size="sm" disabled={busy} onClick={() => void mergeReviewed()}>合并已审阅提交</Button><p>工作树有未提交内容时不会合并；如发生冲突，Git 合并状态会保留供处理。</p></div>}
+    {mergeResult && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{mergeResult}</pre>}
     {value && <><details open><summary>未暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.working} emptyText="无已跟踪文件差异" /></div></details>
       <details><summary>已暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.staged} emptyText="无已暂存差异" /></div></details>
       <details><summary>未跟踪文件（{value.untracked.length}，另排除 {value.excluded}）</summary><p>按需读取前 100 行；敏感或排除路径、超限、空文件和非 UTF-8 文件不可预览，读取需要 read_file 允许规则。</p>

@@ -314,10 +314,32 @@ def register_workspace_handlers(
                                    "main checkout is in detached HEAD; give it a branch before merging")
             main_head = (await _run_git(main_repo, "rev-parse", "--verify", "HEAD^{commit}")).strip()
 
+            # The reviewed path merges only the exact committed source and
+            # target shown to the user. Never stage unreviewed worktree edits.
+            review = params.get("review")
+            if review is not None:
+                from ..app import ensure_db
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                from .host_session_gate import require_host_session
+
+                review_keys = {"service_id", "project_id", "source_head", "target_head", "target_branch"}
+                if (not isinstance(review, dict) or set(review) != review_keys
+                        or any(not isinstance(review[k], str) or not review[k] for k in review_keys)):
+                    raise HandlerError(INVALID_PARAMS, "Invalid worktree review binding")
+                await require_host_session(session_id)
+                db = await ensure_db()
+                if (session.get("archived") or await ArtifactDAO(db).service_id() != review["service_id"]
+                        or session.get("project_id") != review["project_id"]
+                        or main_head != review["target_head"] or main_branch != review["target_branch"]
+                        or (await _run_git(worktree, "rev-parse", "--verify", "HEAD^{commit}")).strip() != review["source_head"]):
+                    raise HandlerError(INVALID_PARAMS, "Worktree review changed; review again before merging")
+
             # 1) Commit pending work inside the worktree (a dirty tree
             #    cannot be merged).
             status = (await _run_git(worktree, "status", "--porcelain")).strip()
             committed_pending = False
+            if status and review is not None:
+                raise HandlerError(INVALID_PARAMS, "Worktree has uncommitted changes; review and handle them before merging")
             if status:
                 await _run_git(worktree, "add", "-A")
                 await _run_git(worktree, "commit", "-m", commit_message)
@@ -377,6 +399,16 @@ def register_workspace_handlers(
                                  "main_head": main_head, "current_main_head": current_head,
                                  "worktree_head": head, "validation": validation})
                 return
+
+            if review is not None:
+                await require_host_session(session_id)
+                current_session = await sess_dao.get(session_id)
+                if (not current_session or current_session.get("archived")
+                        or current_session.get("workspace_mode") != "worktree"
+                        or current_session.get("workspace_path") != worktree_raw
+                        or current_session.get("project_id") != review["project_id"]
+                        or await ArtifactDAO(db).service_id() != review["service_id"]):
+                    raise HandlerError(INVALID_PARAMS, "Worktree binding changed; review again before merging")
 
             # Git accepts the detached commit directly; no user branch is created or deleted.
             try:

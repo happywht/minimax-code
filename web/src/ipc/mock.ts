@@ -435,6 +435,8 @@ function mockHandle(
 
     case "workspace.review_commits":
       throw new Error("模拟模式无法比较真实工作树提交");
+    case "workspace.merge_worktree":
+      throw new Error("模拟模式无法合并真实工作树");
     case "workspace.list_worktrees": {
       return {
         sessions: Array.from(mockSessions.values())
