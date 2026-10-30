@@ -1378,6 +1378,7 @@ function mockHandle(
     }
 
     case "git.status": {
+      if ((params as { session_id?: string } | undefined)?.session_id) throw new Error("模拟模式无法读取会话工作树状态");
       // Mock backend has no real git binary. Return a clean
       // main branch so the top-bar widget shows a sensible
       // "no changes" state when the agent isn't reachable. The

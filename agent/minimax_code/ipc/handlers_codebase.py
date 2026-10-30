@@ -154,6 +154,7 @@ async def handle_codebase_read_current(params: Any, ctx: Context) -> None:
         from ..app import get_sessions_dao, ensure_db
         from ..storage.dao.text_artifacts import ArtifactDAO
         from ..text_artifacts import _identity, _regular, _safe_open
+        from ..workspace.child import _included
         from .host_session_gate import require_chat_session
         from .handlers_permissions import _ensure_permission_store
 
@@ -169,6 +170,8 @@ async def handle_codebase_read_current(params: Any, ctx: Context) -> None:
                 or ".." in relative.parts or any(c in name for c in "\\:\x00")
                 or any(ord(c) < 32 for c in name)):
             raise HandlerError(INVALID_PARAMS, "Invalid project-relative path")
+        if not _included(name):
+            raise HandlerError(PERMISSION_DENIED, "This path is excluded from workspace review")
         if type(start) is not int or type(end) is not int or start < 1 or end < start or end - start >= 100:
             raise HandlerError(INVALID_PARAMS, "Choose an inclusive range of at most 100 lines")
         if os.name != "nt" and not all(hasattr(os, a) for a in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK")):

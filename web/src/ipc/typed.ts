@@ -435,7 +435,7 @@ export interface TypedIPC {
   // code-review flow. ``gitStatus`` is the cheap call (the widget
   // polls it on a short interval); ``gitDiff`` and ``gitLog`` are
   // on-demand.
-  gitStatus(opts?: { project_id?: string }): Promise<GitStatusResult>;
+  gitStatus(opts?: { project_id?: string; session_id?: string }): Promise<GitStatusResult>;
   gitDiff(opts: { scope?: "staged" | "branch" | "working"; ref?: string; project_id?: string; session_id?: string }): Promise<GitDiffResult>;
   gitRunWorkspaceDiff(runId: string, sessionId: string): Promise<RunWorkspaceDiffResult>;
   previewRunUntracked(params: { run_id: string; session_id: string; project_id: string | null; workspace: string; workspace_identity: string; expected_service_id: string; untracked_path: string }): Promise<{ run_id: string; session_id: string; project_id: string | null; workspace: string; workspace_identity: string; service_id: string; path: string; text: string }>;
@@ -1027,7 +1027,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       client.request<SetProviderApiKeyResult>("provider.clear_api_key", { provider_id: providerId }),
 
     gitStatus: (opts) =>
-      client.request<GitStatusResult>("git.status", { project_id: opts?.project_id }),
+      client.request<GitStatusResult>("git.status", opts ?? {}),
     gitDiff: (opts) => client.request<GitDiffResult>("git.diff", opts ?? {}),
     gitRunWorkspaceDiff: (runId, sessionId) => client.request<RunWorkspaceDiffResult>("git.diff", { run_id: runId, session_id: sessionId }),
     previewRunUntracked: (params) => client.request("git.diff", params),

@@ -1637,6 +1637,9 @@ export interface SpawnSubagentResult {
 
 /** Return shape of `git.status`. */
 export interface GitStatusResult {
+  session_id?: string;
+  workspace?: string;
+  untracked_excluded?: number;
   branch: string;
   clean: boolean;
   ahead: number;

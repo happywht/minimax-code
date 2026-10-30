@@ -1597,6 +1597,8 @@ The run file-sampling view can invoke `codebase.read_current` for a selected rec
 
 `git.diff` with `session_id` resolves the Native session workspace and requires its host-session gate, then rechecks workspace path and filesystem identity after Git completes. It cannot be combined with `project_id` or `cwd`. This is a bounded identity check, not a filesystem lock.
 
+`git.status` accepts the same Native `session_id` binding and returns `session_id` and `workspace`; it checks the directory identity after Git finishes and lists individual untracked files excluding protected workspace paths, with their count as `untracked_excluded`. For an explicitly selected path, `codebase.read_current` applies its normal session, service, project, permission, excluded-path and size checks. Status and file content are separate reads, not a single snapshot.
+
 When `session_id` is supplied to search or summarize, `project_id` must match
 the live session; the index is selected from that session's resolved workspace,
 including an independent worktree. The binding is checked again before reply.

@@ -399,7 +399,12 @@ def register_git_handlers(server: Any) -> None:
 
     async def handle_git_status(params: Any, ctx: Context) -> None:
         try:
-            cwd = await _scoped_cwd(params if isinstance(params, dict) else None)
+            p = params if isinstance(params, dict) else {}
+            cwd = await _scoped_cwd(p)
+            identity = None
+            if "session_id" in p:
+                info = Path(cwd).stat()
+                identity = (info.st_dev, info.st_ino)
 
             # Branch: ``rev-parse --abbrev-ref HEAD`` returns
             # ``HEAD`` when detached; we echo that as-is so the UI
@@ -431,14 +436,26 @@ def register_git_handlers(server: Any) -> None:
             # Status: porcelain v2 + NUL gives us a parseable
             # stream of (X, Y, path) tuples.
             status_text = (await _run_git(
-                ["status", "--porcelain=v2", "-z", "--untracked-files=normal"],
+                ["-c", "status.relativePaths=true", "status", "--porcelain=v2", "-z", "--untracked-files=all" if identity is not None else "--untracked-files=normal"],
                 cwd=cwd,
             ))
             modified, untracked, staged = _parse_status_porcelain_v2(status_text)
+            if identity is not None:
+                current = await _scoped_cwd(p)
+                info = Path(current).stat()
+                if current != cwd or (info.st_dev, info.st_ino) != identity:
+                    raise HandlerError(INVALID_PARAMS, "Session workspace changed during status")
             # "clean" means nothing modified, nothing untracked,
             # nothing staged. We don't penalise ahead/behind —
             # those are pushes, not dirt.
             clean = not (modified or untracked or staged)
+            omitted_untracked = 0
+            if identity is not None:
+                from ..workspace.child import _included
+                from ..agent.tools.file_ops import _is_sensitive
+                visible = [path for path in untracked if _included(path) and not _is_sensitive(Path(cwd) / path)]
+                omitted_untracked = len(untracked) - len(visible)
+                untracked = visible
 
             await ctx.reply(
                 {
@@ -449,6 +466,7 @@ def register_git_handlers(server: Any) -> None:
                     "modified": modified,
                     "untracked": untracked,
                     "staged": staged,
+                    **({"session_id": p["session_id"], "workspace": cwd, "untracked_excluded": omitted_untracked} if identity is not None else {}),
                 }
             )
         except HandlerError as exc:

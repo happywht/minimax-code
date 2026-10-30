@@ -160,19 +160,21 @@ function WorktreesTab(): JSX.Element {
 }
 
 function WorktreeChanges({ session, onClose }: { session: Session; onClose: () => void }): JSX.Element {
-  const [value, setValue] = useState<{ working: string; staged: string } | null>(null);
+  const [value, setValue] = useState<{ working: string; staged: string; untracked: string[]; excluded: number; service: string } | null>(null);
+  const [file, setFile] = useState<{ path: string; content: string; end: number } | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const epoch = useRef(0);
-  useEffect(() => { const stop = ipc.onSideCar(() => { ++epoch.current; setValue(null); setBusy(false); setError("连接变化，请重新读取。"); }); return () => { ++epoch.current; stop(); }; }, []);
+  useEffect(() => { const stop = ipc.onSideCar(() => { ++epoch.current; setValue(null); setFile(null); setBusy(false); setError("连接变化，请重新读取。"); }); return () => { ++epoch.current; stop(); }; }, []);
   const load = async () => {
     if (busy || !session.workspace_path) return;
     const ticket = ++epoch.current, host = ipc.agentBaseUrl;
-    setBusy(true); setValue(null); setError("");
+    setBusy(true); setValue(null); setFile(null); setError("");
     try {
       const identity = await typedIPC.getServiceIdentity();
       const before = await typedIPC.getSession(session.id);
       const working = await typedIPC.gitDiff({ scope: "working", session_id: session.id });
       const staged = await typedIPC.gitDiff({ scope: "staged", session_id: session.id });
+      const status = await typedIPC.gitStatus({ session_id: session.id });
       const after = await typedIPC.getSession(session.id);
       const identityAfter = await typedIPC.getServiceIdentity();
       if (ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
@@ -180,19 +182,43 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
         row.workspace_mode === "worktree" && row.workspace_path === session.workspace_path && !row.archived;
       if (!identity.service_id || identity.service_id !== identityAfter.service_id || !matches(before.session) || !matches(after.session) ||
           working.session_id !== session.id || staged.session_id !== session.id || working.workspace !== session.workspace_path ||
-          staged.workspace !== session.workspace_path || working.scope !== "working" || staged.scope !== "staged")
+          staged.workspace !== session.workspace_path || status.session_id !== session.id || status.workspace !== session.workspace_path ||
+          !Array.isArray(status.untracked) || working.scope !== "working" || staged.scope !== "staged")
         throw new Error("服务或工作树会话绑定已变化，请刷新列表。");
-      setValue({ working: working.diff, staged: staged.diff });
+      setValue({ working: working.diff, staged: staged.diff, untracked: status.untracked, excluded: status.untracked_excluded ?? 0, service: identity.service_id });
+    } catch (failure) { if (ticket === epoch.current) setError(failure instanceof Error ? failure.message : String(failure)); }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
+  const readFile = async (path: string) => {
+    if (!value || busy || !session.project_id || !value.untracked.includes(path)) return;
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl, snapshot = value;
+    setBusy(true); setFile(null); setError("");
+    try {
+      const status = await typedIPC.gitStatus({ session_id: session.id });
+      if (status.session_id !== session.id || status.workspace !== session.workspace_path || !status.untracked.includes(path)) throw new Error("文件已不在当前未跟踪列表中，请刷新。");
+      const result = await typedIPC.readCurrentCodebase({ session_id: session.id, project_id: session.project_id,
+        expected_service_id: snapshot.service, path, start_line: 1, end_line: 100 });
+      const after = await typedIPC.gitStatus({ session_id: session.id });
+      const binding = await typedIPC.getSession(session.id), identity = await typedIPC.getServiceIdentity();
+      if (ticket !== epoch.current || ipc.agentBaseUrl !== host) return;
+      if (identity.service_id !== snapshot.service || binding.session.id !== session.id || binding.session.project_id !== session.project_id ||
+          binding.session.workspace_mode !== "worktree" || binding.session.workspace_path !== session.workspace_path || binding.session.archived ||
+          after.session_id !== session.id || after.workspace !== session.workspace_path || !after.untracked.includes(path) || result.path !== path)
+        throw new Error("服务、工作树或文件状态已变化，请刷新。");
+      setFile({ path, content: result.content, end: result.end_line });
     } catch (failure) { if (ticket === epoch.current) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-3 text-xs" aria-label="工作树未提交差异">
     <p className="break-all">工作树会话：{session.id} · {session.workspace_path}</p>
-    <p>仅显示读取时已跟踪文件的未暂存和已暂存差异；不包含未跟踪文件或已提交变更，不能作为完整合并预览。读取不会合并、提交或验证。</p>
+    <p>分别显示已跟踪文件差异和未跟踪文件路径，不包含已提交变更，不能作为完整合并预览。读取不会添加、合并、提交或验证。</p>
     <Button size="sm" disabled={busy} onClick={() => void load()}>读取／刷新差异</Button>{" "}
     <Button size="sm" variant="ghost" disabled={busy} onClick={onClose}>关闭</Button>
     {error && <p role="alert">读取失败：{error}</p>}
     {value && <><details open><summary>未暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.working} emptyText="无已跟踪文件差异" /></div></details>
-      <details><summary>已暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.staged} emptyText="无已暂存差异" /></div></details></>}
+      <details><summary>已暂存差异</summary><div className="max-h-64 overflow-auto"><DiffLines text={value.staged} emptyText="无已暂存差异" /></div></details>
+      <details><summary>未跟踪文件（{value.untracked.length}，另排除 {value.excluded}）</summary><p>按需读取前 100 行；敏感或排除路径、超限、空文件和非 UTF-8 文件不可预览，读取需要 read_file 允许规则。</p>
+        <ul className="max-h-48 overflow-auto">{value.untracked.map((path) => <li key={path} className="break-all"><button type="button" disabled={busy} onClick={() => void readFile(path)} className="underline">{path}</button></li>)}</ul></details>
+      {file && <div><p className="break-all">当前文件 {file.path} · 第 1–{file.end} 行；内容可能随后变化。</p><pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{file.content}</pre></div>}</>}
   </div>;
 }
