@@ -602,8 +602,8 @@ interface WireScheduledJob {
   prompt?: string;
   payload?: { prompt?: unknown } | null;
   enabled: boolean;
-  last_run_at: number | null;
-  next_run_at: number | null;
+  last_run_at: string | number | null;
+  next_run_at: string | number | null;
 }
 
 function normalizeScheduledJob(job: WireScheduledJob): ScheduledJob {

@@ -9,6 +9,19 @@ import { ScheduleRunDetail } from "./ScheduleRunDetail";
 
 const labels: Record<string,string> = {ready:"已绑定",needs_rebind:"需要重新绑定",blocked:"配置受阻",requires_review:"需要核对",pending:"待接单",running:"运行中",awaiting_approval:"等待授权",completed:"执行结束",budget_paused:"预算暂停",cancelled:"已取消",failed:"执行失败",interrupted:"运行中断",superseded:"已被重新绑定替代",manual:"手动",cron:"定时",chat:"对话（可写）",execute:"执行",plan:"只读规划"};
 const label = (value: string) => labels[value] ?? value;
+// Scheduler timestamps are persisted as UTC ISO strings. Never guess the unit
+// of a legacy numeric value or silently display it in the browser's timezone.
+function scheduleTime(value: string | number | null | undefined, timezone?: string): string {
+  if (value == null) return "未知";
+  if (typeof value !== "string") return `无法解析（${value}）`;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime()) || !timezone) return `${value}（无法按计划时区显示）`;
+  try {
+    return `${new Intl.DateTimeFormat("zh-CN", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(date)} ${timezone}（${value}）`;
+  } catch {
+    return `${value}（计划时区不可用）`;
+  }
+}
 export const emptyScheduleContext = (): ScheduleContext => ({ project_id: "", provider_id: "", model: "", mode: "execute", budget_tokens: 0, timezone: "Asia/Shanghai" });
 export const validScheduleContext = (context: ScheduleContext): boolean => !!(context.project_id && context.provider_id && context.model && typeof context.timezone === "string" && context.timezone.trim() && Number.isSafeInteger(context.budget_tokens) && context.budget_tokens > 0);
 
@@ -40,6 +53,9 @@ export function ScheduleSnapshot({ job }: { job: ScheduledJob }): JSX.Element {
   const context = job.context;
   return <div className="px-3 text-[11px] text-ink-2" data-testid={`schedule-snapshot-${job.id}`}>
     <p>r{job.revision ?? 1} · {label(job.binding_state ?? "needs_rebind")} · {job.binding_reason}</p>
+    <p>{job.enabled && job.binding_state === "ready" ? "持久到期游标" : "已保存的到期游标（当前不代表会运行）"}：{scheduleTime(job.next_run_at, context?.timezone)}</p>
+    {job.enabled && job.binding_state === "ready" && <p>到期并不保证立即开始；当前运行未结束时不会重叠，服务恢复后多个错过周期合并为一次。</p>}
+    {job.last_run_at != null && <p>最近发生状态结算：{scheduleTime(job.last_run_at, context?.timezone)}</p>}
     {context && <p>Local / Native · {context.workspace} · {context.provider_id} / {context.model} · {context.reasoning_effort ?? "默认强度"} · {label(context.mode)} · {context.budget_tokens} tokens · {context.timezone}<br />权限：{context.permission_rules?.map((rule) => `${rule.tool_pattern}:${rule.action}`).join("，") || "逐次询问"} · 校验：{context.validate_command || "未配置"} · 自动任务钩子已禁用</p>}
   </div>;
 }
@@ -244,6 +260,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
     {expanded && (visibleHistory.length === 0 ? (filter === "all" ? (error ? "无法读取发生记录" : "暂无发生记录") : filteredBusy || filteredError ? null : "没有匹配的发生记录。") : visibleHistory.map((occurrence) => <div key={occurrence.id} ref={occurrence.id === targetOccurrenceId ? targetRef : undefined} className={occurrence.id === targetOccurrenceId ? "rounded border border-accent p-2" : undefined}>
     {occurrence.id === targetOccurrenceId && <p className="font-medium">通知关联的发生记录</p>}
     <p>{label(occurrence.source)} · {occurrence.scheduled_for ?? occurrence.created_at} · {label(occurrence.status === "blocked" ? "blocked" : occurrence.execution_status ?? occurrence.status)} · {occurrence.reason}</p>
+    {occurrence.source === "cron" && <p>最早到期：{scheduleTime(occurrence.scheduled_for, occurrence.context?.timezone)}；合并检查截止：{scheduleTime(occurrence.coalesced_through, occurrence.context?.timezone)}。截止时间是接单时的检查边界，不表示每个周期都实际执行。</p>}
     <VerificationBadge evidence={occurrence.verification} />
     {occurrence.result && <p className="whitespace-pre-wrap">{occurrence.result}</p>}
     {!(job.binding_state === "requires_review" && occurrence.id === active?.id) && <ScheduleRunDetail occurrence={occurrence} />}

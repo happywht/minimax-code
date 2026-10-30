@@ -442,8 +442,8 @@ export interface ScheduledJob {
   cron: string;
   prompt: string;
   enabled: boolean;
-  last_run_at: number | null;
-  next_run_at: number | null;
+  last_run_at: string | number | null;
+  next_run_at: string | number | null;
   revision?: number;
   context?: ScheduleContext | null;
   binding_state?: "ready" | "needs_rebind" | "blocked" | "requires_review";

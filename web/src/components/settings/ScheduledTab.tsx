@@ -178,6 +178,7 @@ function ScheduledTab({onOpenSession, active = true, serviceId, draftScope, targ
           <option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="attention">需要处理或绑定</option>
         </select></label>
         <Button type="button" size="sm" variant="ghost" onClick={() => { setQuery(""); setProjectFilter("all"); setStatusFilter("all"); }}>清除筛选</Button>
+        <Button type="button" size="sm" variant="secondary" disabled={!active || loading} loading={loading} onClick={() => void refresh()}>刷新计划状态</Button>
         <span role="status">匹配 {matchingJobs.length} / {jobs.length} 个计划{targetOutsideFilter ? "；另显示通知关联计划" : ""}</span>
       </div>
       <ul className="space-y-1.5" data-testid="settings-jobs-list">

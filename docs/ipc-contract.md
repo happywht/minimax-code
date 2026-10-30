@@ -2250,6 +2250,8 @@ schedule.run_now 必须提交 job_id、idempotency_key、expected_revision，返
 
 每次发生创建独立项目会话及任务，run 使用 schedule:occurrence_id 稳定键；用户消息、run、发生记录关联和 tasks 表的 run_id 原子提交。
 Cron 身份是 job/revision/持久 UTC scheduled_for；SQLite 原子推进 next_run_at，遗漏多个周期合并一次并记录 coalesced_through，下一 due 严格晚于当前时刻。
+
+`schedule.list` 返回的 `next_run_at` 和 `last_run_at` 是持久 UTC ISO 字符串或 null；前者为待处理到期游标，不保证实际开始时间，后者为最近发生状态结算时间。`schedule.occurrences` 的 `scheduled_for` 和 `coalesced_through` 是该次 cron 接单时的最早到期与检查截止边界，并非各周期均已执行的回执。客户端可按发生记录的快照时区显示并保留原始时间。
 同一任务跨 revision 独占租约，覆盖排队、授权、工具、校验及清理。停用/删除后未接单 work 不启动，正在运行的 work 仍可清理/取消；重新启用从未来开始。
 失败/中断/暂停/需核对暂停后续调度；run.resume 审查恢复使用同一快照和发生租约，子运行终态从权威 run 记录投影。放弃原恢复并启用新发生须提交精确 acknowledge_occurrence_id。
 重启已有运行只恢复为 interrupted/需要核对，不盲目重放外部效果；未接单发生可复用同一身份继续接单。幂等接单不构成外部副作用 exactly-once 保证。
