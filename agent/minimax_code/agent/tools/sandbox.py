@@ -538,6 +538,9 @@ class CollectSubagentTool(Tool):
                 base_sha = file_sha256(base_file) if has_base else None
                 ws_existed = ws_file.exists()
                 cur_sha = file_sha256(ws_file) if ws_existed else None
+                if (has_base and base_sha is None) or (ws_existed and cur_sha is None):
+                    errors.append({"path": rel, "error": "baseline or workspace copy is unreadable"})
+                    continue
 
                 # Classify: conflict, no-op, or merge.
                 conflict_reason = ""
@@ -571,7 +574,8 @@ class CollectSubagentTool(Tool):
 
                 # Clean merge: workspace still at the baseline (or absent).
                 ws_file.parent.mkdir(parents=True, exist_ok=True)
-                atomic_copy_file(sb_file, ws_file, baseline_sha256=cur_sha)
+                atomic_copy_file(sb_file, ws_file, baseline_sha256=cur_sha,
+                                 expected_source_sha256=sb_sha)
                 merged.append({"path": rel})
                 emits["created" if not ws_existed else "modified"].append(
                     str(ws_file)

@@ -433,7 +433,10 @@ def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail") -> dict[s
                 backup = _path(child.base, "backups/" + relative)
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 if not backup.exists():
-                    atomic_copy_file(target, backup, baseline_sha256=None)
+                    atomic_copy_file(target, backup, baseline_sha256=None,
+                                     expected_source_sha256=current)
+                elif _digest(backup) != current:
+                    raise ValueError("Existing collection backup differs from the current file; review it before collecting")
             target.parent.mkdir(parents=True, exist_ok=True)
             atomic_copy_file(_path(child.root, relative), target, baseline_sha256=current,
                              expected_source_sha256=final[relative])

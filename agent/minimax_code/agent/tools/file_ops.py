@@ -674,6 +674,8 @@ class AppendFileTool(Tool):
 
         # v1.5.0 CAS — the lock guards the pre-append state of the file.
         previous_sha = file_sha256(read_target) if existed else None
+        if existed and previous_sha is None:
+            return ToolResult.fail("append_file blocked: existing file could not be read; retry after checking it")
         expected = kwargs.get("expected_sha256")
         if expected is not None:
             if not isinstance(expected, str) or len(expected) != 64:
