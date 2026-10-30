@@ -16,7 +16,8 @@ import { DraftFileControl } from "./DraftFileControl";
 import { ReportTextExcerpt } from "./ReportTextExcerpt";
 import { ReportTextReuse } from "./ReportTextReuse";
 import { ReportDocumentReuse } from "./ReportDocumentReuse";
-import type { ReportTableTransfer } from "./DeliveryWorkspace";
+import type { ReportTableTransfer, RunAttachmentTransfer as AttachmentTransfer } from "./DeliveryWorkspace";
+import { RunAttachmentTransfer } from "./RunAttachmentTransfer";
 import { ReportArtifactReuse } from "./ReportArtifactReuse";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
@@ -74,7 +75,7 @@ function reportMarkers(body: string, sections: string, structured: boolean): num
 
 export type RetainedReportDraft = Omit<ReportDraft, "researchIds" | "researchRanges"> & { researchNeedsReview: boolean; citationNeedsReview?: boolean; documentReview?: boolean; file: File | null };
 
-export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, researchTransfer, onClearResearchTransfer, onTableApplied, artifactTransfer, onClearArtifactTransfer }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; researchTransfer?: string[] | null; onClearResearchTransfer?: () => void; onTableApplied?: () => void; artifactTransfer?: TextArtifact | null; onClearArtifactTransfer?: () => void }): JSX.Element {
+export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, researchTransfer, onClearResearchTransfer, attachmentTransfer, onClearAttachmentTransfer, onTableApplied, artifactTransfer, onClearArtifactTransfer }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; researchTransfer?: string[] | null; onClearResearchTransfer?: () => void; attachmentTransfer?: AttachmentTransfer | null; onClearAttachmentTransfer?: () => void; onTableApplied?: () => void; artifactTransfer?: TextArtifact | null; onClearArtifactTransfer?: () => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
@@ -247,6 +248,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     <p className="text-sm text-ink-1">TXT / CSV 严格 UTF-8 预览，最多 64 KiB / 2000 行；CSV 公式只作文本。可选 DOCX 解析仅包含正文段落和表格，保留位置标签；不含页眉页脚、修订、文本框、批注、脚注或图片文字。可选 PDF 解析按物理页序提取已有文字，最多 200 页，不保证版式或表格结构；扫描图片未尝试 OCR。可选 XLSX 解析只预览有界单元格、公式文本和未验证缓存，不计算公式，不执行宏或访问外链。</p>
     <p className="text-sm text-ink-1">原件保存、可解析、质量验证与交付是不同状态；当前质量均为未验证。附件不会自动加入对话上下文。</p>
     {ipc.isMock && <p role="status">演示模式：原件仅保存在本页内存，刷新后清空；Office 容器只标记候选 ZIP。PDF / DOCX / XLSX 解析需要真实后端可选依赖。</p>}
+    {attachmentTransfer && onClearAttachmentTransfer && <RunAttachmentTransfer transfer={attachmentTransfer} project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host} onClear={onClearAttachmentTransfer} />}
     <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (file) void state.upload(file); }}>
       <input aria-label="选择附件原件" type="file" disabled={state.busy} onChange={(event) => { setFile(event.target.files?.[0] ?? null); event.target.value = ""; }} />
       {file && <span className="break-all text-xs text-ink-1">待上传：{file.name}（{file.size} 字节）</span>}

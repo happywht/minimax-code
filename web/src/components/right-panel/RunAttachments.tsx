@@ -8,7 +8,7 @@ import { PdfOriginalPreview } from "../panels/PdfOriginalPreview";
 import { XlsxTablePreview } from "../panels/XlsxTablePreview";
 import { SearchableTextPreview } from "../panels/SearchableTextPreview";
 
-export function RunAttachments({ run, steps, reviewScope }: { run: AgentRun; steps: AgentRunStep[]; reviewScope?: { sessionId: string; projectId: string; serviceId: string } }): JSX.Element | null {
+export function RunAttachments({ run, steps, reviewScope, onPrepareAttachment, transferPending = false }: { run: AgentRun; steps: AgentRunStep[]; reviewScope?: { sessionId: string; projectId: string; serviceId: string }; onPrepareAttachment?: (attachment: AttachmentOriginal, runId: string) => void; transferPending?: boolean }): JSX.Element | null {
   const activeSession = useSessionStore((state) => state.currentSessionId);
   const activeProject = useSessionStore((state) => state.currentProjectId) ?? "inbox";
   const session = reviewScope?.sessionId ?? activeSession;
@@ -84,6 +84,8 @@ export function RunAttachments({ run, steps, reviewScope }: { run: AgentRun; ste
     {error && <p role="alert" className="break-words text-status-warning">{error}</p>}
     {visible && <div className="space-y-1"><p>解析状态：{visible.parser_status}；质量未验证</p>
       <Button size="sm" disabled={loading} onClick={() => void save()}>下载原件</Button>
+      {onPrepareAttachment && <Button size="sm" variant="secondary" disabled={loading || transferPending} onClick={() => onPrepareAttachment(visible, run.id)}>交接到附件与报告</Button>}
+      {transferPending && <p>已有待处理附件，请先在附件与报告中打开或放弃。</p>}
       {project === activeProject && activeSession ? <PdfOriginalPreview attachment={visible} /> : visible.declared_type === "pdf" ? <p>切换到对应项目会话后可打开 PDF 原件预览；此处仍可下载原件。</p> : null}
       <XlsxTablePreview key={`${visible.id}:${visible.sha256}`} attachment={visible} preview={preview} />
       <SearchableTextPreview key={`${visible.id}:${visible.sha256}`} text={preview} label="任务成果预览" className="max-h-60 overflow-auto rounded bg-surface-2 p-2 whitespace-pre-wrap break-all" />

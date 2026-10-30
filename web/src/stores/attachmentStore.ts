@@ -14,7 +14,7 @@ interface AttachmentState {
   upload: (file: File) => Promise<void>;
   generateDocx: (filename: string, title: string, content: DocxContent, format?: "docx" | "pdf") => Promise<void>;
   generatePair: (filename: string, title: string, content: DocxContent) => Promise<void>;
-  select: (id: string) => Promise<void>;
+  select: (id: string, expectedSha256?: string) => Promise<void>;
   download: () => Promise<void>;
   clear: () => void;
 }
@@ -132,7 +132,7 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
       } catch (error) { if (current(ticket, project, host)) set({ error: `${errorText(error)}；结果不明，请刷新附件后再重试缺失格式。` }); }
       finally { if (current(ticket, project, host)) set({ busy: false }); }
     },
-    select: async (id) => {
+    select: async (id, expectedSha256) => {
       const { projectId: project, host, serviceId } = get();
       if (!ready(project, host, serviceId) || !project) return;
       const ticket = epoch, request = ++selection;
@@ -141,7 +141,7 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => {
         const result = await typedIPC.getAttachment(project, id);
         if (!current(ticket, project, host) || selection !== request) return;
         validate(result.attachment, project, serviceId);
-        if (result.attachment.id !== id) throw new Error("Attachment identity changed; refresh");
+        if (result.attachment.id !== id || (expectedSha256 && result.attachment.sha256 !== expectedSha256)) throw new Error("Attachment identity changed; refresh");
         // Deliberate Python splitlines separators, not executable document markup.
         if (typeof result.preview_text !== "string" || new TextEncoder().encode(result.preview_text).length > 65536
           // eslint-disable-next-line no-control-regex
