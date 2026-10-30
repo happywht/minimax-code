@@ -292,27 +292,31 @@ def _summarise_old_turns(
              "paths": changed_paths, "later_user_messages": later_user_messages,
              "captured_output_refs": captured_output_refs, "output_refs_run_id": current_run_id,
              "later_messages_omitted": later_messages_omitted}
-    later_excerpt = "\n".join(f"- {message}" for message in reversed(later_user_messages))
-    if later_messages_omitted:
-        later_excerpt += "\n[Earlier user messages omitted]"
     # Reserve separate space for each class, so a long objective cannot
     # crowd out constraints or the most recent command output.
     budget = min(2400, max(0, int(available * .6) - 20))
     parts = []
     for title, value, fraction in (
         ("Task objective", objective, .12),
-        ("Constraints (newest first; may be superseded)", "\n".join(reversed(constraints)), .14),
-        ("Later user messages (newest first; excerpts)", later_excerpt, .14),
-        ("Assistant decisions (unverified)", "\n".join(reversed(decisions)), .12),
-        ("Assistant pending-work excerpts (may be stale)", "\n".join(reversed(pending_items)), .10),
-        ("Command tool results (not independently verified)", "\n".join(reversed(commands)), .10),
-        ("File tool results (not independently verified)", "\n".join(reversed(write_results)), .10),
+        ("Constraints (newest first; may be superseded)", list(reversed(constraints)), .14),
+        ("Later user messages (newest first; excerpts)", list(reversed(later_user_messages)), .14),
+        ("Assistant decisions (unverified)", list(reversed(decisions)), .12),
+        ("Assistant pending-work excerpts (may be stale)", list(reversed(pending_items)), .10),
+        ("Command tool results (not independently verified)", list(reversed(commands)), .10),
+        ("File tool results (not independently verified)", list(reversed(write_results)), .10),
         ("File write requests (outcomes not established)", ", ".join(changed_paths), .06),
     ):
         if value:
             cap = int(budget * fraction) - len(title) - 6
             if cap > 16:
-                parts.append(f"## {title}\n{_clip(value, cap)}")
+                if isinstance(value, list):
+                    value = _bounded_excerpts(
+                        value, cap,
+                        omitted=title.startswith("Later user messages") and later_messages_omitted,
+                    )
+                else:
+                    value = _clip(value, cap)
+                parts.append(f"## {title}\n{value}")
     # Never truncate an opaque reference: a partial identifier cannot be read.
     title = "Output refs (read_tool_output; current run, unverified)"
     cap = int(budget * .12) - len(title) - 6
@@ -328,6 +332,35 @@ def _summarise_old_turns(
 
 def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:max(0, limit - 12)] + " [truncated]"
+
+
+def _bounded_excerpts(items: list[str], limit: int, *, omitted: bool = False) -> str:
+    """Share a section's budget among recent excerpts, marking omissions.
+
+    Clipping the joined text lets a single long item hide every subsequent
+    constraint or result. Keep each excerpt separately bounded instead, while
+    prioritising newer entries and keeping the existing overall budget.
+    """
+    marker = "[additional excerpts omitted]"
+    selected = items[:max(1, limit // 48)]
+    omitted = omitted or len(selected) < len(items)
+    if omitted and limit < len(marker) + 13:
+        return "[excerpts omitted]"[:limit]
+    reserve = len(marker) + 1 if omitted else 0
+    while len(selected) > 1 and limit - reserve - (len(selected) - 1) < 20 * len(selected):
+        selected = selected[:-1]
+        omitted = True
+        reserve = len(marker) + 1
+    available = max(0, limit - reserve - (len(selected) - 1))
+    excerpts = []
+    for index, item in enumerate(selected):
+        cap = available // (len(selected) - index)
+        excerpt = _clip(item, cap)
+        excerpts.append(excerpt)
+        available -= len(excerpt)
+    if omitted and reserve <= limit:
+        excerpts.append(marker)
+    return "\n".join(excerpts)
 
 
 def _captured_output_ref(content: str, current_run_id: str | None) -> str:
