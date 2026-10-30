@@ -21,6 +21,7 @@ import { ReportDocumentReuse } from "./ReportDocumentReuse";
 import type { ReportTableTransfer, RunAttachmentTransfer as AttachmentTransfer } from "./DeliveryWorkspace";
 import { RunAttachmentTransfer } from "./RunAttachmentTransfer";
 import { ReportArtifactReuse } from "./ReportArtifactReuse";
+import { ReportTextExport } from "./ReportTextExport";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -370,6 +371,9 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       } catch { setFormError("章节 JSON 无效，请使用示例格式。"); }
     }}>
       <h3>生成报告</h3>
+      <ReportTextExport project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host}
+        disabled={state.busy || state.loading || researchNeedsReview || citationNeedsReview || documentReview}
+        draft={{ filename: docName, title, body, structured, sections, sources, researchSources, researchRanges, documentCitations }} />
       <DraftFileControl<ReportDraft> kind="report" disabled={state.busy || state.loading}
         scope={scoped && projectId && state.serviceId ? { host, service: state.serviceId, project: projectId, session: sessionId } : null}
         capture={() => ({ docName, title, body, format, structured, sections, visualSections, sources, researchIds: researchSources.map((item) => item.page_source_id), researchRanges, documentCitations })}
