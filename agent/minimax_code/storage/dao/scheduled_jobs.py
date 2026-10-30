@@ -165,6 +165,21 @@ class ScheduledJobsDAO:
             )
         return await self.get(job_id)
 
+    async def disable_scoped(self, job_id: str, revision: int, service_id: str,
+                             occurrence_id: str) -> dict[str, Any]:
+        """Pause only the reviewed version and currently selected occurrence."""
+        async with self._db.transaction() as conn:
+            await self._check_service(conn, service_id)
+            cursor = await conn.execute(
+                "UPDATE scheduled_jobs SET enabled=0 WHERE id=? AND revision=? "
+                "AND active_occurrence_id=? AND deleted_at IS NULL",
+                (job_id, revision, occurrence_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Schedule version or active occurrence changed; refresh before stopping")
+            cursor = await conn.execute("SELECT * FROM scheduled_jobs WHERE id=?", (job_id,))
+            return _hydrate(await cursor.fetchone())
+
     async def record_run(
         self, job_id: str, *, last_run_at: str, next_run_at: str | None
     ) -> dict[str, Any] | None:

@@ -1178,7 +1178,12 @@ function mockHandle(
     case "schedule.occurrences": return {occurrences:[], next_cursor:null};
     case "schedule.enable": throw new Error("Mock 模式不执行真实调度");
     case "schedule.disable": {
-      const job = mockJobs.find((entry) => entry.id === (params as {job_id:string}).job_id);
+      const p = params as {job_id:string; expected_service_id?:string; expected_revision?:number; expected_occurrence_id?:string};
+      const job = mockJobs.find((entry) => entry.id === p.job_id);
+      if (p.expected_service_id !== undefined || p.expected_revision !== undefined || p.expected_occurrence_id !== undefined) {
+        if (p.expected_service_id !== "mock" || !job || job.revision !== p.expected_revision || job.active_occurrence_id !== p.expected_occurrence_id || !p.expected_occurrence_id)
+          throw new Error("Schedule version or active occurrence changed; refresh before stopping");
+      }
       if (job) job.enabled=false;
       return {job:job??null};
     }

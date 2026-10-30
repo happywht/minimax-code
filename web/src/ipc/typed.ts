@@ -352,7 +352,7 @@ export interface TypedIPC {
   listScheduleOccurrences(jobId: string, before?: ScheduleOccurrenceCursor, statusGroup?: string): Promise<{occurrences: ScheduleOccurrence[]; next_cursor?: ScheduleOccurrenceCursor | null}>;
   deleteJob(jobId: string): Promise<{ ok: true }>;
   enableJob(jobId: string, acknowledgeOccurrenceId?: string, expectedRevision?: number, expectedService?: string): Promise<{ job: ScheduledJob }>;
-  disableJob(jobId: string): Promise<{ job: ScheduledJob }>;
+  disableJob(jobId: string, scope?: { expected_revision: number; expected_service_id: string; expected_occurrence_id: string }): Promise<{ job: ScheduledJob }>;
   runNowJob(jobId: string, idempotencyKey: string, expectedRevision: number): Promise<ScheduleTriggerResult>;
 
   // agent (multi-agent)
@@ -912,8 +912,8 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       const result = await client.request<{ job: WireScheduledJob }>("schedule.enable", { job_id: jid, ...(acknowledgeOccurrenceId ? {acknowledge_occurrence_id: acknowledgeOccurrenceId} : {}), ...(expectedRevision !== undefined ? {expected_revision: expectedRevision} : {}), ...(expectedService ? {expected_service_id: expectedService} : {}) });
       return { job: normalizeScheduledJob(result.job) };
     },
-    disableJob: async (jid) => {
-      const result = await client.request<{ job: WireScheduledJob }>("schedule.disable", { job_id: jid });
+    disableJob: async (jid, scope) => {
+      const result = await client.request<{ job: WireScheduledJob }>("schedule.disable", { job_id: jid, ...scope });
       return { job: normalizeScheduledJob(result.job) };
     },
     runNowJob: (jid, idempotencyKey, expectedRevision) =>

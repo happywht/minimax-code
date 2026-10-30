@@ -172,8 +172,12 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
         try:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"job_id"})
+            if set(params) - {"job_id", "expected_revision", "expected_service_id", "expected_occurrence_id"}:
+                raise ValueError("Unsupported schedule disable fields")
             job_id = str(params["job_id"])
-            job = await sched.disable(job_id)
+            job = await sched.disable(job_id, expected_revision=params.get("expected_revision"),
+                                      expected_service_id=params.get("expected_service_id"),
+                                      expected_occurrence_id=params.get("expected_occurrence_id"))
             if job is None:
                 raise HandlerError(INVALID_PARAMS, f"unknown job_id: {job_id!r}")
             await ctx.reply({"job": job})
@@ -181,7 +185,11 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except ValueError as exc:
             await ctx.reply_error(INVALID_PARAMS,str(exc))
-        except Exception:  # pragma: no cover — defensive
+        except Exception as exc:
+            from ..scheduler import SchedulerError
+            if isinstance(exc, SchedulerError):
+                await ctx.reply_error(INVALID_PARAMS, str(exc))
+                return
             logger.exception("schedule.disable failed")
             await ctx.reply_error(INTERNAL_ERROR, "schedule.disable failed")
 

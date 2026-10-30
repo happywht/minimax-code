@@ -6,7 +6,7 @@ import { Button } from "../../ui";
 import { RunAttachments } from "../right-panel/RunAttachments";
 import { FollowupRunDraft } from "../right-panel/FollowupRunDraft";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
-import { useChat, usePermissionStore } from "../../stores";
+import { useChat, usePermissionStore, useScheduleStore } from "../../stores";
 import { toast } from "../layout/ErrorBoundary";
 
 interface Detail { snapshot: RunStepsResult; receipt: RunGetResult; serviceId: string; scopeKey: string }
@@ -14,8 +14,9 @@ const labels: Record<string, string> = { queued: "排队中", planning: "规划�
   waiting_input: "等待输入", completed: "执行结束", failed: "执行失败", cancelled: "已取消", interrupted: "运行中断", budget_paused: "预算暂停" };
 const cancellable = ["queued", "planning", "running", "awaiting_approval", "waiting_input"];
 
-export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, serviceId }: { occurrence: ScheduleOccurrence;
+export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, serviceId, activeJobRevision }: { occurrence: ScheduleOccurrence;
   onOpenSession?: () => boolean | void; serviceId?: string;
+  activeJobRevision?: number;
   onVerified?: (value: { serviceId: string; status: string } | null) => void }): JSX.Element {
   const activeSession = useSessionStore((state) => state.currentSessionId);
   const activeProject = useSessionStore((state) => state.currentProjectId);
@@ -140,6 +141,42 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
       if (current()) { setDetail(null); onVerified?.(null); setCancelMessage(`停止结果未确认：${failure instanceof Error ? failure.message : String(failure)}。请先刷新并核对实际状态。`); }
     } finally { cancelInFlight.current = false; if (current()) setCancelling(false); }
   };
+  const pauseAndCancel = async () => {
+    if (!view || !run || !sameStatus || !cancellable.includes(run.status) || !project || !serviceId ||
+        serviceId !== view.serviceId || !activeJobRevision || cancelInFlight.current) return;
+    const ticket = epoch.current;
+    const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
+      useSessionStore.getState().currentSessionId === activeSession && useSessionStore.getState().currentProjectId === activeProject;
+    cancelInFlight.current = true; setCancelling(true); setCancelMessage("");
+    let pauseConfirmed = false;
+    try {
+      const confirmed = await requestConfirmation({ title: "停用计划并请求停止本次运行？",
+        description: "先停用未来计划，再请求停止当前运行。停止不一定立即完成，已产生的文件或外部操作不会撤销；若任一步结果不明，请刷新并核对。",
+        confirmLabel: "停用并请求停止" });
+      if (!confirmed || !current()) return;
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current() || identity.service_id !== serviceId) throw new Error("服务或会话已变化");
+      const job = useScheduleStore.getState().jobs.find((item) => item.id === occurrence.job_id);
+      if (!job || job.revision !== activeJobRevision || job.active_occurrence_id !== occurrence.id) throw new Error("计划或当前发生已变化");
+      const paused = await typedIPC.disableJob(job.id, { expected_revision: activeJobRevision,
+        expected_service_id: serviceId, expected_occurrence_id: occurrence.id });
+      if (!current()) { toast.info("停用结果待核对", "请刷新计划和本次运行；未继续请求停止。"); return; }
+      if (paused.job.id !== job.id || paused.job.enabled || paused.job.revision !== activeJobRevision || paused.job.active_occurrence_id !== occurrence.id)
+        throw new Error("停用回执不匹配");
+      pauseConfirmed = true;
+      void useScheduleStore.getState().refresh();
+      const reply = await typedIPC.cancelRun(run.id, { service_id: serviceId, job_id: occurrence.job_id,
+        occurrence_id: occurrence.id, session_id: occurrence.session_id, project_id: project, revision: occurrence.revision });
+      if (!current()) { toast.info("停止结果待核对", "请刷新计划和运行状态。"); return; }
+      setCancelMessage(reply.requested ? "计划已停用，已请求停止本次运行；请刷新确认最终状态和副作用。" : "计划已停用；停止请求未被接受，请刷新核对运行状态。");
+      setCancelling(false);
+      await load();
+    } catch (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure);
+      if (current()) setCancelMessage(`${pauseConfirmed ? "计划已停用；停止" : "停用"}结果未确认：${message}。请刷新计划及运行并核对后再操作。`);
+      else toast.info("操作结果待核对", "请刷新计划和本次运行，确认是否停用及停止。");
+    } finally { cancelInFlight.current = false; if (current()) setCancelling(false); }
+  };
   return <div className="mt-1 rounded border border-line p-2" data-testid={`schedule-run-detail-${occurrence.id}`}>
     <p>执行位置：{occurrence.context?.host === "local" ? "当前服务所在主机" : "未知主机"} / {occurrence.context?.engine === "native" ? "Native" : "未知引擎"} · 项目 {project || "未知"} · 服务地址 {host}</p>
     {occurrence.context?.workspace && <p className="break-all">运行时目录：{occurrence.context.workspace}</p>}
@@ -165,6 +202,7 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, servi
               occurrenceId: occurrence.id, revision: occurrence.revision, workspace: occurrence.context.workspace! }} />}
         </div>}
         {sameStatus && cancellable.includes(run.status) && <Button type="button" size="sm" variant="danger" disabled={busy || cancelling} loading={cancelling} onClick={() => void cancel()}>停止本次运行</Button>}
+        {sameStatus && cancellable.includes(run.status) && activeJobRevision && serviceId === view.serviceId && <Button type="button" size="sm" variant="danger" disabled={busy || cancelling} loading={cancelling} onClick={() => void pauseAndCancel()}>停用计划并请求停止本次运行</Button>}
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void load()}>刷新本次运行</Button>
       </>}
     </div>}

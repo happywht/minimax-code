@@ -290,7 +290,16 @@ class JobScheduler:
             self._spawn_occurrence(active)
         return row
 
-    async def disable(self, job_id: str) -> dict[str, Any] | None:
+    async def disable(self, job_id: str, *, expected_revision=None, expected_service_id=None,
+                      expected_occurrence_id=None) -> dict[str, Any] | None:
+        if any(value is not None for value in (expected_revision, expected_service_id, expected_occurrence_id)):
+            _require_revision(expected_revision)
+            if not isinstance(expected_service_id, str) or not expected_service_id or not isinstance(expected_occurrence_id, str) or not expected_occurrence_id:
+                raise ValueError("A service identity and active occurrence are required")
+            async with self._admission_lock:
+                row = await self._dao.disable_scoped(job_id, expected_revision, expected_service_id, expected_occurrence_id)
+                self._unregister_from_aps(job_id)
+                return row
         self._unregister_from_aps(job_id)
         return await self._dao.disable(job_id)
 

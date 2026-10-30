@@ -2272,6 +2272,8 @@ schedule.create/update 的 context 输入选择 project_id、provider_id/model�
 快照权限与当前限制取严格交集；全局后续 allow 不扩大授权，ask/deny 可收紧。未知工具 ask；permission.request 的 approval_policy=explicit_once 禁止前端全局 alwaysAllow 自动通过，同时保留实际 tool 名称供差异预览。自动任务禁用全局/插件钩子。
 
 schedule.update 要求 job_id/expected_revision/name/cron_expr/payload/context，成功 revision+1，重新计算未来 next_run_at。已接单发生记录保持旧快照；未接单旧记录显式 superseded，释放旧租约。
+
+`schedule.disable` 可同时提供 `expected_service_id`、`expected_revision`、`expected_occurrence_id`；这三个条件必须一起提供，并在停用事务内核对。无条件的旧调用仍兼容。停用只影响未来接单，不停止已接单运行；客户端可在确认停用后使用原有带完整归属的 `run.cancel` 请求停止，两个操作不是原子事务，任一结果不明需刷新核对。
 schedule.run_now 必须提交 job_id、idempotency_key、expected_revision，返回 `{ok:true,occurrence_id,task_id,run_id:null|string,status,created}`，这是持久接单回执，不能视作执行成功。
 同键同 revision 重放先于启停/删除/配置检查；不同 revision 冲突。客户端丢回执后保留原 key+revision。另一个手动意图在同任务租约占用时返回 busy，不积压。
 

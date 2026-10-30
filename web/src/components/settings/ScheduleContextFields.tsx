@@ -244,7 +244,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
       <p>启用未来计划与继续原运行是不同操作。启用只允许未来按当前计划运行，不自动恢复或重放原步骤；继续原运行请打开其会话并核对后使用恢复入口。</p>
       {stale ? <p>连接状态待刷新，暂不能处理。</p> : active ? <>
         <p className="break-all">发生 {active.id} · 计划快照版本 {active.revision} · 状态 {label(status(active))} · 运行 {active.run_id ?? "尚未接单"}</p>
-        {active.run_id ? <ScheduleRunDetail occurrence={active} serviceId={serviceId} onOpenSession={onOpenSession} onVerified={(value) => { setVerified(value); setAcknowledged(false); }} /> : <p>该发生未绑定运行；请查看原因并重新绑定计划，不能在此确认运行副作用。</p>}
+        {active.run_id ? <ScheduleRunDetail occurrence={active} serviceId={serviceId} activeJobRevision={job.revision} onOpenSession={onOpenSession} onVerified={(value) => { setVerified(value); setAcknowledged(false); }} /> : <p>该发生未绑定运行；请查看原因并重新绑定计划，不能在此确认运行副作用。</p>}
         {active.run_id && <Button type="button" size="sm" variant="secondary" onClick={() => open(active)}>打开原会话核对步骤</Button>}
         {verified && verified.serviceId !== serviceId && <p role="alert">服务身份不匹配，请刷新后重新核对。</p>}
         {verified && !terminalReview && <p role="status">读取的运行状态不是可核对的终态；请刷新后处理。</p>}
@@ -267,7 +267,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
     {occurrence.source === "cron" && <p>最早到期：{scheduleTime(occurrence.scheduled_for, occurrence.context?.timezone)}；合并检查截止：{scheduleTime(occurrence.coalesced_through, occurrence.context?.timezone)}。截止时间是接单时的检查边界，不表示每个周期都实际执行。</p>}
     <VerificationBadge evidence={occurrence.verification} />
     {occurrence.result && <p className="whitespace-pre-wrap">{occurrence.result}</p>}
-    {!(job.binding_state === "requires_review" && occurrence.id === active?.id) && <ScheduleRunDetail occurrence={occurrence} serviceId={serviceId} onOpenSession={onOpenSession} />}
+    {!(job.binding_state === "requires_review" && occurrence.id === active?.id) && <ScheduleRunDetail occurrence={occurrence} serviceId={serviceId} activeJobRevision={occurrence.id === job.active_occurrence_id ? job.revision : undefined} onOpenSession={onOpenSession} />}
     <Button disabled={!occurrence.context?.project_id || !occurrence.session_id} onClick={() => open(occurrence)}>查看任务 {occurrence.task_id} / 运行 {occurrence.run_id ?? "尚未接单"}</Button>
   </div>))}
     {expanded && filter === "all" && cursor && <Button type="button" size="sm" disabled={stale || loadingMore} loading={loadingMore} onClick={() => void loadMore()}>加载更早记录</Button>}
