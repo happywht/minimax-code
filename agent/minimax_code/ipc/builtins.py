@@ -1898,8 +1898,70 @@ async def _handle_agent_send_message(
     if internal_skill is not None and saved_preliminary is None:
         from ..run_errors import RunPersistenceError
         raise RunPersistenceError("Owned preliminary receipt could not be confirmed")
-    verification = await verify_native_result(status=execution_status, mode=params.get("mode", "chat"),
-        command=job.validate_command, workspace=job.workspace, truncated=bool(result.truncated), base=verification_base)
+    validation_blocked = None
+    if (execution_status == "completed" and params.get("mode", "chat") != "plan"
+            and not result.truncated and job.validate_command):
+        from ..agent.core import _check_rule
+        from ..app import get_sessions_dao
+        from ..workspace_ctx import resolve_root_for_session
+        from .host_session_gate import require_chat_session
+
+        async def validation_binding_ok() -> bool:
+            try:
+                await require_chat_session(session_id, internal_agent=(
+                    internal_skill if internal_agent is not None else None))
+                sessions_dao = get_sessions_dao()
+                if sessions_dao is None:
+                    return False
+                current = await sessions_dao.get(session_id)
+                root = await resolve_root_for_session(session_id)
+                latest = await sessions_dao.get(session_id)
+                return bool(current and latest and current.get("project_id") == job.project_id
+                    and latest.get("project_id") == job.project_id
+                    and (current.get("engine") or "native") == "native"
+                    and (latest.get("engine") or "native") == "native"
+                    and str(root) == job.workspace)
+            except Exception:
+                return False
+
+        def validation_actions() -> set[str | None]:
+            return {_check_rule(perm_store, "project_validation"),
+                    _check_rule(perm_store, "exec_command")}
+
+        actions = validation_actions()
+        approved = False
+        if "deny" in actions:
+            validation_blocked = "validation_denied"
+        elif not await validation_binding_ok():
+            validation_blocked = "validation_workspace_changed"
+        elif "ask" in actions:
+            register_gater(ctx.server, session_id, gater)
+            await _set_run_state("awaiting_approval")
+            try:
+                approved = await gater.request_consent(tool="project_validation", args={
+                    "command": job.validate_command, "cwd": job.workspace,
+                    "scope": "host shell; unrestricted filesystem and network"}, session_id=session_id)
+            finally:
+                unregister_gater(ctx.server, session_id)
+            await _set_run_state("running")
+            if not approved:
+                validation_blocked = "validation_denied"
+        if validation_blocked is None:
+            actions = validation_actions()
+            if "deny" in actions or ("ask" in actions and not approved):
+                validation_blocked = "validation_denied"
+            elif not await validation_binding_ok():
+                validation_blocked = "validation_workspace_changed"
+            else:
+                actions = validation_actions()
+                if "deny" in actions or ("ask" in actions and not approved):
+                    validation_blocked = "validation_denied"
+    if validation_blocked:
+        verification = {**verification, "verdict": "unknown", "reason": validation_blocked,
+                        "requires_review": True}
+    else:
+        verification = await verify_native_result(status=execution_status, mode=params.get("mode", "chat"),
+            command=job.validate_command, workspace=job.workspace, truncated=bool(result.truncated), base=verification_base)
     job.result["verification"] = verification
     if internal_skill is not None:
         job.result = internal_skill.receipt(job.result, tool_calls=tool_calls_log)
