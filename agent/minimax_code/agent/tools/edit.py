@@ -36,7 +36,8 @@ class EditFileTool(Tool):
         "the old text verbatim; the tool refuses to run if it appears 0 "
         "or >1 times (unless replace_all=True). Returns a textual diff "
         "summary and the line ranges that were modified. Unchanged text "
-        "retains its original line endings."
+        "retains its original line endings. Supply the SHA-256 from a "
+        "fresh read_file after reviewing the relevant context."
     )
     parameters = {
         "type": "object",
@@ -53,13 +54,13 @@ class EditFileTool(Tool):
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
                 "description": (
-                    "Optional optimistic lock: the sha256 the file had when "
-                    "you last read it. On mismatch the edit fails with the "
+                    "Required optimistic lock: the whole-file sha256 from a fresh "
+                    "read_file after reviewing relevant context. On mismatch the edit fails with the "
                     "current hash — re-read the file, then reapply your edit."
                 ),
             },
         },
-        "required": ["path", "old_string", "new_string"],
+        "required": ["path", "old_string", "new_string", "expected_sha256"],
         "additionalProperties": False,
     }
 
@@ -129,6 +130,13 @@ class EditFileTool(Tool):
         # The atomic writer rechecks that baseline before replacing the file.
         previous_sha = hashlib.sha256(original_bytes).hexdigest()
         expected = kwargs.get("expected_sha256")
+        if expected is None:
+            return ToolResult.fail(
+                "edit_file blocked: read and review the file first, then supply "
+                "its whole-file read_file sha256 as expected_sha256; a hash alone "
+                "does not mean the file was reviewed",
+                output={"path": str(target), "current_sha256": previous_sha},
+            )
         if expected is not None:
             if not isinstance(expected, str) or len(expected) != 64:
                 return ToolResult.fail("'expected_sha256' must be a 64-char hex string")

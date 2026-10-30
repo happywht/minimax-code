@@ -189,11 +189,11 @@ to call.
 
 | Name | Description | Required args | Optional args |
 | --- | --- | --- | --- |
-| `read_file` | Read a UTF-8/latin-1 text file; binary rejected. Line ranges can reach beyond the initial byte window with bounded memory. Output includes `sha256` of the on-disk bytes; it is null for truncated or partial streaming reads, so CAS is unavailable for those reads. `total_lines` is null when the range reader stops before EOF. | `path` | `start_line`, `end_line`, `max_bytes` |
-| `write_file` | Create or replace a UTF-8 file. For an existing file, read and review its contents and provide the full-file `read_file` SHA-256; a hash alone does not establish review. A truncated read returns no hash. New-file creation fails if the destination appears concurrently. Output includes `previous_sha256`, `sha256`, and any `concurrent_writer` advisory. | `path`, `content`; `expected_sha256` for an existing file | `expected_sha256` for a new file is not accepted |
-| `append_file` | Append bytes to a file's tail verbatim (UTF-8, no separator injected — the caller owns line breaks; creates the file with parent dirs when missing). Inherits every write-safety layer: CAS (`expected_sha256`), backup, the `concurrent_writer` advisory, and sandbox redirection with **mirror seeding** — when appending inside a sandbox to a file that only exists in the workspace, the original is first copied into the sandbox mirror so "a"-mode never starts from empty (v1.5.2 — the unseeded mirror would later merge a truncated file over the workspace original). The recommended shape for large multi-part outputs: `write_file` the first chunk, `append_file` the rest. | `path`, `content` | `expected_sha256` (CAS check) |
+| `read_file` | Read UTF-8/latin-1 text with bounded returned content. Line ranges can reach beyond the initial byte window. `sha256` covers the whole file even for a partial read; computing it reads the whole file. The same open file is checked for identity and metadata changes around reading and hashing. `total_lines` is null when the range reader stops before EOF. | `path` | `start_line`, `end_line`, `max_bytes` |
+| `write_file` | Create or replace a UTF-8 file. For an existing file, read and review its contents and provide the whole-file `read_file` SHA-256; a partial read's hash does not establish review of unseen contents. New-file creation fails if the destination appears concurrently. Output includes `previous_sha256`, `sha256`, and any `concurrent_writer` advisory. | `path`, `content`; `expected_sha256` for an existing file | `expected_sha256` for a new file is not accepted |
+| `append_file` | Append UTF-8 text without an implicit separator; creates missing files and parent directories. Existing files require a reviewed full-file read hash or the hash from the preceding successful write/append. For multi-part output, pass each returned hash to the next append. | `path`, `content`; `expected_sha256` for an existing file | `expected_sha256` for a new file is not accepted |
 | `list_directory` | List immediate children of a directory. Inside a sandbox the view merges the sandbox mirrors of that directory: same-name entries take the sandbox copy (marked `sandboxed: true`, `path` stays the workspace address), sandbox-only directories answer even without a workspace counterpart, and `_base` / the merge marker stay hidden (v1.6.0 — see §8a). | — | `path` (default workspace), `pattern` |
-| `edit_file` | Replace an exact substring in a file. Output includes `previous_sha256` / `sha256`, plus the `concurrent_writer` advisory when another run claims the path (v1.5.1). | `path`, `old_string`, `new_string` | `replace_all`, `expected_sha256` (CAS check, v1.5.0) |
+| `edit_file` | Replace an exact substring after reviewing its context and providing the whole-file read hash. Output includes `previous_sha256` / `sha256`, plus the `concurrent_writer` advisory when another run claims the path. | `path`, `old_string`, `new_string`, `expected_sha256` | `replace_all` |
 | `exec_command` | Run a shell command with hard timeout. Inside a sandbox the process still runs with the real workspace cwd (the sandbox only holds COW'd files — redirecting cwd would break test-runner scenarios), but the output carries a `sandbox_escape` advisory when files changed on disk that the write redirect never saw: shell writes bypass the sandbox, escape into the shared workspace, and are invisible to `collect_subagent`'s three-way compare (v1.6.0 — see §8a). | `cmd` (list) | `cwd`, `env`, `timeout` (default 30s, cap 600s) |
 | `search_files` | Recursive text search (ripgrep fast path, pure-Python fallback). Set `context_lines` to 1–5 for line-numbered `before` and `after` arrays on each match; context searches allow at most 200 results. Context searches and sandbox searches use the Python engine; sandbox mirrors override workspace files and results retain workspace addresses. Narrow `path` when possible because the walker is slower than rg. | `pattern` | `path`, `regex`, `file_pattern`, `case_sensitive`, `max_results`, `context_lines` |
 | `find_files` | Glob-match files under a directory (`**/*.py` patterns, depth-bounded). Inside a sandbox, sandbox-only matches are unioned into the results (projected to workspace addresses); `.minimax` is hard-excluded even when the caller replaces the default `exclude_dirs` table (v1.6.0). | `pattern` | `path`, `max_depth`, `max_results`, `exclude_dirs` |
@@ -208,7 +208,9 @@ For agent calls, `append_file` consults both its own permission rule and the
 `write_file` rule. A denial takes precedence over an approval request, which
 takes precedence over an allow; absent rules retain the normal default.
 
-`edit_file` computes its baseline hash from the exact bytes it decoded for the
+Partial reads calculate the digest without returning unseen bytes. File identity,
+size and timestamps are checked, but this is not an OS snapshot and cannot
+detect every adversarial change that restores metadata. `edit_file` computes its baseline hash from the exact bytes it decoded for the
 edit, then checks those bytes again before replacement. A change between the
 read and that check is rejected, including in an overlay. This is not an atomic
 compare-and-swap against unrelated processes: a change after the final check
@@ -246,7 +248,7 @@ can still race the replacement. Workspace checks are not an OS sandbox.
     "replace_all":  {"type": "boolean", "default": false},
     "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
-  "required": ["path", "old_string", "new_string"],
+  "required": ["path", "old_string", "new_string", "expected_sha256"],
   "additionalProperties": false
 }
 ```
@@ -335,6 +337,7 @@ Tool results are serialised into the conversation as OpenAI-style
 | `old_string` matches 0 locations | `edit_file.run` | Returns `ToolResult.fail("'old_string' not found … closest match: …")` (did-you-mean hint). |
 | `old_string` matches >1 location, `replace_all=False` | same | Returns `ToolResult.fail("'old_string' matches N locations; narrow it or pass replace_all=True")`. |
 | Existing `write_file` target without `expected_sha256` | `write_file.run` | Refuses the overwrite; read and review the file, then supply its full-file hash. Copying the returned hash alone is not a review. |
+| `edit_file`, or an existing `append_file` target, without `expected_sha256` | tool dispatch or tool run | Refuses the mutation. Review a full read and supply its hash; for successive appends the preceding successful write/append hash may be used. |
 | `expected_sha256` ≠ on-disk hash before write (CAS, v1.5.0) | `write_file.run` / `edit_file.run` | Returns `ToolResult.fail(...)` carrying `current_sha256` and a "re-read the file" hint; the file on disk is untouched (the edit check fires before the backup, so a blocked edit produces no backup either). |
 | `spawn_subagent(sandbox=true)` with no workspace root, or sandbox mkdir failure | `SpawnSubagentTool.run` | **Fails closed**: `ToolResult.fail(...)`. Unlike the artifacts/fs_bus fail-open family, a silent fallback to the shared workspace would void the contract the caller opted into. |
 | `collect_subagent` finds workspace-vs-sandbox divergence | `CollectSubagentTool.run` | With `on_conflict=fail` (default): `ToolResult.fail(...)` whose output carries the full report (all three sha256 fingerprints per conflict) and **no receipt written** — resolve manually and re-run; already-merged files degrade to no-ops so the re-run is idempotent. `skip` keeps the workspace version; `overwrite` applies the sandbox version. The sandbox tree is kept (never pruned) so the retry can succeed. |

@@ -19,9 +19,11 @@ string the LLM can act on.
 from __future__ import annotations
 
 import hashlib
+import io
 import os
+import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from ...execution import (ExecutionDeniedError, network_tools_restricted, policy_workspace,
                           require_write_access)
@@ -219,7 +221,7 @@ def release_run_writes(run_id: str) -> None:
 
 
 def _read_large_line_range(
-    path: Path, start: int, end: int | None, max_bytes: int
+    source: BinaryIO, start: int, end: int | None, max_bytes: int
 ) -> tuple[str, bool, int | None]:
     """Read a line range without retaining the preceding portion of a large file.
 
@@ -233,7 +235,9 @@ def _read_large_line_range(
         line = 1
         saw_text = False
         ended_line = False
-        with path.open("r", encoding=encoding, newline=None) as fh:
+        source.seek(0)
+        fh = io.TextIOWrapper(source, encoding=encoding, newline=None)
+        try:
             while True:
                 piece = fh.readline(65536)
                 if not piece:
@@ -257,11 +261,75 @@ def _read_large_line_range(
                     if end is not None and line >= end:
                         return "".join(parts), False, None
                     line += 1
+        finally:
+            fh.detach()
 
     try:
         return read_with_encoding("utf-8")
     except UnicodeDecodeError:
         return read_with_encoding("latin-1")
+
+
+def _stable_file_read(path: Path, max_bytes: int, start_line: Any, end_line: Any) -> tuple[str, bool, int | None, str | None]:
+    """Read selected text and hash the same unchanged open file, with bounded memory.
+
+    Metadata checks detect ordinary concurrent changes but are not an OS snapshot.
+    Hashing reads the complete file even when the returned text is bounded.
+    """
+    from ...file_mutations import _file_identity
+
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("file is not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if _file_identity(before) != _file_identity(opened):
+            raise ValueError("file changed before reading; retry")
+        data = source.read(max_bytes + 1)
+        truncated = len(data) > max_bytes
+        data = data[:max_bytes]
+        if b"\x00" in data[:8192]:
+            raise ValueError("binary file detected (NUL byte) — refusing to read")
+        if truncated and (start_line is not None or end_line is not None):
+            start = max(1, int(start_line or 1))
+            end = int(end_line) if end_line is not None else None
+            if end is not None and end < start:
+                raise ValueError("'end_line' must be greater than or equal to 'start_line'")
+            text, truncated, total_lines = _read_large_line_range(source, start, end, max_bytes)
+        else:
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                text = data.decode("latin-1")
+            total_lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+            if start_line is not None or end_line is not None:
+                lines = text.splitlines()
+                start = max(1, int(start_line or 1))
+                end = min(len(lines), int(end_line or len(lines)))
+                if start > len(lines):
+                    raise ValueError(f"start_line {start} beyond file length ({len(lines)} lines)")
+                if end < start:
+                    raise ValueError("'end_line' must be greater than or equal to 'start_line'")
+                selected = lines[start - 1:end]
+                text = "\n".join(selected) + ("\n" if selected and end < len(lines) else "")
+        source.seek(0)
+        hasher = hashlib.sha256()
+        remaining = opened.st_size
+        while remaining:
+            chunk = source.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise ValueError("file changed while hashing; retry")
+            hasher.update(chunk)
+            remaining -= len(chunk)
+        if source.read(1):
+            raise ValueError("file grew while hashing; retry")
+        digest = hasher.hexdigest()
+        if (_file_identity(opened) != _file_identity(os.fstat(source.fileno()))
+                or _file_identity(opened) != _file_identity(path.lstat())):
+            raise ValueError("file changed while reading; retry")
+        return text, truncated, total_lines, digest
 
 
 @register_tool
@@ -270,7 +338,9 @@ class ReadFileTool(Tool):
     description = (
         "Read a UTF-8 (or latin-1) text file. Returns the file contents "
         "as a string, optionally clipped to a 1-indexed inclusive line "
-        "range. Binary files are rejected with an error."
+        "range. Binary files are rejected with an error. The returned SHA-256 "
+        "covers the entire stable file even for a partial read; hashing reads "
+        "the whole file and does not mean unseen content was reviewed."
     )
     parameters = {
         "type": "object",
@@ -313,75 +383,11 @@ class ReadFileTool(Tool):
         end_line = kwargs.get("end_line")
 
         try:
-            with read_target.open("rb") as fh:
-                data = fh.read(max_bytes + 1)
-        except OSError as exc:
+            text, truncated, total_lines, sha = _stable_file_read(
+                read_target, max_bytes, start_line, end_line
+            )
+        except (OSError, ValueError) as exc:
             return ToolResult.fail(f"read failed: {exc}")
-        truncated = len(data) > max_bytes
-        if truncated:
-            data = data[:max_bytes]
-
-        # Cheap binary sniff — any NUL byte in the first 8 KiB
-        # means this is not text we want to ship to the model.
-        if b"\x00" in data[:8192]:
-            return ToolResult.fail(
-                "binary file detected (NUL byte) — refusing to read"
-            )
-
-        # The prefix limit must not prevent seeking to later requested lines.
-        # Keep the ordinary path for small files (including its whole-file CAS).
-        if truncated and (start_line is not None or end_line is not None):
-            start = max(1, int(start_line or 1))
-            end = int(end_line) if end_line is not None else None
-            if end is not None and end < start:
-                return ToolResult.fail("'end_line' must be greater than or equal to 'start_line'")
-            try:
-                text, range_truncated, total_lines = _read_large_line_range(
-                    read_target, start, end, max_bytes
-                )
-            except (OSError, ValueError) as exc:
-                return ToolResult.fail(f"read failed: {exc}")
-            output: dict[str, Any] = {
-                "path": str(target),
-                "content": text,
-                "truncated": range_truncated,
-                # A partial streaming read is not a whole-file fingerprint.
-                "sha256": None,
-            }
-            if read_target != target:
-                output["sandboxed"] = True
-                output["sandbox_path"] = str(read_target)
-            return ToolResult.ok(
-                output=output,
-                total_lines=total_lines,
-                returned_bytes=len(text.encode("utf-8")),
-            )
-
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            try:
-                text = data.decode("latin-1")
-            except UnicodeDecodeError:
-                return ToolResult.fail("file is not decodable as utf-8 or latin-1")
-
-        # v1.5.0 CAS: fingerprint the raw bytes we read (pre-decode,
-        # pre-line-slice) so it always describes the full file on disk.
-        # Truncated reads cannot offer a whole-file hash — null means
-        # "CAS unavailable for this read".
-        sha = None if truncated else hashlib.sha256(data).hexdigest()
-
-        total_lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
-        if start_line is not None or end_line is not None:
-            lines = text.splitlines()
-            s = max(1, int(start_line or 1))
-            e = min(len(lines), int(end_line or len(lines)))
-            if s > len(lines):
-                return ToolResult.fail(
-                    f"start_line {s} beyond file length ({len(lines)} lines)"
-                )
-            selected = lines[s - 1 : e]
-            text = "\n".join(selected) + ("\n" if selected and e < len(lines) else "")
 
         output: dict[str, Any] = {
             "path": str(target),
@@ -612,7 +618,8 @@ class AppendFileTool(Tool):
         "calls so each call's content stays well under the output budget. "
         "The content lands verbatim at the current tail — include a "
         "leading newline yourself when the existing tail has no trailing "
-        "one."
+        "one. For an existing file supply the SHA-256 from a fresh full "
+        "read or from the preceding successful write or append."
     )
     parameters = {
         "type": "object",
@@ -626,8 +633,9 @@ class AppendFileTool(Tool):
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
                 "description": (
-                    "Optional optimistic lock: the sha256 the file had when "
-                    "you last read it. On mismatch (or if the file no longer "
+                    "Required for an existing file: the sha256 from a fresh "
+                    "full read or the preceding successful write or append. "
+                    "On mismatch (or if the file no longer "
                     "exists) the append fails with the current hash — "
                     "re-read the file, then reapply your append."
                 ),
@@ -677,6 +685,13 @@ class AppendFileTool(Tool):
         if existed and previous_sha is None:
             return ToolResult.fail("append_file blocked: existing file could not be read; retry after checking it")
         expected = kwargs.get("expected_sha256")
+        if existed and expected is None:
+            return ToolResult.fail(
+                "append_file blocked: read and review the existing file, or use "
+                "the sha256 from your preceding successful write or append, then "
+                "supply expected_sha256",
+                output={"path": str(target), "current_sha256": previous_sha, "file_exists": True},
+            )
         if expected is not None:
             if not isinstance(expected, str) or len(expected) != 64:
                 return ToolResult.fail("'expected_sha256' must be a 64-char hex string")
