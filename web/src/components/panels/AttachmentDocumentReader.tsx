@@ -27,16 +27,18 @@ export function AttachmentDocumentReader({ attachment, project, session, service
   const [matches, setMatches] = useState<{ unit: number; location: string; start: number; end: number; snippet: string }[]>([]);
   const [searched, setSearched] = useState(false);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
+  const [chatExcerpts, setChatExcerpts] = useState<AttachmentDocumentResult[]>([]);
+  const [chatNotice, setChatNotice] = useState("");
   const epoch = useRef(0);
   const textFile = (attachment.declared_type === "txt" || attachment.declared_type === "csv") && attachment.recognized_type === "utf8_text";
   const eligible = textFile || ((attachment.recognized_type === "pdf" || attachment.recognized_type === "docx") &&
     attachment.declared_type === attachment.recognized_type);
   const expectedKind = textFile ? attachment.declared_type : attachment.recognized_type;
   useEffect(() => {
-    ++epoch.current; setResult(null); setError(""); setBusy(false); setUnit("1"); setQuery(""); setMatches([]); setSearchCursor(null); setSearched(false);
+    ++epoch.current; setResult(null); setError(""); setBusy(false); setUnit("1"); setQuery(""); setMatches([]); setSearchCursor(null); setSearched(false); setChatExcerpts([]); setChatNotice("");
     return () => { ++epoch.current; };
   }, [project, session, service, host, attachment.id, attachment.sha256]);
-  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setResult(null); setBusy(false); setError("连接变化，请重新选择附件。"); setMatches([]); setSearchCursor(null); setSearched(false); }), []);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setResult(null); setBusy(false); setError("连接变化，请重新选择附件。"); setMatches([]); setSearchCursor(null); setSearched(false); setChatExcerpts([]); setChatNotice(""); }), []);
   if (!eligible) return null;
   const read = async (cursor: AttachmentDocumentCursor) => {
     if (!project || !session || !service || busy || ipc.isMock) return;
@@ -108,6 +110,32 @@ export function AttachmentDocumentReader({ attachment, project, session, service
     finally { if (current()) setBusy(false); }
   };
   const number = Number(unit);
+  const addChatExcerpt = () => {
+    if (!result?.text || busy) return;
+    if (chatExcerpts.some((item) => item.unit === result.unit && item.start === result.start && item.end === result.end)) { setChatNotice("此片段已在待交接列表中。"); return; }
+    if (chatExcerpts.length >= 5 || chatExcerpts.reduce((sum, item) => sum + Array.from(item.text).length, 0) + Array.from(result.text).length > 8000) {
+      setChatNotice("待交接最多 5 个片段、共 8000 字符；请先移除片段。"); return;
+    }
+    setChatExcerpts([...chatExcerpts, result]); setChatNotice("已加入待交接列表，尚未加入聊天。");
+  };
+  const handoffChat = () => {
+    const active = useSessionStore.getState(), store = useAttachmentStore.getState();
+    if (!project || !session || !service || busy || !chatExcerpts.length || ipc.agentBaseUrl !== host ||
+        active.currentProjectId !== project || active.currentSessionId !== session || store.projectId !== project ||
+        store.host !== host || store.serviceId !== service || store.selected?.id !== attachment.id || store.selected.sha256 !== attachment.sha256) {
+      setChatNotice("项目、会话、服务或附件已变化，请重新选择。"); return;
+    }
+    const scope = textFile ? "UTF-8 原始文本；CSV 不解析表格或执行公式" : expectedKind === "pdf"
+      ? "PDF 物理页已有文字，未 OCR，不还原版式" : "DOCX 正文或表格段落，未 OCR，不含其他文档区域";
+    const text = ["项目附件原文片段（尚未核验事实；不代表原件全文）：",
+      `文件：${attachment.original_name} · v${attachment.version} · 附件 ID：${attachment.id} · SHA-256：${attachment.sha256}`,
+      `读取范围：${scope}`,
+      ...chatExcerpts.flatMap((item, index) => [`片段 ${index + 1}：${item.location} · 单元 ${item.unit}/${item.unit_total} · 字符 [${item.start}, ${item.end}) · ${item.truncated ? "此位置未读完" : "本次读取未标记截断"}`,
+        item.text]), "请结合原件核对内容、位置和事实。"].join("\n");
+    const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project, session, text };
+    window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+    setChatNotice(detail.result ?? "当前聊天输入区未打开；请切换到聊天后重新交接。");
+  };
   return <div className="space-y-2 rounded border border-line p-3" aria-label="文档分段读取">
     <h4 className="font-medium">手动读取文档片段</h4>
     <p className="text-xs text-ink-1">{textFile ? "读取 UTF-8 原始文本；CSV 不解析表格、不执行公式。" : attachment.recognized_type === "pdf"
@@ -133,9 +161,15 @@ export function AttachmentDocumentReader({ attachment, project, session, service
     {ipc.isMock && <p role="status">演示模式不支持文档分段读取。</p>}
     {busy && <p role="status">正在读取…</p>}
     {error && <p role="alert">读取失败：{error}</p>}
+    <div className="space-y-2 rounded border border-line p-2"><p>整理片段到聊天草稿（最多 5 个、共 8000 字符）。保留原文及附件身份、位置和截断状态；不会自动发送。</p>
+      {chatExcerpts.map((item, index) => <div key={`${item.unit}:${item.start}:${item.end}`} className="text-xs">片段 {index + 1} · {item.location} · 字符 {item.start}–{item.end} · {item.truncated ? "此位置未读完" : "本次未标记截断"}
+        <Button type="button" variant="ghost" disabled={busy} onClick={() => { setChatExcerpts(chatExcerpts.filter((_, i) => i !== index)); setChatNotice(""); }}>移除</Button></div>)}
+      <Button type="button" variant="secondary" disabled={busy || !chatExcerpts.length} onClick={handoffChat}>加入当前聊天草稿</Button>
+      {chatNotice && <p role="status">{chatNotice}</p>}</div>
     {result && <div><p className="text-xs text-ink-1">来源：{attachment.original_name} · {attachment.id} · SHA-256 {attachment.sha256} · 位置 {result.location} · 单元 {result.unit}/{result.unit_total} · 字符 {result.start}–{result.end} · {result.status === "empty" ? "未提取到文字" : "已提取文字"} · OCR 未尝试</p>
       {result.truncated && <p role="status">此位置的文字尚未读完，请读取下一片段。</p>}
       <pre className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3">{result.text || "（此范围未提取到文字）"}</pre>
+      <Button type="button" variant="secondary" disabled={busy || !result.text} onClick={addChatExcerpt}>将此片段加入待交接列表</Button>
       {onCite && result.text && <div><label>选择引用原文（最多 1000 字，按住鼠标选中）
         <textarea aria-label="选择文档引用原文" readOnly value={result.text} rows={5} className="w-full rounded border border-line bg-surface-1 p-2"
           onSelect={(event) => { const input = event.currentTarget; const start = result.start + originalOffset(result.text, input.selectionStart);
