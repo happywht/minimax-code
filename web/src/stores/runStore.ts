@@ -175,7 +175,11 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
   runs: {}, order: [], initialized: false, loading: false, error: null,
   init: () => {
     if (get().initialized) return;
-    const wake = () => { void requestSync(useSessionStore.getState().currentSessionId); };
+    const wake = () => {
+      // A lifecycle notification can supersede a snapshot already in flight.
+      generation++;
+      void requestSync(useSessionStore.getState().currentSessionId);
+    };
     // Notifications are wakeups; durable snapshots/events are the source of truth.
     unsubs = [
       ...[StreamEvent.RunCreated, StreamEvent.RunUpdated, StreamEvent.RunStepStarted, StreamEvent.RunStepCompleted,
@@ -191,7 +195,9 @@ export const useRunTimelineStore = create<RunTimelineState>((set, get) => ({
           // Discard responses begun before this connection epoch, even if the
           // replacement service happens to expose the same session id.
           generation++;
-          void requestSync(useSessionStore.getState().currentSessionId, true);
+          const current = useSessionStore.getState().currentSessionId;
+          if (current) useChat.getState().restartHistoryOnReconnect(current);
+          void requestSync(current, true);
         }
       }),
     ];

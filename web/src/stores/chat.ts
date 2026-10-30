@@ -70,6 +70,7 @@ export interface ChatState {
   loadMessages: (sessionId: string) => Promise<void>;
   reconcileRuns: (runs: AgentRun[], stillCurrent: () => boolean, includeActive?: boolean) => Promise<void>;
   reconcileActiveStatus: (sessionId: string, active: boolean) => void;
+  restartHistoryOnReconnect: (sessionId: string) => void;
   reconcileLiveStream: (run: AgentRun, stream: NonNullable<RunStepsResult["live_stream"]>) => void;
   reset: () => void;
   cancel: () => Promise<void>;
@@ -95,6 +96,7 @@ let askUserUnsub: (() => void) | null = null;
 let askUserClosedUnsub: (() => void) | null = null;
 let pendingAssistantId: string | null = null;
 let pendingActiveSession: string | null = null;
+let deferredStreamSession: string | null = null;
 const inFlightRequests = new Map<string, Promise<unknown>>();
 
 function trackRequest<T>(sessionId: string, request: Promise<T>): Promise<T> {
@@ -377,6 +379,10 @@ export const useChat = create<ChatState>((set, get) => ({
   },
   reconcileLiveStream: (run, stream) => {
     if (run.session_id !== useSessionStore.getState().currentSessionId) return;
+    if (get().loadingMessages) {
+      deferredStreamSession = run.session_id;
+      return;
+    }
     if (!stream.complete) { if (!unavailableStreams.has(run.id)) unavailableStreams.set(run.id, 0); warnStream(run.id); return; }
     if (unavailableStreams.has(run.id)) return;
     const replay: MessageChunkData[] = [];
@@ -425,6 +431,13 @@ export const useChat = create<ChatState>((set, get) => ({
     if (useSessionStore.getState().currentSessionId !== sessionId) return;
     pendingActiveSession = active && get().loadingMessages ? sessionId : null;
     if (active && !get().loadingMessages && get().status === "idle") set({ status: "streaming" });
+  },
+
+  restartHistoryOnReconnect: (sessionId) => {
+    if (useSessionStore.getState().currentSessionId === sessionId && get().loadingMessages) {
+      // A previous connection's response must not populate the new service view.
+      void get().loadMessages(sessionId);
+    }
   },
 
   init: async () => {
@@ -1119,6 +1132,7 @@ export const useChat = create<ChatState>((set, get) => ({
           return { messages: [...state.messages.slice(0, insert), ...visible, ...state.messages.slice(insert)] };
         });
         completedCalls.forEach((id) => { activeToolCalls.delete(id); activeToolNames.delete(id); });
+        if (completedCalls.length) ++_viewRevision;
         if (completedCalls.length && get().status === "streaming") resetStallWatchdogForCurrentActivity();
       } catch {
         // Preserve live content; the next reconnect or explicit refresh retries.
@@ -1182,6 +1196,7 @@ export const useChat = create<ChatState>((set, get) => ({
         activeToolNames.clear();
         clearStallWatchdog();
       }
+      ++_viewRevision;
       set({ messages: trimArray([...saved, ...retained], MAX_MESSAGES),
         ...(!hasUnconfirmedInput ? { status: latest.status === "failed" || latest.status === "interrupted" ? "error" as const : "idle" as const,
           error: latest.error ?? null, askUser: null } : {}),
@@ -1199,6 +1214,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // Bump the sequence counter so any in-flight load from a
     // previous session is silently discarded.
     const seq = ++_loadSeq;
+    const revision = _viewRevision;
     set({ loadingMessages: true });
     try {
       const result = await typedIPC.listMessages(sessionId);
@@ -1208,7 +1224,7 @@ export const useChat = create<ChatState>((set, get) => ({
       const activeStatus = get().status;
       if (
         currentSessionId === sessionId &&
-        (activeStatus === "sending" || activeStatus === "streaming" || activeStatus === "cancelling")
+        (revision !== _viewRevision || activeStatus === "sending" || activeStatus === "streaming" || activeStatus === "cancelling")
       ) {
         set({ loadingMessages: false });
         return;
@@ -1242,11 +1258,17 @@ export const useChat = create<ChatState>((set, get) => ({
         pendingActiveSession = null;
         if (get().status === "idle") set({ status: "streaming" });
       }
+      if (seq === _loadSeq && deferredStreamSession === sessionId
+          && useSessionStore.getState().currentSessionId === sessionId) {
+        deferredStreamSession = null;
+        requestStreamSnapshot(sessionId);
+      }
     }
   },
 
   reset: () => {
     pendingActiveSession = null;
+    deferredStreamSession = null;
     ++askVersion;
     closedAskIds.clear();
     if (askExpiryTimer) clearTimeout(askExpiryTimer);
