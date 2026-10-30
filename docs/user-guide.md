@@ -428,11 +428,13 @@ uv run python -m minimax_code.bundle verify --bundle /absolute/backups/data-vaul
 uv run python -m minimax_code.bundle restore --bundle /absolute/backups/data-vault.zip --new-data-dir /absolute/fresh-data
 ```
 
+Windows 也可双击程序目录中的 `Data-Vault-Backup.cmd`，选择创建或恢复，输入绝对路径并在确认 `YES` 后调用该版本的数据包命令。它优先使用该版本的 `agent/.venv/Scripts/python.exe`；不存在时须指定已安装相应依赖的 Python 3.11+，不会安装依赖。退出码和结果保留在窗口。恢复只接受可信来源的数据包，不会启动、迁移或自动重新绑定；恢复后的数据目录不能直接启动。旧发行包可能不含此入口；该交互入口尚未进行实机演练。
+
 将示例路径换成实际路径（Windows 也支持，空格须加引号）。父目录须已存在，输出包
 位于源数据目录外，恢复目录必须全新且不存在。正在占用目录的服务、链接/损坏/超限
 文件或不支持的格式会使操作失败；不会覆盖已有目标。该包保存一致 SQLite 快照和
 全部已登记历史文本版本及附件原件，孤儿/待发布文件只计数、不收取。
-当前新包为v3/Schema043；仍能校验/恢复旧v1/Schema041、v2/Schema042，不自动迁移，旧工具拒绝v3。
+数据包格式、支持的 schema 与检查点内容随所用版本变化，具体范围见下方离线数据包说明；旧工具不一定能读取新包。
 任一已登记原件缺失或损坏都会失败，不会默默跳过无法解析的附件。
 
 这是 **data-only 副本，不能直接作为可运行实例启动**。数据库中的原主机路径、凭据、
