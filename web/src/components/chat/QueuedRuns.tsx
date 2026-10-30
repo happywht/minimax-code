@@ -50,7 +50,7 @@ export function QueuedRuns({ session, host, runs, stale }: {
 
   const cancel = async (run: RunTimelineEntry) => {
     if (lock.current || stale) return;
-    const ticket = ++epoch.current;
+    const ticket = ++epoch.current, project = useSessionStore.getState().sessions.find((item) => item.id === session)?.project_id ?? null;
     const current = () => ticket === epoch.current && ipc.agentBaseUrl === host &&
       useSessionStore.getState().currentSessionId === session;
     lock.current = true; setBusy(run.id); setNotice("");
@@ -65,15 +65,15 @@ export function QueuedRuns({ session, host, runs, stale }: {
           snapshot.steps.some((step) => step.run_id !== run.id || step.session_id !== session)) {
         throw new Error("任务或服务状态已变化，请刷新队列");
       }
-      if (!window.confirm(`取消排队任务“${run.title || run.id}”？如果它已开始，将请求停止运行；已执行的操作不会撤销。`)) return;
+      if (!window.confirm(`取消排队任务“${run.title || run.id}”？如果它已经开始，本操作不会停止该任务。`)) return;
       const finalIdentity = await typedIPC.getServiceIdentity();
       if (!current()) return;
       if (finalIdentity.service_id !== identity.service_id) throw new Error("服务身份已变化，请刷新队列");
       sent = true;
-      const result = await typedIPC.cancelRun(run.id);
+      const result = await typedIPC.cancelRun(run.id, undefined, { session_id: session, service_id: identity.service_id, project_id: project });
       if (!current()) return;
       if (result.run.id !== run.id || result.run.session_id !== session) throw new Error("取消回执关联不匹配");
-      setNotice(result.requested ? "已请求取消；请刷新确认最终状态。" : "服务未接受取消请求；任务可能已结束或不可停止，请刷新确认。");
+      setNotice(result.requested ? "已请求取消排队项；请刷新确认最终状态。" : "任务已开始、结束或不可取消；未请求停止运行，请刷新确认。");
       await useRunTimelineStore.getState().loadForSession(session);
     } catch (error) {
       if (current()) setNotice(`${sent ? "取消结果未确认，请先刷新：" : "未发送取消请求："}${error instanceof Error ? error.message : String(error)}`);

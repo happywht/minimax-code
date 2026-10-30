@@ -809,6 +809,19 @@ def register_run_handlers(server: Any) -> None:
             run = await dao.get_run(request.run_id)
             if run is None:
                 raise HandlerError(INVALID_PARAMS, "unknown run_id")
+            if request.queued_only:
+                from ..storage.dao.text_artifacts import ArtifactDAO
+                from .host_session_gate import require_chat_session
+                if (not request.expected_session_id or not request.expected_service_id
+                        or run["session_id"] != request.expected_session_id
+                        or await ArtifactDAO(dao._db).service_id() != request.expected_service_id):
+                    raise HandlerError(INVALID_PARAMS, "Queued run or service binding changed")
+                await require_chat_session(request.expected_session_id)
+                session_row = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (request.expected_session_id,))
+                if ("expected_project_id" not in request.model_fields_set or not session_row
+                        or session_row["project_id"] != request.expected_project_id
+                        or (run.get("metadata") or {}).get("project_id") != request.expected_project_id):
+                    raise HandlerError(INVALID_PARAMS, "Queued run project binding changed")
             if request.schedule_scope:
                 from ..storage.dao.schedule_occurrences import ScheduleOccurrencesDAO
                 from ..storage.dao.text_artifacts import ArtifactDAO
@@ -840,8 +853,8 @@ def register_run_handlers(server: Any) -> None:
             # cancellation from an RPC disconnect.
             job = await service.job_for_run(request.run_id)
             queued_job = job is not None and not job.operation_started
-            requested = await service.cancel_run_durable(request.run_id)
-            if run.get("mode") == "team" and not requested:
+            requested = await service.cancel_run_durable(request.run_id, queued_only=request.queued_only)
+            if run.get("mode") == "team" and not requested and not request.queued_only:
                 from ..orchestrator.team_control import cancel as cancel_team
                 requested = cancel_team(request.run_id)
             if queued_job and job.cancel_requested:
@@ -849,6 +862,8 @@ def register_run_handlers(server: Any) -> None:
                 run = await dao.get_run(request.run_id)
                 if run is not None:
                     await _notify_run(ctx, "run.updated", {"run": run})
+            if request.queued_only:
+                run = await dao.get_run(request.run_id) or run
             await ctx.reply({"ok": True, "requested": requested, "run": run})
         except ValidationError as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))

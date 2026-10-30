@@ -274,7 +274,7 @@ export interface TypedIPC {
   getRunInputImage(params: { run_id: string; session_id: string; project_id: string | null; expected_service_id: string; index: number }): Promise<import("../types/ipc").RunInputImage>;
   getRunInputText(params: { run_id: string; session_id: string; project_id: string | null; expected_service_id: string; expected_cursor: number }): Promise<import("../types/ipc").RunInputText>;
   getRun(runId: string): Promise<RunGetResult>;
-  cancelRun(runId: string, scheduleScope?: { service_id: string; job_id: string; occurrence_id: string; session_id: string; project_id: string; revision: number }): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
+  cancelRun(runId: string, scheduleScope?: { service_id: string; job_id: string; occurrence_id: string; session_id: string; project_id: string; revision: number }, queued?: { session_id: string; service_id: string; project_id: string | null }): Promise<{ ok: boolean; requested: boolean; run: AgentRun }>;
   resumeRun(runId: string, idempotencyKey: string, reviewed?: boolean, budgetTokens?: number, scope?: { service: string; session: string; project: string | null; cursor: number }, handoff?: string): Promise<RunAdmissionResult>;
   getBudget(runId?: string, day?: string, blockersAfter?: number): Promise<BudgetStateResult>;
   getDailyBudgetSettings(): Promise<import("../types/ipc").DailyBudgetSettings>;
@@ -830,7 +830,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     getRunInputImage: (params) => client.request("run.input_image", params),
     getRunInputText: (params) => client.request("run.input_text", params),
     getRun: (runId) => client.request<RunGetResult>("run.get", { run_id: runId }),
-    cancelRun: (runId, scheduleScope) => client.request("run.cancel", { run_id: runId, ...(scheduleScope ? { schedule_scope: scheduleScope } : {}) }),
+    cancelRun: (runId, scheduleScope, queued) => client.request("run.cancel", { run_id: runId, ...(scheduleScope ? { schedule_scope: scheduleScope } : {}), ...(queued ? { queued_only: true, expected_session_id: queued.session_id, expected_service_id: queued.service_id, expected_project_id: queued.project_id } : {}) }),
     getDailyBudgetSettings: () => client.request("budget.settings_get", {}),
     setDailyBudgetSettings: (service, limit, expectedSavedLimit) => client.request("budget.settings_set", { expected_service_id: service, limit_tokens: limit, ...(expectedSavedLimit !== undefined ? { expected_saved_limit: expectedSavedLimit } : {}) }),
     getBudget: (runId, day, blockersAfter) => client.request<BudgetStateResult>("budget.get", { ...(runId ? {run_id: runId} : {}), ...(day ? {day} : {}), ...(blockersAfter !== undefined ? {blockers_after: blockersAfter} : {}) }),

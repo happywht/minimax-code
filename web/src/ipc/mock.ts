@@ -837,9 +837,13 @@ function mockHandle(
     }
     case "run.cancel": {
       if ((params as { schedule_scope?: unknown }).schedule_scope) throw new Error("Mock 模式不执行定时运行控制");
-      const runId = (params as { run_id: string }).run_id;
+      const p = params as { run_id: string; queued_only?: boolean; expected_session_id?: string; expected_service_id?: string; expected_project_id?: string | null };
+      const runId = p.run_id;
       const entry = mockRuns.get(runId);
       if (!entry) throw new Error("unknown run_id");
+      if (p.queued_only && (p.expected_service_id !== "mock" || p.expected_session_id !== entry.run.session_id ||
+          p.expected_project_id !== (mockSessions.get(entry.run.session_id)?.project_id ?? null))) throw new Error("Queued run binding changed");
+      if (p.queued_only && entry.run.status !== "queued") return { ok: true, requested: false, run: structuredClone(entry.run) };
       if (["completed", "failed", "cancelled", "interrupted"].includes(entry.run.status)) {
         return { ok: true, requested: false, run: structuredClone(entry.run) };
       }

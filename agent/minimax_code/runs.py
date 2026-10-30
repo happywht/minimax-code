@@ -397,10 +397,10 @@ class RunService:
         job = self.get_job(run_id)
         return self._cancel(job) if job is not None else False
 
-    async def cancel_run_durable(self, run_id: str) -> bool:
+    async def cancel_run_durable(self, run_id: str, *, queued_only: bool = False) -> bool:
         """Cancel a run and persist the fence when it has not begun execution."""
         job = self.get_job(run_id)
-        if job is None:
+        if job is None or (queued_only and job.operation_started):
             return False
         queued = not job.operation_started
         # Fence the queued job before yielding to persistence.

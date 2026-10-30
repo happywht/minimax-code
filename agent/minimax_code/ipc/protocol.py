@@ -508,6 +508,10 @@ class ScheduledRunCancelScope(BaseModel):
 
 class RunCancelParams(RunIdParams):
     schedule_scope: ScheduledRunCancelScope | None = None
+    queued_only: bool = False
+    expected_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_project_id: str | None = None
 
 
 class RunSteerParams(BaseModel):
