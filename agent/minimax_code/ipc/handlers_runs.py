@@ -404,7 +404,7 @@ def register_run_handlers(server: Any) -> None:
                 if req.action == "read_backup":
                     if reviewed["revision"] != req.revision or not req.attempt_id:
                         raise ValueError("Workspace changed since review; refresh before reading backup")
-                    backup = await asyncio.to_thread(read_resolution_backup, child, req.attempt_id)
+                    backup = await asyncio.to_thread(read_resolution_backup, child, req.attempt_id, req.path)
                     if await binding() != (root, project_id, identity):
                         raise ValueError("Session, project or service changed during backup read")
                     await ctx.reply({"backup": backup, "session_id": req.session_id,
@@ -417,7 +417,7 @@ def register_run_handlers(server: Any) -> None:
                     def restore_copy():
                         with execution_scope(ExecutionPolicy(workspace=root)):
                             return restore_resolution_backup_copy(child, req.attempt_id, req.destination,
-                                expected_parent_identity=tuple(reviewed["parent_identity"]))
+                                expected_parent_identity=tuple(reviewed["parent_identity"]), path=req.path)
                     task = asyncio.create_task(asyncio.to_thread(restore_copy))
                     try:
                         result = await asyncio.shield(task)

@@ -426,7 +426,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string;
         backup: { attempt_id: string; path: string; sha256: string; content: string } }>("run.child_workspace", {
         run_id: runId, session_id: sessionId, ...(teamRunId ? { team_run_id: teamRunId } : {}), action: "read_backup",
-        revision: snapshot.revision, expected_service_id: snapshot.service_id, attempt_id: attemptId,
+        revision: snapshot.revision, expected_service_id: snapshot.service_id, attempt_id: attemptId, path,
       });
       if (!current()) return;
       if (result.session_id !== sessionId || result.project_id !== projectId || result.service_id !== snapshot.service_id ||
@@ -453,7 +453,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string;
         backup_copy: { attempt_id: string; source_path: string; destination: string; sha256: string } }>("run.child_workspace", {
         run_id: runId, session_id: sessionId, ...(teamRunId ? { team_run_id: teamRunId } : {}),
-        action: "restore_backup_copy", attempt_id: saved.attempt_id, destination, confirmed_backup_copy: true,
+        action: "restore_backup_copy", attempt_id: saved.attempt_id, path: saved.path, destination, confirmed_backup_copy: true,
         revision: snapshot.revision, expected_service_id: snapshot.service_id,
         ...(interrupted ? { confirmed_team_stopped: true, expected_team_step_id: snapshot.team_collection!.step_id } : {}),
       });
@@ -593,13 +593,17 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
           <p>{attempt.operation === "manual_resolution" ? "手动合并 · " : ""}{attempt.id} · {attempt.status === "complete" ? "完成" : attempt.status === "partial" ? "部分收集" : "中断或进行中，结果未确认"}</p>
           {validReceipt(attempt.report, runId) ? <>
             <p>已确认复制 {attempt.report.merged.length} 项；当时已相同 {attempt.report.noop.length} 项；冲突 {attempt.report.conflicts.length} 项。</p>
-            {!!attempt.report.merged.length && <details><summary>已确认复制</summary><ul>{attempt.report.merged.map((item) => <li key={item.path} className="break-all">{item.path}</li>)}</ul></details>}
+            {!!attempt.report.merged.length && <details><summary>已确认复制</summary><ul>{attempt.report.merged.map((item) => {
+              const baseline = review.files.find((file) => file.path === item.path)?.baseline_sha256;
+              return <li key={item.path} className="break-all">{item.path} {baseline && <button type="button" disabled={busy} onClick={() => void readBackup(attempt.id, item.path, baseline)}>查看收集前备份</button>}</li>;
+            })}</ul></details>}
             {!!attempt.report.noop.length && <details><summary>当时已相同</summary><ul>{attempt.report.noop.map((path) => <li key={path} className="break-all">{path}</li>)}</ul></details>}
             {!!attempt.report.conflicts.length && <details><summary>当时的冲突</summary><ul>{attempt.report.conflicts.map((item) => <li key={item.path} className="break-all">{item.path} · {item.reason || "父目录已变化"}</li>)}</ul></details>}
           </> : <p>记录格式不可用，请手动核对。</p>}
           {attempt.backup && <p className="break-all">备份路径：{attempt.backup}</p>}
           {attempt.operation === "manual_resolution" && (attempt.path && attempt.parent_sha256 ? <>
             <button type="button" disabled={busy} onClick={() => void readBackup(attempt.id, attempt.path!, attempt.parent_sha256!)}>查看合并前备份</button>
+          </> : <p>旧记录缺少原文件摘要，无法在此核验备份；请在文件系统中自行查看。</p>)}
             {backup?.attempt_id === attempt.id && <div>
               <p className="break-all">原文件：{backup.path} · SHA-256：{backup.sha256}</p>
               <p>内容与记录的写入前摘要一致；仅供查看，不会恢复或覆盖文件。</p>
@@ -610,7 +614,6 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
               </div>}
               <button type="button" onClick={() => setBackup(null)}>关闭备份内容</button>
             </div>}
-          </> : <p>旧记录缺少原文件摘要，无法在此核验备份；请在文件系统中自行查看。</p>)}
           {attempt.pending_path && <p className="break-all">复制结果待核对：{attempt.pending_path}。不能推断是否已写入。</p>}
         </div>)}
         <p>历史记录反映当时的结果，不能证明当前文件未变化，也不代表验证或验收。</p>

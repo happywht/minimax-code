@@ -357,20 +357,35 @@ def collection_history(child: ChildWorkspace) -> list[dict[str, Any]]:
     return result
 
 
-def read_resolution_backup(child: ChildWorkspace, attempt_id: str) -> dict[str, str]:
-    """Read only a journal-bound, digest-verified pre-resolution text backup."""
+def read_resolution_backup(child: ChildWorkspace, attempt_id: str, path: str | None = None) -> dict[str, str]:
+    """Read a journal-bound, digest-verified pre-write text backup."""
     records = [record for record in collection_history(child) if record.get("id") == attempt_id]
     if len(records) != 1:
         raise ValueError("Backup attempt is unavailable")
     record = records[0]
-    relative, expected = record.get("path"), record.get("parent_sha256")
-    if (record.get("operation") != "manual_resolution" or not isinstance(relative, str)
+    if record.get("operation") == "manual_resolution":
+        relative, expected = record.get("path"), record.get("parent_sha256")
+        if path is not None and path != relative:
+            raise ValueError("Backup path does not match the attempt")
+        backup_dir = "resolution-backups/" + attempt_id + "/"
+    else:
+        relative = path
+        merged = record.get("report", {}).get("merged", [])
+        if (not isinstance(relative, str) or not isinstance(merged, list)
+                or not any(isinstance(item, dict) and item.get("path") == relative
+                           and item.get("sha256") == child.record.get("final", {}).get(relative)
+                           for item in merged)):
+            raise ValueError("Attempt does not confirm collection of this file")
+        expected = child.record.get("baseline", {}).get(relative)
+        backup_dir = "backups/"
+    if (not isinstance(relative, str)
             or not _included(relative) or not isinstance(expected, str)
             or len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected)
             or not isinstance(attempt_id, str) or not attempt_id or Path(attempt_id).name != attempt_id):
         raise ValueError("Backup lacks a verifiable original digest")
-    backup = _path(child.base, "resolution-backups/" + attempt_id + "/" + relative)
-    if record.get("backup") != str(backup) or not backup.is_file() or backup.is_symlink():
+    backup = _path(child.base, backup_dir + relative)
+    if ((record.get("operation") == "manual_resolution" and record.get("backup") != str(backup))
+            or not backup.is_file() or backup.is_symlink()):
         raise ValueError("Backup is unavailable or its path is invalid")
     with backup.open("rb") as stream:
         data = stream.read(16385)
@@ -391,13 +406,14 @@ def _check_parent_identity(parent: Path, expected: tuple[int, int]) -> None:
 
 
 def restore_resolution_backup_copy(child: ChildWorkspace, attempt_id: str, destination: str,
-                                   *, expected_parent_identity: tuple[int, int]) -> dict[str, str]:
+                                   *, expected_parent_identity: tuple[int, int],
+                                   path: str | None = None) -> dict[str, str]:
     """Create a new file from a verified backup; never replace an existing path."""
     require_write_access()
     if active_child() or not isinstance(destination, str) or not _included(destination):
         raise ValueError("Invalid backup destination")
     _check_parent_identity(child.parent, expected_parent_identity)
-    backup = read_resolution_backup(child, attempt_id)
+    backup = read_resolution_backup(child, attempt_id, path)
     from ..agent.tools.file_ops import safe_resolve
 
     target = _path(child.parent, destination)
