@@ -366,6 +366,17 @@ async def initialize_execution_service(server):
         await catalog.prepare_service(server)
 
 
+async def initialize_schedule_service():
+    """Start persisted schedules after database recovery and service preparation."""
+    db = await ensure_db()
+    if db is None:
+        logger.warning("Schedule service unavailable: database is not available")
+        return
+    from .scheduler import get_scheduler
+
+    await get_scheduler(db)
+
+
 async def ensure_db() -> Any:
     """Return the process-wide DB, opening it once when needed."""
     existing = get_db()
@@ -953,10 +964,8 @@ def register_app_handlers(server: Any, *, runtime: SkillRuntime | None = None) -
     # that pre-built a store can pass it via the ``store=`` kwarg
     # (see :func:`register_permission_handlers`).
     register_permission_handlers(server)
-    # The schedule handlers build the JobScheduler lazily via
-    # :func:`minimax_code.scheduler.get_scheduler`, which opens
-    # the DB on first call. Tests can inject a scheduler with
-    # the ``scheduler=`` kwarg to skip the lazy path.
+    # Service startup starts persisted schedules; handlers also resolve the
+    # scheduler lazily for callers that do not use the service lifecycle.
     register_scheduled_handlers(server)
     # The mobile handlers lazily resolve the DAO + pairing manager
     # (or accept them via the ``dao=`` / ``manager=`` kwargs for

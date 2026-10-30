@@ -493,12 +493,9 @@ def build_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        from .app import initialize_execution_service
+        from .app import initialize_execution_service, initialize_schedule_service
         await initialize_execution_service(server)
-        # No background tasks to spawn — the IPCServer handlers
-        # are the work, and they are driven by incoming requests.
-        # The lifespan hook exists so future work (a heartbeat
-        # task, a metrics exporter) has a clean place to register.
+        await initialize_schedule_service()
         logger.info(
             "http server ready: version=%s, ws clients=%d", app_version, 0
         )

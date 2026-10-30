@@ -112,9 +112,11 @@ async def amain(config: Config, mode: str, port: int, host: str) -> int:
     await initialize_execution_service(server)
 
     if mode == "stdio":
+        from .app import initialize_schedule_service
         from .runtime.shutdown import shutdown_runtime
 
         try:
+            await initialize_schedule_service()
             await server.run_forever()
         finally:
             await shutdown_runtime(server)
