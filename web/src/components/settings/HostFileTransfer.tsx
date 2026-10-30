@@ -4,6 +4,7 @@ import type { HostTransferResult, RemoteHost } from "../../types/ipc";
 import { Button, Input, Textarea } from "../../ui";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { HostFileBrowser } from "./HostFileBrowser";
+import { HostTextPreview } from "./HostTextPreview";
 import { HostServiceStart } from "./HostServiceStart";
 import { downloadHostFile } from "../../ipc/hostDownload";
 import { uploadHostFile } from "../../ipc/hostUpload";
@@ -16,6 +17,7 @@ const isRemoteAbsolute = (path: string) => path.startsWith("/") && path !== "/" 
 
 export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
   const [local, setLocal] = useState(""), [remote, setRemote] = useState("");
+  const [transferOpen, setTransferOpen] = useState(false);
   const [browserFile, setBrowserFile] = useState<File | null>(null);
   const [receipt, setReceipt] = useState<UploadReceipt | null>(null), [status, setStatus] = useState<HostTransferResult | null>(null);
   const [manualId, setManualId] = useState(""), [manualRemote, setManualRemote] = useState("");
@@ -170,12 +172,13 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     } catch (e) { if (valid(ticket)) setMessage(`${e instanceof Error ? e.message : String(e)}；上传结果仍未知。`); }
     finally { if (valid(ticket)) setBusy(false); }
   };
-  return <><HostServiceStart host={host} /><details className="rounded border border-line p-2"><summary>上传 / 下载文件</summary>
+  return <><HostServiceStart host={host} /><details className="rounded border border-line p-2" onToggle={(event) => setTransferOpen(event.currentTarget.open)}><summary>上传 / 下载文件</summary>
     <p className="text-xs text-ink-2">本机路径指运行当前服务的机器，不是浏览器选中的文件；远端路径指此主机的 Linux 绝对路径。仅单文件、显式操作，不自动同步。传输使用独立 SSH/SFTP，服务隧道状态不代表传输可用。</p>
     <label className="block text-xs">本机文件绝对路径<Input aria-label={`${host.name} 本机传输路径`} value={local} disabled={busy} onChange={(e) => setLocal(e.target.value)} placeholder="C:\\资料\\报告.pdf" /></label>
     <label className="block text-xs">远端文件绝对路径<Input aria-label={`${host.name} 远端传输路径`} value={remote} disabled={busy} onChange={(e) => setRemote(e.target.value)} placeholder="/home/user/report.pdf" /></label>
     <label className="block text-xs">选择浏览器文件（最大 10 MiB）<input type="file" aria-label={`${host.name} 浏览器上传文件`} disabled={busy} onChange={(e) => setBrowserFile(e.target.files?.[0] ?? null)} /></label>
     <HostFileBrowser host={host} onSelect={(path) => { if (!busy) setRemote(path); }} />
+    <HostTextPreview host={host} path={remote.trim()} active={transferOpen} />
     <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void transfer("upload")}>上传到此主机</Button>
       <Button type="button" size="sm" disabled={busy || !host.enabled || !browserFile} onClick={() => void browserUpload()}>上传浏览器文件</Button>
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void transfer("download")}>下载到服务端路径</Button>
