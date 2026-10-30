@@ -23,6 +23,8 @@ from .handler_utils import HandlerError, check_params
 from .protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
+    HostBindingParams,
+    HostBoundTransferStatusParams,
     HostPushParams,
     HostServiceAutostartParams,
     HostServiceLogsParams,
@@ -313,13 +315,11 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             logger.exception("host.fetch failed")
             await ctx.reply_error(INTERNAL_ERROR, "host.fetch failed")
 
-    async def _bound_service_host(request: HostServiceStartParams) -> dict[str, Any]:
+    async def _bound_host(request: HostBindingParams) -> dict[str, Any]:
         # Caller holds lifecycle_lock while checking and using this host snapshot.
         from ..app import ensure_db
         from ..storage.dao.text_artifacts import ArtifactDAO
 
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service", request.unit):
-            raise HandlerError(INVALID_PARAMS, "invalid service unit")
         host = await _require_host(request.host_id)
         if not host.get("enabled"):
             raise HandlerError(INVALID_PARAMS, "host is disabled")
@@ -331,6 +331,31 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
                 raise HandlerError(INVALID_PARAMS, "host configuration changed; review again")
         build_tunnel_args(host, 1, request.remote_port)
         return host
+
+    async def _bound_service_host(request: HostServiceStartParams) -> dict[str, Any]:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service", request.unit):
+            raise HandlerError(INVALID_PARAMS, "invalid service unit")
+        return await _bound_host(request)
+
+    async def handle_host_transfer_status_bound(params: Any, ctx: Context) -> None:
+        """Reconcile a journal against an explicitly bound local service and host."""
+        try:
+            request = HostBoundTransferStatusParams.model_validate(params)
+            remote_path = _upload_target(request.remote_path)
+            async with lifecycle_lock:
+                host = await _bound_host(request)
+                result = await upload_action(host, remote_path, request.transfer_id, "status",
+                                             runner=runner, strict_host_key=True)
+            await ctx.reply({"ok": result.ok, "exit_code": result.exit_code,
+                             "stderr": "" if result.ok else "Transfer status unavailable",
+                             "remote_path": remote_path, "transfer_id": result.transfer_id,
+                             "publication_state": result.publication_state,
+                             "backup_path": result.backup_path})
+        except (ValidationError, HandlerError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.transfer_status_bound failed")
+            await ctx.reply_error(INTERNAL_ERROR, "host.transfer_status_bound unavailable")
 
     async def handle_host_service_status(params: Any, ctx: Context) -> None:
         """Read bounded systemd fields, without returning logs or SSH diagnostics."""
@@ -470,6 +495,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
 
+    server.register("host.transfer_status_bound", handle_host_transfer_status_bound)
     server.register("host.service_autostart", handle_host_service_autostart)
     server.register("host.service_logs", handle_host_service_logs)
     server.register("host.service_status", handle_host_service_status)

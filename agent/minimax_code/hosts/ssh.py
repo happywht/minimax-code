@@ -201,7 +201,8 @@ async def push_file(
 
 
 async def upload_action(host: Any, remote_path: str, transfer_id: str, action: str, *,
-                        sha256: str | None = None, runner: Any = None) -> SshResult:
+                        sha256: str | None = None, runner: Any = None,
+                        strict_host_key: bool = False) -> SshResult:
     """Run the standalone journal helper; paths are data, never shell syntax."""
     from ..execution import require_write_access
     from . import upload_transaction
@@ -216,7 +217,8 @@ async def upload_action(host: Any, remote_path: str, transfer_id: str, action: s
     payload = json.dumps({"target": remote_path, "transfer_id": transfer_id,
                           "action": action, "sha256": sha256})
     command = shlex.join(["python3", "-c", bootstrap, payload])
-    result = await run_ssh(host, command, timeout=30, runner=runner)
+    result = await run_ssh(host, command, timeout=30, runner=runner,
+                           strict_host_key=strict_host_key)
     result.transfer_id = transfer_id
     result.publication_state = "unknown"
     if not result.ok:

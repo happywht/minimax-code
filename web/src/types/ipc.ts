@@ -195,6 +195,11 @@ export interface HostPushParams {
   transfer_id?: string;
 }
 
+export interface HostBoundTransferStatusParams {
+  host_id: string; expected_service_id: string; hostname: string; username: string;
+  port: number; identity_file: string; remote_port: number; remote_path: string; transfer_id: string;
+}
+
 export interface HostTransferStatusParams {
   host_id: string;
   remote_path: string;

@@ -295,7 +295,8 @@ function mockHandle(
     case "host.exec":
     case "host.push":
     case "host.fetch":
-    case "host.transfer_status": {
+    case "host.transfer_status":
+    case "host.transfer_status_bound": {
       const p = params as { host_id: string; remote_path: string; local_path: string; transfer_id?: string };
       if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");
       const failure = { ok: false, exit_code: null, stderr: "SSH is unavailable in mock mode" };

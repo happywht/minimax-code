@@ -167,6 +167,7 @@ export interface TypedIPC {
   startHostService(params: import("../types/ipc").HostServiceStartParams): Promise<{ ok: boolean; exit_code: number | null; stderr: string; timed_out: boolean }>;
   execHost(params: { host_id: string; command: string; timeout_s?: number }): Promise<import("../types/ipc").HostExecResult>;
   pushHostFile(params: import("../types/ipc").HostPushParams): Promise<import("../types/ipc").HostTransferResult>;
+  getBoundHostTransferStatus(params: import("../types/ipc").HostBoundTransferStatusParams): Promise<import("../types/ipc").HostTransferResult>;
   getHostTransferStatus(params: import("../types/ipc").HostTransferStatusParams): Promise<import("../types/ipc").HostTransferResult>;
   fetchHostFile(params: { host_id: string; remote_path: string; local_path: string }): Promise<{ ok: boolean; exit_code: number | null; stderr: string; local_path: string }>;
 
@@ -692,6 +693,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     startHostService: (params) => client.request("host.service_start", params),
     execHost: (params) => client.request("host.exec", params),
     pushHostFile: (params) => client.request("host.push", params),
+    getBoundHostTransferStatus: (params) => client.request("host.transfer_status_bound", params),
     getHostTransferStatus: (params) => client.request("host.transfer_status", params),
     fetchHostFile: (params) => client.request("host.fetch", params),
 
