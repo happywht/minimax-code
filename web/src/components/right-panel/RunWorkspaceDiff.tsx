@@ -58,23 +58,24 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   const [preview, setPreview] = useState<{ path: string; text: string } | null>(null);
   const [selected, setSelected] = useState<{ scope: "working" | "staged"; block: string } | null>(null);
   const [reviewNote, setReviewNote] = useState("");
+  const [untrackedNote, setUntrackedNote] = useState("");
   const [draftMessage, setDraftMessage] = useState("");
   const version = useRef(0), appending = useRef(false);
   const available = !!workspace && !!runProject && run.session_id === sessionId && runProject === projectId;
 
   useEffect(() => {
     const revision = version;
-    ++revision.current; setResult(null); setComparison(null); setPreview(null); setError(null); setLoading(false); setSearch(""); setSelected(null); setReviewNote(""); setDraftMessage("");
+    ++revision.current; setResult(null); setComparison(null); setPreview(null); setUntrackedNote(""); setError(null); setLoading(false); setSearch(""); setSelected(null); setReviewNote(""); setDraftMessage("");
     return () => { ++revision.current; };
   }, [run.id, sessionId, projectId]);
   useEffect(() => ipc.onSideCar(() => {
-    ++version.current; setResult(null); setComparison(null); setPreview(null); setSelected(null); setReviewNote(""); setDraftMessage(""); setError(null); setLoading(false);
+    ++version.current; setResult(null); setComparison(null); setPreview(null); setUntrackedNote(""); setSelected(null); setReviewNote(""); setDraftMessage(""); setError(null); setLoading(false);
   }), []);
 
   const load = async () => {
     if (!available || !sessionId) return;
     const request = ++version.current, host = ipc.agentBaseUrl;
-    setLoading(true); setError(null); setResult(null); setPreview(null); setSelected(null); setReviewNote(""); setDraftMessage("");
+    setLoading(true); setError(null); setResult(null); setPreview(null); setUntrackedNote(""); setSelected(null); setReviewNote(""); setDraftMessage("");
     const current = () => request === version.current && ipc.agentBaseUrl === host
       && useSessionStore.getState().currentSessionId === sessionId
       && (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
@@ -112,7 +113,7 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
   const previewPath = async (path: string) => {
     if (!result || !sessionId || !available) return;
     const request = ++version.current, host = ipc.agentBaseUrl;
-    setLoading(true); setError(null); setPreview(null);
+    setLoading(true); setError(null); setPreview(null); setUntrackedNote(""); setDraftMessage("");
     const current = () => request === version.current && ipc.agentBaseUrl === host
       && useSessionStore.getState().currentSessionId === sessionId
       && (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
@@ -159,6 +160,40 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
       window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
       setDraftMessage(detail.result ?? "当前聊天输入区未打开，请先切换到聊天再操作。");
       if (detail.result === "已添加到当前会话草稿，尚未发送。") { setSelected(null); setReviewNote(""); }
+    } catch (reason) {
+      if (current()) setDraftMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally { appending.current = false; if (current()) setLoading(false); }
+  };
+
+  const appendUntrackedReview = async () => {
+    if (appending.current || !preview || !result || !sessionId || !available || !untrackedNote.trim()) return;
+    appending.current = true;
+    const request = ++version.current, host = ipc.agentBaseUrl, snapshot = result, choice = preview;
+    const current = () => request === version.current && ipc.agentBaseUrl === host
+      && useSessionStore.getState().currentSessionId === sessionId
+      && (useSessionStore.getState().currentProjectId ?? "inbox") === projectId;
+    setLoading(true); setDraftMessage("");
+    try {
+      const fresh = await typedIPC.previewRunUntracked({ run_id: run.id, session_id: sessionId,
+        project_id: snapshot.project_id, workspace: snapshot.workspace, workspace_identity: snapshot.workspace_identity,
+        expected_service_id: snapshot.service_id, untracked_path: choice.path });
+      const identity = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (identity.service_id !== snapshot.service_id || fresh.service_id !== snapshot.service_id ||
+          fresh.run_id !== run.id || fresh.session_id !== sessionId || fresh.project_id !== runProject ||
+          fresh.workspace !== workspace || fresh.workspace_identity !== snapshot.workspace_identity ||
+          fresh.path !== choice.path || fresh.text !== choice.text)
+        throw new Error("文件内容或工作区归属已变化，请重新预览并审阅。");
+      const excerpt = fresh.text.slice(0, 12000);
+      const text = `请处理以下审阅意见（发送前可编辑）：\n来源运行：${run.id}\n` +
+        `工作区：${fresh.workspace}；未跟踪文件 ${fresh.path} 是当前工作区状态，可能包含用户或其他任务的修改，不能归因于此运行。\n` +
+        `审阅意见：\n${untrackedNote.trim()}\n\n审阅时的文件内容：\n${excerpt || "（空文件）"}` +
+        (fresh.text.length > excerpt.length ? "\n（仅附前 12000 个字符，请重新读取完整文件。）" : "") +
+        "\n以上内容为只读审阅摘录；追加操作未执行验证，任务验证结果请查看原运行。请保留用户同期修改。";
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project: projectId, session: sessionId, text };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      setDraftMessage(detail.result ?? "当前聊天输入区未打开，请先切换到聊天再操作。");
+      if (detail.result === "已添加到当前会话草稿，尚未发送。") { setPreview(null); setUntrackedNote(""); }
     } catch (reason) {
       if (current()) setDraftMessage(reason instanceof Error ? reason.message : String(reason));
     } finally { appending.current = false; if (current()) setLoading(false); }
@@ -220,7 +255,15 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
           <li key={path}><button type="button" disabled={loading} onClick={() => void previewPath(path)} className="w-full break-all py-1 text-left text-accent underline disabled:opacity-50">{path}</button></li>)}</ul>
         {!result.untracked.length && <p>无未跟踪文件</p>}
       </details>
-      {preview && <div><p className="break-all">只读文本预览：{preview.path}（最多 64 KiB；文件可能已变化）</p><pre aria-label="未跟踪文件预览" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{preview.text || "（空文件）"}</pre></div>}
+      {preview && <div className="space-y-2 rounded border border-line p-2"><p className="break-all">只读文本预览：{preview.path}（最多 64 KiB；文件可能已变化）</p><pre aria-label="未跟踪文件预览" className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{preview.text || "（空文件）"}</pre>
+        <label className="block">对此文件的审阅意见或后续目标
+          <textarea value={untrackedNote} disabled={loading} maxLength={4000} onChange={(event) => setUntrackedNote(event.target.value)}
+            className="mt-1 block w-full rounded border border-line bg-surface-1 p-2 text-ink-0" rows={3} />
+        </label>
+        <Button type="button" size="sm" disabled={loading || !untrackedNote.trim()} onClick={() => void appendUntrackedReview()}>将文件审阅意见追加到草稿</Button>{" "}
+        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => { setPreview(null); setUntrackedNote(""); }}>取消文件审阅</Button>
+        <p>追加前重新读取完整文件并核对归属；草稿只附前 12000 字符，不会自动发送或执行验证。请先检查是否适合分享。</p>
+      </div>}
     </div>}
   </div>;
 }
