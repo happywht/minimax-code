@@ -270,7 +270,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
     <ProjectCsvImport project={project} session={session} service={scoped ? state.serviceId : null} host={host} disabled={state.busy || filePending || converting}
       draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, filePending, converting])}
       onApply={(text, table) => { cancelFileRead(); applyCsv(text, table); }} />
-    <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} onImport={(text, table) => {
+    <ProjectXlsxImport project={project} session={session} service={scoped ? state.serviceId : null} disabled={state.busy || filePending || converting} onImport={(text, table) => {
       const scope = generationScope.current, expectedService = state.serviceId, before = conversionRevision.current.revision;
       void (async () => {
         if (csvRef.current || tableDirty) {
@@ -278,7 +278,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
           if (!accepted) return;
         }
         if (!scope.active || ipc.agentBaseUrl !== host || useSessionStore.getState().currentProjectId !== project ||
-            useSessionStore.getState().currentSessionId !== session || useOfficeDeliveryStore.getState().serviceId !== expectedService || conversionRevision.current.revision !== before) return;
+            useSessionStore.getState().currentSessionId !== session || useOfficeDeliveryStore.getState().serviceId !== expectedService || useOfficeDeliveryStore.getState().busy || conversionRevision.current.revision !== before) return;
         cancelFileRead(); applyCsv(text, table);
       })();
     }} />
