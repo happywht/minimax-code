@@ -153,6 +153,7 @@ export function SubAgentPanel({
         </div>
       </div>
       {visibleSession && <ChildResultsHandoff sessionId={visibleSession} />}
+      {visibleSession && <ChildHistory sessionId={visibleSession} />}
       {visibleSession && <OlderChildLookup sessionId={visibleSession} />}
       {recoveryError && <div role="alert" className="mb-2 text-[11px] text-status-error">子任务恢复失败：{recoveryError}。请刷新后核对状态。</div>}
       {runs.length === 0 ? (
@@ -171,6 +172,52 @@ export function SubAgentPanel({
       )}
     </div>
   );
+}
+
+type HistoricChild = { run_id: string; parent_run_id: string; agent_name: string; status: string; live: boolean;
+  prompt: string; text: string; text_truncated: boolean; partial: boolean; error: string | null };
+type ChildCursor = { created_at: string; run_id: string };
+function ChildHistory({ sessionId }: { sessionId: string }): JSX.Element {
+  const session = useSessionStore((s) => s.currentSessionId), selectedProject = useSessionStore((s) => s.currentProjectId);
+  const project = useSessionStore((s) => s.sessions.find((item) => item.id === sessionId)?.project_id ?? null);
+  const [rows, setRows] = useState<HistoricChild[]>([]), [cursor, setCursor] = useState<ChildCursor | null>(null);
+  const [service, setService] = useState(""), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
+  const epoch = useRef(0), lock = useRef(false);
+  useEffect(() => { ++epoch.current; setRows([]); setCursor(null); setService(""); setBusy(false); setMessage(""); return () => { ++epoch.current; }; }, [sessionId, session, project, selectedProject]);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setRows([]); setCursor(null); setService(""); setBusy(false); setMessage("连接变化，请重新读取历史。"); }), []);
+  const load = async (more: boolean) => {
+    if (lock.current || session !== sessionId || (selectedProject !== project && !(project === null && selectedProject === "inbox")) || (more && (!service || !cursor))) return;
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl, prior = more ? cursor : null;
+    const current = () => ticket === epoch.current && host === ipc.agentBaseUrl && useSessionStore.getState().currentSessionId === sessionId &&
+      useSessionStore.getState().currentProjectId === selectedProject && (useSessionStore.getState().sessions.find((s) => s.id === sessionId)?.project_id ?? null) === project;
+    lock.current = true; setBusy(true); setMessage("");
+    try {
+      const identity = await typedIPC.getServiceIdentity();
+      if (!identity.service_id || (more && identity.service_id !== service)) throw new Error("服务身份变化，请重新读取历史。");
+      const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string; children: HistoricChild[]; next_cursor: ChildCursor | null }>("run.child_list", {
+        session_id: sessionId, history: true, expected_service_id: identity.service_id, expected_project_id: project,
+        ...(prior ? { before_created_at: prior.created_at, before_run_id: prior.run_id } : {}),
+      });
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      if (identity.service_id !== after.service_id || result.service_id !== identity.service_id || result.session_id !== sessionId || result.project_id !== project ||
+          !Array.isArray(result.children) || result.children.some((item) => !item.run_id || !item.parent_run_id) ||
+          (result.next_cursor && (!result.next_cursor.run_id || !result.next_cursor.created_at))) throw new Error("历史归属或游标不匹配。");
+      setRows((old) => more ? [...old, ...result.children.filter((item) => !old.some((previous) => previous.run_id === item.run_id))] : result.children);
+      setCursor(result.next_cursor); setService(identity.service_id);
+      if (!result.children.length) setMessage("没有更多可确认归属的直接子任务。");
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { lock.current = false; if (current()) setBusy(false); }
+  };
+  return <details className="mb-2 rounded border border-line p-2 text-xs"><summary>浏览子任务历史</summary>
+    <p>按创建时间倒序，每页 50 条；活动但无法确认仍在运行的记录需要核对。历史可能随新记录或删除变化。</p>
+    <button type="button" disabled={busy} onClick={() => void load(false)}>读取／刷新历史</button>
+    <ul>{rows.map((item) => <li key={item.run_id}><details><summary className="break-all">{item.agent_name || "子 Agent"} · {item.run_id} · {item.status}{!["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(item.status) && !item.live ? " · 状态待核对" : ""}</summary>
+      <p className="break-all">父运行：{item.parent_run_id}{item.partial ? " · 部分结果" : ""}</p><p>任务：{item.prompt}</p>
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{item.text || "（没有已保存的结果文本）"}</pre>{item.text_truncated && <p>结果已截断。</p>}{item.error && <p>{item.error}</p>}</details></li>)}</ul>
+    {cursor && <button type="button" disabled={busy} onClick={() => void load(true)}>加载更多</button>}
+    {message && <p role="status">{message}</p>}
+  </details>;
 }
 
 function OlderChildLookup({ sessionId }: { sessionId: string }): JSX.Element {

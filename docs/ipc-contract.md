@@ -1968,6 +1968,8 @@ DOCX、PDF 与双格式报告参数均可选 `sources:[{title,url,accessed_at?,e
 
 可选 `run_id` 精确查询同一绑定范围内的一条直接子运行，不受最近 100 条限制；不满足归属时返回空列表。查询前后核对宿主会话、项目和服务，不恢复或启动任务。
 
+`run.child_list` 可使用 `history:true`、`expected_service_id`、`expected_project_id` 分页，每页最多 50 项；继续读取时提供上页 `next_cursor` 的 `created_at` 与 `run_id`，分别作为 `before_created_at` 和 `before_run_id`。服务、项目、会话及持久父运行绑定不匹配时拒绝，查询前后复核；不传 `history` 仍返回原有最近 100 项。历史列表不是固定数据库快照，新建或删除可能改变后续结果。
+
 `run.output_page({run_id,session_id,output_ref,expected_service_id,offset?,limit?})` 按字符分页读取该运行的捕获输出 JSON；最多 8000 字符，返回当前/下一偏移、总字符数和绑定标识。输出仅包含工具捕获到的内容，命令捕获上限和截断标记仍然适用；引用不跨项目、会话或服务使用。
 
 该方法可选 `query`（1–256 字符）执行区分大小写的字面查找，`offset` 是起始字符位置；返回 `found` 及绑定标识，命中时返回位置、有界摘录和 `next_search_offset`，未命中不表示捕获之前被截断的内容不存在。省略 `query` 保持原分页响应。

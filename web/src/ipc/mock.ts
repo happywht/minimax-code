@@ -821,10 +821,11 @@ function mockHandle(
     case "run.output_clear":
       throw new Error("演示模式没有真实工具输出存储");
     case "run.child_list": {
-      const p = params as { session_id: string };
+      const p = params as { session_id: string; history?: boolean; expected_service_id?: string; expected_project_id?: string | null };
       const session = mockSessions.get(p.session_id);
       if (!session) throw new Error("Unknown parent session");
-      return { session_id: p.session_id, project_id: session.project_id ?? null, service_id: "mock", children: [], limit: 100 };
+      if (p.history && (p.expected_service_id !== "mock" || p.expected_project_id !== (session.project_id ?? null))) throw new Error("History binding changed");
+      return { session_id: p.session_id, project_id: session.project_id ?? null, service_id: "mock", children: [], limit: p.history ? 50 : 100, ...(p.history ? { next_cursor: null } : {}) };
     }
     case "run.steer":
       throw new Error("演示模式不支持运行中补充");

@@ -266,7 +266,7 @@ def register_run_handlers(server: Any) -> None:
             dao = await _get_read_control_dao(ctx)
 
             async def binding():
-                if req.run_id is not None:
+                if req.run_id is not None or req.history:
                     await require_chat_session(req.session_id)
                 session = await dao._db.fetchone("SELECT project_id FROM sessions WHERE id=?", (req.session_id,))
                 if not session:
@@ -275,13 +275,25 @@ def register_run_handlers(server: Any) -> None:
                 return session["project_id"], identity
 
             project, identity = await binding()
+            if req.history:
+                if (req.run_id is not None or not req.expected_service_id or req.expected_service_id != identity
+                        or "expected_project_id" not in req.model_fields_set or req.expected_project_id != project
+                        or bool(req.before_created_at) != bool(req.before_run_id)):
+                    raise ValueError("History cursor or service/project binding is invalid")
+            elif req.before_created_at or req.before_run_id:
+                raise ValueError("History cursor requires history mode")
+            limit = 50 if req.history else 100
             rows = await dao._db.fetchall("""SELECT c.* FROM agent_runs c JOIN agent_runs p
                 ON p.id = CASE WHEN json_valid(c.metadata) THEN json_extract(c.metadata,'$.parent_run_id') END
                 WHERE c.mode='subagent' AND p.session_id=?
                 AND CASE WHEN json_valid(c.metadata) THEN json_extract(c.metadata,'$.parent_session_id') END=?
                 AND CASE WHEN json_valid(p.metadata) THEN json_extract(p.metadata,'$.project_id') END IS ?
                 AND (? IS NULL OR c.id=?)
-                ORDER BY c.created_at DESC,c.id DESC LIMIT 100""", (req.session_id, req.session_id, project, req.run_id, req.run_id))
+                AND (? IS NULL OR c.created_at < ? OR (c.created_at = ? AND c.id < ?))
+                ORDER BY c.created_at DESC,c.id DESC LIMIT ?""", (req.session_id, req.session_id, project, req.run_id, req.run_id,
+                    req.before_created_at, req.before_created_at, req.before_created_at, req.before_run_id, limit + (1 if req.history else 0)))
+            more = req.history and len(rows) > limit
+            rows = rows[:limit]
             children = []
             for row in rows:
                 run = _hydrate_run(row)
@@ -300,7 +312,8 @@ def register_run_handlers(server: Any) -> None:
             if await binding() != (project, identity):
                 raise ValueError("Session project or service changed during recovery")
             await ctx.reply({"session_id": req.session_id, "project_id": project,
-                             "service_id": identity, "children": children, "limit": 100})
+                             "service_id": identity, "children": children, "limit": limit,
+                             **({"next_cursor": {"created_at": rows[-1]["created_at"], "run_id": rows[-1]["id"]} if more and rows else None} if req.history else {})})
         except (ValidationError, ValueError, HandlerError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))
         except Exception:

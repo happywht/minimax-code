@@ -534,6 +534,11 @@ class RunChildListParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1, max_length=128)
     run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    history: bool = False
+    before_created_at: str | None = Field(default=None, min_length=1, max_length=128)
+    before_run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_service_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_project_id: str | None = None
 
 
 class RunVerifyCollectedParams(BaseModel):
