@@ -77,7 +77,7 @@ function reportMarkers(body: string, sections: string, structured: boolean): num
 
 export type RetainedReportDraft = Omit<ReportDraft, "researchIds" | "researchRanges"> & { researchNeedsReview: boolean; citationNeedsReview?: boolean; documentReview?: boolean; file: File | null };
 
-export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, researchTransfer, onClearResearchTransfer, attachmentTransfer, onClearAttachmentTransfer, onTableApplied, artifactTransfer, onClearArtifactTransfer }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; researchTransfer?: string[] | null; onClearResearchTransfer?: () => void; attachmentTransfer?: AttachmentTransfer | null; onClearAttachmentTransfer?: () => void; onTableApplied?: () => void; artifactTransfer?: TextArtifact | null; onClearArtifactTransfer?: () => void }): JSX.Element {
+export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, researchTransfer, onClearResearchTransfer, attachmentTransfer, onClearAttachmentTransfer, onTableApplied, artifactTransfer, artifactTransferRequiresRun, onClearArtifactTransfer }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; researchTransfer?: string[] | null; onClearResearchTransfer?: () => void; attachmentTransfer?: AttachmentTransfer | null; onClearAttachmentTransfer?: () => void; onTableApplied?: () => void; artifactTransfer?: TextArtifact | null; artifactTransferRequiresRun?: boolean; onClearArtifactTransfer?: () => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
@@ -412,10 +412,12 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           <Button type="button" variant="secondary" onClick={() => { setDocumentCitations(documentCitations.filter((_, i) => i !== index)); setDocumentReview(true); }}>移除此引用</Button></div>)}
         {documentReview && <div role="alert">资料引用顺序已变化或草稿已恢复，正文编号不会自动更新；请核对。<Button type="button" variant="secondary" onClick={() => setDocumentReview(false)}>已核对资料引用编号</Button></div>}
       </div>
-      <ReportArtifactReuse project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host} transfer={artifactTransfer} onClearTransfer={onClearArtifactTransfer}
-        onApply={(paragraphs) => {
-          const applied = appendExcerpt(paragraphs);
+      <ReportArtifactReuse project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host} transfer={artifactTransfer} transferRequiresRun={artifactTransferRequiresRun} onClearTransfer={onClearArtifactTransfer}
+        draftVersion={JSON.stringify([docName, title, body, format, structured, sections, visualSections, excerptSection, sources, researchSources, researchRanges, documentCitations, researchNeedsReview, citationNeedsReview, documentReview])}
+        onApply={(paragraphs, row) => {
+          const applied = appendExcerpt([`文本成果（未经核验）：${row.source_path} · v${row.version} · ${row.id} · SHA-256 ${row.sha256}`, ...paragraphs]);
           if (applied && paragraphs.some((text) => /\[[1-9][0-9]*\]/.test(text))) setCitationNeedsReview(true);
+          if (applied && paragraphs.some((text) => /\[资料[1-9][0-9]*\]/.test(text))) setDocumentReview(true);
           return applied;
         }} />
       {tableTransfer && <div className="space-y-2 rounded border border-line p-3">

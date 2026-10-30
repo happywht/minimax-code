@@ -7,8 +7,9 @@ import { ResearchSourcesPanel } from "./ResearchSourcesPanel";
 import { SearchableTextPreview } from "./SearchableTextPreview";
 import { ArtifactFollowupDraft } from "./ArtifactFollowupDraft";
 import { ArtifactEditCopy } from "./ArtifactEditCopy";
+import type { TextArtifact } from "../../types/ipc";
 
-export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }): JSX.Element {
+export function ArtifactsPanel({ onClose, embedded = false, onPrepareReport, reportTransferPending = false, reportService }: { onClose: () => void; embedded?: boolean; onPrepareReport?: (row: TextArtifact) => void; reportTransferPending?: boolean; reportService?: string }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const [serviceEpoch, setServiceEpoch] = useState(0);
@@ -68,7 +69,13 @@ export function ArtifactsPanel({ onClose, embedded = false }: { onClose: () => v
         <h3 className="font-medium">预览与下载</h3>
         <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
         <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载原始字节</Button>
-        <Button variant="secondary" disabled={state.busy || state.loading || !state.serviceId} onClick={() => void state.register(state.selected!.source_path)}>从源文件登记新版本</Button></div>
+        <Button variant="secondary" disabled={state.busy || state.loading || !state.serviceId} onClick={() => void state.register(state.selected!.source_path)}>从源文件登记新版本</Button>
+        {onPrepareReport && <Button type="button" variant="secondary" disabled={state.busy || state.loading || !sessionId || !state.serviceId || state.serviceId !== reportService || reportTransferPending} onClick={() => {
+          const active = useSessionStore.getState(), current = useArtifactStore.getState(), row = current.selected;
+          if (!row || ipc.agentBaseUrl !== host || active.currentProjectId !== projectId || active.currentSessionId !== sessionId || current.projectId !== projectId || current.host !== host || current.serviceId !== reportService || row.project_id !== projectId || row.service_id !== reportService) return;
+          onPrepareReport(row);
+        }}>交接到报告</Button>}</div>
+        {reportTransferPending && <p role="status">已有待复用文本成果，请先在报告中处理或放弃。</p>}
         <ArtifactFollowupDraft key={`${state.selected.id}:${state.selected.sha256}`} artifact={state.selected} />
         <ArtifactEditCopy key={`${state.selected.id}:${state.selected.sha256}`} artifact={state.selected} />
         <SearchableTextPreview key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} label="成果纯文本预览" className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" />

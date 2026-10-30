@@ -30,7 +30,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTr
   const projectName = useSessionStore((s) => s.projects.find((item) => item.id === project)?.name);
   const host = ipc.agentBaseUrl;
   const [binding, setBinding] = useState<Binding | null>(null), bindingRef = useRef<Binding | null>(null);
-  const [artifactTransfer, setArtifactTransfer] = useState<{ scope: string; row: TextArtifact } | null>(null);
+  const [artifactTransfers, setArtifactTransfers] = useState<Record<string, { row: TextArtifact; requireRun: boolean }>>({});
   const [tableTransfer, setTableTransfer] = useState<{ scope: string; value: ReportTableTransfer } | null>(null);
   const [researchTransfer, setResearchTransfer] = useState<{ scope: string; ids: string[] } | null>(null);
   const [attachmentTransfers, setAttachmentTransfers] = useState<Record<string, RunAttachmentTransfer>>({});
@@ -80,6 +80,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTr
     historicalTransfer.project === validBinding.project && historicalTransfer.session === validBinding.session &&
     historicalTransfer.row.project_id === validBinding.project && historicalTransfer.row.service_id === validBinding.service;
   const scopeKey = validBinding ? JSON.stringify([validBinding.host, validBinding.project, validBinding.session, validBinding.service]) : "";
+  const pendingArtifact = historicalMatches ? { row: historicalTransfer!.row, requireRun: true } : artifactTransfers[scopeKey] ?? null;
   useEffect(() => {
     const node = surfaceRef.current;
     if (!node) return;
@@ -107,17 +108,17 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTr
         const label = button?.textContent ?? "";
         if ((tab === "attachments" || tab === "office") && /添加|加入|追加|删除|新增|插入|移动|转换|恢复|撤销|重做|复制/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
       }}>
-        {visited.has("artifacts") && <div className="h-full" hidden={tab !== "artifacts"}><ArtifactsPanel embedded onClose={onClose} /></div>}
-        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} tableTransfer={tableTransfer?.scope === scopeKey ? tableTransfer.value : null} onClearTableTransfer={() => setTableTransfer(null)} researchTransfer={researchTransfer?.scope === scopeKey ? researchTransfer.ids : null} onClearResearchTransfer={() => setResearchTransfer(null)} attachmentTransfer={attachmentTransfers[scopeKey] ?? null} onClearAttachmentTransfer={() => setAttachmentTransfers((previous) => { const next = { ...previous }; delete next[scopeKey]; return next; })} onTableApplied={() => onEdit?.("report")} artifactTransfer={historicalMatches ? historicalTransfer!.row : artifactTransfer?.scope === scopeKey ? artifactTransfer.row : null} onClearArtifactTransfer={() => { setArtifactTransfer(null); onClearHistoricalTransfer?.(); }} /></div>}
+        {visited.has("artifacts") && <div className="h-full" hidden={tab !== "artifacts"}><ArtifactsPanel embedded onClose={onClose} reportService={validBinding.service} reportTransferPending={!!pendingArtifact} onPrepareReport={(row) => { setArtifactTransfers((previous) => ({ ...previous, [scopeKey]: { row, requireRun: false } })); switchTab("attachments"); }} /></div>}
+        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} tableTransfer={tableTransfer?.scope === scopeKey ? tableTransfer.value : null} onClearTableTransfer={() => setTableTransfer(null)} researchTransfer={researchTransfer?.scope === scopeKey ? researchTransfer.ids : null} onClearResearchTransfer={() => setResearchTransfer(null)} attachmentTransfer={attachmentTransfers[scopeKey] ?? null} onClearAttachmentTransfer={() => setAttachmentTransfers((previous) => { const next = { ...previous }; delete next[scopeKey]; return next; })} onTableApplied={() => onEdit?.("report")} artifactTransfer={pendingArtifact?.row ?? null} artifactTransferRequiresRun={pendingArtifact?.requireRun ?? true} onClearArtifactTransfer={() => { if (historicalMatches) onClearHistoricalTransfer?.(); else setArtifactTransfers((previous) => { const next = { ...previous }; delete next[scopeKey]; return next; }); }} /></div>}
         {visited.has("office") && <div className="h-full" hidden={tab !== "office"}><OfficeDeliveryPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} initialDraft={officeDrafts.get(scopeKey)} onRetainDraft={(draft) => officeDrafts.set(scopeKey, draft)} tableTransferPending={tableTransfer?.scope === scopeKey} onPrepareReportTable={(value) => { setTableTransfer({ scope: scopeKey, value }); switchTab("attachments"); }} /></div>}
         {visited.has("research") && <div className="h-full" hidden={tab !== "research"}><ResearchSourcesPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} reportService={validBinding.service} reportTransferPending={researchTransfer?.scope === scopeKey} onPrepareReport={(ids) => { setResearchTransfer({ scope: scopeKey, ids }); switchTab("attachments"); }} /></div>}
-        {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} target={runTarget} onClearTarget={onClearRunTarget} attachmentTransferPending={!!attachmentTransfers[scopeKey]} onPrepareAttachment={(value) => { setAttachmentTransfers((previous) => ({ ...previous, [scopeKey]: value })); switchTab("attachments"); }} onPrepareReport={(row) => { setArtifactTransfer({ scope: scopeKey, row }); switchTab("attachments"); }} /></div>}
+        {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} target={runTarget} onClearTarget={onClearRunTarget} attachmentTransferPending={!!attachmentTransfers[scopeKey]} onPrepareAttachment={(value) => { setAttachmentTransfers((previous) => ({ ...previous, [scopeKey]: value })); switchTab("attachments"); }} onPrepareReport={pendingArtifact ? undefined : (row) => { setArtifactTransfers((previous) => ({ ...previous, [scopeKey]: { row, requireRun: true } })); switchTab("attachments"); }} /></div>}
       </div>
     </div>}
   </section>;
 }
 
-function SessionDeliveries({ binding, target, onClearTarget, onPrepareReport, onPrepareAttachment, attachmentTransferPending }: { binding: Binding; target?: { host: string; service: string; project: string; session: string; run: string } | null; onClearTarget?: () => void; onPrepareReport: (row: TextArtifact) => void; onPrepareAttachment: (value: RunAttachmentTransfer) => void; attachmentTransferPending: boolean }): JSX.Element {
+function SessionDeliveries({ binding, target, onClearTarget, onPrepareReport, onPrepareAttachment, attachmentTransferPending }: { binding: Binding; target?: { host: string; service: string; project: string; session: string; run: string } | null; onClearTarget?: () => void; onPrepareReport?: (row: TextArtifact) => void; onPrepareAttachment: (value: RunAttachmentTransfer) => void; attachmentTransferPending: boolean }): JSX.Element {
   const runs = useRunTimelineStore((s) => s.runs), order = useRunTimelineStore((s) => s.order);
   const loading = useRunTimelineStore((s) => s.loading), error = useRunTimelineStore((s) => s.error);
   const load = useRunTimelineStore((s) => s.loadForSession);

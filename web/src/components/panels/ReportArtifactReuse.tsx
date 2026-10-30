@@ -6,9 +6,9 @@ import type { TextArtifact } from "../../types/ipc";
 import { Button, Input } from "../../ui";
 
 /** Reuse immutable project snapshots as editable report paragraphs. */
-export function ReportArtifactReuse({ project, session, service, host, onApply, transfer, onClearTransfer }: {
+export function ReportArtifactReuse({ project, session, service, host, onApply, transfer, transferRequiresRun = true, onClearTransfer, draftVersion }: {
   project: string | null; session: string | null; service: string | null; host: string;
-  onApply: (paragraphs: string[]) => boolean; transfer?: TextArtifact | null; onClearTransfer?: () => void;
+  onApply: (paragraphs: string[], row: TextArtifact) => boolean; transfer?: TextArtifact | null; transferRequiresRun?: boolean; onClearTransfer?: () => void; draftVersion: string;
 }): JSX.Element {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<TextArtifact[]>([]);
@@ -18,6 +18,9 @@ export function ReportArtifactReuse({ project, session, service, host, onApply, 
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const epoch = useRef(0);
+  const draft = useRef({ value: draftVersion, revision: 0 }), callbacks = useRef({ onApply, onClearTransfer });
+  callbacks.current = { onApply, onClearTransfer };
+  if (draft.current.value !== draftVersion) draft.current = { value: draftVersion, revision: draft.current.revision + 1 };
   useEffect(() => {
     const invalidate = () => { ++epoch.current; setRows([]); setCursor(null); setCandidate(null); setBusy(false); };
     invalidate(); setNotice("");
@@ -32,7 +35,7 @@ export function ReportArtifactReuse({ project, session, service, host, onApply, 
   }, [project, session, service, host]);
   useEffect(() => {
     ++epoch.current; setCandidate(null); setBusy(false); setNotice("");
-  }, [transfer?.id, transfer?.sha256, transfer?.run_id]);
+  }, [transfer?.id, transfer?.sha256, transfer?.run_id, transferRequiresRun]);
   const current = (ticket: number) => {
     const s = useSessionStore.getState(), a = useAttachmentStore.getState();
     return ticket === epoch.current && ipc.agentBaseUrl === host && s.currentProjectId === project &&
@@ -63,7 +66,7 @@ export function ReportArtifactReuse({ project, session, service, host, onApply, 
   const read = async (row: TextArtifact, ticket: number) => {
     if (!project) throw new Error("请先选择项目。");
     const checkRun = async () => {
-      if (!transfer || transfer.id !== row.id) return;
+      if (!transferRequiresRun || !transfer || transfer.id !== row.id) return;
       if (!session || !service || !row.run_id) throw new Error("任务关联范围已变化，请重新选择。 ");
       const result = await typedIPC.getProjectRunSummary({ project_id: project, expected_service_id: service, run_id: row.run_id });
       if (!current(ticket) || result.project_id !== project || result.service_id !== service ||
@@ -96,20 +99,21 @@ export function ReportArtifactReuse({ project, session, service, host, onApply, 
   };
   const apply = async () => {
     if (!candidate || busy) return;
-    const ticket = ++epoch.current; setBusy(true); setNotice("");
+    const ticket = ++epoch.current, expectedDraft = draft.current.revision; setBusy(true); setNotice("");
     try {
       const text = await read(candidate.row, ticket);
       if (!current(ticket)) return;
       if (text !== candidate.text) throw new Error("成果内容已变化，请重新准备。");
+      if (draft.current.revision !== expectedDraft) throw new Error("报告草稿在读取期间发生变化，未追加内容。");
       const paragraphs = text.split("\n").filter((line) => line.trim());
-      if (onApply(paragraphs)) { if (transfer?.id === candidate.row.id) onClearTransfer?.(); setCandidate(null); setNotice("已追加可编辑段落；请核对内容和引用。尚未生成文件。"); }
+      if (callbacks.current.onApply(paragraphs, candidate.row)) { if (transfer?.id === candidate.row.id) callbacks.current.onClearTransfer?.(); setCandidate(null); setNotice("已追加可编辑段落和成果身份；请核对内容和引用。尚未生成文件。"); }
     } catch (error) { if (current(ticket)) setNotice(error instanceof Error ? error.message : String(error)); }
     finally { if (current(ticket)) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2">
-    {transfer && <div className="space-y-1 rounded border border-line p-2"><p className="break-all">任务关联成果：{transfer.source_path} · v{transfer.version} · 运行 {transfer.run_id}</p>
+    {transfer && <div className="space-y-1 rounded border border-line p-2"><p className="break-all">{transferRequiresRun ? "任务关联成果" : "项目文本成果"}：{transfer.source_path} · v{transfer.version}{transferRequiresRun ? ` · 运行 ${transfer.run_id}` : ""}</p>
       <p>准备时重新读取完整快照；请核对内容后再追加到报告，原文件不变。</p>
-      <Button type="button" size="sm" variant="secondary" disabled={busy || !project || !session || !service || transfer.project_id !== project || transfer.service_id !== service || !transfer.run_id} onClick={() => void prepare(transfer)}>准备此任务成果</Button>
+      <Button type="button" size="sm" variant="secondary" disabled={busy || !project || !session || !service || transfer.project_id !== project || transfer.service_id !== service || (transferRequiresRun && !transfer.run_id)} onClick={() => void prepare(transfer)}>{transferRequiresRun ? "准备此任务成果" : "准备此项目成果"}</Button>
       <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { setCandidate(null); onClearTransfer?.(); }}>放弃待复用成果</Button></div>}
     <p>复用已登记文本成果的完整快照：每行追加为报告段落，空行省略；Markdown 和 CSV 均作为纯文本。原文件不变，内容需核对。</p>
     <div className="flex gap-2"><Input aria-label="搜索可复用文本成果" maxLength={240} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按路径搜索" />
