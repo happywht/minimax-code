@@ -2406,3 +2406,5 @@ publication, so the saved ID and remote path must be used to query
 立即运行界面在发送前把包含服务身份、计划 ID、版本及幂等键的待确认记录保存到 sessionStorage；重载不会自动重试，用户可复制/导入该记录并显式重试相同请求。原请求未接单时重试可能首次创建运行，因此应先核对历史。回执已确认后才清除记录；清除记录不取消已接单运行。浏览器存储不可用或记录损坏时阻止新的界面接单。导入按服务身份与计划 ID 校验，数据库克隆可能复用服务身份，不能代替人工核对远端主机；不同标签页的待确认记录不互相协调。旧客户端不带 expected_service_id 的调用仍兼容。
 
 `schedule.manual_receipt` 必须传入 `job_id`、`idempotency_key`、`expected_revision` 和 `expected_service_id`。服务端在同一数据库事务内核对服务身份，查找原 manual occurrence 并验证与版本对应的指纹，不调用调度器、不创建或重试任务。返回 `{found:false,receipt:null}` 或 `{found:true,receipt}`；匹配回执只包含原发生/任务/运行 ID 与读取时状态，`created:false`。界面显式查询找到后核对本地原请求、清除待确认记录并展示原发生编号；查不到或错误保留记录。结果只代表当前数据库快照，未找到不证明在途请求不会接单，也不能排除备份恢复或克隆导致的历史差异。
+
+工作台可从当前项目的运行生成仅含 `version`、`service_id`、`project_id`、`session_id` 和 `run_id` 的可复制定位记录；登录到原服务后显式粘贴，通过现有 `run.project_summary` 的服务和项目归属校验、`run.steps` 的会话/步骤核对读取快照及关联附件。只支持该摘要入口可见的非归档主运行及其权限边界；不自动恢复、迁移或重放任务。摘要服务身份可能随数据库克隆，记录不是主机身份凭证或签名；用户须核对实际远端主机。

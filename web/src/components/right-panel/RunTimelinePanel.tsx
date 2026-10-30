@@ -31,6 +31,7 @@ import { OutputStorage } from "./OutputStorage";
 import { RunTimelineTextArtifacts } from "./RunTimelineTextArtifacts";
 import { CodexInputImages } from "./CodexInputImages";
 import { CodexInputDraft } from "./CodexInputDraft";
+import { RunReferenceExport, RunReferenceRecovery } from "./RunReferenceRecovery";
 
 export type TimelineTarget = { host: string; service: string; project: string; session: string; run: string;
   job: string; occurrence: string; revision: number; workspace: string };
@@ -141,6 +142,7 @@ export function RunTimelinePanel({
     return (
       <div data-testid={testId} className="px-3 py-4 text-xs text-minimax-muted">
         <OutputStorage />
+        <RunReferenceRecovery />
         {loading
           ? strings.rightPanel.timeline.loading
           : error
@@ -157,6 +159,7 @@ export function RunTimelinePanel({
         <OutputStorage />
       </div>
       {syncError}
+      <RunReferenceRecovery />
       <div
         ref={scrollRef}
         data-testid="run-timeline-scroll"
@@ -242,6 +245,7 @@ export function RunTimelinePanel({
               ))}
             </ol></div>
             <div className="space-y-2 border-t border-line pt-2"><h4 className="text-[11px] font-semibold text-ink-1">预算、成果与操作</h4>
+            <RunReferenceExport run={run} />
             <RunBudgetPanel run={run} />
             <CodexInputImages run={run} />
             <CodexInputDraft run={run} />
