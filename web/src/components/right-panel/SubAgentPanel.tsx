@@ -32,6 +32,7 @@ import { strings } from "../../ui/strings";
 import { useSessionStore } from "../../stores/sessionStore";
 import { ipc } from "../../ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
+import { ChildConflictHandoff } from "./ChildConflictHandoff";
 import { ChildResultsHandoff } from "./ChildResultsHandoff";
 
 export interface SubAgentPanelProps {
@@ -585,6 +586,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
           <button type="button" disabled={busy} onClick={() => setMerge(null)}>取消编辑</button>
         </div>}
       </details>)}
+      <ChildConflictHandoff review={review} teamRunId={teamRunId} disabled={busy} />
       <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>
       {review.files.some((f) => !!f.conflict) && review.files.some((f) => !f.conflict && f.parent_sha256 !== f.child_sha256) && <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected"} onClick={() => void invoke(true, true)}>仅收集无冲突文件，跳过冲突</button>}
       {!allowCollect && <p>{review.team_collection?.eligible ? "已保存成员完成及受管任务收束记录；请自行核对相关进程并明确确认。" : `不能收集：${review.team_collection?.reason || "缺少停止或成员完成证据"}。`} 工作副本不是操作系统沙箱。</p>}
