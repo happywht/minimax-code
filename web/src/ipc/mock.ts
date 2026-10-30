@@ -712,6 +712,7 @@ function mockHandle(
         cursor: mockRunEvents.get(runId)?.length ?? 0,
         queued_input: null,
         pending_ask_user: null,
+        pending_ask_users: [],
         pending_native_permissions: [],
         pending_codex_permissions: [],
         live_stream: null,

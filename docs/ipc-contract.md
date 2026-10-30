@@ -546,11 +546,12 @@ It is cleared after the run starts; non-text inputs do not get this projection.
 This permits recovery of accepted queued text after reconnect without treating
 it as an in-flight instruction. Startup recovery may mark queued runs as
 interrupted; it does not automatically execute them.
-It also returns `pending_ask_user`, null or a Native question whose owning
+It also returns `pending_ask_users`, all Native questions whose owning
 in-process future is still pending for that run and session. This optional live
 projection is not part of the database transaction or a restartable wait. Its
 `remaining_ms` is sampled by the server; clients treat it as an estimate and
 the answer endpoint remains authoritative on expiration and resolution.
+The legacy `pending_ask_user` field contains the first such question or null.
 `pending_native_permissions` similarly contains only pending Native consent
 requests owned by this run and session, or an empty list. It is a live memory
 projection, not persisted approval; `remaining_ms` is an estimate and

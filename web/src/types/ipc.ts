@@ -1034,6 +1034,7 @@ export interface RunStepsResult {
   cursor: number;
   queued_input?: { text: string; truncated: boolean } | null;
   pending_ask_user?: AskUserData | null;
+  pending_ask_users?: AskUserData[];
   pending_native_permissions?: PermissionRequestData[];
   pending_codex_permissions?: PermissionRequestData[];
   live_stream?: { complete: boolean; messages: { message_id: string; text: string; seq: number; done: boolean }[] } | null;

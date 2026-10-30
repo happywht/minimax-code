@@ -29,6 +29,7 @@ import { formatRelative } from "../../lib/time";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores/sessionStore";
+import { useChat } from "../../stores/chat";
 
 const TYPE_ICON: Record<string, typeof Info> = {
   info: Info,
@@ -169,8 +170,9 @@ function NotificationItem({
   const openAttention = async () => {
     const ticket = ++attentionEpoch.current, host = ipc.agentBaseUrl;
     const { currentSessionId, currentProjectId } = useSessionStore.getState();
+    let expectedSession = currentSessionId, expectedProject = currentProjectId;
     const current = () => ticket === attentionEpoch.current && ipc.agentBaseUrl === host &&
-      useSessionStore.getState().currentSessionId === currentSessionId && useSessionStore.getState().currentProjectId === currentProjectId;
+      useSessionStore.getState().currentSessionId === expectedSession && useSessionStore.getState().currentProjectId === expectedProject;
     setAttentionBusy(true); setAttentionError("");
     try {
       const binding = JSON.parse(entry.source_id || "") as { job_id: string; occurrence_id: string; run_id: string;
@@ -192,10 +194,26 @@ function NotificationItem({
         throw new Error("运行与定时任务的关联已变化，请查看历史");
       const pending = binding.kind === "permission"
         ? snapshot.pending_native_permissions?.some((item) => item.request_id === binding.request_id && item.run_id === binding.run_id && item.session_id === binding.session_id)
-        : snapshot.pending_ask_user?.request_id === binding.request_id && snapshot.pending_ask_user.run_id === binding.run_id && snapshot.pending_ask_user.session_id === binding.session_id;
+        : (snapshot.pending_ask_users ?? (snapshot.pending_ask_user ? [snapshot.pending_ask_user] : []))
+          .some((item) => item.request_id === binding.request_id && item.run_id === binding.run_id && item.session_id === binding.session_id);
       if (!pending) throw new Error("请求已解决、超时或失效，请查看运行历史");
       if (!useSessionStore.getState().setCurrentProject(binding.project_id)) return;
+      expectedProject = binding.project_id;
       if (!useSessionStore.getState().setCurrent(binding.session_id)) return;
+      expectedSession = binding.session_id;
+      if (binding.kind === "question") {
+        // Re-read after switching sessions: events received in the old session
+        // cannot guard a snapshot taken before the switch.
+        const version = useChat.getState().askRecoveryVersion();
+        const latest = await typedIPC.getRunSteps(binding.run_id);
+        if (!current()) return;
+        if (latest.run.id !== binding.run_id || latest.run.session_id !== binding.session_id) throw new Error("运行关联已变化");
+        const question = (latest.pending_ask_users ?? (latest.pending_ask_user ? [latest.pending_ask_user] : []))
+          .find((item) => item.request_id === binding.request_id && item.run_id === binding.run_id && item.session_id === binding.session_id);
+        if (!question) throw new Error("请求已解决、超时或失效，请查看运行历史");
+        useChat.getState().reconcileAskUser(question, version, binding.session_id);
+        if (useChat.getState().askUser?.request_id !== binding.request_id) throw new Error("请求状态已变化，请重新打开通知");
+      }
       void useSessionStore.getState().refresh({ loadCurrent: false });
       window.dispatchEvent(new Event("minimax:open-chat"));
       useNotificationStore.getState().setOpen(false);

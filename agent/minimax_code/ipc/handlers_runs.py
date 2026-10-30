@@ -523,6 +523,7 @@ def register_run_handlers(server: Any) -> None:
                 await ctx.reply_error(INVALID_PARAMS, f"unknown run_id: {run_id!r}")
                 return
             snapshot["pending_ask_user"] = None
+            snapshot["pending_ask_users"] = []
             snapshot["pending_native_permissions"] = []
             snapshot["pending_codex_permissions"] = []
             snapshot["queued_input"] = None
@@ -555,9 +556,9 @@ def register_run_handlers(server: Any) -> None:
                         and event.get("run_id") == run_id
                         and event.get("session_id") == snapshot["run"]["session_id"]
                         and deadline > asyncio.get_running_loop().time()):
-                    snapshot["pending_ask_user"] = {**event, "remaining_ms": max(0, int(
-                        (deadline - asyncio.get_running_loop().time()) * 1000))}
-                    break
+                    snapshot["pending_ask_users"].append({**event, "remaining_ms": max(0, int(
+                        (deadline - asyncio.get_running_loop().time()) * 1000))})
+            snapshot["pending_ask_user"] = next(iter(snapshot["pending_ask_users"]), None)
             await ctx.reply(snapshot)
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

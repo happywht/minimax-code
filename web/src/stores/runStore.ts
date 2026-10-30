@@ -41,6 +41,7 @@ function validateSnapshot(snapshot: RunStepsResult, runId: string, sessionId: st
       !Number.isSafeInteger(snapshot.cursor) || snapshot.cursor < 0 ||
       snapshot.steps.some((step) => step.run_id !== runId || step.session_id !== sessionId) ||
       (snapshot.pending_ask_user != null && (snapshot.pending_ask_user.run_id !== runId || snapshot.pending_ask_user.session_id !== sessionId)) ||
+      snapshot.pending_ask_users?.some((item) => item.run_id !== runId || item.session_id !== sessionId) ||
       snapshot.pending_native_permissions?.some((item) => item.run_id !== runId || item.session_id !== sessionId || item.tool.startsWith("codex:")) ||
       snapshot.pending_codex_permissions?.some((item) => item.run_id !== runId || item.session_id !== sessionId || !item.tool.startsWith("codex:"))) {
     throw new Error("Invalid run snapshot; refresh the timeline.");
@@ -118,7 +119,7 @@ async function drain(): Promise<void> {
         }
       }
       if (refresh && entries.every((entry) => "pending_ask_user" in entry)) {
-        const questions = entries.map((entry) => entry.pending_ask_user).filter((value) => value != null);
+        const questions = entries.flatMap((entry) => entry.pending_ask_users ?? (entry.pending_ask_user ? [entry.pending_ask_user] : []));
         const currentQuestionId = useChat.getState().askUser?.request_id;
         const question = questions.find((value) => value.request_id === currentQuestionId) ?? questions[0] ?? null;
         useChat.getState().reconcileAskUser(question, askVersion, current);
