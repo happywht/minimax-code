@@ -110,7 +110,7 @@ class HookExecutor:
             stdout=stdout_b.decode("utf-8", errors="replace"),
             stderr=stderr_b.decode("utf-8", errors="replace"),
         )
-        result.decision = _parse_decision(result.stdout)
+        result.decision = _parse_decision(result.stdout, strict=hook.required)
         if result.exit_code != 0:
             logger.info(
                 "hook %s exited %d (stderr: %s)",
@@ -121,7 +121,7 @@ class HookExecutor:
         return result
 
 
-def _parse_decision(stdout: str) -> HookDecision | None:
+def _parse_decision(stdout: str, *, strict: bool = False) -> HookDecision | None:
     """Best-effort JSON decision parse. ``None`` if absent or unparseable."""
     text = stdout.strip()
     if not text:
@@ -138,6 +138,8 @@ def _parse_decision(stdout: str) -> HookDecision | None:
     except json.JSONDecodeError:
         return None
     if not isinstance(data, dict):
+        return None
+    if strict and type(data.get("block")) is not bool:
         return None
     try:
         return HookDecision.model_validate(data)

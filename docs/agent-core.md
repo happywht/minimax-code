@@ -155,6 +155,31 @@ The loop-iteration pair lets observers watch long-running turns at
 iteration granularity without per-tool noise; the final-answer
 iteration skips `post_loop_iteration` (session events cover it).
 
+A `pre_tool_use` hook may opt into `"required": true` in its hook JSON.
+For each matched call it must exit successfully and return a JSON decision
+with an explicit boolean `block`, for example `{"block": false}`. Spawn
+failure, policy denial, timeout, nonzero exit, truncated output, an exception,
+or a missing or invalid decision blocks the tool; an explicit block also
+blocks it. The existing `hook_blocked` result and audit path report the
+rejection. Hooks without this flag retain fail-open behavior; notification
+events ignore it. In read-only planning, process hooks cannot run, so a
+matching required hook blocks even otherwise permitted tools.
+
+For example, a hook configuration can require a check for shell tool calls:
+
+```json
+{"hooks": {"pre_tool_use": [{"command": ["python", "check_command.py"],
+  "matcher": {"tool_name": "exec_command"}, "required": true}]}}
+```
+
+The checker receives the tool context on stdin and must print its decision.
+
+This protects only successfully loaded and active hooks: missing or invalid
+configuration and plugin discovery failures still fail open. It does not
+cover direct terminal/RPC execution or prevent an authorized hook process
+from accessing the host. Do not treat it as an OS sandbox or a mandatory
+system-wide policy.
+
 ## 2. Built-in tool catalogue
 
 Every tool inherits from `minimax_code.agent.tools.Tool` and is

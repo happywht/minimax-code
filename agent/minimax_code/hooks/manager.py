@@ -2,8 +2,9 @@
 
 AgentCore calls the four ``fire_*`` methods at lifecycle points; the
 manager aggregates per-hook outcomes so the core only has to inspect a
-single :class:`PreToolOutcome` per tool call. Everything stays
-fail-open: a hook that raises or crashes is logged and never propagates.
+single :class:`PreToolOutcome` per tool call. Required pre-tool hooks
+block the tool when they cannot return a valid decision; other hooks are
+fail-open.
 """
 
 from __future__ import annotations
@@ -130,6 +131,13 @@ class HookManager:
                 result = HookExecutionResult(error=str(exc))
             outcome.results.append(result)
             decision = result.decision
+            if hook.required and (not result.ok or decision is None):
+                cmd = hook.command[0] if hook.command else "<hook>"
+                outcome.blocked = True
+                outcome.block_reason = (
+                    f"required pre_tool_use hook ({cmd}) failed or returned no valid decision"
+                )
+                break
             if decision is not None and decision.block and not outcome.blocked:
                 cmd = hook.command[0] if hook.command else "<hook>"
                 outcome.blocked = True

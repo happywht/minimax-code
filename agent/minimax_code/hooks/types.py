@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictBool
 
 
 class _Base(BaseModel):
@@ -62,6 +62,8 @@ class HookConfig(_Base):
     timeout: float = 10.0
     env: dict[str, str] | None = None
     pass_stdin: bool = True
+    # Only pre_tool_use consumes this flag. Existing hooks remain fail-open.
+    required: StrictBool = False
 
 
 class HookContext(_Base):
