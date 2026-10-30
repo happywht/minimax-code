@@ -128,16 +128,19 @@ class ResearchSources:
         return {"page_source_id": row["id"], "run_id": row["run_id"], **payload["page"]}
 
     @staticmethod
-    def _report_page(page):
+    def _report_page(page, span=None):
         title, excerpt = page["title"], page["excerpt"]
+        start, end = (0, min(len(excerpt), MAX_EXCERPT)) if span is None else span
         return {"title": title[:200] if title else "（页面未提供标题）",
                 "title_truncated": bool(page.get("title_truncated") or len(title) > 200),
                 "url": page["url"], "accessed_at": page["accessed_at"],
-                "excerpt": excerpt[:MAX_EXCERPT] or None,
-                "excerpt_truncated": bool(page.get("excerpt_truncated", page["truncated"]) or len(excerpt) > MAX_EXCERPT)}
+                "excerpt": excerpt[start:end] or None,
+                "excerpt_truncated": bool(page.get("excerpt_truncated", page["truncated"]) or start > 0 or end < len(excerpt))}
 
-    async def resolve_pages(self, source_ids, manual):
+    async def resolve_pages(self, source_ids, manual, excerpt_ranges=None):
         if self.db is None:
+            if excerpt_ranges:
+                raise ValueError("Page excerpt ranges require project-bound research storage")
             return self.resolve(source_ids, manual)
         from ...storage.dao._base import loads_json
         identity = await self._binding()
@@ -147,6 +150,20 @@ class ResearchSources:
                 or any(not isinstance(value, str) for value in source_ids)
                 or len(set(source_ids)) != len(source_ids)):
             raise ValueError("page_source_ids must contain at most 30 unique source IDs")
+        if excerpt_ranges is None:
+            excerpt_ranges = []
+        if not isinstance(excerpt_ranges, list) or len(excerpt_ranges) > MAX_SOURCES:
+            raise ValueError("page_excerpt_ranges must contain at most 30 ranges")
+        ranges = {}
+        for ref in excerpt_ranges:
+            if (not isinstance(ref, dict) or set(ref) != {"page_source_id", "start", "end"}
+                    or not isinstance(ref["page_source_id"], str)
+                    or ref["page_source_id"] not in source_ids or ref["page_source_id"] in ranges
+                    or type(ref["start"]) is not int or type(ref["end"]) is not int
+                    or not 0 <= ref["start"] < ref["end"] <= 8000
+                    or ref["end"] - ref["start"] > MAX_EXCERPT):
+                raise ValueError("Invalid page excerpt range or source ID")
+            ranges[ref["page_source_id"]] = (ref["start"], ref["end"])
         result = list(manual or [])
         for ident in source_ids:
             row = await self.db.fetchone("""SELECT payload FROM research_sources
@@ -155,7 +172,10 @@ class ResearchSources:
             if (not isinstance(payload, dict) or payload.get("source") != "research_page_v1"
                     or payload.get("project_id") != self.project_id or payload.get("service_id") != identity):
                 raise ValueError("Unknown page source ID for this project and service")
-            result.append(self._report_page(payload["page"]))
+            span = ranges.get(ident)
+            if span is not None and span[1] > len(payload["page"]["excerpt"]):
+                raise ValueError("Page excerpt range exceeds the saved excerpt")
+            result.append(self._report_page(payload["page"], span))
         if len(result) > MAX_SOURCES:
             raise ValueError("A report can contain at most 30 sources")
         return result

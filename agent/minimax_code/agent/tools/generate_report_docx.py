@@ -19,8 +19,9 @@ class GenerateReportDocxTool(Tool):
         "and either paragraphs or sections containing ordered paragraph/table blocks. "
         "Provide sources as title, HTTP(S) URL, and optional actual access time; cite them in body as [1], [2] in source order. Never invent sources or access times. "
         "Pass page_source_ids returned by read_public_page or list_research_sources for this project; actual page metadata and bounded excerpt are inserted automatically. Manual sources come first, then page_source_ids in order. "
+        "To cite a different part of a saved page, use page_excerpt_ranges with zero-based start and exclusive end offsets into get_research_source's excerpt. "
         "Use document_excerpts to include verified current-project attachment extracts; cite them in the body as [资料1], [资料2] in their supplied order. "
-        "Use only one of paragraphs or sections. Include source citations supplied or verified by the user. "
+        "Use only one of paragraphs or sections. Distinguish source-reported facts, inference and uncertainty; acknowledge truncated evidence. Include source citations supplied or verified by the user. "
         "The file is not rendered or fact-checked. An ambiguous failure may have committed: "
         "check project attachments before retrying."
     )
@@ -36,6 +37,13 @@ class GenerateReportDocxTool(Tool):
             }, "required": ["title", "url"], "additionalProperties": False}},
             "page_source_ids": {"type": "array", "maxItems": 30, "uniqueItems": True,
                                 "items": {"type": "string"}, "description": "IDs of pages read in this project on this service"},
+            "page_excerpt_ranges": {"type": "array", "maxItems": 30, "items": {
+                "type": "object", "properties": {
+                    "page_source_id": {"type": "string"},
+                    "start": {"type": "integer", "minimum": 0},
+                    "end": {"type": "integer", "minimum": 1},
+                }, "required": ["page_source_id", "start", "end"], "additionalProperties": False,
+            }, "description": "Optional exact ranges in saved excerpts; end is exclusive, maximum 1000 characters per source. Each ID must also be in page_source_ids."},
             "document_excerpts": {"type": "array", "maxItems": 10, "items": {
                 "type": "object", "properties": {
                     "attachment_id": {"type": "string"},
@@ -72,12 +80,12 @@ class GenerateReportDocxTool(Tool):
         self.research_sources = research_sources
         self.service = AttachmentService(db, db.path.parent)
 
-    async def _sources(self, sources, page_source_ids):
-        if page_source_ids is not None and page_source_ids != [] and self.research_sources is None:
+    async def _sources(self, sources, page_source_ids, page_excerpt_ranges):
+        if (page_source_ids or page_excerpt_ranges) and self.research_sources is None:
             raise ValueError("Page source IDs are unavailable in this task")
         if self.research_sources is None:
             return [] if sources is None else sources
-        return await self.research_sources.resolve_pages(page_source_ids, sources)
+        return await self.research_sources.resolve_pages(page_source_ids, sources, page_excerpt_ranges)
 
     async def _document_excerpts(self, excerpts, paragraphs, sections):
         """Resolve citations from vault originals rather than trusting supplied text."""
@@ -128,6 +136,7 @@ class GenerateReportDocxTool(Tool):
                   sections: list[dict[str, Any]] | None = None,
                   sources: list[dict[str, Any]] | None = None,
                   page_source_ids: list[str] | None = None,
+                  page_excerpt_ranges: list[dict[str, Any]] | None = None,
                   document_excerpts: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
             require_write_access()
@@ -141,7 +150,7 @@ class GenerateReportDocxTool(Tool):
             params = AttachmentGenerateDocxParams.model_validate({
                 "project_id": self.project_id, "expected_service_id": identity,
                 "filename": filename, "title": title, "paragraphs": paragraphs, "sections": sections,
-                "sources": await self._sources(sources, page_source_ids),
+                "sources": await self._sources(sources, page_source_ids, page_excerpt_ranges),
             })
             result = await getattr(self.service, self.operation)(**params.model_dump(), expected_session=self.session_id)
             attachment = result["attachment"]
@@ -165,8 +174,9 @@ class GenerateReportPdfTool(GenerateReportDocxTool):
         "paragraphs or structured sections with ordered paragraph/table blocks. Include source "
         "citations where available in sources and cite them in body as [1], [2] in source order; do not invent sources or access times. "
         "Pass project page_source_ids from read_public_page or list_research_sources for page metadata and excerpts, ordered after manual sources. "
+        "Use page_excerpt_ranges to select exact offsets within saved excerpts returned by get_research_source. "
         "Use document_excerpts to include verified attachment extracts; cite them as [资料1], [资料2]. "
-        "A Chinese TrueType font is embedded; missing dependencies or font coverage cause an explicit error. Facts and visual layout are not verified. "
+        "Distinguish source-reported facts, inference and uncertainty; acknowledge truncated evidence. A Chinese TrueType font is embedded; missing dependencies or font coverage cause an explicit error. Facts and visual layout are not verified. "
         "If the outcome is uncertain, inspect project attachments before retrying."
     )
     parameters = {**GenerateReportDocxTool.parameters, "properties": {
@@ -181,8 +191,9 @@ class GenerateReportPairTool(GenerateReportDocxTool):
         "Generate DOCX and PDF from the same title and paragraphs or sections, saving each in "
         "current-project attachments. Provide known sources with actual URLs and optional access times, and cite them as [1], [2] in source order; never invent them. "
         "Use project page_source_ids from read_public_page or list_research_sources to append actual page metadata and excerpts after manual sources. "
+        "Use page_excerpt_ranges to select exact offsets within saved excerpts returned by get_research_source. "
         "Use document_excerpts to include verified attachment extracts; cite them as [资料1], [资料2]. "
-        "Each format is reported separately; partial success is not "
+        "Distinguish source-reported facts, inference and uncertainty; acknowledge truncated evidence. Each format is reported separately; partial success is not "
         "full success. Check project attachments before retrying an unconfirmed format, then request "
         "only that format. Neither factual accuracy nor visual rendering is verified."
     )
@@ -197,6 +208,7 @@ class GenerateReportPairTool(GenerateReportDocxTool):
                   sections: list[dict[str, Any]] | None = None, formats: list[str] | None = None,
                   sources: list[dict[str, Any]] | None = None,
                   page_source_ids: list[str] | None = None,
+                  page_excerpt_ranges: list[dict[str, Any]] | None = None,
                   document_excerpts: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
             require_write_access()
@@ -211,7 +223,7 @@ class GenerateReportPairTool(GenerateReportDocxTool):
                 "project_id": self.project_id, "expected_service_id": identity, "filename": filename,
                 "title": title, "paragraphs": paragraphs, "sections": sections,
                 "formats": ["docx", "pdf"] if formats is None else formats,
-                "sources": await self._sources(sources, page_source_ids),
+                "sources": await self._sources(sources, page_source_ids, page_excerpt_ranges),
             })
             result = await self.service.generate_report_pair(**params.model_dump(), expected_session=self.session_id)
             row = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
