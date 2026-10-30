@@ -31,6 +31,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTr
   const [binding, setBinding] = useState<Binding | null>(null), bindingRef = useRef<Binding | null>(null);
   const [artifactTransfer, setArtifactTransfer] = useState<{ scope: string; row: TextArtifact } | null>(null);
   const [tableTransfer, setTableTransfer] = useState<{ scope: string; value: ReportTableTransfer } | null>(null);
+  const [researchTransfer, setResearchTransfer] = useState<{ scope: string; ids: string[] } | null>(null);
   const [ready, setReady] = useState(false), [error, setError] = useState("");
   const [visited, setVisited] = useState<Set<DeliveryTab>>(() => new Set([tab]));
   const visitedRef = useRef(visited); visitedRef.current = visited;
@@ -102,12 +103,12 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTr
       }} onClickCapture={(event) => {
         const button = (event.target as HTMLElement).closest("button");
         const label = button?.textContent ?? "";
-        if ((tab === "attachments" || tab === "office") && /添加|追加|删除|新增|插入|移动|转换|恢复|撤销|重做/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
+        if ((tab === "attachments" || tab === "office") && /添加|加入|追加|删除|新增|插入|移动|转换|恢复|撤销|重做/.test(label)) onEdit?.(tab === "office" ? "table" : "report");
       }}>
         {visited.has("artifacts") && <div className="h-full" hidden={tab !== "artifacts"}><ArtifactsPanel embedded onClose={onClose} /></div>}
-        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} tableTransfer={tableTransfer?.scope === scopeKey ? tableTransfer.value : null} onClearTableTransfer={() => setTableTransfer(null)} onTableApplied={() => onEdit?.("report")} artifactTransfer={historicalMatches ? historicalTransfer!.row : artifactTransfer?.scope === scopeKey ? artifactTransfer.row : null} onClearArtifactTransfer={() => { setArtifactTransfer(null); onClearHistoricalTransfer?.(); }} /></div>}
+        {visited.has("attachments") && <div className="h-full" hidden={tab !== "attachments"}><AttachmentsPanel embedded onClose={onClose} initialDraft={reportDrafts.get(scopeKey)} onRetainDraft={(draft) => reportDrafts.set(scopeKey, draft)} tableTransfer={tableTransfer?.scope === scopeKey ? tableTransfer.value : null} onClearTableTransfer={() => setTableTransfer(null)} researchTransfer={researchTransfer?.scope === scopeKey ? researchTransfer.ids : null} onClearResearchTransfer={() => setResearchTransfer(null)} onTableApplied={() => onEdit?.("report")} artifactTransfer={historicalMatches ? historicalTransfer!.row : artifactTransfer?.scope === scopeKey ? artifactTransfer.row : null} onClearArtifactTransfer={() => { setArtifactTransfer(null); onClearHistoricalTransfer?.(); }} /></div>}
         {visited.has("office") && <div className="h-full" hidden={tab !== "office"}><OfficeDeliveryPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} initialDraft={officeDrafts.get(scopeKey)} onRetainDraft={(draft) => officeDrafts.set(scopeKey, draft)} tableTransferPending={tableTransfer?.scope === scopeKey} onPrepareReportTable={(value) => { setTableTransfer({ scope: scopeKey, value }); switchTab("attachments"); }} /></div>}
-        {visited.has("research") && <div className="h-full" hidden={tab !== "research"}><ResearchSourcesPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} /></div>}
+        {visited.has("research") && <div className="h-full" hidden={tab !== "research"}><ResearchSourcesPanel embedded onClose={onClose} onText={() => switchTab("artifacts")} reportService={validBinding.service} reportTransferPending={researchTransfer?.scope === scopeKey} onPrepareReport={(ids) => { setResearchTransfer({ scope: scopeKey, ids }); switchTab("attachments"); }} /></div>}
         {visited.has("run-artifacts") && <div className="h-full overflow-auto p-4" hidden={tab !== "run-artifacts"}><SessionDeliveries binding={validBinding} onPrepareReport={(row) => { setArtifactTransfer({ scope: scopeKey, row }); switchTab("attachments"); }} /></div>}
       </div>
     </div>}

@@ -12,7 +12,7 @@ function safeUrl(value: string): string | null {
   } catch { return null; }
 }
 
-export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { onText: () => void; onClose: () => void; embedded?: boolean }): JSX.Element {
+export function ResearchSourcesPanel({ onText, onClose, embedded = false, onPrepareReport, reportTransferPending = false, reportService }: { onText: () => void; onClose: () => void; embedded?: boolean; onPrepareReport?: (ids: string[]) => void; reportTransferPending?: boolean; reportService?: string }): JSX.Element {
   const project = useSessionStore((state) => state.currentProjectId);
   const session = useSessionStore((state) => state.currentSessionId);
   const [host, setHost] = useState(ipc.agentBaseUrl);
@@ -133,7 +133,11 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
         </button></li>)}</ul>
       <div className="flex flex-wrap items-center gap-2"><Button type="button" variant="secondary" loading={adding}
         disabled={loading || adding || !visible || batchIds.length === 0} onClick={() => void addToDraft(batchIds)}>将所选 {batchIds.length} 条加入草稿</Button>
+        {onPrepareReport && <Button type="button" variant="secondary" disabled={loading || adding || !visible || !service || service !== reportService || reportTransferPending || batchIds.length === 0}
+          onClick={() => onPrepareReport([...batchIds])}>将所选 {batchIds.length} 条交接到报告</Button>}
         <span className="text-xs text-ink-2">每页最多选 10 条；逐条重新核对后一次追加，不发送。翻页或搜索会清空选择。</span></div>
+      {reportTransferPending && <p role="status">报告中有待处理的来源交接，请先应用或放弃。</p>}
+      {onPrepareReport && service && service !== reportService && <p role="alert">报告与来源的服务身份不一致，请重新确认连接。</p>}
       {notice && !selected && <p role="status">{notice}</p>}
       {added && !selected && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}
       <div className="flex gap-2"><Button variant="secondary" disabled={loading || adding || offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</Button>
@@ -145,6 +149,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false }: { on
         <p>实际访问时间：{selected.accessed_at}</p><p className="break-all">所属任务：{selected.run_id}</p>
         <p className="break-all">来源 ID：{selected.page_source_id}</p>
         <div className="flex flex-wrap gap-2"><Button type="button" variant="primary" loading={adding} disabled={adding || loading} onClick={() => void addToDraft([selected.page_source_id])}>加入当前会话草稿</Button>
+        {onPrepareReport && <Button type="button" variant="secondary" disabled={adding || loading || service !== reportService || reportTransferPending} onClick={() => onPrepareReport([selected.page_source_id])}>交接此来源到报告</Button>}
         <Button variant="secondary" onClick={() => {
           if (!navigator.clipboard) { setNotice("复制不可用，请手动选择 ID。"); return; }
           void navigator.clipboard.writeText(selected.page_source_id).then(() => setNotice("来源 ID 已复制。"), () => setNotice("复制失败，请手动选择 ID。"));

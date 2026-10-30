@@ -11,6 +11,7 @@ import { XlsxTablePreview } from "./XlsxTablePreview";
 import { SearchableTextPreview } from "./SearchableTextPreview";
 import { ReportSectionsEditor, readEditableSections } from "./ReportSectionsEditor";
 import { ReportResearchPicker } from "./ReportResearchPicker";
+import { ReportResearchTransfer } from "./ReportResearchTransfer";
 import { DraftFileControl } from "./DraftFileControl";
 import { ReportTextExcerpt } from "./ReportTextExcerpt";
 import { ReportTextReuse } from "./ReportTextReuse";
@@ -73,7 +74,7 @@ function reportMarkers(body: string, sections: string, structured: boolean): num
 
 export type RetainedReportDraft = Omit<ReportDraft, "researchIds" | "researchRanges"> & { researchNeedsReview: boolean; citationNeedsReview?: boolean; documentReview?: boolean; file: File | null };
 
-export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, onTableApplied, artifactTransfer, onClearArtifactTransfer }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; onTableApplied?: () => void; artifactTransfer?: TextArtifact | null; onClearArtifactTransfer?: () => void }): JSX.Element {
+export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRetainDraft, tableTransfer, onClearTableTransfer, researchTransfer, onClearResearchTransfer, onTableApplied, artifactTransfer, onClearArtifactTransfer }: { onClose: () => void; embedded?: boolean; initialDraft?: RetainedReportDraft; onRetainDraft?: (draft: RetainedReportDraft) => void; tableTransfer?: ReportTableTransfer | null; onClearTableTransfer?: () => void; researchTransfer?: string[] | null; onClearResearchTransfer?: () => void; onTableApplied?: () => void; artifactTransfer?: TextArtifact | null; onClearArtifactTransfer?: () => void }): JSX.Element {
   const projectId = useSessionStore((state) => state.currentProjectId);
   const sessionId = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.projects.find((item) => item.id === projectId));
@@ -367,6 +368,15 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           setCitationNeedsReview(restoredMarkers === null || restoredMarkers.length > 0);
         }} />
       <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
+      {researchTransfer && onClearResearchTransfer && <ReportResearchTransfer ids={researchTransfer} project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host}
+        onClear={onClearResearchTransfer} onApply={(items) => {
+          const existing = new Set(researchSources.map((item) => item.page_source_id));
+          const added = items.filter((item) => !existing.has(item.page_source_id));
+          if (sources.length + researchSources.length + added.length > 30) return "加入后来源超过 30 条，请先移除部分来源。";
+          if (added.length) { noteSourceChange(); setResearchSources([...researchSources, ...added]); }
+          setExcerptNotice(`已加入 ${added.length} 条研究来源，跳过 ${items.length - added.length} 条重复来源。请核对正文编号和事实。`);
+          return null;
+        }} />}
       <div className="space-y-2 rounded border border-line p-2"><p>资料引用（最多 10 条）：在上方读取 PDF、DOCX、UTF-8 TXT 或 CSV，选中原文后加入。正文可使用 [资料1] 等编号；生成时从原件重新读取并附上位置和摘录。CSV 为原始文本，不解析表格或执行公式；扫描件、OCR 和其他格式不支持此手工选择；事实与编号需自行核对。</p>
         {documentCitations.map((item, index) => <div key={`${item.ref.attachment_id}:${item.ref.unit}:${item.ref.start}:${index}`} className="break-all">[资料{index + 1}] {item.label} · {item.ref.attachment_id} · SHA-256 {item.ref.expected_sha256}
           <Button type="button" variant="secondary" onClick={() => { setDocumentCitations(documentCitations.filter((_, i) => i !== index)); setDocumentReview(true); }}>移除此引用</Button></div>)}
