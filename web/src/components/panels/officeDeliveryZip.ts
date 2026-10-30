@@ -8,13 +8,8 @@ function crc32(bytes: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export function officeDeliveryZip(workbook: ArrayBuffer, receipt: string): Blob {
+function storedZip(entries: { name: string; bytes: Uint8Array }[]): Blob {
   const encoder = new TextEncoder();
-  const entries = [
-    { name: "workbook.xlsx", bytes: new Uint8Array(workbook) },
-    { name: "office-receipt.json", bytes: encoder.encode(receipt) },
-    { name: "README.txt", bytes: encoder.encode("workbook.xlsx 是所选成果的原始字节。office-receipt.json 包含成果与附件身份、校验范围及已保存的处理说明。回执不是数字签名，不证明来源、业务内容或版式正确；接收者应自行核对。说明可能包含敏感信息。\n") },
-  ];
   const locals: ArrayBuffer[] = [], centrals: ArrayBuffer[] = [];
   let offset = 0;
   for (const entry of entries) {
@@ -37,4 +32,22 @@ export function officeDeliveryZip(workbook: ArrayBuffer, receipt: string): Blob 
   e.setUint32(0, 0x06054b50, true); e.setUint16(8, entries.length, true); e.setUint16(10, entries.length, true);
   e.setUint32(12, centralSize, true); e.setUint32(16, offset, true);
   return new Blob([...locals, ...centrals, end], { type: "application/zip" });
+}
+
+export function officeDeliveryZip(workbook: ArrayBuffer, receipt: string): Blob {
+  const encoder = new TextEncoder();
+  return storedZip([
+    { name: "workbook.xlsx", bytes: new Uint8Array(workbook) },
+    { name: "office-receipt.json", bytes: encoder.encode(receipt) },
+    { name: "README.txt", bytes: encoder.encode("workbook.xlsx 是所选成果的原始字节。office-receipt.json 包含成果与附件身份、校验范围及已保存的处理说明。回执不是数字签名，不证明来源、业务内容或版式正确；接收者应自行核对。说明可能包含敏感信息。\n") },
+  ]);
+}
+
+export function reportDeliveryZip(document: ArrayBuffer, kind: "pdf" | "docx", information: string): Blob {
+  const encoder = new TextEncoder();
+  return storedZip([
+    { name: `report.${kind}`, bytes: new Uint8Array(document) },
+    { name: "report-info.json", bytes: encoder.encode(information) },
+    { name: "README.txt", bytes: encoder.encode("report 文件是所选附件的原始字节。report-info.json 包含附件身份和用户填写的交付说明，说明不是系统提取或核验的来源、事实和处理记录；附件身份也不是数字签名。报告的内容、来源及版式需自行核对。交付说明可能包含敏感信息。\n") },
+  ]);
 }

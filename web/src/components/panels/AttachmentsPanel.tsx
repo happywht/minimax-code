@@ -22,6 +22,7 @@ import type { ReportTableTransfer, RunAttachmentTransfer as AttachmentTransfer }
 import { RunAttachmentTransfer } from "./RunAttachmentTransfer";
 import { ReportArtifactReuse } from "./ReportArtifactReuse";
 import { ReportTextExport } from "./ReportTextExport";
+import { ReportDeliveryPackage } from "./ReportDeliveryPackage";
 
 const sectionExample = JSON.stringify([{ heading: "研究结论", blocks: [
   { kind: "paragraph", text: "在此填写正文及来源。" },
@@ -299,6 +300,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {state.selected.recognized_type === "xlsx" && state.selected.parser_status === "empty" && <p role="status">有界扫描未发现非空单元格；不等于文件没有其他内容。</p>}
       {state.selected.preview_truncated && <p role="status">{state.selected.recognized_type === "xlsx" ? "预览已达到单元格窗口、数量或 64 KiB / 2000 行展示上限，部分存储内容未显示；可下载完整原件。" : "预览已达到 64 KiB / 2000 行展示上限，后续内容未显示；可下载完整原件。"}</p>}
       <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
+      <ReportDeliveryPackage key={`report-package:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
       <AttachmentVersions key={`versions:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
       <label className="flex items-center gap-2 text-xs text-ink-1"><input type="checkbox" checked={includeExcerpt} disabled={addingContext} onChange={(event) => setIncludeExcerpt(event.target.checked)} />同时加入最多 1200 字解析摘录</label>
       <div className="flex flex-wrap gap-2"><Button type="button" disabled={state.busy || state.loading || addingContext || !sessionId || !state.serviceId} loading={addingContext} onClick={() => void addAttachmentContext()}>加入当前会话草稿</Button>
