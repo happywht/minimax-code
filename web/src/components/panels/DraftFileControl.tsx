@@ -4,7 +4,7 @@ import { useSessionStore } from "../../stores";
 import { Button } from "../../ui";
 
 type Scope = { host: string; service: string; project: string; session: string | null };
-type Props<T> = { kind: "report" | "table"; scope: Scope | null; disabled?: boolean;
+type Props<T> = { kind: "report" | "table" | "report_delivery"; scope: Scope | null; disabled?: boolean;
   capture: () => T; decode: (value: unknown, scope: Scope) => Promise<T>; apply: (value: T) => void };
 const LIMIT = 6 * 1024 * 1024;
 
@@ -63,7 +63,7 @@ export function DraftFileControl<T>({ kind, scope, disabled, capture, decode, ap
     <p className="font-medium">手动保存或恢复草稿</p>
     <p className="text-ink-2">仅本地文件；包含实际编辑内容，可能有敏感信息。恢复仅支持同一服务、项目及会话，不会自动提交或修改原件。</p>
     <div className="flex flex-wrap items-center gap-2"><Button type="button" size="sm" variant="secondary" disabled={!scope || disabled || busy} onClick={exportDraft}>导出草稿</Button>
-      <label className="text-ink-1">选择草稿文件 <input aria-label={kind === "report" ? "选择报告草稿" : "选择表格草稿"} type="file" accept=".json,application/json" disabled={!scope || disabled || busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void importDraft(file); }} /></label></div>
+      <label className="text-ink-1">选择草稿文件 <input aria-label={kind === "report" ? "选择报告草稿" : kind === "table" ? "选择表格草稿" : "选择报告交付说明草稿"} type="file" accept=".json,application/json" disabled={!scope || disabled || busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void importDraft(file); }} /></label></div>
     {busy && <p role="status">正在读取并核对草稿…</p>}{message && <p role="status">{message}</p>}
   </div>;
 }

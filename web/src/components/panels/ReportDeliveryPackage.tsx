@@ -5,6 +5,9 @@ import { useAttachmentStore, useSessionStore } from "../../stores";
 import type { AttachmentOriginal } from "../../types/ipc";
 import { Button, Textarea } from "../../ui";
 import { reportDeliveryZip } from "./officeDeliveryZip";
+import { DraftFileControl } from "./DraftFileControl";
+
+type DeliveryNotes = { attachmentId: string; sha256: string; sources: string; method: string; limitations: string };
 
 export function ReportDeliveryPackage({ attachment, project, session, service, host }: {
   attachment: AttachmentOriginal; project: string | null; session: string | null; service: string | null; host: string;
@@ -60,7 +63,18 @@ export function ReportDeliveryPackage({ attachment, project, session, service, h
     <label className="block">资料来源与访问时间（用户填写）<Textarea aria-label="报告交付资料来源" rows={3} maxLength={2000} value={sources} disabled={busy} onChange={(event) => setSources(event.target.value)} /></label>
     <label className="block">成稿及处理口径（用户填写）<Textarea aria-label="报告交付处理口径" rows={3} maxLength={2000} value={method} disabled={busy} onChange={(event) => setMethod(event.target.value)} /></label>
     <label className="block">限制和待核对事项（用户填写）<Textarea aria-label="报告交付限制" rows={3} maxLength={2000} value={limitations} disabled={busy} onChange={(event) => setLimitations(event.target.value)} /></label>
-    <p className="text-xs text-ink-2">说明仅随本次 ZIP 下载，不持久保存；可能包含敏感信息。附件哈希和身份不是数字签名，不代表事实、来源、OCR 或版式已验证。</p>
+    <DraftFileControl<DeliveryNotes> kind="report_delivery" disabled={busy}
+      scope={project && session && service ? { host, service, project, session } : null}
+      capture={() => ({ attachmentId: attachment.id, sha256: attachment.sha256, sources, method, limitations })}
+      decode={async (value) => {
+        if (!value || typeof value !== "object") throw new Error("交付说明格式无效");
+        const data = value as Record<string, unknown>;
+        if (data.attachmentId !== attachment.id || data.sha256 !== attachment.sha256) throw new Error("说明不属于当前报告附件及内容版本");
+        if ([data.sources, data.method, data.limitations].some((item) => typeof item !== "string" || item.length > 2000)) throw new Error("交付说明字段无效或超过长度限制");
+        return data as DeliveryNotes;
+      }}
+      apply={(data) => { setSources(data.sources); setMethod(data.method); setLimitations(data.limitations); }} />
+    <p className="text-xs text-ink-2">说明随 ZIP 下载，也可单独导出为本地草稿并在同一服务、项目、会话和报告版本恢复；不会自动保存到项目。文件可能包含敏感信息。附件哈希和身份不是数字签名，不代表事实、来源、OCR 或版式已验证。</p>
     <Button type="button" variant="secondary" disabled={busy || !project || !session || !service || ipc.isMock} onClick={() => void download()}>下载报告及说明交付包</Button>
     {busy && <p role="status">正在核对附件并打包…</p>}{notice && <p role="status">{notice}</p>}
   </details>;
