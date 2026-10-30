@@ -3,6 +3,7 @@ import { ipc, typedIPC } from "../../ipc";
 import { fetchArtifactContent } from "../../ipc/artifactContent";
 import { useSessionStore } from "../../stores/sessionStore";
 import type { TextArtifact } from "../../types/ipc";
+import { RunArtifactFollowup } from "./RunArtifactFollowup";
 
 /** Explicitly registered run links only; registration does not prove authorship. */
 export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, review = false, onPrepareReport }: { runId: string; sessionId: string; projectId: string; serviceId: string; review?: boolean; onPrepareReport?: (row: TextArtifact) => void }): JSX.Element {
@@ -136,7 +137,8 @@ export function RunTextArtifacts({ runId, sessionId, projectId, serviceId, revie
       <button type="button" disabled={busy} onClick={() => { sessionStorage.removeItem(key); setPending(null); setMessage("已清除本地重试记录；原请求可能已登记，请先读取成果确认，避免重复。"); }}>清除本地重试记录</button>
     </div>}
     {items && (items.length ? <ul>{items.map((row) => <li key={row.id}><button type="button" disabled={busy} onClick={() => void select(row)}>{row.source_path} · v{row.version}</button></li>)}</ul> : <p>此运行没有登记的文本关联。</p>)}
-    {selected && <div><button type="button" disabled={busy} onClick={() => void save()}>下载文本原件</button>{onPrepareReport && <button type="button" disabled={busy} onClick={() => onPrepareReport(selected.row)}>在报告中复用此成果</button>}<pre aria-label="文本成果预览" className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{selected.preview || "（无可用预览）"}</pre></div>}
+    {selected && <div><button type="button" disabled={busy} onClick={() => void save()}>下载文本原件</button>{onPrepareReport && <button type="button" disabled={busy} onClick={() => onPrepareReport(selected.row)}>在报告中复用此成果</button>}<pre aria-label="文本成果预览" className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{selected.preview || "（无可用预览）"}</pre>
+      {!review && <RunArtifactFollowup key={`${selected.row.id}:${selected.row.sha256}`} artifact={selected.row} session={sessionId} />}</div>}
     {message && <p role="status">{message}</p>}
   </div>;
 }
