@@ -380,6 +380,27 @@ def _check_parent_identity(parent: Path, expected: tuple[int, int]) -> None:
         raise ValueError("Parent workspace changed; review it again before writing")
 
 
+def restore_resolution_backup_copy(child: ChildWorkspace, attempt_id: str, destination: str,
+                                   *, expected_parent_identity: tuple[int, int]) -> dict[str, str]:
+    """Create a new file from a verified backup; never replace an existing path."""
+    require_write_access()
+    if active_child() or not isinstance(destination, str) or not _included(destination):
+        raise ValueError("Invalid backup destination")
+    _check_parent_identity(child.parent, expected_parent_identity)
+    backup = read_resolution_backup(child, attempt_id)
+    from ..agent.tools.file_ops import safe_resolve
+
+    target = _path(child.parent, destination)
+    if safe_resolve(destination, workspace=child.parent) != target:
+        raise ValueError("Invalid backup destination")
+    if not target.parent.is_dir():
+        raise ValueError("Destination parent directory must already exist")
+    _check_parent_identity(child.parent, expected_parent_identity)
+    atomic_write_text(target, backup["content"], baseline_path=target, baseline_sha256=None)
+    return {"attempt_id": attempt_id, "source_path": backup["path"],
+            "destination": destination, "sha256": backup["sha256"]}
+
+
 def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
                   expected_parent_identity: tuple[int, int] | None = None) -> dict[str, Any]:
     require_write_access()

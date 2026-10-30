@@ -235,7 +235,8 @@ def register_run_handlers(server: Any) -> None:
         from ..execution import ExecutionPolicy, execution_scope
         from ..orchestrator.subagent import get_background_run
         from ..storage.dao.text_artifacts import ArtifactDAO
-        from ..workspace.child import collect_child, load_child, read_resolution_backup, resolve_child_text
+        from ..workspace.child import (collect_child, load_child, read_resolution_backup,
+                                       resolve_child_text, restore_resolution_backup_copy)
         from ..workspace.child_review import preview
         from ..workspace_ctx import require_directory, resolve_root_for_session
         from .host_session_gate import require_host_session
@@ -287,7 +288,7 @@ def register_run_handlers(server: Any) -> None:
                         team_collection = {"eligible": eligible,
                             "step_id": completed[0]["id"] if len(completed) == 1 else None,
                             "reason": None if eligible else "成员终态、受管清理证据或团队停止状态不可确认"}
-                        if req.action in {"collect", "resolve_text"} and (not eligible or not req.confirmed_team_stopped
+                        if req.action in {"collect", "resolve_text", "restore_backup_copy"} and (not eligible or not req.confirmed_team_stopped
                                 or req.expected_team_step_id != team_collection["step_id"]):
                             raise ValueError("Interrupted team requires confirmed stop and an unchanged completed member record")
                     root = require_directory(await resolve_root_for_session(req.session_id))
@@ -317,14 +318,15 @@ def register_run_handlers(server: Any) -> None:
 
             async with child_review_lock:
                 root, project_id, identity = await binding()
-                if req.action in {"collect", "resolve_text", "read_backup"} and (req.expected_service_id != identity or not req.revision):
+                if req.action in {"collect", "resolve_text", "read_backup", "restore_backup_copy"} and (req.expected_service_id != identity or not req.revision):
                     raise ValueError("Review this workspace again before collection")
                 if get_background_run(req.run_id) is not None:
                     raise ValueError("Child is still running")
                 child = load_child(root, req.run_id)
                 if child is None:
                     raise ValueError("No independent workspace is available for this run")
-                if req.action in {"collect", "resolve_text"} and team_collection is not None and child.record.get("state") != "completed":
+                permitted_states = {"completed", "collected"} if req.action == "restore_backup_copy" else {"completed"}
+                if req.action in {"collect", "resolve_text", "restore_backup_copy"} and team_collection is not None and child.record.get("state") not in permitted_states:
                     raise ValueError("Interrupted team member workspace is not confirmed completed")
                 reviewed = await asyncio.to_thread(preview, child)
                 if await binding() != (root, project_id, identity):
@@ -339,6 +341,23 @@ def register_run_handlers(server: Any) -> None:
                     if await binding() != (root, project_id, identity):
                         raise ValueError("Session, project or service changed during backup read")
                     await ctx.reply({"backup": backup, "session_id": req.session_id,
+                                     "project_id": project_id, "service_id": identity})
+                    return
+                if req.action == "restore_backup_copy":
+                    if (reviewed["revision"] != req.revision or not req.attempt_id
+                            or not req.destination or not req.confirmed_backup_copy):
+                        raise ValueError("Review the backup and confirm a new destination")
+                    def restore_copy():
+                        with execution_scope(ExecutionPolicy(workspace=root)):
+                            return restore_resolution_backup_copy(child, req.attempt_id, req.destination,
+                                expected_parent_identity=tuple(reviewed["parent_identity"]))
+                    task = asyncio.create_task(asyncio.to_thread(restore_copy))
+                    try:
+                        result = await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        await task
+                        raise
+                    await ctx.reply({"backup_copy": result, "session_id": req.session_id,
                                      "project_id": project_id, "service_id": identity})
                     return
                 if req.action in {"collect", "resolve_text"}:

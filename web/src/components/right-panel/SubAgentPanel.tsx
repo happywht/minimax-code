@@ -342,6 +342,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
   const [busy, setBusy] = useState(false);
   const [merge, setMerge] = useState<{ path: string; text: string } | null>(null);
   const [backup, setBackup] = useState<{ attempt_id: string; path: string; sha256: string; content: string } | null>(null);
+  const [backupDestination, setBackupDestination] = useState("");
   const [message, setMessage] = useState("");
   const [validation, setValidation] = useState<{ id: string; status: string; result?: Record<string, unknown> | null } | null>(null);
   const validationKey = useRef<string | null>(null);
@@ -423,9 +424,40 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       if (result.session_id !== sessionId || result.project_id !== projectId || result.service_id !== snapshot.service_id ||
           result.backup?.attempt_id !== attemptId || result.backup.path !== path || result.backup.sha256 !== sha256 ||
           typeof result.backup.content !== "string") throw new Error("备份绑定或摘要不匹配，请重新查看");
-      setBackup(result.backup);
+      setBackup(result.backup); setBackupDestination("");
     } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
     finally { if (current()) setBusy(false); }
+  };
+  const restoreBackupCopy = async () => {
+    if (!review || !backup || !backupDestination.trim() || busy || (!allowCollect && !review.team_collection?.eligible)) return;
+    const snapshot = review, saved = backup, destination = backupDestination.trim();
+    const ticket = ++generation.current, host = ipc.agentBaseUrl;
+    const current = () => ticket === generation.current && host === ipc.agentBaseUrl &&
+      useSessionStore.getState().currentSessionId === sessionId &&
+      (useSessionStore.getState().currentProjectId === projectId || (!projectId && useSessionStore.getState().currentProjectId === "inbox"));
+    setBusy(true); setMessage("");
+    try {
+      const interrupted = !allowCollect;
+      if (interrupted && !snapshot.team_collection?.step_id) throw new Error("缺少成员完成记录或停止证据");
+      const accepted = await requestConfirmation({ title: "将备份恢复为新文件", confirmLabel: "确认创建",
+        description: `${interrupted ? "请先核对团队及相关进程确已停止。" : ""}将在父目录创建 ${destination}，内容来自 ${saved.path} 的合并前备份。目标必须不存在，父目录须已存在。` });
+      if (!accepted || !current()) return;
+      const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string;
+        backup_copy: { attempt_id: string; source_path: string; destination: string; sha256: string } }>("run.child_workspace", {
+        run_id: runId, session_id: sessionId, ...(teamRunId ? { team_run_id: teamRunId } : {}),
+        action: "restore_backup_copy", attempt_id: saved.attempt_id, destination, confirmed_backup_copy: true,
+        revision: snapshot.revision, expected_service_id: snapshot.service_id,
+        ...(interrupted ? { confirmed_team_stopped: true, expected_team_step_id: snapshot.team_collection!.step_id } : {}),
+      });
+      if (!current()) return;
+      if (result.session_id !== sessionId || result.project_id !== projectId || result.service_id !== snapshot.service_id ||
+          result.backup_copy?.attempt_id !== saved.attempt_id || result.backup_copy.source_path !== saved.path ||
+          result.backup_copy.destination !== destination || result.backup_copy.sha256 !== saved.sha256) throw new Error("备份副本回执不匹配");
+      setBackup(null); setReview(null); setBackupDestination("");
+      setMessage(`已创建备份副本 ${destination}；原文件未被覆盖。`);
+    } catch (error) {
+      if (current()) { setBackup(null); setReview(null); setMessage(`创建结果未确认，请先检查目标文件：${error instanceof Error ? error.message : String(error)}`); }
+    } finally { if (current()) setBusy(false); }
   };
   const resolveText = async () => {
     if (!review || !merge || busy || (!allowCollect && !review.team_collection?.eligible)) return;
@@ -563,6 +595,10 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
               <p className="break-all">原文件：{backup.path} · SHA-256：{backup.sha256}</p>
               <p>内容与记录的写入前摘要一致；仅供查看，不会恢复或覆盖文件。</p>
               <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{backup.content}</pre>
+              {(allowCollect || review.team_collection?.eligible) && <div className="space-y-1">
+                <label className="block">恢复到父目录内的新文件（相对路径）<input aria-label="备份副本目标路径" value={backupDestination} disabled={busy} onChange={(event) => setBackupDestination(event.target.value)} className="w-full rounded border border-line bg-surface-0 p-1" /></label>
+                <button type="button" disabled={busy || !backupDestination.trim()} onClick={() => void restoreBackupCopy()}>审阅并创建备份副本</button>
+              </div>}
               <button type="button" onClick={() => setBackup(null)}>关闭备份内容</button>
             </div>}
           </> : <p>旧记录缺少原文件摘要，无法在此核验备份；请在文件系统中自行查看。</p>)}
