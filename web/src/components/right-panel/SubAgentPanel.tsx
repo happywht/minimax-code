@@ -182,9 +182,10 @@ function ChildHistory({ sessionId }: { sessionId: string }): JSX.Element {
   const project = useSessionStore((s) => s.sessions.find((item) => item.id === sessionId)?.project_id ?? null);
   const [rows, setRows] = useState<HistoricChild[]>([]), [cursor, setCursor] = useState<ChildCursor | null>(null);
   const [service, setService] = useState(""), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
+  const [handoff, setHandoff] = useState<{ row: HistoricChild; text: string } | null>(null);
   const epoch = useRef(0), lock = useRef(false);
-  useEffect(() => { ++epoch.current; setRows([]); setCursor(null); setService(""); setBusy(false); setMessage(""); return () => { ++epoch.current; }; }, [sessionId, session, project, selectedProject]);
-  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setRows([]); setCursor(null); setService(""); setBusy(false); setMessage("连接变化，请重新读取历史。"); }), []);
+  useEffect(() => { ++epoch.current; setRows([]); setCursor(null); setService(""); setHandoff(null); setBusy(false); setMessage(""); return () => { ++epoch.current; }; }, [sessionId, session, project, selectedProject]);
+  useEffect(() => ipc.onSideCar(() => { ++epoch.current; setRows([]); setCursor(null); setService(""); setHandoff(null); setBusy(false); setMessage("连接变化，请重新读取历史。"); }), []);
   const load = async (more: boolean) => {
     if (lock.current || session !== sessionId || (selectedProject !== project && !(project === null && selectedProject === "inbox")) || (more && (!service || !cursor))) return;
     const ticket = ++epoch.current, host = ipc.agentBaseUrl, prior = more ? cursor : null;
@@ -209,12 +210,39 @@ function ChildHistory({ sessionId }: { sessionId: string }): JSX.Element {
     } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
     finally { lock.current = false; if (current()) setBusy(false); }
   };
+  const append = async () => {
+    if (!handoff || !service || !project || lock.current || !handoff.text.trim()) return;
+    const ticket = ++epoch.current, host = ipc.agentBaseUrl, saved = handoff;
+    const current = () => ticket === epoch.current && host === ipc.agentBaseUrl && useSessionStore.getState().currentSessionId === sessionId &&
+      useSessionStore.getState().currentProjectId === project && (useSessionStore.getState().sessions.find((s) => s.id === sessionId)?.project_id ?? null) === project;
+    lock.current = true; setBusy(true); setMessage("");
+    try {
+      const before = await typedIPC.getServiceIdentity();
+      const result = await ipc.request<{ session_id: string; project_id: string | null; service_id: string; children: HistoricChild[] }>("run.child_list", { session_id: sessionId, run_id: saved.row.run_id });
+      const after = await typedIPC.getServiceIdentity();
+      if (!current()) return;
+      const fresh = result.children?.[0];
+      if (before.service_id !== service || after.service_id !== service || result.service_id !== service || result.session_id !== sessionId || result.project_id !== project ||
+          result.children?.length !== 1 || !fresh || JSON.stringify(fresh) !== JSON.stringify(saved.row) ||
+          !["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(fresh.status) || fresh.live)
+        throw new Error("子任务记录或归属已变化，请刷新并重新审阅。");
+      const detail: { host: string; project: string; session: string; text: string; result?: string } = { host, project, session: sessionId, text: saved.text };
+      window.dispatchEvent(new CustomEvent("minimax:append-context", { detail }));
+      setMessage(detail.result ?? "聊天输入区未打开，请切换到聊天。");
+      if (detail.result === "已添加到当前会话草稿，尚未发送。") setHandoff(null);
+    } catch (error) { if (current()) setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { lock.current = false; if (current()) setBusy(false); }
+  };
   return <details className="mb-2 rounded border border-line p-2 text-xs"><summary>浏览子任务历史</summary>
     <p>按创建时间倒序，每页 50 条；活动但无法确认仍在运行的记录需要核对。历史可能随新记录或删除变化。</p>
     <button type="button" disabled={busy} onClick={() => void load(false)}>读取／刷新历史</button>
     <ul>{rows.map((item) => <li key={item.run_id}><details><summary className="break-all">{item.agent_name || "子 Agent"} · {item.run_id} · {item.status}{!["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(item.status) && !item.live ? " · 状态待核对" : ""}</summary>
       <p className="break-all">父运行：{item.parent_run_id}{item.partial ? " · 部分结果" : ""}</p><p>任务：{item.prompt}</p>
-      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{item.text || "（没有已保存的结果文本）"}</pre>{item.text_truncated && <p>结果已截断。</p>}{item.error && <p>{item.error}</p>}</details></li>)}</ul>
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{item.text || "（没有已保存的结果文本）"}</pre>{item.text_truncated && <p>结果已截断。</p>}{item.error && <p>{item.error}</p>}
+      {["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(item.status) && !item.live && <button type="button" disabled={busy || !project} onClick={() => setHandoff({ row: item, text: `子任务结果交接（请审阅并编辑）：\n子任务：${item.agent_name || "子 Agent"} · ${item.run_id}\n父运行：${item.parent_run_id} · 状态：${item.status}${item.partial ? " · 部分结果" : ""}\n任务：${item.prompt.slice(0, 1000)}\n结果：\n${item.text.slice(0, 2000)}${item.text_truncated || item.text.length > 2000 ? "\n（结果已截断）" : ""}${item.error ? `\n错误：${item.error.slice(0, 1000)}` : ""}\n\n以上为已保存的子任务文本，不代表文件已合并或验证通过。请核对实际文件与验证记录，保留用户同期修改。\n后续目标：` })}>编辑此结果交接</button>}</details></li>)}</ul>
+    {handoff && <div className="space-y-1"><label className="block">可编辑的结果交接<textarea aria-label="历史子任务结果交接" rows={8} maxLength={7500} disabled={busy} value={handoff.text} onChange={(event) => setHandoff({ ...handoff, text: event.target.value })} className="w-full rounded border border-line bg-surface-0 p-1" /></label>
+      <button type="button" disabled={busy || !handoff.text.trim()} onClick={() => void append()}>重新核对并加入草稿</button>{" "}<button type="button" disabled={busy} onClick={() => setHandoff(null)}>取消</button>
+      <p>文本可能含敏感信息；加入后仍须手动发送。不会合并文件或执行验证。</p></div>}
     {cursor && <button type="button" disabled={busy} onClick={() => void load(true)}>加载更多</button>}
     {message && <p role="status">{message}</p>}
   </details>;
