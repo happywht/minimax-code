@@ -309,9 +309,18 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
       <p className="text-xs text-ink-2">默认仅追加附件身份；可选择加入解析摘录。不会发送或上传原件到对话，也不代表模型已读取完整文件。</p>
       {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>}
-      <ReportTextReuse key={`reuse:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} onApply={(text) => {
+      <ReportTextReuse key={`reuse:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host}
+        draftVersion={JSON.stringify([body, structured, sections, title, sources, researchSources, researchRanges, documentCitations, excerptSection, format, docName, citationNeedsReview, documentReview, researchNeedsReview])} onApply={(text) => {
         setBody(text); setStructured(false); setVisualSections(false); setExcerptSection(""); setFormError(null);
         if (/\[[1-9][0-9]*\]/.test(text)) setCitationNeedsReview(true);
+        if (/\[资料[1-9][0-9]*\]/.test(text)) setDocumentReview(true);
+      }} onAppend={(text) => {
+        const selected = state.selected!;
+        const applied = appendExcerpt([`完整 UTF-8 文本附件（未经核验）：${selected.original_name} · v${selected.version} · ${selected.id} · SHA-256 ${selected.sha256}`,
+          ...text.split("\n").filter((line) => line.trim())]);
+        if (applied && /\[[1-9][0-9]*\]/.test(text)) setCitationNeedsReview(true);
+        if (applied && /\[资料[1-9][0-9]*\]/.test(text)) setDocumentReview(true);
+        return applied;
       }} />
       <ReportDocumentReuse key={`document-reuse:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host}
         draftVersion={JSON.stringify([body, structured, sections, title, sources, researchSources, researchRanges, documentCitations, excerptSection, format, docName])} onApply={(text, sameName) => {
