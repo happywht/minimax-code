@@ -314,6 +314,9 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
     async def handle_host_fetch(params: Any, ctx: Context) -> None:
         """Download a remote file to the local machine with sha256 verification."""
         try:
+            from ..execution import require_write_access
+
+            require_write_access()
             check_params(params, expected_keys={"host_id", "remote_path", "local_path"})
             dao_obj = await dao_factory()
             host = await dao_obj.get(str(params["host_id"]))
@@ -379,6 +382,10 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             destination = destination.absolute()
             if (not destination.parent.is_dir() or destination.parent.resolve() != destination.parent):
                 raise HandlerError(INVALID_PARAMS, "local parent must exist without symbolic links")
+            parent_info = destination.parent.stat()
+            if not parent_info.st_ino:
+                raise HandlerError(INVALID_PARAMS, "local parent directory identity is unavailable")
+            parent_identity = (parent_info.st_dev, parent_info.st_ino)
             async with lifecycle_lock:
                 host = await _bound_host(request)
                 data, digest = await _read(host, request.remote_path, strict_host_key=True)
@@ -393,6 +400,10 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
                         stream.flush()
                         os.fsync(stream.fileno())
                     try:
+                        current_parent = destination.parent.stat()
+                        if (destination.parent.resolve() != destination.parent or
+                                (current_parent.st_dev, current_parent.st_ino) != parent_identity):
+                            raise ValueError("Destination directory changed; review before saving")
                         os.link(staged, destination)
                     except FileExistsError:
                         await ctx.reply({"ok": False, "reason": "exists"})

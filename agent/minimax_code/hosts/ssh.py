@@ -233,6 +233,10 @@ async def fetch_file(
     local_path = Path(local_path).expanduser().absolute()
     if local_path.is_symlink() or local_path.parent.resolve() != local_path.parent:
         return SshResult(False, None, "", "download destination must not be a symbolic link")
+    parent_info = local_path.parent.stat()
+    if not parent_info.st_ino:
+        return SshResult(False, None, "", "download destination directory identity is unavailable")
+    parent_identity = (parent_info.st_dev, parent_info.st_ino)
     if local_path.exists():
         return SshResult(False, None, "", "download destination already exists; choose a new path")
     with tempfile.TemporaryDirectory(prefix=".minimax-download-", dir=local_path.parent) as tmp:
@@ -249,6 +253,11 @@ async def fetch_file(
             return SshResult(False, None, result.stdout,
                              f"sha256 mismatch after download: local={local_sha} remote={remote_sha}")
         try:
+            current_parent = local_path.parent.stat()
+            if (local_path.parent.resolve() != local_path.parent or
+                    (current_parent.st_dev, current_parent.st_ino) != parent_identity):
+                return SshResult(False, None, result.stdout,
+                                 "download destination directory changed; review before retrying")
             # The staging directory is on the same filesystem. Linking is an
             # atomic create-if-absent, including if another process creates
             # the destination while the transfer is running.
