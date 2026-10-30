@@ -158,11 +158,28 @@ def filter_spec(spec: dict, filters: list[dict[str, Any]] | None) -> dict:
             raise ValueError("Filter column must be an output column name")
         if not isinstance(operator, str) or operator not in {
             "eq", "ne", "gt", "gte", "lt", "lte",
-            "contains", "not_contains", "starts_with", "ends_with",
+            "contains", "not_contains", "starts_with", "ends_with", "in", "not_in",
         }:
             raise ValueError("Unsupported filter operator")
         index = names.index(name)
         kind = columns[index]["kind"]
+        if operator in {"in", "not_in"}:
+            if not isinstance(value, list) or not 1 <= len(value) <= 20:
+                raise ValueError("Membership filters require 1–20 values")
+            for member in value:
+                if member is None:
+                    continue
+                if kind == "text":
+                    if not isinstance(member, str) or not member or len(member) > 4096:
+                        raise ValueError("Membership text values must be nonempty text of at most 4096 characters")
+                elif kind == "boolean":
+                    if type(member) is not bool:
+                        raise ValueError("Membership values must match the boolean column")
+                elif (type(member) not in {int, float} or abs(member) > 999999999999999
+                      or not math.isfinite(member)):
+                    raise ValueError("Membership values must be finite numbers")
+            predicates.append((index, operator, value))
+            continue
         text_operator = operator in {"contains", "not_contains", "starts_with", "ends_with"}
         if text_operator and (kind != "text" or not isinstance(value, str) or not value):
             raise ValueError("Text matching requires a text column and a nonempty text value")
@@ -187,6 +204,10 @@ def filter_spec(spec: dict, filters: list[dict[str, Any]] | None) -> dict:
                 matched = cell == value
             elif operator == "ne":
                 matched = cell != value
+            elif operator == "in":
+                matched = cell in value
+            elif operator == "not_in":
+                matched = cell not in value
             elif cell is None or value is None:
                 matched = False
             elif operator == "contains":
@@ -416,6 +437,7 @@ class GenerateXlsxFromCsvTool(Tool):
         "exact markers to blank before type conversion; markers are matched after trimming. "
         "Optional fill_missing replaces blank cells with explicit same-type constants before calculations and filters. "
         "Optional filters use output column names and typed values; all conditions must match. "
+        "Use in or not_in with 1–20 same-type values to select or exclude exact alternatives; null represents blank. "
         "Text supports case-sensitive contains, not_contains, starts_with and ends_with with nonempty "
         "values; blank cells never match these operators. "
         "Use calculated_column or calculated_columns (1–10 ordered calculations), not both, before filters. Each may reference earlier numeric results. Add, subtract, multiply or divide numeric columns; division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors. Blank operands yield blank; results are static. "
@@ -457,10 +479,13 @@ class GenerateXlsxFromCsvTool(Tool):
                 "column": {"type": "string"},
                 "operator": {"type": "string", "enum": [
                     "eq", "ne", "gt", "gte", "lt", "lte",
-                    "contains", "not_contains", "starts_with", "ends_with",
+                    "contains", "not_contains", "starts_with", "ends_with", "in", "not_in",
                 ]},
                 "value": {"anyOf": [{"type": "string"}, {"type": "number"},
-                                    {"type": "boolean"}, {"type": "null"}]},
+                                    {"type": "boolean"}, {"type": "null"},
+                                    {"type": "array", "minItems": 1, "maxItems": 20,
+                                     "items": {"anyOf": [{"type": "string"}, {"type": "number"},
+                                                        {"type": "boolean"}, {"type": "null"}]}}]},
             }, "required": ["column", "operator", "value"], "additionalProperties": False}},
             "deduplicate_by": {"type": "array", "minItems": 1, "maxItems": 20,
                                "uniqueItems": True, "items": {"type": "string"},

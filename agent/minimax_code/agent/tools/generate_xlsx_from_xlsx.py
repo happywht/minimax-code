@@ -42,7 +42,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Per-column trim removes surrounding Unicode whitespace; null_values maps exact markers to blank "
         "after trimming and before conversion. Optional fill_missing replaces blanks with explicit same-type constants before calculations and filters. Optional summaries "
         "are static values and charts use output column names. Optional typed filters use output column names; "
-        "all conditions must match. Text supports case-sensitive contains, not_contains, starts_with and "
+        "all conditions must match. Use in or not_in with 1–20 same-type values for exact alternatives; null represents blank. Text supports case-sensitive contains, not_contains, starts_with and "
         "ends_with with nonempty values; blank cells never match these operators. "
         "Optional calculated_column or calculated_columns (1–10 ordered, mutually exclusive) appends static add, subtract, multiply or divide results before filtering; later calculations can reference earlier results; division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors, while blank operands produce blank. Optional deduplicate_by keeps the first row for exact output-column "
         "values, with blanks matching blanks, after filtering and before grouping. "
