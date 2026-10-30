@@ -2202,6 +2202,7 @@ command、self_evolution、use_runservice:false、混合或未知字段在创建
 旧任务升级后 disabled/needs_rebind，原 payload 保留供导出/查看/删除；不会自动转成可执行提示词。
 
 schedule.create/update 的 context 输入选择 project_id、provider_id/model（必须一起指定，均省略则在此刻固定当前选择）、reasoning_effort、mode(chat/execute/plan)、budget_tokens、timezone。
+输入也可回传已知的 v1 快照字段以支持编辑；服务端重新捕获只读字段，不采用其值。未知顶层字段和未知 context 字段（包括 execution_profile_id、execution_target）均拒绝，已有快照携带未知字段时启用和分派也会拒绝。调度仍只支持受信宿主 Local / Native，不支持受限容器或无人值守容器执行；请求受限目标不能被忽略后转为宿主执行。
 返回的 context v1 固定 canonical workspace+目录身份、local/native、provider ID/协议/endpoint 配置摘要、模型/强度、顺序权限规则及默认策略版本、hooks_policy=disabled、正 token 上限、校验命令及时区。
 密钥不序列化。正预算来自显式值或 MINIMAX_CODE_SCHEDULED_BUDGET_TOKENS / MINIMAX_CODE_RUN_BUDGET_TOKENS；无正上限拒绝。全局模型切换不改变任务，Provider 配置/目录身份漂移及缺失密钥均阻止推理。
 快照权限与当前限制取严格交集；全局后续 allow 不扩大授权，ask/deny 可收紧。未知工具 ask；permission.request 的 approval_policy=explicit_once 禁止前端全局 alwaysAllow 自动通过，同时保留实际 tool 名称供差异预览。自动任务禁用全局/插件钩子。

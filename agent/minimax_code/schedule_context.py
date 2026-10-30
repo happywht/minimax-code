@@ -20,6 +20,23 @@ from .workspace_ctx import require_directory
 
 scheduled_runtime: ContextVar[dict | None] = ContextVar("scheduled_runtime", default=None)
 
+# The UI edits a returned snapshot, so accept its known read-only fields on
+# input but always recapture them from the server. Unknown fields must not be
+# silently discarded: they may be a caller's requested execution boundary.
+_CONTEXT_FIELDS = frozenset({
+    "version", "host", "engine", "project_id", "workspace", "directory_identity",
+    "provider_id", "protocol", "provider_fingerprint", "model", "reasoning_effort",
+    "context_window", "mode", "budget_tokens", "validate_command",
+    "permission_policy_version", "permission_rules", "hooks_policy", "timezone",
+})
+
+
+def _check_context_fields(context: Any) -> None:
+    if not isinstance(context, dict):
+        raise ValueError("Schedule context must be an object")
+    if set(context) - _CONTEXT_FIELDS:
+        raise ValueError("Unsupported schedule context fields; execution profiles are not supported")
+
 
 def validate_payload(payload: Any) -> str:
     if not isinstance(payload, dict) or set(payload) != {"prompt"}:
@@ -43,8 +60,7 @@ def provider_fingerprint(provider: dict) -> str:
 
 
 async def capture_context(db, options: dict) -> dict:
-    if not isinstance(options, dict):
-        raise ValueError("Schedule context must be an object")
+    _check_context_fields(options)
     if options.get("host", "local") != "local" or options.get("engine", "native") != "native":
         raise ValueError("Schedules support Local / Native only")
     project = await ProjectsDAO(db).get(str(options.get("project_id") or ""))
@@ -104,6 +120,7 @@ async def capture_context(db, options: dict) -> dict:
 
 
 async def validate_context(db, context: dict) -> dict:
+    _check_context_fields(context)
     if (
         context.get("version") != 1
         or context.get("host") != "local"

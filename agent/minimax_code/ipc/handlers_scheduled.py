@@ -82,6 +82,8 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
         try:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"name", "cron_expr"})
+            if set(params) - {"name", "cron_expr", "payload", "enabled", "context"}:
+                raise HandlerError(INVALID_PARAMS, "Unsupported schedule creation fields")
             name = str(params["name"]).strip()
             cron_expr = str(params["cron_expr"]).strip()
             payload = params.get("payload")
@@ -200,6 +202,8 @@ def register_scheduled_handlers(server: Any, scheduler: Any = None) -> None:
         try:
             sched = await scheduler_factory()
             check_params(params, expected_keys={"job_id","expected_revision","name","cron_expr","payload","context"})
+            if set(params) - {"job_id", "expected_revision", "name", "cron_expr", "payload", "context", "expected_service_id"}:
+                raise ValueError("Unsupported schedule update fields")
             expected_service = params.get("expected_service_id")
             if expected_service is not None:
                 if not isinstance(expected_service, str) or not expected_service:
