@@ -12,6 +12,7 @@ import { RunRecoveryActions } from "../right-panel/RunRecoveryActions";
 import { RunChangeEvidence } from "./RunChangeEvidence";
 import { ProjectRunBudget } from "./ProjectRunBudget";
 import { RunDeliverySummary } from "./RunDeliverySummary";
+import { ProjectRunAttention } from "./ProjectRunAttention";
 
 type Group = "attention" | "active" | "recent";
 const groupLabels: Record<Group, string> = { attention: "等待处理", active: "运行与排队", recent: "最近结果" };
@@ -227,6 +228,8 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
           {snapshot.steps.filter((step) => step.status === "failed").length > 25 && <p>仅显示前 25 项失败步骤，请打开所属会话查看全部记录。</p>}
           <p className="text-ink-2">步骤记录与配置命令的结果不证明交付质量；运行中的快照可能发生变化。</p>
         </div>
+        <ProjectRunAttention key={`${host}:${service}:${project}:${activeSession}:${detail.session_id}:${detail.id}`}
+          snapshot={snapshot} host={host} service={service} project={project!} onOpenSession={onOpenSession} />
         <RunDeliverySummary key={`${host}:${service}:${project}:${activeSession}:${detail.session_id}:${detail.id}`}
           host={host} service={service} project={project!} session={detail.session_id} run={detail.id} />
         {snapshot.run.status === "budget_paused" && <ProjectRunBudget key={`${host}:${service}:${project}:${detail.session_id}:${detail.id}:${activeSession}`}
