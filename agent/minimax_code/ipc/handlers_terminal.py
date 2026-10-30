@@ -474,6 +474,14 @@ async def _run_session(
         await require_host_session(session.chat_session_id)
         await _create_run_tracking(session, emit)
         await require_host_session(session.chat_session_id)
+        if session.chat_session_id is not None and session.workspace_root is not None:
+            # The session may have been rebound while this command was queued
+            # or while its run record was created. Do not execute in the old root.
+            current_root = await resolve_root_for_session(session.chat_session_id)
+            if current_root != Path(session.workspace_root):
+                raise ExecutionDeniedError(
+                    "Terminal session workspace has changed; start the command again."
+                )
         scope = (execution_scope(ExecutionPolicy(workspace=Path(session.workspace_root)))
                  if session.workspace_root is not None else contextlib.nullcontext())
         with scope:

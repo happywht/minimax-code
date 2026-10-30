@@ -84,6 +84,36 @@ async def _await_session_task(session_id: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_terminal_does_not_spawn_after_session_rebind(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    old_root.mkdir()
+    new_root.mkdir()
+    resolve = AsyncMock(side_effect=[old_root, new_root])
+    spawn = AsyncMock()
+    monkeypatch.setattr(handlers_terminal, "resolve_root_for_session", resolve)
+    monkeypatch.setattr(handlers_terminal, "require_host_session", AsyncMock())
+    monkeypatch.setattr(handlers_terminal, "_create_run_tracking", AsyncMock())
+    monkeypatch.setattr(handlers_terminal, "_complete_run_tracking", AsyncMock())
+    monkeypatch.setattr(handlers_terminal, "spawn_shell", spawn)
+
+    start, ctx = _make_handler("terminal.start")
+    await start({"command": "echo old", "session_id": "chat"}, ctx)
+    assert ctx.reply_error_payload is None
+    session_id = ctx.reply_payload["session"]["id"]
+    await _await_session_task(session_id)
+
+    session = handlers_terminal._SESSIONS[session_id]
+    assert session.status == "failed"
+    assert "workspace has changed" in session.error
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_terminal_start_and_read_collects_stdout(tmp_path: Path) -> None:
     start, ctx = _make_handler("terminal.start")
     await start(
