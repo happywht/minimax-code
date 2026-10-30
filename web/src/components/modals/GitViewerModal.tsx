@@ -16,9 +16,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { FileText, GitCommit as CommitIcon } from "lucide-react";
 import { SkeletonTable } from "../layout/Skeleton";
-import { useGitStore } from "../../stores";
+import { useGitStore, useSessionStore } from "../../stores";
 import { Modal, DiffLines } from "../../ui";
 import { strings } from "../../ui/strings";
+import { ipc } from "../../ipc";
 import type { GitLogEntry } from "../../types/ipc";
 
 export interface GitViewerModalProps {
@@ -36,8 +37,13 @@ export function GitViewerModal({
   testId = "git-viewer-modal",
 }: GitViewerModalProps): JSX.Element | null {
   const [tab, setTab] = useState<"diff" | "log">(initialTab);
+  const [scope, setScope] = useState<"working" | "staged" | "branch">("working");
+  const [diffError, setDiffError] = useState(false);
+  const project = useSessionStore((s) => s.currentProjectId);
 
   const lastDiff = useGitStore((s) => s.lastDiff);
+  const diffProject = useGitStore((s) => s.diffProject);
+  const diffHost = useGitStore((s) => s.diffHost);
   const lastLog = useGitStore((s) => s.lastLog);
   const loading = useGitStore((s) => s.loading);
   const fetchDiff = useGitStore((s) => s.fetchDiff);
@@ -47,11 +53,19 @@ export function GitViewerModal({
   useEffect(() => {
     if (!open) return;
     if (tab === "diff") {
-      void fetchDiff({ scope: "working" });
+      let active = true;
+      setDiffError(false);
+      void fetchDiff({ scope }).then((value) => { if (active && value === null) setDiffError(true); });
+      return () => { active = false; };
     } else {
       void fetchLog({ n: 20 });
     }
-  }, [open, tab, fetchDiff, fetchLog]);
+  }, [open, tab, scope, project, fetchDiff, fetchLog]);
+  useEffect(() => ipc.onSideCar((event) => {
+    useGitStore.getState().reset();
+    setDiffError(event.status !== "started");
+    if (open && tab === "diff" && event.status === "started") void fetchDiff({ scope }).then((value) => { if (value === null) setDiffError(true); });
+  }), [open, tab, scope, fetchDiff]);
 
   const handleTabChange = useCallback((t: "diff" | "log") => {
     setTab(t);
@@ -92,10 +106,14 @@ export function GitViewerModal({
       {loading && !lastDiff && !lastLog ? (
         <SkeletonTable rows={6} />
       ) : tab === "diff" ? (
-        <DiffContent
-          text={lastDiff?.diff ?? null}
-          testId={`${testId}-diff-content`}
-        />
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-2" aria-label="差异范围">
+            {([["working", "未暂存"], ["staged", "已暂存"], ["branch", "最近提交"]] as const).map(([value, label]) =>
+              <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)} className="rounded border border-line px-2 py-1">{label}</button>)}
+          </div>
+          <p className="text-xs text-ink-2">{scope === "branch" ? "最近提交相对其父提交；根提交可能没有父提交。" : scope === "staged" ? "当前索引相对 HEAD。" : "当前已跟踪文件的未暂存差异；未跟踪文件不在此视图。"} 这是当前项目的快照，不归因于某个任务。</p>
+          {diffError ? <p role="alert">差异读取失败，不能判断工作区是否有变化。</p> : loading && !lastDiff ? <SkeletonTable rows={4} /> : <DiffContent text={lastDiff?.scope === scope && diffProject === project && diffHost === ipc.agentBaseUrl ? lastDiff.diff : null} testId={`${testId}-diff-content`} />}
+        </div>
       ) : (
         <LogContent
           entries={lastLog?.entries ?? null}

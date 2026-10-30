@@ -13,7 +13,7 @@
  */
 
 import { create } from "zustand";
-import { typedIPC } from "../ipc";
+import { ipc, typedIPC } from "../ipc";
 import { toast } from "../components/layout/ErrorBoundary";
 import type { GitDiffResult, GitLogResult, GitStatusResult } from "../types/ipc";
 import { strings } from "../ui/strings";
@@ -29,12 +29,15 @@ function currentProjectScope(): { project_id?: string } {
   const pid = useSessionStore.getState().currentProjectId;
   return pid ? { project_id: pid } : {};
 }
+let diffGeneration = 0;
 
 export interface GitState {
   /** Latest known status snapshot — ``null`` until first refresh. */
   status: GitStatusResult | null;
   /** Last diff fetched via ``fetchDiff``. ``null`` until first call. */
   lastDiff: GitDiffResult | null;
+  diffProject: string | null;
+  diffHost: string | null;
   /** Last log fetched via ``fetchLog``. ``null`` until first call. */
   lastLog: GitLogResult | null;
   /** True while a ``git.*`` request is in flight. */
@@ -63,6 +66,8 @@ export interface GitState {
 export const useGitStore = create<GitState>((set) => ({
   status: null,
   lastDiff: null,
+  diffProject: null,
+  diffHost: null,
   lastLog: null,
   loading: false,
 
@@ -81,12 +86,16 @@ export const useGitStore = create<GitState>((set) => ({
   },
 
   fetchDiff: async (opts) => {
-    set({ loading: true });
+    const ticket = ++diffGeneration, project = useSessionStore.getState().currentProjectId, host = ipc.agentBaseUrl;
+    const current = () => ticket === diffGeneration && project === useSessionStore.getState().currentProjectId && host === ipc.agentBaseUrl;
+    set({ loading: true, lastDiff: null, diffProject: null, diffHost: null });
     try {
-      const d = await typedIPC.gitDiff({ ...opts, ...currentProjectScope() });
-      set({ lastDiff: d, loading: false });
+      const d = await typedIPC.gitDiff({ ...opts, ...(project ? { project_id: project } : {}) });
+      if (!current()) return null;
+      set({ lastDiff: d, diffProject: project, diffHost: host, loading: false });
       return d;
     } catch (err) {
+      if (!current()) return null;
       set({ loading: false });
       const message = err instanceof Error ? err.message : String(err);
       toast.error(strings.toasts.gitDiffFailed, message);
@@ -108,5 +117,5 @@ export const useGitStore = create<GitState>((set) => ({
     }
   },
 
-  reset: () => set({ status: null, lastDiff: null, lastLog: null, loading: false }),
+  reset: () => { ++diffGeneration; set({ status: null, lastDiff: null, diffProject: null, diffHost: null, lastLog: null, loading: false }); },
 }));
