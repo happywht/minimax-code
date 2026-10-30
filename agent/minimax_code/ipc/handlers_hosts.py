@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import tempfile
 import re
 import shlex
 import unicodedata
@@ -25,6 +27,7 @@ from .protocol import (
     INVALID_PARAMS,
     HostBindingParams,
     HostBoundTransferStatusParams,
+    HostFetchPreviewParams,
     HostPushParams,
     HostServiceAutostartParams,
     HostServiceLogsParams,
@@ -337,6 +340,49 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
             raise HandlerError(INVALID_PARAMS, "invalid service unit")
         return await _bound_host(request)
 
+    async def handle_host_fetch_preview(params: Any, ctx: Context) -> None:
+        """Publish only the exact previewed remote bytes to an unused local path."""
+        from ..execution import require_write_access
+        from ..host_download_http import _read
+
+        try:
+            request = HostFetchPreviewParams.model_validate(params)
+            require_write_access()
+            parts = request.remote_path.split("/")
+            if (not request.remote_path.startswith("/") or any(p in {"", ".", ".."} for p in parts[1:])
+                    or "\0" in request.remote_path):
+                raise HandlerError(INVALID_PARAMS, "invalid remote path")
+            destination = Path(request.local_path).expanduser()
+            if not destination.is_absolute() or not destination.name:
+                raise HandlerError(INVALID_PARAMS, "local path must be an absolute file path")
+            destination = destination.absolute()
+            if (not destination.parent.is_dir() or destination.parent.resolve() != destination.parent):
+                raise HandlerError(INVALID_PARAMS, "local parent must exist without symbolic links")
+            async with lifecycle_lock:
+                host = await _bound_host(request)
+                data, digest = await _read(host, request.remote_path, strict_host_key=True)
+                if digest != request.expected_sha256:
+                    await ctx.reply({"ok": False, "reason": "changed"})
+                    return
+                # Same filesystem, private stage and atomic create-if-absent.
+                with tempfile.TemporaryDirectory(prefix=".minimax-preview-", dir=destination.parent) as directory:
+                    staged = Path(directory) / "payload"
+                    with staged.open("xb") as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    try:
+                        os.link(staged, destination)
+                    except FileExistsError:
+                        await ctx.reply({"ok": False, "reason": "exists"})
+                        return
+            await ctx.reply({"ok": True, "reason": None})
+        except (ValidationError, HandlerError, ValueError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("host.fetch_preview failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Previewed file could not be saved; inspect destination")
+
     async def handle_host_reconnect_bound(params: Any, ctx: Context) -> None:
         """Replace an owned SSH forward after verifying its saved host binding."""
         try:
@@ -511,6 +557,7 @@ def register_host_handlers(server: Any, *, dao: Any = None, ssh_runner: Any = No
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
 
+    server.register("host.fetch_preview", handle_host_fetch_preview)
     server.register("host.reconnect_bound", handle_host_reconnect_bound)
     server.register("host.transfer_status_bound", handle_host_transfer_status_bound)
     server.register("host.service_autostart", handle_host_service_autostart)

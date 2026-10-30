@@ -158,6 +158,7 @@ export interface TypedIPC {
   updateHost(hostId: string, fields: Partial<import("../types/ipc").HostConfig> & { enabled?: boolean }): Promise<{ ok: boolean; host: import("../types/ipc").RemoteHost }>;
   deleteHost(hostId: string): Promise<{ ok: boolean; host_id: string }>;
   probeHost(hostId: string): Promise<import("../types/ipc").HostProbeResult>;
+  saveHostPreview(params: import("../types/ipc").HostFetchPreviewParams): Promise<{ ok: boolean; reason: "changed" | "exists" | null }>;
   reconnectBoundHost(params: import("../types/ipc").HostBindingParams): Promise<{ connection: import("../types/ipc").HostConnection }>;
   connectHost(params: { host_id: string; remote_port?: number; local_port?: number }): Promise<{ connection: import("../types/ipc").HostConnection }>;
   disconnectHost(hostId: string): Promise<{ connection: import("../types/ipc").HostConnection }>;
@@ -686,6 +687,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     updateHost: (hostId, fields) => client.request("host.update", { host_id: hostId, ...fields }),
     deleteHost: (hostId) => client.request("host.delete", { host_id: hostId }),
     probeHost: (hostId) => client.request("host.probe", { host_id: hostId }),
+    saveHostPreview: (params) => client.request("host.fetch_preview", params),
     reconnectBoundHost: (params) => client.request("host.reconnect_bound", params),
     connectHost: (params) => client.request("host.connect", params),
     disconnectHost: (hostId) => client.request("host.disconnect", { host_id: hostId }),

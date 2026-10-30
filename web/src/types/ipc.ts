@@ -175,6 +175,10 @@ export interface HostBindingParams {
   port: number; identity_file: string; remote_port: number;
 }
 
+export interface HostFetchPreviewParams extends HostBindingParams {
+  remote_path: string; local_path: string; expected_sha256: string;
+}
+
 export interface HostServiceStartParams extends HostBindingParams {
   unit: string;
 }

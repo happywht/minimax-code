@@ -53,7 +53,7 @@ try:
 finally: os.close(fd)
 """
 
-async def _read(host, path):
+async def _read(host, path, *, strict_host_key=False):
     for value in (host['hostname'], host['username']):
         if not value or value.startswith('-') or any(ord(c) <= 32 or ord(c) == 127 or c == '@' for c in value):
             raise ValueError('Unsafe SSH host identity')
@@ -62,7 +62,7 @@ async def _read(host, path):
     command = shlex.join(['python3', '-c', f"import base64;exec(base64.b64decode('{code}'))", encoded])
     argv = build_ssh_args(hostname=host['hostname'], username=host['username'],
                           port=int(host['port']), identity_file=host.get('identity_file') or None,
-                          remote_command=command)
+                          remote_command=command, strict_host_key=strict_host_key)
     proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.DEVNULL,
                                                 env=ssh_environment())

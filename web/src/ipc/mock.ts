@@ -265,6 +265,11 @@ function mockHandle(
       host.last_probe_ok = false;
       return { host, probe: { ok: false, timed_out: false, agent_version: "", os: "", python_version: "", error: "SSH is unavailable in mock mode" } };
     }
+    case "host.fetch_preview": {
+      const p = params as { host_id: string };
+      if (!requireMockHost(p.host_id).enabled) throw new Error("host is disabled");
+      throw new Error("SSH is unavailable in mock mode");
+    }
     case "host.reconnect_bound":
     case "host.connect":
     case "host.disconnect":

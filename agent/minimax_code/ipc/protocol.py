@@ -774,6 +774,12 @@ class HostTransferStatusParams(BaseModel):
     transfer_id: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
+class HostFetchPreviewParams(HostBindingParams):
+    remote_path: str = Field(min_length=1, max_length=4096)
+    local_path: str = Field(min_length=1, max_length=4096)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class HostBoundTransferStatusParams(HostBindingParams):
     remote_path: str = Field(min_length=1, max_length=4096)
     transfer_id: str = Field(pattern=r"^[0-9a-f]{32}$")
