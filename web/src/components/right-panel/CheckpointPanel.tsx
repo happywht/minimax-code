@@ -30,6 +30,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   const [diffs, setDiffs] = useState<Record<string, string>>({});
   const [diffLoading, setDiffLoading] = useState<Record<string, boolean>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [creationWarnings, setCreationWarnings] = useState<string[]>([]);
   const [legacyPaths, setLegacyPaths] = useState<Record<string, string>>({});
   const [legacyConfirmed, setLegacyConfirmed] = useState<Record<string, boolean>>({});
   const [restoreDetails, setRestoreDetails] = useState<Record<string, string[]>>({});
@@ -65,6 +66,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => { setCreationWarnings([]); }, [sessionId]);
 
   const handleCreate = async () => {
     if (!sessionId) {
@@ -74,14 +76,18 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     const trimmedLabel = label.trim() || strings.rightPanel.checkpoint.defaultLabel;
     setCreating(true);
     try {
-      await typedIPC.createCheckpoint({
+      const result = await typedIPC.createCheckpoint({
         session_id: sessionId,
         label: trimmedLabel,
         message: message.trim(),
       });
+      if (useSessionStore.getState().currentSessionId !== sessionId) return;
       setLabel("");
       setMessage("");
-      toast.success(strings.rightPanel.checkpoint.created, trimmedLabel);
+      const warnings = result.warnings ?? [];
+      setCreationWarnings([...warnings, ...(result.warnings_truncated ? ["还有其他创建警告未显示。"] : [])]);
+      if (warnings.length || result.warnings_truncated) toast.error("检查点可能不完整", "请查看创建警告，不要将其作为完整备份。");
+      else toast.success(strings.rightPanel.checkpoint.created, trimmedLabel);
       await load();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -231,6 +237,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
       </div>
 
       <div className="space-y-2 px-3 pb-3">
+        {creationWarnings.length > 0 && <div role="alert" className="rounded border border-status-warning/30 p-2 text-status-warning"><p>检查点创建警告（仅本次显示）：</p>{creationWarnings.map((warning, index) => <p key={index} className="break-words">{warning}</p>)}</div>}
         {sessionId ? (
           <div className="space-y-2 rounded-md border border-minimax-border bg-minimax-bg/40 p-2">
             <input

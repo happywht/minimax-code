@@ -107,7 +107,8 @@ def register_checkpoint_handlers(
                 created_at=snapshot.created_at,
                 source_root=str(workdir),
             )
-            await ctx.reply({"checkpoint": row})
+            await ctx.reply({"checkpoint": row, "warnings": snapshot.warnings[:100],
+                             "warnings_truncated": len(snapshot.warnings) > 100})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover - defensive

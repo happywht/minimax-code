@@ -2291,6 +2291,8 @@ export interface Checkpoint {
 /** Result of `checkpoint.create`. */
 export interface CheckpointCreateResult {
   checkpoint: Checkpoint;
+  warnings?: string[];
+  warnings_truncated?: boolean;
 }
 
 /** Result of `checkpoint.list`. */

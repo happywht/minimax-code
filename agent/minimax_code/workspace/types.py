@@ -65,6 +65,7 @@ class Checkpoint:
     untracked_files: list[str]
     has_untracked_snapshot: bool
     created_at: str
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

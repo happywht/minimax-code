@@ -178,6 +178,7 @@ class CheckpointManager:
             untracked_files=untracked_files,
             has_untracked_snapshot=has_snapshot,
             created_at=timestamp,
+            warnings=warnings,
         )
 
     # ------------------------------------------------------------------

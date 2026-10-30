@@ -2100,6 +2100,8 @@ Mock 模式仅模拟虚拟 `demo.txt`，不读取本机文件。
 
 `checkpoint.diff` 的 `untracked_preview` 列出每个记录路径及当前状态：`available`（副本存在且目标不存在）、`existing`、`missing_snapshot` 或 `unsafe_path`。这是状态预览，不展示文件内容，也不锁定工作区。`checkpoint.restore` 可选 `untracked_file` 指定一个记录的未跟踪路径，只恢复该文件，不应用 Git stash 或恢复其他文件；目标已存在时跳过，原子创建竞争失败时返回警告，不覆盖现有目标。面板先显示预览并要求单文件确认；关闭后重新打开可刷新。旧的无 `untracked_file` RPC 仍尝试整体应用快照，带上述 Git 并发风险；面板提供整体应用入口，预览后需明确确认。副本可能缺失或被外部修改，此流程不验证副本内容的原始性；文件模式和元数据也不保证还原。
 
+`checkpoint.create` 返回至多 100 条本次创建警告及 `warnings_truncated`；面板显示这些即时警告，提示快照可能不完整。警告当前不持久化，重新打开面板不会恢复该提示。
+
 对不超过 16 MiB 且落在本次 32 MiB 摘要预算内的可恢复副本，预览会提供当前 SHA-256；界面单文件恢复将该值作为 `expected_sha256` 传回，复制时不匹配则不发布。未取得摘要的文件不能在界面逐文件恢复；旧 RPC 与整体应用仍不强制该校验。摘要只绑定当前副本，不证明它与创建检查点时一致。
 
 迁移后可调用 `checkpoint.rebind`，参数为 `checkpoint_id`、绝对仓库根 `cwd`、`confirm_rebind: true` 和 `confirm_trusted_bundle: true`。用户须先将会话绑定到新工作区并导入可信 v11 包的 Git 对象。服务端校验会话工作区边界、仓库根和 Git 对象存储、pack 和完整闭包、对象格式、HEAD 与 stash 基底，并只更新仍匹配的检查点 `source_root`。规划只读、文件沙箱或受限 host 会话不得执行；Git worktree 的 common 目录位于会话工作区之外时拒绝。原来源未知的旧检查点不能安全重绑定。该操作不修改项目、会话、Git refs、index 或工作区；目录与提交匹配不能证明仓库身份，外部 Git/GC 并发不受锁保护。失败时不重新绑定。
