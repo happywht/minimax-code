@@ -7,7 +7,7 @@ import re
 from .storage.dao._base import dumps_json, loads_json, now_iso
 from .storage.dao.runs import _append_event, _fetchone, _hydrate_step
 
-TOOLS = {"generate_report_docx", "generate_report_pdf", "generate_report_pair",
+TOOLS = {"export_research_sources", "generate_report_docx", "generate_report_pdf", "generate_report_pair",
          "generate_table_xlsx", "generate_xlsx_from_csv", "generate_xlsx_from_xlsx"}
 
 
@@ -20,13 +20,13 @@ async def record_tool_attachments(db, run_id, session_id, project_id, call, resu
         entries = output.get("results")
         values = [(item, item.get("format")) for item in entries if isinstance(item, dict) and item.get("status") == "saved"] if isinstance(entries, list) else []
     elif result.success:
-        values = [(output, "docx" if name == "generate_report_docx" else "pdf" if name == "generate_report_pdf" else "xlsx")]
+        values = [(output, "txt" if name == "export_research_sources" else "docx" if name == "generate_report_docx" else "pdf" if name == "generate_report_pdf" else "xlsx")]
     else:
         return []
     candidates = []
     for item, kind in values[:2]:
         ident, digest = item.get("attachment_id"), item.get("sha256")
-        if (kind in {"docx", "pdf", "xlsx"} and isinstance(ident, str) and re.fullmatch(r"att_[0-9a-f]{32}", ident)
+        if (kind in {"txt", "docx", "pdf", "xlsx"} and isinstance(ident, str) and re.fullmatch(r"att_[0-9a-f]{32}", ident)
                 and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
             candidates.append((ident, digest, kind))
     if not candidates:
@@ -53,7 +53,8 @@ async def record_tool_attachments(db, run_id, session_id, project_id, call, resu
             attachment = await _fetchone(conn, "SELECT id,project_id,service_id,sha256,original_name,declared_type,recognized_type FROM attachments WHERE id=?", (ident,))
             if (not attachment or attachment["project_id"] != project_id
                     or attachment["service_id"] != service["service_id"] or attachment["sha256"] != digest
-                    or attachment["declared_type"] != kind or attachment["recognized_type"] != kind):
+                    or attachment["declared_type"] != kind
+                    or attachment["recognized_type"] != ("utf8_text" if kind == "txt" else kind)):
                 continue
             key = hashlib.sha256((run_id + "\0" + str(call.get("id") or "") + "\0" + ident).encode()).hexdigest()
             step_id = "run_attachment_" + key

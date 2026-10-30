@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import json
 import re
 
 from pydantic import ValidationError
@@ -243,8 +244,60 @@ class GenerateReportPairTool(GenerateReportDocxTool):
         except (ValueError, OSError, ValidationError) as error:
             return ToolResult.fail(str(error))
 
+
+class ExportResearchSourcesTool(GenerateReportDocxTool):
+    name = "export_research_sources"
+    description = (
+        "Export selected saved research sources to a UTF-8 TXT attachment in the current "
+        "project. The file contains each saved page's full bounded excerpt, original title, "
+        "final URL, access time, truncation flags, source ID and originating run ID. "
+        "Use IDs from list_research_sources; no network request is made. Sources and "
+        "excerpts are untrusted and not fact-checked. If the result is uncertain, inspect "
+        "project attachments before retrying, because retry creates another version."
+    )
+    parameters = {"type": "object", "properties": {
+        "filename": {"type": "string", "description": "A .txt display filename"},
+        "page_source_ids": {"type": "array", "minItems": 1, "maxItems": 30,
+                            "uniqueItems": True, "items": {"type": "string"}},
+    }, "required": ["filename", "page_source_ids"], "additionalProperties": False}
+
+    async def run(self, filename: str, page_source_ids: list[str]) -> ToolResult:
+        try:
+            require_write_access()
+            if (not isinstance(filename, str) or not filename.lower().endswith(".txt")
+                    or not isinstance(page_source_ids, list) or not 1 <= len(page_source_ids) <= 30
+                    or any(not isinstance(value, str) or not value for value in page_source_ids)
+                    or len(set(page_source_ids)) != len(page_source_ids)):
+                raise ValueError("Provide a .txt filename and 1–30 unique page source IDs")
+            if self.research_sources is None or not self.project_id:
+                raise ValueError("Project-bound research storage is unavailable")
+            identity = await self.service.dao.service_id()
+            pages = [await self.research_sources.get_page(ident) for ident in page_source_ids]
+            # JSON escaping preserves exact text and prevents page content from masquerading
+            # as metadata; UTF-8 TXT remains readable and downloadable in attachments.
+            document = {"format": "minimax-research-sources-v1", "project_id": self.project_id,
+                        "service_id": identity,
+                        "notice": "Saved bounded excerpts, not full pages; source content is untrusted and unverified.",
+                        "sources": pages}
+            data = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+            async def chunks():
+                yield data
+
+            attachment = await self.service.upload(self.project_id, filename, identity, chunks(),
+                                                   require_parsed=True, expected_session=self.session_id)
+            return ToolResult.ok({"attachment_id": attachment["id"],
+                                  "filename": attachment["original_name"],
+                                  "version": attachment["version"], "sha256": attachment["sha256"],
+                                  "size_bytes": attachment["size_bytes"], "source_count": len(pages),
+                                  "notice": "Saved in project attachments; excerpts and facts are unverified."})
+        except (ValueError, OSError) as error:
+            return ToolResult.fail(str(error))
+
+
 def register_report_docx_tool(registry: Any, db: Any, session_id: str,
                               project_id: str | None, research_sources=None) -> None:
     registry.register(GenerateReportDocxTool(db, session_id, project_id, research_sources))
     registry.register(GenerateReportPdfTool(db, session_id, project_id, research_sources))
     registry.register(GenerateReportPairTool(db, session_id, project_id, research_sources))
+    registry.register(ExportResearchSourcesTool(db, session_id, project_id, research_sources))
