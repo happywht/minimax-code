@@ -31,6 +31,7 @@ import { OutputStorage } from "./OutputStorage";
 import { RunTimelineTextArtifacts } from "./RunTimelineTextArtifacts";
 import { CodexInputImages } from "./CodexInputImages";
 import { CodexInputDraft } from "./CodexInputDraft";
+import { PlanRunDraft } from "./PlanRunDraft";
 import { RunReferenceExport, RunReferenceRecovery, type Reference } from "./RunReferenceRecovery";
 
 export type TimelineTarget = { host: string; service: string; project: string; session: string; run: string;
@@ -257,6 +258,7 @@ export function RunTimelinePanel({
             <RunBudgetPanel run={run} />
             <CodexInputImages run={run} />
             <CodexInputDraft run={run} />
+            <PlanRunDraft run={run} />
             <RunAttachments run={run} steps={run.steps} />
             <RunTimelineTextArtifacts run={run} />
             <FollowupRunDraft run={run} />
