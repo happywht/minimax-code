@@ -13,6 +13,7 @@ import { toast } from "../layout/ErrorBoundary";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import type { Checkpoint, CheckpointDiffResult } from "../../types/ipc";
 import { strings } from "../../ui/strings";
+import { CheckpointPatchReview } from "./CheckpointPatchReview";
 
 export interface CheckpointPanelProps {
   testId?: string;
@@ -392,6 +393,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                           text={diffs[ckpt.id] ?? ""}
                           emptyText={strings.rightPanel.checkpoint.noDiff}
                         />
+                        {previews[ckpt.id] && legacyReady(ckpt) && <CheckpointPatchReview checkpoint={ckpt} patch={diffs[ckpt.id] ?? ""} legacyCwd={ckpt.source_root ? undefined : (legacyPaths[ckpt.id] ?? "").trim()} />}
                         <Button size="sm" variant="secondary" disabled={restoring || !previews[ckpt.id]} data-testid={`${testId}-restore-${ckpt.id}`} onClick={() => void handleApplyCheckpoint(ckpt)}>应用检查点（非精确撤销）</Button>
                         <div className="mt-2 text-[11px]">
                           <p>未跟踪文件恢复预览（关闭后重新打开可刷新）：</p>
