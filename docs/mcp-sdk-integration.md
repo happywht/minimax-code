@@ -126,6 +126,19 @@ supported; returned content is untrusted. Name collisions prevent registration.
 The reserved opt-in state key is `$minimax.resources`; a server tool with that
 exact name also prevents resource-tool registration.
 
+The separate `$minimax.prompts` switch is off by default. When enabled and
+advertised, `mcp__<server>__minimax_prompts` lists prompt names and argument
+descriptions or gets a uniquely listed name with bounded string arguments.
+It checks declared and required arguments, the active connection, the same
+tool/network permission rules, and the planning/restricted dispatch boundary.
+It returns at most 16 role-labelled messages as untrusted tool data; text is
+bounded and binary content omitted. No message is inserted into the conversation
+as a user or assistant instruction, and no template is automatically executed.
+Lists show at most 50 prompts and 16 arguments each, with omissions indicated.
+The SDK's disabled input-required rounds remain in effect. Reserved key and
+bridged name collisions prevent registration. This does not establish full
+prompt interoperability or validate the server's content.
+
 Each operation has one 30-second total deadline including semaphore wait and all
 pages/retries, with at most eight active operations. Explicit tool/resource/prompt
 listings are capped at 100 pages, 1000 items and 8 MiB of serialized listing data.

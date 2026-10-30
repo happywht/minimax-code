@@ -30,6 +30,7 @@ from .transport import MCPTransport, MCPTransportError
 from .types import (
     CallToolResult,
     ClientCapabilities,
+    GetPromptResult,
     Implementation,
     InitializeResult,
     ListPromptsResult,
@@ -156,6 +157,10 @@ class MCPClient:
     async def list_prompts(self) -> ListPromptsResult:
         raw = await self._request(protocol.METHOD_PROMPTS_LIST, {})
         return ListPromptsResult.model_validate(raw)
+
+    async def get_prompt(self, name: str, arguments: dict[str, str]) -> GetPromptResult:
+        raw = await self._request(protocol.METHOD_PROMPTS_GET, {"name": name, "arguments": arguments})
+        return GetPromptResult.model_validate(raw)
 
     # -- JSON-RPC plumbing -----------------------------------------------
 

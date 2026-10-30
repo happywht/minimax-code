@@ -1530,12 +1530,12 @@ class AgentCore:
 
         # 1. Permission check (configurable, default-allow).
         action = _check_rule(self._permission_store, name)
-        from ..mcp.registry import MCPResourcesTool
+        from ..mcp.registry import MCPPromptsTool, MCPResourcesTool
         try:
-            is_mcp_resource = type(self.registry.get(name)) is MCPResourcesTool
+            is_mcp_content = type(self.registry.get(name)) in (MCPResourcesTool, MCPPromptsTool)
         except KeyError:
-            is_mcp_resource = False
-        if is_mcp_resource:
+            is_mcp_content = False
+        if is_mcp_content:
             network_action = _check_rule(self._permission_store, "network")
             actions = {action, network_action}
             action = ("deny" if "deny" in actions else "ask" if "ask" in actions

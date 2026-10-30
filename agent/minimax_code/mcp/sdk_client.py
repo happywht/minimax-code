@@ -24,6 +24,7 @@ from .http_policy import http_client_factory, quiet_sdk_diagnostics, validate_he
 from .transport import MCPTransport
 from .types import (
     CallToolResult,
+    GetPromptResult,
     ListPromptsResult,
     ListResourcesResult,
     ListToolsResult,
@@ -312,6 +313,15 @@ class SDKMCPClient:
 
     async def list_prompts(self) -> ListPromptsResult:
         return await self._list("list_prompts", "prompts", ListPromptsResult)
+
+    async def get_prompt(self, name: str, arguments: dict[str, str]) -> GetPromptResult:
+        async def get(sdk: Client) -> GetPromptResult:
+            result = await sdk.get_prompt(name, arguments)
+            return GetPromptResult.model_validate(
+                result.model_dump(by_alias=True, mode="json", exclude_unset=True)
+            )
+
+        return await self._operate("prompts_get", get)
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> CallToolResult:
         async def call(sdk: Client) -> CallToolResult:
