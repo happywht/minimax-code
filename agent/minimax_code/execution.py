@@ -32,6 +32,7 @@ class ExecutionDeniedError(PermissionError):
 class ExecutionPolicy:
     workspace: Path | None = None
     read_only: bool = False
+    restrict_network_tools: bool = False
 
 
 _policy: ContextVar[ExecutionPolicy | None] = ContextVar("execution_policy", default=None)
@@ -52,14 +53,30 @@ def execution_scope(policy: ExecutionPolicy) -> Iterator[None]:
         target = require_directory(policy.workspace) if policy.workspace is not None else root
         if not target.is_relative_to(root):
             raise ExecutionDeniedError("Nested execution workspace is outside the parent workspace.")
-        policy = ExecutionPolicy(workspace=target, read_only=parent.read_only or policy.read_only)
+        policy = ExecutionPolicy(workspace=target, read_only=parent.read_only or policy.read_only,
+                                 restrict_network_tools=parent.restrict_network_tools or policy.restrict_network_tools)
     elif policy.workspace is not None:
-        policy = ExecutionPolicy(workspace=require_directory(policy.workspace), read_only=policy.read_only)
+        policy = ExecutionPolicy(workspace=require_directory(policy.workspace), read_only=policy.read_only,
+                                 restrict_network_tools=policy.restrict_network_tools)
     token = _policy.set(policy)
     try:
         yield
     finally:
         _policy.reset(token)
+
+
+def require_offline_tool(tool: Any) -> None:
+    """Only explicitly reviewed implementations may run under this task policy."""
+    policy = _policy.get()
+    if policy is None or not policy.restrict_network_tools:
+        return
+    from .agent.tools.ask_user import AskUserTool
+    from .agent.tools.public_research import GetResearchSourceTool, ListResearchSourcesTool
+
+    if type(tool) not in (AskUserTool, GetResearchSourceTool, ListResearchSourcesTool):
+        raise ExecutionDeniedError(
+            f"Tool {tool.name!r} is unavailable under this task's network tool restriction."
+        )
 
 
 def require_write_access() -> None:
@@ -93,6 +110,9 @@ def require_tool_access(name: str) -> None:
 
 
 def process_cwd(cwd: str | Path | None) -> str:
+    policy = _policy.get()
+    if policy is not None and policy.restrict_network_tools:
+        raise ExecutionDeniedError("Processes are unavailable under this task's network tool restriction.")
     require_write_access()
     return _validated_process_cwd(cwd)
 

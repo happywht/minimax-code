@@ -34,6 +34,10 @@ function serviceLabel(value: string): string {
   try { return new URL(value).origin; } catch { return "未知"; }
 }
 
+function readNetworkRestriction(key: string): boolean {
+  try { return window.localStorage.getItem(key) === "true"; } catch { return false; }
+}
+
 export interface MessageInputProps {
   testId?: string;
   /** Override the agent list fetcher (for tests). */
@@ -70,6 +74,17 @@ export function MessageInput({
   const budgetValid = !budgetText || (/^[1-9]\d*$/.test(budgetText) && budgetNumber !== undefined && Number.isSafeInteger(budgetNumber));
 
   const codex = useSessionStore((s) => s.sessions.find((session) => session.id === sessionId)?.engine === "codex");
+  const restrictionKey = `minimax-code:network-restriction:${budgetHost}:${sessionId ?? "new"}`;
+  const [restriction, setRestriction] = useState(() => ({ key: restrictionKey, value: readNetworkRestriction(restrictionKey) }));
+  if (restriction.key !== restrictionKey) setRestriction({ key: restrictionKey, value: readNetworkRestriction(restrictionKey) });
+  const restrictNetworkTools = restriction.key === restrictionKey && restriction.value;
+  const restrictionRef = useRef(restrictNetworkTools);
+  restrictionRef.current = restrictNetworkTools;
+  const changeRestriction = (value: boolean) => {
+    restrictionRef.current = value;
+    setRestriction({ key: restrictionKey, value });
+    try { if (value) window.localStorage.setItem(restrictionKey, "true"); else window.localStorage.removeItem(restrictionKey); } catch { /* in-memory only */ }
+  };
   const draft = useComposerDraft(sessionId);
   const attachments = useAttachments(draft.ref, draft.setValue);
   const latestAttachments = useRef(attachments);
@@ -100,6 +115,7 @@ export function MessageInput({
     if (disabled) return;
     if (draft.overLimit || !budgetValid) return;
 
+    const selectedRestriction = restrictNetworkTools;
     const rawText = draft.value;
     const hasText = rawText.trim().length > 0;
     const hasImages = attachments.attachedImages.length > 0;
@@ -143,7 +159,7 @@ export function MessageInput({
     if (scopeChanged || ipc.agentBaseUrl !== origin || current.currentSessionId !== originalSession ||
         current.currentProjectId !== originalProject || liveDraft.id !== originalSession || liveDraft.text !== rawText ||
         latestAttachments.current.attachedFiles !== originalFiles || latestAttachments.current.attachedImages !== originalImages ||
-        currentStatus === "sending" || currentStatus === "streaming" || currentStatus === "cancelling") {
+        restrictionRef.current !== selectedRestriction || currentStatus === "sending" || currentStatus === "streaming" || currentStatus === "cancelling") {
       useChat.setState({ error: "准备任务期间服务、会话、项目或草稿发生变化；未发送，请核对当前执行位置后重试。" });
       return;
     }
@@ -160,12 +176,14 @@ export function MessageInput({
       draft.clear();
       attachments.clearAll();
       mention.closePicker();
-      await send(parts, budgetNumber);
+      changeRestriction(false);
+      await send(parts, budgetNumber, selectedRestriction);
     } else {
       draft.clear();
       attachments.clearAll();
       mention.closePicker();
-      await send(hasContext ? finalText : rawText, budgetNumber);
+      changeRestriction(false);
+      await send(hasContext ? finalText : rawText, budgetNumber, selectedRestriction);
     }
   };
 
@@ -224,7 +242,8 @@ export function MessageInput({
           }}
         />
         {!codex && <ResearchTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
-          onPrepare={(text) => {
+          onPrepare={(text, restricted) => {
+            changeRestriction(restricted);
             draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
             mention.closePicker();
             draft.ref.current?.focus();
@@ -241,6 +260,7 @@ export function MessageInput({
             mention.closePicker();
             draft.ref.current?.focus();
           }} />}
+        {!codex && <label className="block px-2.5 py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制此任务的联网工具（仅允许已审计的来源读取及提问；禁用 shell、MCP 和其他工具）。模型服务可能联网；不提供系统网络隔离。</label>}
         <ProjectAttachmentImport sessionId={sessionId} projectId={projectId} host={budgetHost} />
         <AttachmentRows
           attachedFiles={attachments.attachedFiles}

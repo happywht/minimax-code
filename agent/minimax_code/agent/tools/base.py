@@ -236,6 +236,8 @@ class ToolRegistry:
             from ...execution import require_tool_access
 
             require_tool_access(name)
+            from ...execution import require_offline_tool
+            require_offline_tool(tool)
             from ...run_ownership import require_live_owned_tool
             require_live_owned_tool(name)
             from ...run_ownership import LiveSkillCapability

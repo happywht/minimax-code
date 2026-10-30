@@ -485,6 +485,18 @@ may change after the response. This is not an OS sandbox or task attribution.
 In `git.status`, a rename is listed under its destination; its source is not a
 separate entry.
 
+`agent.send_message` and Native `run.start` accept optional boolean
+`restrict_network_tools` (default false). When true, the admitted request and
+run metadata retain the policy across queuing, recovery and continuation.
+Tool dispatch permits only the reviewed saved-research-source readers and
+`ask_user`; shell, MCP, network tools and other unreviewed tools are rejected.
+Processes through the task execution boundary are rejected, so configured
+validation commands and file-change sampling may be unavailable. Codex runs
+reject this option. It is a task-tool restriction, not OS network isolation:
+the model provider and unrelated application activity may still use the network.
+Existing permission rules still apply to allowed tools. Mock mode does not
+execute real tools or enforce a real network boundary.
+
 `agent.send_message` and `run.start` accept optional boolean
 `capture_file_changes` (default false, included in request identity when true).
 When enabled, service-owned execution samples Git-visible regular files in the

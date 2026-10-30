@@ -1131,6 +1131,7 @@ export interface StatusResult extends PingResult {
 
 export interface SendMessageParams {
   capture_file_changes?: boolean;
+  restrict_network_tools?: boolean;
   session_id: string | null;
   content: string | ContentPart[];
   idempotency_key?: string;

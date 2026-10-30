@@ -313,6 +313,7 @@ class SendMessageParams(_Base):
     content: str | list[dict[str, Any]]
     mode: Literal["chat", "plan", "execute"] = "chat"
     capture_file_changes: bool = False
+    restrict_network_tools: bool = False
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
     # M2 — per-run token budget. None defers to the env default
     # (MINIMAX_CODE_RUN_BUDGET_TOKENS); 0 disables budgeting for this

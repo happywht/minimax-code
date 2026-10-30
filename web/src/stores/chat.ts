@@ -56,7 +56,7 @@ export interface ChatState {
   reconcileAskUser: (request: AskUserData | null, version: number, sessionId: string) => void;
 
   init: () => Promise<void>;
-  send: (content: string | ContentPart[], budgetTokens?: number) => Promise<void>;
+  send: (content: string | ContentPart[], budgetTokens?: number, restrictNetworkTools?: boolean) => Promise<void>;
   /**
    * v1.1.0 — resume the latest budget-truncated run. Unlike send(),
    * no user bubble is added: the backend injects a fixed continuation
@@ -704,7 +704,7 @@ export const useChat = create<ChatState>((set, get) => ({
     }));
   },
 
-  send: async (content: string | ContentPart[], budgetTokens?: number) => {
+  send: async (content: string | ContentPart[], budgetTokens?: number, restrictNetworkTools = false) => {
     if (budgetTokens !== undefined && (!Number.isSafeInteger(budgetTokens) || budgetTokens <= 0)) {
       set({ error: "任务 token 上限必须是安全范围内的正整数。" }); return;
     }
@@ -750,6 +750,7 @@ export const useChat = create<ChatState>((set, get) => ({
       }
 
       const pinned = useSessionStore.getState().sessions.find((session) => session.id === sessionId)?.engine ?? "native";
+      if (pinned === "codex" && restrictNetworkTools) throw new Error("工具联网限制仅支持 Native 任务。");
       if (pinned === "codex" && parts) throw new Error("Codex 当前仅支持纯文本，请移除附件后重试。");
       const requestKey = crypto.randomUUID();
       const userMessage: Message = {
@@ -803,6 +804,7 @@ export const useChat = create<ChatState>((set, get) => ({
         session_id: sessionId,
         content: wireContent,
         idempotency_key: requestKey,
+        ...(restrictNetworkTools ? { restrict_network_tools: true } : {}),
         ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
         ...(get().captureFileChanges ? { capture_file_changes: true } : {}),
         ...(get().executionMode === "plan" ? { mode: "plan" as const } : {}),

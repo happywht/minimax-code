@@ -604,6 +604,8 @@ def register_run_handlers(server: Any) -> None:
             if request.engine is not None and request.engine != pinned:
                 raise HandlerError(INVALID_PARAMS, "Requested engine differs from the session's pinned engine")
             if pinned == "codex":
+                if request.restrict_network_tools:
+                    raise HandlerError(INVALID_PARAMS, "Network tool restriction is supported only for Native runs")
                 await _start_codex_run(request, ctx)
             else:
                 await handle_agent_send_message(request.model_dump(exclude={"engine"}), ctx, wait=False)
@@ -806,7 +808,8 @@ def register_run_handlers(server: Any) -> None:
                 saved_schedule = {**saved_schedule, "context": {**saved_schedule["context"], "budget_tokens": budget_override}}
             await handle_agent_send_message(
                 {**previous, "content": content, "idempotency_key": request.idempotency_key,
-                 "budget_tokens": budget_override},
+                 "budget_tokens": budget_override,
+                 "restrict_network_tools": metadata.get("restrict_network_tools", False)},
                 ctx, wait=False, resumed_from_id=run["id"],
                 continuation=scheduled_continuation,
                 required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"],

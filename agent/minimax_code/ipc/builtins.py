@@ -618,6 +618,12 @@ async def handle_agent_send_message(
         return
     session_id = str(params.get("session_id") or f"ses_{uuid.uuid4().hex[:8]}")
     request = {"session_id": session_id, "mode": mode, "content": copy.deepcopy(content)}
+    restrict_network_tools = params.get("restrict_network_tools", False)
+    if not isinstance(restrict_network_tools, bool):
+        await ctx.reply_error(-32602, "restrict_network_tools must be a boolean")
+        return
+    if restrict_network_tools:
+        request["restrict_network_tools"] = True
     capture = params.get("capture_file_changes", False)
     if not isinstance(capture, bool):
         await ctx.reply_error(-32602, "capture_file_changes must be a boolean")
@@ -847,7 +853,7 @@ async def handle_agent_send_message(
                                       reasoning_effort=model_snapshot.reasoning_effort)
             if not job.workspace:
                 raise RuntimeError("Accepted workspace is missing; rebind before starting a new task")
-            with execution_scope(ExecutionPolicy(workspace=Path(job.workspace), read_only=mode == "plan")), subagent_runtime_scope(runtime), budget_scope(job.budget_handle), run_children_scope(children):
+            with execution_scope(ExecutionPolicy(workspace=Path(job.workspace), read_only=mode == "plan", restrict_network_tools=restrict_network_tools)), subagent_runtime_scope(runtime), budget_scope(job.budget_handle), run_children_scope(children):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
                                                  model_snapshot=model_snapshot, internal_schedule=internal_schedule,
                                                  internal_skill=internal_skill, admitted_permissions=admitted_permissions)
@@ -937,6 +943,7 @@ async def handle_agent_send_message(
                       **({profile_key: internal_skill.snapshot()} if internal_skill is not None else {}),
                       "model_snapshot": model_snapshot.metadata(), "workspace_snapshot": root,
                       "project_id": project_id,
+                      "restrict_network_tools": restrict_network_tools,
                       **({"permission_rules_snapshot": admitted_permissions} if admitted_permissions is not None else {}),
                       "validate_command": validate_command,
                       "budget": {"limit_tokens": run_budget, "daily_limit": daily_limit,
@@ -2119,7 +2126,8 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
     await handle_agent_send_message(
         {"session_id": session_id, "content": _CONTINUE_PROMPT + f"\n[Continuation of run {run['id']}]",
          "mode": run.get("mode", "chat"), "idempotency_key": key,
-         "budget_tokens": (metadata.get("budget") or {}).get("limit_tokens"), **skill_intent}, ctx,
+         "budget_tokens": (metadata.get("budget") or {}).get("limit_tokens"),
+         "restrict_network_tools": metadata.get("restrict_network_tools", False), **skill_intent}, ctx,
         resumed_from_id=run["id"], continuation=True,
         required_model=metadata.get("model_snapshot"), required_workspace=metadata.get("workspace_snapshot"),
         required_permission_rules=metadata.get("permission_rules_snapshot"),

@@ -829,7 +829,8 @@ function mockHandle(
       const sid = p.session_id ?? `ses_${Math.random().toString(36).slice(2, 10)}`;
       if (mockSessions.get(sid)?.engine === "codex") throw new Error("Codex sessions must send through run.start");
       const requestKey = p.idempotency_key ? sid + "\0" + p.idempotency_key : null;
-      const signature = JSON.stringify({ content: p.content, mode: p.mode ?? "chat" });
+      if (p.restrict_network_tools !== undefined && typeof p.restrict_network_tools !== "boolean") throw new Error("restrict_network_tools must be a boolean");
+      const signature = JSON.stringify({ content: p.content, mode: p.mode ?? "chat", restrict_network_tools: p.restrict_network_tools === true });
       const previous = requestKey ? mockRequestKeys.get(requestKey) : null;
       if (previous) {
         if (previous.signature !== signature) throw new Error("idempotency_key already belongs to different input");
@@ -846,7 +847,7 @@ function mockHandle(
         id: runId,
         session_id: sid,
         mode: p.mode ?? "chat",
-        metadata: { model_snapshot: { engine: "native", model: mockModels[0].id,
+        metadata: { restrict_network_tools: p.restrict_network_tools === true, model_snapshot: { engine: "native", model: mockModels[0].id,
           provider_id: mockModels[0].provider_id ?? null, protocol: mockModels[0].protocol ?? null,
           reasoning_effort: mockReasoningEffort, context_window: mockModels[0].context_window } },
         status: "running",
