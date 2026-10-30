@@ -1,21 +1,27 @@
 """Pre-edit file backup manager.
 
-Before the agent overwrites or edits a file, the :class:`BackupManager`
-creates a timestamped copy in ``.minimax/backups/`` within the workspace.
-Backups are best-effort — a failure is logged but never blocks the edit.
+Native file tools use ``backup_verified`` and block existing-file mutations
+when a reviewed baseline cannot be copied and verified. These copies and their
+metadata are retained in the workspace's ``.minimax/backups`` directory.
 
-Each file keeps at most ``_MAX_BACKUPS_PER_FILE`` backups; the oldest
-is automatically pruned when the limit is exceeded.
+The legacy ``backup`` API remains best-effort and prunes its older copies; it
+is separate from the verified backups used by those tools.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import shutil
+import stat
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from ..file_mutations import _file_identity
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +131,83 @@ class BackupManager:
             return str(file_path.resolve().relative_to(self._workspace.resolve()))
         except ValueError:
             return file_path.name
+
+
+    def backup_verified(self, file_path: Path, *, expected_sha256: str) -> dict[str, Any]:
+        """Copy and verify the exact baseline or raise without modifying it."""
+        workspace = self._workspace.resolve(strict=True)
+        root = workspace
+        for component in (".minimax", "backups"):
+            root = root / component
+            try:
+                root.mkdir()
+            except FileExistsError:
+                pass
+            info = root.lstat()
+            if not stat.S_ISDIR(info.st_mode) or root.resolve(strict=True) != root:
+                raise OSError("Backup directory is not a safe local directory")
+
+        before = file_path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError("Backup source is not a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        ts = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S%f")
+        # Do not flatten a pathname: different paths can flatten identically.
+        name = hashlib.sha256(os.fsencode(str(file_path))).hexdigest()[:16]
+        dest = root / f"{ts}_{name}_{uuid.uuid4().hex}.bak"
+        manifest = dest.with_suffix(".json")
+        created = False
+        manifest_created = False
+        try:
+            source_fd = os.open(file_path, flags)
+            with os.fdopen(source_fd, "rb") as source:
+                opened = os.fstat(source.fileno())
+                if _file_identity(before) != _file_identity(opened):
+                    raise OSError("Backup source changed before copying")
+                digest = hashlib.sha256()
+                backup_fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(backup_fd, "wb") as target:
+                    created = True
+                    while chunk := source.read(65536):
+                        target.write(chunk)
+                        digest.update(chunk)
+                    target.flush()
+                    os.fsync(target.fileno())
+                after = os.fstat(source.fileno())
+                if (_file_identity(opened) != _file_identity(after)
+                        or _file_identity(after) != _file_identity(file_path.lstat())
+                        or digest.hexdigest() != expected_sha256):
+                    raise OSError("Backup source changed or does not match the reviewed baseline")
+            with dest.open("rb") as check:
+                if hashlib.file_digest(check, "sha256").hexdigest() != expected_sha256:
+                    raise OSError("Backup verification failed")
+            metadata = {"backup_path": str(dest), "original_path": str(file_path),
+                        "timestamp": ts, "sha256": expected_sha256}
+            manifest_fd = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(manifest_fd, "w", encoding="utf-8") as record:
+                manifest_created = True
+                json.dump(metadata, record, ensure_ascii=False)
+                record.flush()
+                os.fsync(record.fileno())
+            if os.name != "nt":
+                directory_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            return {**metadata, "manifest_path": str(manifest)}
+        except BaseException:
+            if manifest_created:
+                try:
+                    manifest.unlink()
+                except OSError:
+                    pass
+            if created:
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+            raise
 
 
 __all__ = ["BackupManager"]

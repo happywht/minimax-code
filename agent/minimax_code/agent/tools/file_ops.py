@@ -534,16 +534,15 @@ class WriteFileTool(Tool):
                     },
                 )
 
-        # Pre-write backup for existing files (best-effort, never blocks).
-        # Backs up the file being overwritten as the caller sees it —
-        # the sandbox mirror when sandboxed, the original otherwise.
+        # Existing content must have a verified recovery copy before mutation.
         backup_meta = None
         if existed:
             try:
                 from ..backup import BackupManager
-                backup_meta = BackupManager().backup(read_target)
-            except Exception:
-                pass
+
+                backup_meta = BackupManager().backup_verified(read_target, expected_sha256=previous_sha)
+            except (OSError, ValueError) as exc:
+                return ToolResult.fail(f"write blocked: could not verify backup: {exc}")
 
         try:
             write_target.parent.mkdir(parents=True, exist_ok=True)
@@ -717,16 +716,14 @@ class AppendFileTool(Tool):
                     },
                 )
 
-        # Pre-append backup (best-effort) — the tail being extended as
-        # the caller sees it: sandbox mirror when sandboxed, original
-        # otherwise.
         backup_meta = None
         if existed:
             try:
                 from ..backup import BackupManager
-                backup_meta = BackupManager().backup(read_target)
-            except Exception:
-                pass
+
+                backup_meta = BackupManager().backup_verified(read_target, expected_sha256=previous_sha)
+            except (OSError, ValueError) as exc:
+                return ToolResult.fail(f"append blocked: could not verify backup: {exc}")
 
         appended_bytes = len(content.encode("utf-8"))
         try:

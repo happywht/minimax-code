@@ -151,14 +151,6 @@ class EditFileTool(Tool):
                     },
                 )
 
-        # Pre-edit backup (best-effort, never blocks).
-        backup_meta = None
-        try:
-            from ..backup import BackupManager
-            backup_meta = BackupManager().backup(read_target)
-        except Exception:
-            pass
-
         # Match line endings as logical newlines, but retain the original
         # spans when writing. This also works with mixed newline files.
         normalized_old = _normalize_newlines(old)
@@ -188,6 +180,13 @@ class EditFileTool(Tool):
             cursor = match.end()
         pieces.append(original[cursor:])
         updated = "".join(pieces)
+
+        try:
+            from ..backup import BackupManager
+
+            backup_meta = BackupManager().backup_verified(read_target, expected_sha256=previous_sha)
+        except (OSError, ValueError) as exc:
+            return ToolResult.fail(f"edit blocked: could not verify backup: {exc}")
 
         try:
             from ...file_mutations import atomic_write_text
