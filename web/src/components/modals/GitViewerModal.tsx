@@ -40,10 +40,14 @@ export function GitViewerModal({
   const [scope, setScope] = useState<"working" | "staged" | "branch">("working");
   const [diffError, setDiffError] = useState(false);
   const project = useSessionStore((s) => s.currentProjectId);
+  const sessionId = useSessionStore((s) => s.currentSessionId);
+  const activeSession = useSessionStore((s) => s.sessions.find((item) => item.id === s.currentSessionId));
+  const boundSession = activeSession?.engine === "native" && (activeSession.project_id ?? "inbox") === (project ?? "inbox") && !activeSession.archived ? sessionId : null;
 
   const lastDiff = useGitStore((s) => s.lastDiff);
   const diffProject = useGitStore((s) => s.diffProject);
   const diffHost = useGitStore((s) => s.diffHost);
+  const diffSession = useGitStore((s) => s.diffSession);
   const lastLog = useGitStore((s) => s.lastLog);
   const loading = useGitStore((s) => s.loading);
   const fetchDiff = useGitStore((s) => s.fetchDiff);
@@ -55,17 +59,17 @@ export function GitViewerModal({
     if (tab === "diff") {
       let active = true;
       setDiffError(false);
-      void fetchDiff({ scope }).then((value) => { if (active && value === null) setDiffError(true); });
+      void fetchDiff({ scope, ...(boundSession ? { session_id: boundSession } : {}) }).then((value) => { if (active && value === null) setDiffError(true); });
       return () => { active = false; };
     } else {
       void fetchLog({ n: 20 });
     }
-  }, [open, tab, scope, project, fetchDiff, fetchLog]);
+  }, [open, tab, scope, project, boundSession, fetchDiff, fetchLog]);
   useEffect(() => ipc.onSideCar((event) => {
     useGitStore.getState().reset();
     setDiffError(event.status !== "started");
-    if (open && tab === "diff" && event.status === "started") void fetchDiff({ scope }).then((value) => { if (value === null) setDiffError(true); });
-  }), [open, tab, scope, fetchDiff]);
+    if (open && tab === "diff" && event.status === "started") void fetchDiff({ scope, ...(boundSession ? { session_id: boundSession } : {}) }).then((value) => { if (value === null) setDiffError(true); });
+  }), [open, tab, scope, boundSession, fetchDiff]);
 
   const handleTabChange = useCallback((t: "diff" | "log") => {
     setTab(t);
@@ -111,8 +115,8 @@ export function GitViewerModal({
             {([["working", "未暂存"], ["staged", "已暂存"], ["branch", "最近提交"]] as const).map(([value, label]) =>
               <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)} className="rounded border border-line px-2 py-1">{label}</button>)}
           </div>
-          <p className="text-xs text-ink-2">{scope === "branch" ? "最近提交相对其父提交；根提交可能没有父提交。" : scope === "staged" ? "当前索引相对 HEAD。" : "当前已跟踪文件的未暂存差异；未跟踪文件不在此视图。"} 这是当前项目的快照，不归因于某个任务。</p>
-          {diffError ? <p role="alert">差异读取失败，不能判断工作区是否有变化。</p> : loading && !lastDiff ? <SkeletonTable rows={4} /> : <DiffContent text={lastDiff?.scope === scope && diffProject === project && diffHost === ipc.agentBaseUrl ? lastDiff.diff : null} testId={`${testId}-diff-content`} />}
+          <p className="text-xs text-ink-2">{scope === "branch" ? "最近提交相对其父提交；根提交可能没有父提交。" : scope === "staged" ? "当前索引相对 HEAD。" : "当前已跟踪文件的未暂存差异；未跟踪文件不在此视图。"} {boundSession ? `当前 Native 会话工作区：${lastDiff?.workspace ?? "读取中"}` : "当前项目目录（非会话工作区）。"} 不归因于某个任务。</p>
+          {diffError ? <p role="alert">差异读取失败，不能判断工作区是否有变化。</p> : loading && !lastDiff ? <SkeletonTable rows={4} /> : <DiffContent text={lastDiff?.scope === scope && diffProject === project && diffHost === ipc.agentBaseUrl && diffSession === boundSession ? lastDiff.diff : null} testId={`${testId}-diff-content`} />}
         </div>
       ) : (
         <LogContent

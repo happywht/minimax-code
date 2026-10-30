@@ -156,10 +156,12 @@ async def _scoped_cwd(params: dict[str, Any] | None) -> str | None:
     if isinstance(params, dict) and "session_id" in params:
         from ..app import get_db, init_runtime
         from ..workspace_ctx import resolve_root_for_session
+        from .host_session_gate import require_chat_session
         sid = params["session_id"]
         if not isinstance(sid, str) or not sid.strip():
             raise HandlerError(INVALID_PARAMS, "session_id must be an explicit Native session")
         await init_runtime()
+        await require_chat_session(sid)
         db = get_db()
         session = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (sid,)) if db else None
         if session is None or session["engine"] != "native":
@@ -465,6 +467,10 @@ def register_git_handlers(server: Any) -> None:
                 await ctx.reply(await _run_workspace_diff(p))
                 return
             cwd = await _scoped_cwd(p)
+            bound_identity = None
+            if "session_id" in p:
+                info = Path(cwd).stat()
+                bound_identity = (info.st_dev, info.st_ino)
             scope = p.get("scope", "working")
             ref = p.get("ref")
             if not isinstance(scope, str):
@@ -507,6 +513,12 @@ def register_git_handlers(server: Any) -> None:
             else:
                 cmd = base_args
             diff_text = (await _run_git([*cmd, "--"], cwd=cwd))
+
+            if bound_identity is not None:
+                current = await _scoped_cwd(p)
+                info = Path(current).stat()
+                if current != cwd or (info.st_dev, info.st_ino) != bound_identity:
+                    raise HandlerError(INVALID_PARAMS, "Session workspace changed during diff")
 
             await ctx.reply(
                 {

@@ -1595,6 +1595,8 @@ An MCP server is external code, not an operating-system sandbox.
 
 The run file-sampling view can invoke `codebase.read_current` for a selected recorded path, checking the run's current workspace binding with `git.diff` before and after reading. It displays current source only, not attribution or verification; missing, oversized or disallowed files remain unavailable.
 
+`git.diff` with `session_id` resolves the Native session workspace and requires its host-session gate, then rechecks workspace path and filesystem identity after Git completes. It cannot be combined with `project_id` or `cwd`. This is a bounded identity check, not a filesystem lock.
+
 When `session_id` is supplied to search or summarize, `project_id` must match
 the live session; the index is selected from that session's resolved workspace,
 including an independent worktree. The binding is checked again before reply.

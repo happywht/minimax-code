@@ -38,6 +38,7 @@ export interface GitState {
   lastDiff: GitDiffResult | null;
   diffProject: string | null;
   diffHost: string | null;
+  diffSession: string | null;
   /** Last log fetched via ``fetchLog``. ``null`` until first call. */
   lastLog: GitLogResult | null;
   /** True while a ``git.*`` request is in flight. */
@@ -53,7 +54,7 @@ export interface GitState {
    * Fetch a diff for a scope. Stores the result in ``lastDiff``
    * so the code-review panel can re-render without re-fetching.
    */
-  fetchDiff: (opts?: { scope?: "staged" | "branch" | "working"; ref?: string }) => Promise<GitDiffResult | null>;
+  fetchDiff: (opts?: { scope?: "staged" | "branch" | "working"; ref?: string; session_id?: string }) => Promise<GitDiffResult | null>;
   /**
    * Fetch the most recent N commits. ``n`` defaults to 10 on
    * the wire; pass an explicit value to override.
@@ -68,6 +69,7 @@ export const useGitStore = create<GitState>((set) => ({
   lastDiff: null,
   diffProject: null,
   diffHost: null,
+  diffSession: null,
   lastLog: null,
   loading: false,
 
@@ -87,12 +89,15 @@ export const useGitStore = create<GitState>((set) => ({
 
   fetchDiff: async (opts) => {
     const ticket = ++diffGeneration, project = useSessionStore.getState().currentProjectId, host = ipc.agentBaseUrl;
-    const current = () => ticket === diffGeneration && project === useSessionStore.getState().currentProjectId && host === ipc.agentBaseUrl;
-    set({ loading: true, lastDiff: null, diffProject: null, diffHost: null });
+    const session = opts?.session_id ?? null;
+    const current = () => ticket === diffGeneration && project === useSessionStore.getState().currentProjectId && host === ipc.agentBaseUrl &&
+      (!session || session === useSessionStore.getState().currentSessionId);
+    set({ loading: true, lastDiff: null, diffProject: null, diffHost: null, diffSession: null });
     try {
-      const d = await typedIPC.gitDiff({ ...opts, ...(project ? { project_id: project } : {}) });
+      const d = await typedIPC.gitDiff({ ...opts, ...(!session && project ? { project_id: project } : {}) });
       if (!current()) return null;
-      set({ lastDiff: d, diffProject: project, diffHost: host, loading: false });
+      if (session && (d.session_id !== session || !d.workspace)) throw new Error("Session workspace response is unavailable");
+      set({ lastDiff: d, diffProject: project, diffHost: host, diffSession: session, loading: false });
       return d;
     } catch (err) {
       if (!current()) return null;
@@ -117,5 +122,5 @@ export const useGitStore = create<GitState>((set) => ({
     }
   },
 
-  reset: () => { ++diffGeneration; set({ status: null, lastDiff: null, diffProject: null, diffHost: null, lastLog: null, loading: false }); },
+  reset: () => { ++diffGeneration; set({ status: null, lastDiff: null, diffProject: null, diffHost: null, diffSession: null, lastLog: null, loading: false }); },
 }));
