@@ -20,6 +20,36 @@ from .execution import require_write_access
 _WRITE_LOCKS = tuple(threading.Lock() for _ in range(128))
 
 
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _baseline_state(path: Path) -> tuple[str | None, tuple[int, ...] | None]:
+    """Hash one regular file without following its final symlink.
+
+    Verify the open descriptor and directory entry still refer to the same
+    unchanged file after reading. This is a conflict check, not an OS CAS.
+    """
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return None, None
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError("Baseline is not a regular file; re-read before writing")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or _file_identity(before) != _file_identity(opened):
+            raise OSError("Baseline file was replaced; re-read before writing")
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+        after = os.fstat(source.fileno())
+        if _file_identity(opened) != _file_identity(after) or _file_identity(after) != _file_identity(path.lstat()):
+            raise OSError("Baseline file changed while reading; re-read before writing")
+    return digest, _file_identity(after)
+
+
 def _atomic_replace(target: Path, write: Callable[[BinaryIO], object], *, baseline_path: Path,
                     baseline_sha256: str | None) -> None:
     require_write_access()
@@ -35,20 +65,26 @@ def _atomic_replace_locked(target: Path, write: Callable[[BinaryIO], object], *,
     parent = target.parent.resolve()
     if parent != target.parent or target.is_symlink():
         raise OSError("Write target changed to a symbolic link; re-read before writing")
-    target_existed = target.exists()
-    mode = stat.S_IMODE(target.stat().st_mode) if target_existed else None
+    try:
+        target_stat = target.lstat()
+    except FileNotFoundError:
+        target_stat = None
+    if target_stat is not None and not stat.S_ISREG(target_stat.st_mode):
+        raise OSError("Write target is not a regular file")
+    target_existed = target_stat is not None
+    mode = stat.S_IMODE(target_stat.st_mode) if target_stat is not None else None
     fd, temporary = tempfile.mkstemp(prefix=".minimax-write-", dir=parent)
     try:
         with os.fdopen(fd, "wb") as stream:
             write(stream)
             stream.flush()
             os.fsync(stream.fileno())
-        current = None
-        if baseline_path.exists():
-            with baseline_path.open("rb") as source:
-                current = hashlib.file_digest(source, "sha256").hexdigest()
+        current, baseline_identity = _baseline_state(baseline_path)
         if current != baseline_sha256:
             raise OSError("File changed during write preparation; re-read before retrying")
+        if (baseline_path == target and target_stat is not None
+                and baseline_identity != _file_identity(target_stat)):
+            raise OSError("File identity or metadata changed during write preparation; re-read before retrying")
         if target.is_symlink() or target.parent.resolve() != parent:
             raise OSError("Write target changed during preparation")
         if mode is not None:
@@ -77,8 +113,18 @@ def atomic_append_text(target: Path, content: str, *, baseline_path: Path,
                        baseline_sha256: str | None) -> None:
     def write(stream: BinaryIO) -> None:
         if baseline_sha256 is not None:
-            with baseline_path.open("rb") as source:
+            before = baseline_path.lstat()
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("Baseline is not a regular file; re-read before writing")
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(baseline_path, flags)
+            with os.fdopen(fd, "rb") as source:
+                if _file_identity(before) != _file_identity(os.fstat(source.fileno())):
+                    raise OSError("Baseline file was replaced; re-read before writing")
                 shutil.copyfileobj(source, stream, 65536)
+                if (_file_identity(before) != _file_identity(os.fstat(source.fileno()))
+                        or _file_identity(before) != _file_identity(baseline_path.lstat())):
+                    raise OSError("Baseline file changed while copying; re-read before writing")
         stream.write(content.encode("utf-8"))
 
     _atomic_replace(target, write, baseline_path=baseline_path, baseline_sha256=baseline_sha256)
