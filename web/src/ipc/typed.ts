@@ -258,6 +258,7 @@ export interface TypedIPC {
   listMcpTools(serverName: string): Promise<ListMcpToolsResult>;
   invokeMcpTool(serverName: string, toolName: string, args?: Record<string, unknown>): Promise<InvokeMcpToolResult>;
   mcpResources(params: import("../types/ipc").McpResourcesParams): Promise<import("../types/ipc").McpResourcesResult>;
+  mcpPrompts(params: import("../types/ipc").McpPromptsParams): Promise<import("../types/ipc").McpPromptsResult>;
 
   // codebase
   getCodebaseStatus(opts?: { project_id?: string }): Promise<CodebaseStatusResult>;
@@ -795,6 +796,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
       }),
 
     mcpResources: (params) => client.request("mcp.resources", params),
+    mcpPrompts: (params) => client.request("mcp.prompts", params),
     getCodebaseStatus: (opts) =>
       client.request<CodebaseStatusResult>("codebase.status", {
         project_id: opts?.project_id,

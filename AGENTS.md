@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (237 methods: 39 dotted namespaces + 3 standalone methods)
+  |- IPCServer (238 methods: 39 dotted namespaces + 3 standalone methods)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (built-in tools + skill/MCP bridges)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -169,7 +169,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **237 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **238 个注册方法、39 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
@@ -186,7 +186,7 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `host.*` | 22 | 远程 Linux 主机：注册/诊断/SSH 隧道/执行/文件传输 | `handlers_hosts.py` |
 | `diag.*` | 1 | 诊断包导出 | `handlers_diag.py` |
 | `git.*` | 3 | Git 状态/差异/日志 | `handlers_git.py` |
-| `mcp.*` | 7 | MCP 服务器管理及资源读取 | `handlers_mcp.py` |
+| `mcp.*` | 8 | MCP 服务器管理、资源和提示模板 | `handlers_mcp.py` |
 | `memory.*` | 5 | 长期记忆 | `handlers_memory.py` |
 | `message.*` | 3 | 消息列表/编辑/删除 | `handlers_sessions.py` |
 | `mobile.*` | 7 | 设备配对/推送 | `handlers_mobile.py` |

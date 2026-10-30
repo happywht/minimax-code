@@ -65,6 +65,18 @@ class McpResourcesParams(BaseModel):
     uri: str | None = Field(default=None, max_length=1024)
 
 
+class McpPromptsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    server_name: str = Field(min_length=1, max_length=256)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    action: Literal["list", "get"]
+    connection_id: str | None = Field(default=None, max_length=128)
+    name: str | None = Field(default=None, max_length=256)
+    arguments: dict[str, str] | None = None
+
+
 class DataBackupListParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     target_dir: str | None = Field(default=None, min_length=1, max_length=4096)

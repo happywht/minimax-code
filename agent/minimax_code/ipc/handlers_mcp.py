@@ -391,32 +391,34 @@ async def handle_mcp_invoke_tool(params: Any, ctx: Context) -> None:
         await ctx.reply_error(INTERNAL_ERROR, "mcp.invoke_tool failed")
 
 
-async def handle_mcp_resources(params: Any, ctx: Context) -> None:
+async def handle_mcp_resources(params: Any, ctx: Context, *, prompts: bool = False) -> None:
     """User-initiated, session-bound access to the existing resource capability."""
     try:
         from ..agent.core import _check_rule
         from ..app import ensure_db, get_sessions_dao
-        from ..mcp.registry import MCPResourcesTool, RESOURCE_TOOL
+        from ..mcp.registry import MCPPromptsTool, MCPResourcesTool, PROMPT_TOOL, RESOURCE_TOOL
         from ..storage.dao.text_artifacts import ArtifactDAO
         from .handlers_permissions import _ensure_permission_store
         from .host_session_gate import require_chat_session
-        from .protocol import McpResourcesParams
+        from .protocol import McpPromptsParams, McpResourcesParams
 
-        req = McpResourcesParams.model_validate(params)
+        req = (McpPromptsParams if prompts else McpResourcesParams).model_validate(params)
         registry = _registry()
         if registry is None:
             raise HandlerError(INTERNAL_ERROR, "MCP registry is unavailable")
         conn = registry._get_conn(req.server_name)
         if conn is None or (req.connection_id is not None and req.connection_id != conn.connection_id):
             raise HandlerError(INVALID_PARAMS, "MCP connection changed; list resources again")
-        if req.action == "read" and (not req.connection_id or not req.uri):
+        if prompts and req.action == "get" and (not req.connection_id or not req.name):
+            raise HandlerError(INVALID_PARAMS, "Get requires a listed prompt and connection identity")
+        if not prompts and req.action == "read" and (not req.connection_id or not req.uri):
             raise HandlerError(INVALID_PARAMS, "Read requires a listed URI and connection identity")
-        name = bridged_name(req.server_name, RESOURCE_TOOL)
+        name = bridged_name(req.server_name, PROMPT_TOOL if prompts else RESOURCE_TOOL)
         try:
             tool = registry._tool_registry.get(name)
         except KeyError as exc:
             raise HandlerError(PERMISSION_DENIED, "MCP resources are not enabled") from exc
-        if type(tool) is not MCPResourcesTool or tool._conn is not conn:
+        if type(tool) is not (MCPPromptsTool if prompts else MCPResourcesTool) or tool._conn is not conn:
             raise HandlerError(PERMISSION_DENIED, "MCP resource capability changed")
         db = await ensure_db()
 
@@ -438,7 +440,8 @@ async def handle_mcp_resources(params: Any, ctx: Context) -> None:
 
         await binding()
         await authorize()
-        result = await tool.run(action=req.action, uri=req.uri)
+        result = (await tool.run(action=req.action, name=req.name, arguments=req.arguments)
+                  if prompts else await tool.run(action=req.action, uri=req.uri))
         if not result.success:
             raise HandlerError(INVALID_PARAMS, result.error or "MCP resource request failed")
         await authorize()
@@ -467,3 +470,6 @@ def register_mcp_handlers(server: Any) -> None:
     server.register("mcp.list_tools", handle_mcp_list_tools)
     server.register("mcp.invoke_tool", handle_mcp_invoke_tool)
     server.register("mcp.resources", handle_mcp_resources)
+    async def handle_mcp_prompts(params: Any, ctx: Context) -> None:
+        await handle_mcp_resources(params, ctx, prompts=True)
+    server.register("mcp.prompts", handle_mcp_prompts)

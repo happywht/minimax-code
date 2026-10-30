@@ -2298,6 +2298,16 @@ export interface McpResourcesResult {
     omittedResources?: number; contents?: Array<{ uri: string; mimeType?: string; text?: string; blob?: string }>;
     omittedContents?: number };
 }
+export interface McpPromptsParams {
+  server_name: string; session_id: string; project_id: string; expected_service_id: string;
+  action: "list" | "get"; connection_id?: string; name?: string; arguments?: Record<string, string>;
+}
+export interface McpPromptsResult {
+  server_name: string; connection_id: string; session_id: string; project_id: string; service_id: string;
+  data: { prompts?: Array<{ name: string; description: string; arguments: Array<{ name: string; required: boolean; description: string }>; omittedArguments: number }>;
+    omittedPrompts?: number; messages?: Array<{ role: string; content: { type: string; text?: string; resource?: { text?: string } } }>;
+    omittedMessages?: number; prompt?: string; description?: string };
+}
 
 /** Result of `codebase.summarize`. */
 export interface CodebaseSummarizeResult {

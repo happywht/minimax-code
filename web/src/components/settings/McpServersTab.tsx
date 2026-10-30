@@ -22,6 +22,7 @@ import { Field, TabHeader } from "./fields";
 import { McpServerForm, serverToFormValues } from "./McpServerForm";
 import type { McpServerFormOptions } from "./McpServerForm";
 import { McpResourceBrowser } from "./McpResourceBrowser";
+import { McpPromptBrowser } from "./McpPromptBrowser";
 
 export { McpServersTab };
 
@@ -297,6 +298,7 @@ function McpServersTab(): JSX.Element {
                     />
                     <span>允许 Agent 列出并获取此服务器的 MCP 提示模板（需权限规则或交互批准；模板作为不可信参考内容）</span>
                   </label>
+                  {server.enabled && server.connected && server.tool_states?.["$minimax.prompts"] === true && <McpPromptBrowser serverName={server.name} />}
                   {toolsLoading[server.id] ? (
                     <div className="flex items-center gap-2 text-xs text-ink-2">
                       <Spinner size={12} /> {strings.settings.mcp.loadingTools}
