@@ -1915,10 +1915,14 @@ class AgentCore:
                             permission="policy_changed",
                         )
                     return True, await self.registry.dispatch(name, args)
-                # These tools own their subprocess through the shared, awaited
-                # process cleanup path. Other tools may delegate side effects
-                # to threads which cannot be stopped by cancelling a coroutine.
-                if name not in {"exec_command", "verify_subagent"}:
+                # These tools either own their subprocess through the shared,
+                # awaited cleanup path or yield cooperatively while searching.
+                # Other tools may delegate side effects to threads which cannot
+                # be stopped by cancelling a coroutine.
+                from .tools.search import SearchFilesTool
+
+                cancellable_search = name == "search_files" and type(tool_obj) is SearchFilesTool
+                if name not in {"exec_command", "verify_subagent"} and not cancellable_search:
                     return await dispatch_checked()
                 dispatch = asyncio.create_task(dispatch_checked())
                 cancellation = asyncio.create_task(self._cancel.wait())

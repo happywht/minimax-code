@@ -24,7 +24,7 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Iterable
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +32,7 @@ from ...execution import capture_output, is_read_only, spawn_exec
 from ...workspace_ctx import current_root, current_sandbox, env_or_cwd_root
 from .base import Tool, ToolResult, register_tool
 from .file_ops import PathSecurityError, safe_resolve
-from .sandbox import overlay_read_target, sandbox_mirror_files
+from .sandbox import BASE_DIR, MERGED_MARKER, overlay_read_target
 
 # Search output limits.
 _DEFAULT_MAX_RESULTS = 200
@@ -132,7 +132,7 @@ class SearchFilesTool(Tool):
                 # rg failed; fall through to Python walker.
                 return ToolResult.fail(f"ripgrep failed: {exc}")
 
-        return _python_search(
+        return await _python_search(
             root=search_root,
             rx=rx,
             file_pattern=file_pattern,
@@ -237,7 +237,7 @@ def _parse_rg_json(text: str, limit: int, root: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _python_search(
+async def _python_search(
     *,
     root: Path,
     rx: re.Pattern[str],
@@ -263,7 +263,7 @@ def _python_search(
         # (the sub-agent's write is the newer truth), mirror-only files
         # append at the end.
         seen: dict[str, Path] = {}
-        for f in _walk_files(root, file_pattern):
+        async for f in _walk_files(root, file_pattern):
             seen[_workspace_rel(f, root)] = f
         if sandbox is not None:
             workspace = current_root() or env_or_cwd_root()
@@ -271,7 +271,7 @@ def _python_search(
                 prefix = root.relative_to(workspace).as_posix()
             except ValueError:
                 prefix = None
-            for rel in sandbox_mirror_files(sandbox):
+            for rel in await _sandbox_search_files(sandbox):
                 if prefix is None:
                     continue
                 if prefix != ".":
@@ -288,7 +288,9 @@ def _python_search(
         candidates = [(p, rel) for rel, p in seen.items()]
 
     matches: list[dict[str, Any]] = []
-    for read_path, rel in candidates:
+    for index, (read_path, rel) in enumerate(candidates):
+        if index % 32 == 0:
+            await asyncio.sleep(0)
         try:
             # os.walk does not follow directory links by default, but its
             # filenames can still contain links to files outside the root.
@@ -318,6 +320,8 @@ def _python_search(
 
         lines = text.splitlines()
         for i, line in enumerate(lines, 1):
+            if i % 1024 == 0:
+                await asyncio.sleep(0)
             if rx.search(line):
                 match = _format_match(rel, i, line)
                 if context_lines:
@@ -344,7 +348,23 @@ def _python_search(
     )
 
 
-def _walk_files(root: Path, file_pattern: str) -> Iterable[Path]:
+async def _sandbox_search_files(sandbox: Path) -> list[str]:
+    """Collect the overlay view without blocking cancellation during its walk."""
+    paths: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(sandbox):
+        await asyncio.sleep(0)
+        directory = Path(dirpath)
+        if directory == sandbox:
+            dirnames[:] = [name for name in dirnames if name != BASE_DIR]
+        for index, name in enumerate(filenames):
+            if index % 128 == 0:
+                await asyncio.sleep(0)
+            if name != MERGED_MARKER and not (directory == sandbox and name == BASE_DIR):
+                paths.append((directory / name).relative_to(sandbox).as_posix())
+    return sorted(paths, key=Path)
+
+
+async def _walk_files(root: Path, file_pattern: str) -> AsyncIterator[Path]:
     import fnmatch
 
     if root.is_file():
@@ -352,6 +372,8 @@ def _walk_files(root: Path, file_pattern: str) -> Iterable[Path]:
             yield root
         return
     for dirpath, dirnames, filenames in os.walk(root):
+        # Yield even for empty directories or when no filenames match.
+        await asyncio.sleep(0)
         # Skip dot-directories and the usual noise. ``.minimax`` holds
         # our own machinery (backups / sandboxes / artifacts) — it must
         # never leak into search results.
@@ -363,7 +385,9 @@ def _walk_files(root: Path, file_pattern: str) -> Iterable[Path]:
                 ".pytest_cache", ".minimax",
             )
         ]
-        for name in filenames:
+        for index, name in enumerate(filenames):
+            if index % 128 == 0:
+                await asyncio.sleep(0)
             if file_pattern not in ("*", "") and not fnmatch.fnmatch(name, file_pattern):
                 continue
             yield Path(dirpath) / name
