@@ -39,13 +39,13 @@ export function WorkbenchNavigator({ view, connection, onNavigate }: {
   }, [connection]);
   const association = !sessionId ? "未选择会话" : !session || !session.project_id ? "会话信息待确认" : session.project_id !== projectId ? "会话与当前项目不一致" : null;
   return <div className="shrink-0 border-b border-line bg-surface-1 px-3 py-2 text-xs" data-testid="workbench-navigator">
-    <nav aria-label="工作台区域" className="flex flex-wrap gap-1">
+    <nav aria-label="工作台区域" className="flex flex-wrap gap-1 md:hidden">
       {(Object.keys(labels) as Area[]).map((item) => <button key={item} type="button" aria-current={area === item ? "page" : undefined}
         onClick={() => { if (area !== item) onNavigate(last.current[item]); }}
         className={`rounded-md px-2 py-1 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${area === item ? "bg-accent-subtle text-ink-0" : "text-ink-1 hover:bg-surface-3"}`}>
         {labels[item]}</button>)}
     </nav>
-    {area === "work" && <nav aria-label={`${labels[area]}页面`} className="mt-1 flex gap-1 overflow-x-auto whitespace-nowrap">
+    {area === "work" && <nav aria-label={`${labels[area]}页面`} className="mt-1 flex gap-1 overflow-x-auto whitespace-nowrap md:hidden">
       {areaPages[area].map((page) => <button key={page} type="button" aria-current={view === page ? "page" : undefined}
         onClick={() => { if (view !== page) onNavigate(page); }}
         className={`rounded px-2 py-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${view === page ? "bg-surface-3 text-ink-0" : "text-ink-2 hover:bg-surface-3"}`}>
