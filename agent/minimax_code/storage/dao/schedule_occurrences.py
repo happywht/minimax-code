@@ -286,3 +286,16 @@ class ScheduleOccurrencesDAO:
                 "SELECT o.* FROM schedule_occurrences o JOIN scheduled_jobs j ON j.active_occurrence_id=o.id"
             )
         ]
+
+    async def scheduler_pending(self):
+        """Leave an unreadable occurrence leased while reconciling other jobs."""
+        rows = await self.db.fetchall(
+            "SELECT o.* FROM schedule_occurrences o JOIN scheduled_jobs j ON j.active_occurrence_id=o.id"
+        )
+        result = []
+        for row in rows:
+            try:
+                result.append(hydrate(row))
+            except (ValueError, TypeError, UnicodeError):
+                logger.exception("Cannot decode occurrence %s; retaining its lease", row["id"])
+        return result

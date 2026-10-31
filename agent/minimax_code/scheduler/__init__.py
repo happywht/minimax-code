@@ -366,26 +366,34 @@ class JobScheduler:
                 logger.exception("Could not push scheduled occurrence notification")
 
     async def _reconcile_occurrences(self, *, dispatch_pending=False):
-        from ..runs import get_run_service
         from ..storage.dao.runs import AgentRunsDAO
-        from ..verification import task_outcome
         dao = AgentRunsDAO(self._db)
-        for occurrence in await self._occurrences.pending():
-            if occurrence["id"] in self._occurrence_tasks:
-                continue
-            run = await dao.get_run(occurrence["run_id"]) if occurrence["run_id"] else None
-            if run:
-                if _IPC_SERVER and get_run_service(_IPC_SERVER).get_job(run["id"]):
-                    continue
-                result = await self._durable_run_result(dao, run)
-                status = task_outcome(result)
-                if status == "running":
-                    continue
-                await self._settle_occurrence(occurrence["id"],status,expected_run_id=run["id"],reason=result.get("error") or result.get("review_reason"),result=result.get("text"))
-            elif dispatch_pending and occurrence["status"] == "pending":
-                owner = await self._dao.get(occurrence["job_id"])
-                if owner and owner["enabled"] and not owner.get("deleted_at") and owner["revision"]==occurrence["revision"]:
-                    self._spawn_occurrence(occurrence)
+        for occurrence in await self._occurrences.scheduler_pending():
+            try:
+                await self._reconcile_one(occurrence, dao, dispatch_pending=dispatch_pending)
+            except Exception:
+                # Preserve the lease and retry later. One damaged receipt must
+                # not keep unrelated schedules from recovering.
+                logger.exception("Cannot reconcile occurrence %s; retaining its lease", occurrence["id"])
+
+    async def _reconcile_one(self, occurrence, dao, *, dispatch_pending):
+        from ..runs import get_run_service
+        from ..verification import task_outcome
+        if occurrence["id"] in self._occurrence_tasks:
+            return
+        run = await dao.get_run(occurrence["run_id"]) if occurrence["run_id"] else None
+        if run:
+            if _IPC_SERVER and get_run_service(_IPC_SERVER).get_job(run["id"]):
+                return
+            result = await self._durable_run_result(dao, run)
+            status = task_outcome(result)
+            if status == "running":
+                return
+            await self._settle_occurrence(occurrence["id"],status,expected_run_id=run["id"],reason=result.get("error") or result.get("review_reason"),result=result.get("text"))
+        elif dispatch_pending and occurrence["status"] == "pending" and not occurrence["run_id"]:
+            owner = await self._dao.get(occurrence["job_id"])
+            if owner and owner["enabled"] and not owner.get("deleted_at") and owner["revision"]==occurrence["revision"]:
+                self._spawn_occurrence(occurrence)
 
     async def _dispatch_due(self):
         if self._stopping:
@@ -394,7 +402,7 @@ class JobScheduler:
             if self._stopping:
                 return
             await self._reconcile_occurrences(dispatch_pending=True)
-            for row in await self._dao.due():
+            for row in await self._dao.scheduler_rows(due_at=now_iso()):
                 if not row.get("deleted_at") and row.get("binding_state") == "ready" and not row.get("active_occurrence_id"):
                     self._spawn_fire(row,source="cron")
 
@@ -416,12 +424,26 @@ class JobScheduler:
         cutoff = datetime.now(UTC).replace(microsecond=0)
         cutoff_text = cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
         async with self._admission_lock:
-            for row in await self._dao.due(now=cutoff_text):
+            for row in await self._dao.scheduler_rows(due_at=cutoff_text):
                 if (row.get("deleted_at") or row.get("binding_state") != "ready"
                         or row.get("active_occurrence_id")
                         or (row.get("context") or {}).get("restart_missed_policy", "coalesce") != "skip"):
                     continue
-                next_due = _next_due(row["cron_expr"], row["timezone"], now=cutoff)
+                try:
+                    next_due = _next_due(row["cron_expr"], row["timezone"], now=cutoff)
+                except (ValueError, SchedulerError, TypeError):
+                    # Never turn a failed skip calculation into catch-up execution.
+                    logger.exception("Cannot advance skipped schedule %s", row["id"])
+                    async with self._db.transaction() as conn:
+                        await conn.execute(
+                            "UPDATE scheduled_jobs SET enabled=0,binding_state='requires_review', "
+                            "binding_reason='Cannot calculate restart skip; review schedule' "
+                            "WHERE id=? AND revision=? AND next_run_at=? AND enabled=1 "
+                            "AND deleted_at IS NULL AND binding_state='ready' "
+                            "AND active_occurrence_id IS NULL",
+                            (row["id"], row["revision"], row["next_run_at"]),
+                        )
+                    continue
                 async with self._db.transaction() as conn:
                     await conn.execute(
                         "UPDATE scheduled_jobs SET next_run_at=? WHERE id=? AND revision=? "
@@ -496,7 +518,7 @@ class JobScheduler:
                     logger.debug("aps.remove_job(%s) raised", aps_id, exc_info=True)
 
     async def _reload_from_db(self) -> None:
-        rows = await self._dao.list(enabled=True, order_by="name ASC")
+        rows = await self._dao.scheduler_rows()
         for row in rows:
             try:
                 self._register_with_aps(row)

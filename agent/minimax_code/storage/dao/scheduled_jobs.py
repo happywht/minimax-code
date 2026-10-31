@@ -157,6 +157,31 @@ class ScheduledJobsDAO:
         )
         return [_hydrate(r) for r in rows]
 
+    async def scheduler_rows(self, *, due_at: str | None = None) -> list[dict[str, Any]]:
+        """Read scheduler candidates independently; malformed JSON cannot starve peers.
+
+        Bad records are left untouched for inspection and are never dispatched.
+        Public list/get retain their strict decoding behavior.
+        """
+        where = "enabled=1 AND deleted_at IS NULL"
+        args = ()
+        if due_at is not None:
+            where += " AND next_run_at IS NOT NULL AND next_run_at <= ?"
+            args = (due_at,)
+        rows = await self._db.fetchall(
+            f"SELECT * FROM scheduled_jobs WHERE {where} ORDER BY next_run_at, id", args
+        )
+        result = []
+        for row in rows:
+            try:
+                item = _hydrate(row)
+                if item.get("binding_state") == "ready" and not isinstance(item.get("context"), dict):
+                    raise ValueError("ready schedule has invalid context")
+                result.append(item)
+            except (ValueError, TypeError, UnicodeError):
+                logger.exception("Cannot decode schedule %s; leaving it unexecuted", row["id"])
+        return result
+
     async def set_enabled(self, job_id: str, enabled: bool) -> dict[str, Any] | None:
         async with self._db.transaction() as conn:
             await conn.execute(
