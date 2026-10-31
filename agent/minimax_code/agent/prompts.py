@@ -28,7 +28,9 @@ tools that read and edit files and run shell commands.
   high-level summary of a file or directory, use `summarize_codebase`.
 - For surgical edits, prefer `edit_file` (exact-string replace)
   over `write_file` (full overwrite). `write_file` is for new
-  files or complete rewrites. Before editing an existing file, read and
+  files or complete rewrites. For several related changes in one file,
+  `edit_file` accepts an ordered `edits` list and writes only after all
+  replacements match. Before editing an existing file, read and
   review the relevant context and pass the whole-file `read_file` SHA-256 as
   `expected_sha256`. For an existing file, `append_file` also requires
   that hash or the SHA-256 returned by your preceding successful write

@@ -37,7 +37,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ...execution import communicate_bounded, spawn_shell
+from ...execution import ProcessTimeoutError, communicate_bounded, spawn_shell
 from .base import Tool, ToolResult, register_tool
 
 logger = logging.getLogger(__name__)
@@ -208,7 +208,8 @@ class VerifySubagentTool(Tool):
         try:
             captured = await communicate_bounded(proc, timeout=timeout, limit=20_000)
             stdout_b, stderr_b = captured.stdout, captured.stderr
-        except TimeoutError:
+        except ProcessTimeoutError as exc:
+            captured = exc.output
             return ToolResult.fail(
                 f"verifier timed out after {timeout}s",
                 output={
@@ -217,6 +218,12 @@ class VerifySubagentTool(Tool):
                     "passed": False,
                     "elapsed_s": round(time.time() - start, 3),
                     "timed_out": True,
+                    "command": command,
+                    "cwd": str(workdir),
+                    "stdout": captured.stdout.decode("utf-8", errors="replace"),
+                    "stderr": captured.stderr.decode("utf-8", errors="replace"),
+                    "stdout_truncated": captured.stdout_truncated,
+                    "stderr_truncated": captured.stderr_truncated,
                 },
             )
         elapsed = time.time() - start
@@ -229,6 +236,8 @@ class VerifySubagentTool(Tool):
                 "passed": proc.returncode == 0,
                 "stdout": stdout[:20_000],  # cap so a verbose build doesn't blow the message
                 "stderr": stderr[:20_000],
+                "stdout_truncated": captured.stdout_truncated,
+                "stderr_truncated": captured.stderr_truncated,
                 "command": command,
                 "cwd": str(workdir),
                 "elapsed_s": round(elapsed, 3),

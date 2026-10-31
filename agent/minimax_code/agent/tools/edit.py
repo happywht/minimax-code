@@ -37,7 +37,9 @@ class EditFileTool(Tool):
         "or >1 times (unless replace_all=True). Returns a textual diff "
         "summary and the line ranges that were modified. Unchanged text "
         "retains its original line endings. Supply the SHA-256 from a "
-        "fresh read_file after reviewing the relevant context."
+        "fresh read_file after reviewing the relevant context. For multiple "
+        "changes to one file, pass edits instead of old_string/new_string: "
+        "they are applied in order and written only if every edit matches."
     )
     parameters = {
         "type": "object",
@@ -50,6 +52,22 @@ class EditFileTool(Tool):
                 "default": False,
                 "description": "If True, replace every non-overlapping occurrence.",
             },
+            "edits": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "description": "Ordered replacements. Each edit sees the result of preceding edits; all must match before the file is written.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old_string": {"type": "string"},
+                        "new_string": {"type": "string"},
+                        "replace_all": {"type": "boolean", "default": False},
+                    },
+                    "required": ["old_string", "new_string"],
+                    "additionalProperties": False,
+                },
+            },
             "expected_sha256": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
@@ -60,26 +78,36 @@ class EditFileTool(Tool):
                 ),
             },
         },
-        "required": ["path", "old_string", "new_string", "expected_sha256"],
+        "required": ["path", "expected_sha256"],
         "additionalProperties": False,
     }
 
     async def run(self, **kwargs: Any) -> ToolResult:
         path = kwargs.get("path")
-        old = kwargs.get("old_string")
-        new = kwargs.get("new_string")
-        replace_all = bool(kwargs.get("replace_all", False))
-
         if not isinstance(path, str) or not path:
             return ToolResult.fail("'path' must be a non-empty string")
-        if not isinstance(old, str):
-            return ToolResult.fail("'old_string' must be a string")
-        if not isinstance(new, str):
-            return ToolResult.fail("'new_string' must be a string")
-        if not old:
-            return ToolResult.fail("'old_string' must be non-empty")
-        if old == new:
-            return ToolResult.fail("'old_string' and 'new_string' are identical — nothing to do")
+        edits = kwargs.get("edits")
+        if edits is not None:
+            if any(key in kwargs for key in ("old_string", "new_string", "replace_all")):
+                return ToolResult.fail("use either 'edits' or the single-edit arguments, not both")
+            if not isinstance(edits, list) or not 1 <= len(edits) <= 50:
+                return ToolResult.fail("'edits' must contain between 1 and 50 replacements")
+        else:
+            edits = [{"old_string": kwargs.get("old_string"),
+                      "new_string": kwargs.get("new_string"),
+                      "replace_all": kwargs.get("replace_all", False)}]
+        for index, edit in enumerate(edits, 1):
+            if not isinstance(edit, dict) or set(edit) - {"old_string", "new_string", "replace_all"}:
+                return ToolResult.fail(f"edit {index}: invalid replacement")
+            old, new = edit.get("old_string"), edit.get("new_string")
+            if not isinstance(old, str) or not old:
+                return ToolResult.fail(f"edit {index}: 'old_string' must be a non-empty string")
+            if not isinstance(new, str):
+                return ToolResult.fail(f"edit {index}: 'new_string' must be a string")
+            if old == new:
+                return ToolResult.fail(f"edit {index}: strings are identical — nothing to do")
+            if not isinstance(edit.get("replace_all", False), bool):
+                return ToolResult.fail(f"edit {index}: 'replace_all' must be a boolean")
 
         try:
             require_write_access()
@@ -153,33 +181,36 @@ class EditFileTool(Tool):
 
         # Match line endings as logical newlines, but retain the original
         # spans when writing. This also works with mixed newline files.
-        normalized_old = _normalize_newlines(old)
-        pattern = re.compile(r"(?:\r\n|\r|\n)".join(
-            re.escape(part) for part in normalized_old.split("\n")
-        ))
-        matches = list(pattern.finditer(original))
-        occurrences = len(matches)
-        if occurrences == 0:
-            hint = _closest_hint(_normalize_newlines(original), normalized_old)
-            return ToolResult.fail(
-                f"'old_string' not found in {target.name}" + (f" — {hint}" if hint else "")
-            )
-        if occurrences > 1 and not replace_all:
-            return ToolResult.fail(
-                f"'old_string' matches {occurrences} locations; "
-                "narrow it or pass replace_all=True"
-            )
-
-        chosen = matches if replace_all else matches[:1]
-        pieces: list[str] = []
-        cursor = 0
-        for match in chosen:
-            pieces.append(original[cursor:match.start()])
-            newline = _nearby_newline(original, match.start(), match.end())
-            pieces.append(_normalize_newlines(new).replace("\n", newline))
-            cursor = match.end()
-        pieces.append(original[cursor:])
-        updated = "".join(pieces)
+        updated = original
+        replacements = 0
+        for index, edit in enumerate(edits, 1):
+            normalized_old = _normalize_newlines(edit["old_string"])
+            pattern = re.compile(r"(?:\r\n|\r|\n)".join(
+                re.escape(part) for part in normalized_old.split("\n")
+            ))
+            matches = list(pattern.finditer(updated))
+            if not matches:
+                hint = _closest_hint(_normalize_newlines(updated), normalized_old)
+                return ToolResult.fail(
+                    f"edit {index}: 'old_string' not found in {target.name}"
+                    + (f" — {hint}" if hint else "")
+                )
+            if len(matches) > 1 and not edit.get("replace_all", False):
+                return ToolResult.fail(
+                    f"edit {index}: 'old_string' matches {len(matches)} locations; "
+                    "narrow it or pass replace_all=True"
+                )
+            chosen = matches if edit.get("replace_all", False) else matches[:1]
+            pieces: list[str] = []
+            cursor = 0
+            for match in chosen:
+                pieces.append(updated[cursor:match.start()])
+                newline = _nearby_newline(updated, match.start(), match.end())
+                pieces.append(_normalize_newlines(edit["new_string"]).replace("\n", newline))
+                cursor = match.end()
+            pieces.append(updated[cursor:])
+            updated = "".join(pieces)
+            replacements += len(chosen)
 
         try:
             from ..backup import BackupManager
@@ -230,7 +261,8 @@ class EditFileTool(Tool):
 
         output: dict[str, Any] = {
             "path": str(target),
-            "replacements": occurrences if replace_all else 1,
+            "replacements": replacements,
+            "edits_applied": len(edits),
             "changed_lines": changed_lines,
             "lines_removed": removed,
             "lines_added": added,
@@ -252,7 +284,7 @@ class EditFileTool(Tool):
 
         return ToolResult.ok(
             output=output,
-            replacements=occurrences if replace_all else 1,
+            replacements=replacements,
             lines_removed=removed,
             lines_added=added,
         )
