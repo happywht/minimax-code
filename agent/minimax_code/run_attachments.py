@@ -7,8 +7,8 @@ import re
 from .storage.dao._base import dumps_json, loads_json, now_iso
 from .storage.dao.runs import _append_event, _fetchone, _hydrate_step
 
-TOOLS = {"export_research_sources", "generate_report_docx", "generate_report_pdf", "generate_report_pair", "generate_report_from_text",
-         "generate_table_xlsx", "generate_xlsx_from_csv", "generate_xlsx_from_xlsx"}
+TOOLS = {"export_research_sources", "generate_report_docx", "generate_report_pdf", "generate_report_pair", "generate_report_from_text", "generate_report_from_artifact",
+         "generate_table_xlsx", "generate_xlsx_from_csv", "generate_xlsx_from_xlsx", "join_spreadsheets_xlsx"}
 
 
 async def record_tool_attachments(db, run_id, session_id, project_id, call, result):
@@ -16,7 +16,7 @@ async def record_tool_attachments(db, run_id, session_id, project_id, call, resu
     if name not in TOOLS or not isinstance(getattr(result, "output", None), dict) or not project_id:
         return []
     output = result.output
-    if name in {"generate_report_pair", "generate_report_from_text"}:
+    if name in {"generate_report_pair", "generate_report_from_text", "generate_report_from_artifact"}:
         entries = output.get("results")
         values = [(item, item.get("format")) for item in entries if isinstance(item, dict) and item.get("status") == "saved"] if isinstance(entries, list) else []
     elif result.success:

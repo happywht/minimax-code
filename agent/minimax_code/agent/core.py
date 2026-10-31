@@ -1531,27 +1531,30 @@ class AgentCore:
             actions = {action, _check_rule(self._permission_store, "exec_command")}
             action = ("deny" if "deny" in actions else "ask" if "ask" in actions
                       else "allow" if "allow" in actions else None)
-        if name in {"export_research_sources", "generate_report_docx", "generate_report_pdf", "generate_report_pair", "generate_report_from_text", "generate_table_xlsx", "generate_xlsx_from_csv", "generate_xlsx_from_xlsx", "join_spreadsheets_xlsx"}:
+        if name in {"export_research_sources", "generate_report_docx", "generate_report_pdf", "generate_report_pair", "generate_report_from_text", "generate_report_from_artifact", "generate_table_xlsx", "generate_xlsx_from_csv", "generate_xlsx_from_xlsx", "join_spreadsheets_xlsx"}:
             # Generated documents are writes: existing write_file restrictions
             # cannot be bypassed by allowing the new tool name.
             write_action = _check_rule(self._permission_store, "write_file")
             actions = {action, write_action}
-            if name in {"generate_report_pair", "generate_report_from_text"}:
+            if name in {"generate_report_pair", "generate_report_from_text", "generate_report_from_artifact"}:
                 formats = args.get("formats", ["docx", "pdf"])
                 if not isinstance(formats, list) or not formats or any(item not in ("docx", "pdf") for item in formats):
                     formats = ["docx", "pdf"]
                 format_actions = [_check_rule(self._permission_store, f"generate_report_{kind}") for kind in formats]
                 actions.update(format_actions)
-                if name == "generate_report_from_text":
+                if name in {"generate_report_from_text", "generate_report_from_artifact"}:
                     actions.add(_check_rule(self._permission_store, "generate_report_pair"))
-                    actions.add(_check_rule(self._permission_store, "read_project_attachment"))
+                    if name == "generate_report_from_text":
+                        actions.add(_check_rule(self._permission_store, "read_project_attachment"))
+                    else:
+                        actions.add(_check_rule(self._permission_store, "read_file"))
             if name in {"generate_xlsx_from_csv", "generate_xlsx_from_xlsx", "join_spreadsheets_xlsx"}:
                 actions.add(_check_rule(self._permission_store, "generate_table_xlsx"))
             if name in {"generate_xlsx_from_xlsx", "join_spreadsheets_xlsx"}:
                 actions.add(_check_rule(self._permission_store, "generate_xlsx_from_csv"))
             if name == "join_spreadsheets_xlsx":
                 actions.add(_check_rule(self._permission_store, "generate_xlsx_from_xlsx"))
-            if name in {"generate_report_pair", "generate_report_from_text"}:
+            if name in {"generate_report_pair", "generate_report_from_text", "generate_report_from_artifact"}:
                 explicitly_allowed = action == "allow" or write_action == "allow" or all(
                     value == "allow" for value in format_actions)
                 action = ("deny" if "deny" in actions else "ask" if "ask" in actions

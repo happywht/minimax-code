@@ -63,6 +63,8 @@ export function ArtifactFollowupDraft({ artifact }: { artifact: TextArtifact }):
         lines.push("以下为最多 1200 字的有界预览摘录，不保证覆盖全文，也不是已验证事实：",
           chars.slice(0, 1200).join("") || "（预览为空）");
       } else lines.push("仅附身份信息，未将成果正文加入草稿。");
+      if (row.mime_type === "text/plain" || row.mime_type === "text/markdown")
+        lines.push("如需生成 DOCX 或 PDF，请说明标题、文件名和所需格式；可使用此成果快照生成，Markdown 按纯文本处理。");
       return lines.join("\n");
     } finally { stopSession(); stopArtifacts(); stopConnection(); }
   };

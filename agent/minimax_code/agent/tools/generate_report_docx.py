@@ -349,10 +349,66 @@ class GenerateReportFromTextTool(GenerateReportPairTool):
             return ToolResult.fail(str(error))
 
 
+class GenerateReportFromArtifactTool(GenerateReportPairTool):
+    name = "generate_report_from_artifact"
+    description = (
+        "Convert a registered current-project TXT or Markdown text artifact snapshot into "
+        "a new DOCX and/or PDF attachment. Provide the artifact ID and SHA-256 shown in "
+        "the project's artifacts panel, a title and a filename stem. The complete snapshot "
+        "is used as plain text; Markdown is not rendered. The original is unchanged. "
+        "Inspect attachments before retrying an unconfirmed format."
+    )
+    parameters = {"type": "object", "properties": {
+        "artifact_id": {"type": "string"}, "expected_sha256": {"type": "string"},
+        "filename": {"type": "string"}, "title": {"type": "string"},
+        "formats": {"type": "array", "items": {"type": "string", "enum": ["docx", "pdf"]},
+                    "minItems": 1, "maxItems": 2, "uniqueItems": True},
+    }, "required": ["artifact_id", "expected_sha256", "filename", "title"],
+        "additionalProperties": False}
+
+    async def run(self, artifact_id: str, expected_sha256: str, filename: str, title: str,
+                  formats: list[str] | None = None) -> ToolResult:
+        from ...text_artifacts import ArtifactService
+
+        try:
+            require_write_access()
+            if not isinstance(self.project_id, str) or not self.project_id:
+                raise ValueError("Current session has no project")
+            session = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
+            if session is None or session["project_id"] != self.project_id:
+                raise ValueError("Current session project binding changed")
+            if not isinstance(artifact_id, str) or not isinstance(expected_sha256, str):
+                raise ValueError("Invalid artifact identity")
+            service = ArtifactService(self.db, self.db.path.parent)
+            artifact, data = await service.content(self.project_id, artifact_id)
+            if (artifact["sha256"] != expected_sha256 or
+                    artifact["mime_type"] not in {"text/plain", "text/markdown"}):
+                raise ValueError("Select the same current-project TXT or Markdown artifact")
+            text = data.decode("utf-8-sig", errors="strict")
+            paragraphs = [text[offset:offset + 4096] for offset in range(0, len(text), 4096)]
+            if not paragraphs or len(paragraphs) > 100:
+                raise ValueError("Text must be nonempty and fit within 100 report paragraphs")
+            result = await super().run(filename=filename, title=title, paragraphs=paragraphs, formats=formats)
+            if isinstance(result.output, dict):
+                result.output["source_artifact"] = {
+                    "artifact_id": artifact["id"], "source_path": artifact["source_path"],
+                    "sha256": artifact["sha256"], "snapshot_id": artifact["snapshot_id"],
+                }
+                result.output["conversion_notice"] = (
+                    "Plain text conversion; Markdown is not rendered. An optional UTF-8 BOM is "
+                    "removed and paragraph boundaries are inserted at 4096 characters. "
+                    "Facts and layout are not verified."
+                )
+            return result
+        except (ValueError, OSError, UnicodeError) as error:
+            return ToolResult.fail(str(error))
+
+
 def register_report_docx_tool(registry: Any, db: Any, session_id: str,
                               project_id: str | None, research_sources=None) -> None:
     registry.register(GenerateReportDocxTool(db, session_id, project_id, research_sources))
     registry.register(GenerateReportPdfTool(db, session_id, project_id, research_sources))
     registry.register(GenerateReportPairTool(db, session_id, project_id, research_sources))
     registry.register(GenerateReportFromTextTool(db, session_id, project_id, research_sources))
+    registry.register(GenerateReportFromArtifactTool(db, session_id, project_id, research_sources))
     registry.register(ExportResearchSourcesTool(db, session_id, project_id, research_sources))
