@@ -57,6 +57,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
   const loading = useScheduleStore((s) => s.loading);
   const projects = useSessionStore((s) => s.projects);
   const currentProject = useSessionStore((s) => s.currentProjectId);
+  const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [projectFilter, setProjectFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -147,7 +148,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
       reasoning_effort: source.reasoning_effort, mode: source.mode, budget_tokens: source.budget_tokens,
       timezone: source.timezone, restart_missed_policy: source.restart_missed_policy, notification_policy: source.notification_policy } : emptyScheduleContext());
     setDraftEnabled(false); onDraftEdit?.();
-    document.getElementById("scheduled-job-name")?.focus();
+    setCreateOpen(true); window.setTimeout(() => document.getElementById("scheduled-job-name")?.focus(), 0);
   };
 
   const followupToDraft = async (job: ScheduledJob, occurrence: ScheduleOccurrence, originalText: string, status: string) => {
@@ -182,7 +183,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
       setDraftContext({ project_id: source.project_id, provider_id: source.provider_id, model: source.model,
         reasoning_effort: source.reasoning_effort, mode: source.mode, budget_tokens: source.budget_tokens,
         timezone: source.timezone, restart_missed_policy: source.restart_missed_policy, notification_policy: source.notification_policy });
-      setDraftEnabled(false); onDraftEdit?.(); document.getElementById("scheduled-job-name")?.focus();
+      setDraftEnabled(false); onDraftEdit?.(); setCreateOpen(true); window.setTimeout(() => document.getElementById("scheduled-job-name")?.focus(), 0);
       toast.success("已准备后续计划草稿", "请编辑并核对项目、配置、预算和权限；尚未创建或运行计划。");
     } catch (failure) { if (current()) toast.error("无法准备后续草稿", failure instanceof Error ? failure.message : String(failure)); }
   };
@@ -200,7 +201,9 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
         }
       />
 
-      <Panel title={strings.settings.scheduled.newTitle}>
+      <details open={createOpen} onToggle={(event) => setCreateOpen(event.currentTarget.open)} className="rounded-lg border border-line">
+        <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-ink-0">{strings.settings.scheduled.newTitle}{draftName || draftCron || draftPrompt ? " · 草稿已保留" : ""}</summary>
+      <Panel className="border-0">
         <fieldset disabled={creating || !!pendingCreate}>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
           <label htmlFor="scheduled-job-name" className="sr-only">{strings.settings.scheduled.fieldName}</label>
@@ -256,6 +259,8 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
         <label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={draftEnabled} onChange={(event) => setDraftEnabled(event.target.checked)} />创建后启用计划</label>
         <p className="text-xs text-ink-2">默认先创建为停用，核对后可启用；启用的计划会在到期时执行。</p>
         </fieldset>
+      </Panel>
+      </details>
         {pendingCreate && <div className="mt-2 text-xs text-status-warning" role="alert">
           {pendingCreate === "unavailable" ? <><p>无法读取浏览器中的创建请求；请检查浏览器存储并核对计划列表，避免重复创建。</p><Button type="button" size="sm" onClick={() => setPendingCreate(readPendingCreate(createScope))}>重新读取浏览器存储</Button></> : <><p>创建结果待确认：{pendingCreate.name} · 请求 {pendingCreate.idempotency_key}。重试会使用保存的原始请求；如果此前未创建，重试将创建计划。</p><Button type="button" size="sm" variant="secondary" disabled={!active || creating || pendingCreate.expected_service_id !== serviceId} loading={creating} onClick={() => void submitCreate(pendingCreate)}>核对或安全重试原请求</Button> <Button type="button" size="sm" variant="ghost" disabled={creating} onClick={async () => {
             const intent = pendingCreate;
@@ -263,9 +268,9 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
             try { sessionStorage.removeItem(createStorageKey(createScope)); }
             catch { toast.error("无法清除请求", "请检查浏览器存储。"); return; }
             setDraftName(intent.name); setDraftCron(intent.cron); setDraftPrompt(intent.prompt); setDraftContext(intent.context); setDraftEnabled(intent.enabled); setPendingCreate(null); onDraftEdit?.();
+            setCreateOpen(true); window.setTimeout(() => document.getElementById("scheduled-job-name")?.focus(), 0);
           }}>放弃请求并编辑草稿</Button></>}
         </div>}
-      </Panel>
 
       {draftScope && !loading && [...editDrafts.entries()].filter(([key]) => {
         const [scope, id] = JSON.parse(key) as [string, string];
@@ -411,11 +416,12 @@ function ScheduledJobRow({ job, onToggle, onDelete, onCopy, onFollowup, onUpdate
       data-testid={`settings-job-row-${job.id}`}
       className="rounded-lg border border-line bg-surface-2 transition-colors duration-150 hover:border-line-strong"
     >
-      <div className="flex items-center gap-2 px-3 py-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
         <IconButton
           data-testid={`settings-job-expand-${job.id}`}
           onClick={() => setExpanded((v) => !v)}
           aria-label={expanded ? strings.settings.scheduled.collapse : strings.settings.scheduled.expand}
+          aria-expanded={expanded}
           active={expanded}
         >
           {expanded ? <ChevronDown /> : <ChevronRight />}

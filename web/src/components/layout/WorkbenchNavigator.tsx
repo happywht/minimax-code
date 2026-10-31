@@ -57,7 +57,7 @@ export function WorkbenchNavigator({ view, connection, onNavigate }: {
       <span className="max-w-48 shrink-0 truncate" title={session?.title || sessionId || "未选择"}>会话：{session?.title || sessionId || "未选择"}</span>
       <span className="shrink-0">服务地址：{host} · {connection === "connected" ? "已连接" : "连接待确认"}</span>
     </div>
-    {association && <p role="status" className="mt-1 text-status-warning">{association}</p>}
+    {area === "work" && association && <p role="status" className="mt-1 text-status-warning">{association}</p>}
     {connection !== "connected" && <p className="mt-1 text-status-warning">项目与会话为最近选择，连接恢复后请重新核对。</p>}
     {area === "work" && session && !association && <details className="mt-1 text-ink-2">
       <summary className="cursor-pointer">会话配置与目录</summary>

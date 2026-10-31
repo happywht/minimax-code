@@ -75,7 +75,7 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
   }, [ready, binding]);
   const select = (next: AutomationTab) => { setVisited((current) => new Set([...current, next])); onSelect(next); };
   return <section className="flex h-full min-h-0 flex-col" aria-label="自动化工作区">
-    <header className="shrink-0 space-y-2 border-b border-line p-3">
+    <header className="max-h-[45%] shrink-0 space-y-2 overflow-y-auto border-b border-line p-3">
       <div className="flex items-start justify-between gap-2"><div><h2 className="font-semibold">自动化工作区</h2>
         <p className="break-all text-xs text-ink-2">当前项目：{projectName ?? project ?? "未选择"} · 服务地址：{binding?.host ?? ipc.agentBaseUrl} · 服务身份：{ready ? binding?.service : "待确认"}</p></div>
         <Button size="sm" variant="ghost" onClick={onClose}>关闭</Button></div>
@@ -88,7 +88,7 @@ export function AutomationWorkspace({ tab, onSelect, onClose, onOpenSession, onE
     </header>
     {binding && <div key={JSON.stringify([binding.host, binding.service])} className="relative min-h-0 flex-1">
       {!ready && <div className="absolute inset-0 z-10 bg-surface-overlay/90" aria-hidden="true" />}
-      <div ref={surfaceRef} className="h-full overflow-auto p-4" aria-hidden={!ready || undefined} onChangeCapture={(event) => {
+      <div ref={surfaceRef} className="h-full overflow-auto p-3 sm:p-4" aria-hidden={!ready || undefined} onChangeCapture={(event) => {
         if (tab === "scheduled") {
           if (!(event.target instanceof Element) || !event.target.closest("[data-schedule-filter]")) onScheduledEdit?.();
         } else onEdit();

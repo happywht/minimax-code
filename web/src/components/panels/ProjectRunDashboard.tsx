@@ -232,7 +232,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
     <div className="flex justify-between gap-2"><div><h2 className="text-lg font-semibold">项目任务状态</h2>
       <p className="break-all text-xs text-ink-2">项目：{name ?? project ?? "未选择"} · 服务：{host} · 身份：{service ?? "待确认"}</p></div><Button size="sm" variant="ghost" onClick={onClose}>关闭</Button></div>
     <p className="text-sm text-ink-1">按持久运行记录分组，不按会话计数。每组最多显示最近 25 条；已归档会话、未绑定项目的旧记录和内部子任务不在此列表。等待状态不代表审批或问题仍有效。</p>
-    <div className="flex flex-wrap gap-2">{(Object.keys(groupLabels) as Group[]).map((id) => <Button key={id} type="button" size="sm" variant={group === id ? "primary" : "secondary"} aria-pressed={group === id} disabled={busy} onClick={() => { setGroup(id); setDetail(undefined); setSnapshot(null); remember({ group: id, selected: undefined }); }}>{groupLabels[id]}</Button>)}
+    <div className="flex flex-wrap gap-2">{(Object.keys(groupLabels) as Group[]).map((id) => <Button key={id} type="button" size="sm" variant={group === id ? "primary" : "secondary"} aria-pressed={group === id} disabled={busy} onClick={() => { setGroup(id); setDetail(undefined); setSnapshot(null); remember({ group: id, selected: undefined }); }}>{groupLabels[id]}{groups?.[id] ? ` · ${groups[id].items.length}${groups[id].truncated ? "+" : ""}` : ""}</Button>)}
       <Button type="button" size="sm" variant="ghost" disabled={busy || !project} onClick={() => void refresh()}>刷新</Button></div>
     <form className="flex flex-wrap items-end gap-2 rounded border border-line p-2" onSubmit={(event) => { event.preventDefault(); void searchHistory(query.trim(), 0, searchStatus); }}>
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">查找项目运行
@@ -249,11 +249,11 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
       <p className="text-sm">搜索：{appliedQuery || "全部关键词"} · {searchLabels[appliedStatus]} · 从第 {history.offset + 1} 条记录开始</p>
       {historyStale && <p role="status" className="text-status-warning">运行记录已变化，此页是旧快照；打开结果会重新核对。<Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void searchHistory(appliedQuery, history.offset, appliedStatus)}>刷新此页</Button></p>}
       {!history.items.length && <p>本页没有可显示的运行；主机边界可能隐藏部分记录。</p>}
-      <ul className="space-y-2">{history.items.map((item) => <li key={item.id} className="rounded bg-surface-2 p-2">
+      <ul aria-label="搜索运行列表" tabIndex={0} className="max-h-80 space-y-2 overflow-y-auto rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{history.items.map((item) => <li key={item.id} className="rounded bg-surface-2 p-2">
         <p className="font-medium">{item.title || "未命名运行"}</p>
         <p className="break-all text-xs text-ink-2">会话：{item.session_title || item.session_id} · 运行：{item.id}</p>
         <p className="text-xs">记录状态：{statusLabels[item.status] ?? item.status}{item.live === false ? " · 当前服务无法确认仍在执行" : ""} · {item.completed_at ?? item.created_at}</p>
-        <div className="mt-1 flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void select(item, false)}>查看结果</Button>
+        <div className="mt-1 flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void select(item, false)}>查看结果</Button>
           <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void select(item, true)}>打开所属会话</Button></div>
       </li>)}</ul>
       <div className="flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy || history.offset === 0} onClick={() => void searchHistory(appliedQuery, Math.max(0, history.offset - 25), appliedStatus)}>上一页</Button>
@@ -270,15 +270,18 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
     {!project && <p role="status">请先选择项目。</p>}{busy && <p role="status">正在读取当前服务记录…</p>}{error && <p role="alert">{error}</p>}
     {!busy && groups && !items.length && <p>此范围内没有已显示的运行记录。</p>}
     {groups?.[group].truncated && <p>此类别超过 25 条，仅显示最近记录。</p>}
-    <ul className="space-y-2">{items.map((item) => <li key={item.id} className="rounded border border-line p-2">
+    {detail && <a href="#selected-project-run" className="self-start text-xs text-accent underline">查看已选运行结果与待处理事项</a>}
+    <ul aria-label="当前分类运行列表" tabIndex={0} className="max-h-80 space-y-2 overflow-y-auto rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{items.map((item) => <li key={item.id} className="rounded border border-line p-2">
       <p className="font-medium">{item.title || "未命名运行"}</p><p className="break-all text-xs text-ink-2">会话：{item.session_title || item.session_id} · 运行：{item.id}</p>
       <p className="text-xs">记录状态：{statusLabels[item.status] ?? item.status}{item.live === false ? " · 当前服务无法确认仍在执行" : ""} · {group === "recent" ? item.completed_at ?? item.created_at : item.created_at}</p>
-      <div className="mt-1 flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void select(item, false)}>查看结果</Button>
+      <div className="mt-1 flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void select(item, false)}>查看结果</Button>
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void select(item, true)}>打开所属会话</Button>
         {cancellable.has(item.status) && item.live !== false && <Button type="button" size="sm" variant="secondary" disabled={!!stopping || requested.has(item.id) || !service} onClick={() => void stop(item)}>{stopping === item.id ? "正在请求停止…" : requested.has(item.id) ? "已请求停止" : "停止此任务"}</Button>}</div>
     </li>)}</ul>
-    {detail && <div className="rounded border border-line p-3"><h3 className="font-medium">运行结果 · {detail.id}</h3>
+    {detail && <div id="selected-project-run" className="rounded border border-line p-3"><h3 className="font-medium">运行结果 · {detail.id}</h3>
       <p>读取时状态：{statusLabels[detail.status] ?? detail.status}</p>
+      {snapshot && service && <ProjectRunAttention key={`${host}:${service}:${project}:${activeSession}:${detail.session_id}:${detail.id}`}
+        snapshot={snapshot} host={host} service={service} project={project!} onOpenSession={onOpenSession} />}
       {detail.text === null ? <p>没有可确认属于此运行的已保存文本回执；进行中或旧运行可能尚无回执。</p> : <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{detail.text || "（文本为空）"}</pre>}
       {detail.text_truncated && <p>仅显示前 8000 字符；请打开所属会话查看。</p>}
       {snapshot && service && <>
@@ -301,8 +304,6 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
         </div>
         <OpenRunDeliveries key={`${host}:${service}:${project}:${activeSession}:${detail.session_id}:${detail.id}`}
           host={host} service={service} project={project!} session={detail.session_id} run={detail.id} />
-        <ProjectRunAttention key={`${host}:${service}:${project}:${activeSession}:${detail.session_id}:${detail.id}`}
-          snapshot={snapshot} host={host} service={service} project={project!} onOpenSession={onOpenSession} />
         <RunDeliverySummary key={`${host}:${service}:${project}:${activeSession}:${detail.session_id}:${detail.id}`}
           host={host} service={service} project={project!} session={detail.session_id} run={detail.id} />
         {snapshot.run.status === "budget_paused" && <ProjectRunBudget key={`${host}:${service}:${project}:${detail.session_id}:${detail.id}:${activeSession}`}

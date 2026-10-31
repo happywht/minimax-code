@@ -26,6 +26,7 @@ import { ipc, typedIPC } from "../../ipc";
 import { useScheduleStore, useTaskStore } from "../../stores";
 import { ScheduledTab } from "./ScheduledTab";
 import { ScheduleHistory } from "./ScheduleContextFields";
+import * as confirmation from "../modals/ConfirmationDialog";
 
 const listJobs = vi.mocked(typedIPC.listJobs);
 const createJob = vi.mocked(typedIPC.createJob);
@@ -170,4 +171,35 @@ it("refreshes a collapsed occurrence when it starts waiting for approval", async
   events.get("run.updated")?.();
   expect(await screen.findByText(/当前发生：等待授权/)).toBeVisible();
   expect(screen.getByRole("button", { name: "打开会话处理授权" })).toBeVisible();
+});
+
+it("keeps a new schedule draft when the creation form is collapsed", async () => {
+  const user = userEvent.setup();
+  render(<ScheduledTab />);
+  const summary = screen.getByText("新建任务", { selector: "summary" });
+  await user.click(summary);
+  const name = screen.getByTestId("settings-job-name");
+  await user.type(name, "保留的草稿");
+  await user.click(screen.getByText(/新建任务.*草稿已保留/, { selector: "summary" }));
+  expect(name).toHaveValue("保留的草稿");
+  await user.click(screen.getByText(/新建任务.*草稿已保留/, { selector: "summary" }));
+  expect(name).toBeVisible();
+  expect(name).toHaveValue("保留的草稿");
+});
+
+
+it("opens and focuses the restored draft after abandoning an uncertain create", async () => {
+  const user = userEvent.setup();
+  const key = `minimax-code:schedule-create:${JSON.stringify(["local", "svc"])}`;
+  sessionStorage.setItem(key, JSON.stringify({ name: "恢复计划", cron: "0 2 * * *", prompt: "内容", context: makeJob().context,
+    enabled: false, expected_service_id: "svc", idempotency_key: "original-key" }));
+  const confirm = vi.spyOn(confirmation, "requestConfirmation").mockResolvedValue(true);
+  try {
+    render(<ScheduledTab serviceId="svc" />);
+    await user.click(screen.getByRole("button", { name: "放弃请求并编辑草稿" }));
+    const input = screen.getByTestId("settings-job-name");
+    expect(input).toBeVisible();
+    expect(input).toHaveValue("恢复计划");
+    await waitFor(() => expect(input).toHaveFocus());
+  } finally { confirm.mockRestore(); sessionStorage.removeItem(key); }
 });
