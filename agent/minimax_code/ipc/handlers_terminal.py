@@ -56,12 +56,32 @@ class TerminalChunk:
     received_at: float
 
 
+@dataclass(frozen=True)
+class DirectoryBinding:
+    path: Path
+    identity: tuple[int, int]
+
+
+def bind_terminal_directory(path: str) -> DirectoryBinding:
+    resolved = require_directory(path)
+    info = resolved.stat()
+    return DirectoryBinding(resolved, (info.st_dev, info.st_ino))
+
+
+def _check_terminal_directory(path: str, binding: DirectoryBinding) -> None:
+    current = bind_terminal_directory(path)
+    if current != binding:
+        raise ExecutionDeniedError("Terminal directory has changed; start the command again.")
+
+
 @dataclass
 class TerminalSession:
     id: str
     command: str
     cwd: str
     workspace_root: str | None = None
+    cwd_binding: DirectoryBinding | None = None
+    workspace_binding: DirectoryBinding | None = None
     chat_session_id: str | None = None
     run_id: str | None = None
     run_step_id: str | None = None
@@ -528,7 +548,15 @@ async def _run_session(
             action = await terminal_permission_action(session.permission_server, session.permission_tool)
             if action == "deny" or (action == "ask" and not approved):
                 raise ExecutionDeniedError("Terminal execution requires a new permission decision")
-        scope = (execution_scope(ExecutionPolicy(workspace=Path(session.workspace_root)))
+        if session.cwd_binding is None:
+            raise ExecutionDeniedError("Terminal directory binding is unavailable; start the command again.")
+        _check_terminal_directory(session.cwd, session.cwd_binding)
+        if session.workspace_root is not None:
+            if session.workspace_binding is None:
+                raise ExecutionDeniedError("Terminal workspace binding is unavailable; start the command again.")
+            _check_terminal_directory(session.workspace_root, session.workspace_binding)
+        scope = (execution_scope(ExecutionPolicy(workspace=Path(session.workspace_root),
+                                                 _workspace_identity=session.workspace_binding.identity))
                  if session.workspace_root is not None else contextlib.nullcontext())
         with scope:
             if session.workspace_root is not None and policy_workspace() != Path(session.workspace_root):
@@ -626,8 +654,17 @@ async def start_terminal_command(
     workspace_root: str | None = None,
     permission_server: Any = None,
     permission_tool: str = "terminal.start",
+    cwd_binding: DirectoryBinding | None = None,
+    workspace_binding: DirectoryBinding | None = None,
 ) -> TerminalSession:
     """Start a lightweight command session and return its in-memory row."""
+    # Capture before any permission or host await, and preserve a binding
+    # supplied by callers that performed asynchronous work after resolution.
+    cwd_binding = cwd_binding or bind_terminal_directory(cwd)
+    _check_terminal_directory(cwd, cwd_binding)
+    if workspace_root is not None:
+        workspace_binding = workspace_binding or bind_terminal_directory(workspace_root)
+        _check_terminal_directory(workspace_root, workspace_binding)
     await require_host_session(chat_session_id)
     if permission_server is not None:
         action = await terminal_permission_action(permission_server, permission_tool)
@@ -642,6 +679,8 @@ async def start_terminal_command(
         command=command,
         cwd=cwd,
         workspace_root=workspace_root,
+        cwd_binding=cwd_binding,
+        workspace_binding=workspace_binding,
         chat_session_id=chat_session_id,
         permission_server=permission_server,
         permission_tool=permission_tool,

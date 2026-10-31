@@ -17,7 +17,10 @@ from typing import Any
 
 from ..execution import ExecutionPolicy, capture_output, execution_scope, spawn_exec, spawn_shell
 from .handler_utils import HandlerError
-from .handlers_terminal import _cwd_and_root_from_params, start_terminal_command, terminal_permission_action
+from .handlers_terminal import (
+    _cwd_and_root_from_params, bind_terminal_directory, start_terminal_command,
+    terminal_permission_action,
+)
 from .host_session_gate import require_host_session
 from .protocol import INVALID_PARAMS
 from .server import Context
@@ -270,13 +273,17 @@ def register_runner_handlers(server: Any) -> None:
             chat_session_id = _chat_session_id_from_params(p)
             await require_host_session(chat_session_id)
             cwd, workspace_root = await _cwd_and_root_from_params(p)
+            cwd_binding = bind_terminal_directory(cwd)
+            workspace_binding = bind_terminal_directory(workspace_root) if workspace_root else None
             if runner_id == "native":
                 runner = await _runner_entry(id="native", label="Native shell", command_name=None,
                                              version_args=None, supports_prompt=False)
             else:
                 # Version probes are processes too. Pin them to the validated
                 # workspace and recheck its identity when each process starts.
-                with execution_scope(ExecutionPolicy(workspace=Path(workspace_root or cwd))):
+                probe_binding = workspace_binding or cwd_binding
+                with execution_scope(ExecutionPolicy(workspace=probe_binding.path,
+                                                     _workspace_identity=probe_binding.identity)):
                     runner = next(item for item in await _runner_catalog(chat_session_id=chat_session_id, permission_server=ctx.server)
                                   if item["id"] == runner_id)
             if runner_id != "native" and not runner["available"]:
@@ -298,6 +305,8 @@ def register_runner_handlers(server: Any) -> None:
                 chat_session_id=chat_session_id,
                 emit=ctx.emit,
                 workspace_root=workspace_root,
+                cwd_binding=cwd_binding,
+                workspace_binding=workspace_binding,
                 permission_server=ctx.server,
                 permission_tool="runner.start",
             )
