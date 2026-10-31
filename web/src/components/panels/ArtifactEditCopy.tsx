@@ -4,6 +4,7 @@ import { fetchArtifactContent } from "../../ipc/artifactContent";
 import { useArtifactStore, useSessionStore } from "../../stores";
 import type { TextArtifact } from "../../types/ipc";
 import { Button } from "../../ui";
+import { ArtifactCopyAttachment } from "./ArtifactCopyAttachment";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 
@@ -109,13 +110,14 @@ export function ArtifactEditCopy({ artifact }: { artifact: TextArtifact }): JSX.
     finally { if (current(ticket)) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2 text-sm">
-    <p>编辑已登记快照的本地副本，可下载或追加到聊天草稿；不会修改项目源文件或已登记版本。切换成果、项目、会话或服务会丢弃编辑。</p>
+    <p>编辑已登记快照的本地副本，可下载、保存为项目附件或追加到聊天草稿；不会修改项目源文件或已登记版本。切换成果、项目、会话或服务会丢弃编辑。</p>
     {text === null ? <Button type="button" size="sm" variant="secondary" disabled={busy || !project || !session || ipc.isMock} onClick={() => void prepare()}>编辑文本副本</Button> : <>
       <textarea aria-label="文本成果副本" className="min-h-48 w-full rounded border border-line bg-surface-1 p-2 font-mono" value={text} disabled={busy}
         onChange={(event) => { revision.current++; setText(event.target.value); }} />
       <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy} onClick={() => void save()}>下载编辑副本</Button>
         <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void append()}>追加编辑副本到聊天草稿</Button>
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { revision.current++; setText(null); setNotice(""); }}>丢弃副本</Button></div>
+      <ArtifactCopyAttachment artifact={artifact} text={text} />
     </>}
     {notice && <p role="status">{notice}</p>}
     {notice === "已添加到当前会话草稿，尚未发送。" && <Button type="button" size="sm" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}
