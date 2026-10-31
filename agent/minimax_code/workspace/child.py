@@ -402,8 +402,8 @@ def collection_history(child: ChildWorkspace) -> list[dict[str, Any]]:
     return result
 
 
-def read_resolution_backup(child: ChildWorkspace, attempt_id: str, path: str | None = None) -> dict[str, str]:
-    """Read a journal-bound, digest-verified pre-write text backup."""
+def _verified_resolution_backup(child: ChildWorkspace, attempt_id: str, path: str | None = None) -> tuple[Path, str, str, bytes]:
+    """Resolve a journal-bound backup and verify its complete bounded contents."""
     records = [record for record in collection_history(child) if record.get("id") == attempt_id]
     if len(records) != 1:
         raise ValueError("Backup attempt is unavailable")
@@ -433,14 +433,23 @@ def read_resolution_backup(child: ChildWorkspace, attempt_id: str, path: str | N
             or not backup.is_file() or backup.is_symlink()):
         raise ValueError("Backup is unavailable or its path is invalid")
     with backup.open("rb") as stream:
-        data = stream.read(16385)
-    if len(data) > 16384 or hashlib.sha256(data).hexdigest() != expected:
-        raise ValueError("Backup content does not match the recorded digest")
-    try:
-        content = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("Backup is not UTF-8") from exc
-    return {"attempt_id": attempt_id, "path": relative, "sha256": expected, "content": content}
+        data = stream.read(MAX_FILE_BYTES + 1)
+    if len(data) > MAX_FILE_BYTES or hashlib.sha256(data).hexdigest() != expected:
+        raise ValueError("Backup content does not match the recorded digest or exceeds the size limit")
+    return backup, relative, expected, data
+
+
+def read_resolution_backup(child: ChildWorkspace, attempt_id: str, path: str | None = None) -> dict[str, Any]:
+    """Return metadata for any verified backup and a bounded optional text preview."""
+    _, relative, expected, data = _verified_resolution_backup(child, attempt_id, path)
+    content = None
+    if len(data) <= 16384:
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    return {"attempt_id": attempt_id, "path": relative, "sha256": expected,
+            "size": len(data), "content": content}
 
 
 def _check_parent_identity(parent: Path, expected: tuple[int, int]) -> None:
@@ -458,7 +467,7 @@ def restore_resolution_backup_copy(child: ChildWorkspace, attempt_id: str, desti
     if active_child() or not isinstance(destination, str) or not _included(destination):
         raise ValueError("Invalid backup destination")
     _check_parent_identity(child.parent, expected_parent_identity)
-    backup = read_resolution_backup(child, attempt_id, path)
+    backup_path, relative, expected, _ = _verified_resolution_backup(child, attempt_id, path)
     from ..agent.tools.file_ops import safe_resolve
 
     target = _path(child.parent, destination)
@@ -467,9 +476,9 @@ def restore_resolution_backup_copy(child: ChildWorkspace, attempt_id: str, desti
     if not target.parent.is_dir():
         raise ValueError("Destination parent directory must already exist")
     _check_parent_identity(child.parent, expected_parent_identity)
-    atomic_write_text(target, backup["content"], baseline_path=target, baseline_sha256=None)
-    return {"attempt_id": attempt_id, "source_path": backup["path"],
-            "destination": destination, "sha256": backup["sha256"]}
+    atomic_copy_file(backup_path, target, baseline_sha256=None, expected_source_sha256=expected)
+    return {"attempt_id": attempt_id, "source_path": relative,
+            "destination": destination, "sha256": expected}
 
 
 def collect_child(child: ChildWorkspace, *, on_conflict: str = "fail",
