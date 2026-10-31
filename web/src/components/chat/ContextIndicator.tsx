@@ -31,7 +31,7 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
-export function ContextIndicator() {
+export function ContextIndicator({ warningOnly = false }: { warningOnly?: boolean } = {}) {
   const messages = useChat((s) => s.messages);
   const models = useModelStore((s) => s.models);
   const currentModelId = useModelStore((s) => s.current);
@@ -60,7 +60,7 @@ export function ContextIndicator() {
   }, [messages, models, currentModelId]);
 
   // Graceful fallback: no model data or no usage yet.
-  if (total <= 0 && used <= 0) return null;
+  if ((total <= 0 && used <= 0) || (warningOnly && pct < 70)) return null;
 
   // Colour classes based on usage percentage.
   const barColor =

@@ -502,7 +502,7 @@ export default function App() {
             </div>
           </main>
           <div className="hidden lg:block">
-            <RightPanel timelineTarget={timelineTarget} onClearTimelineTarget={() => setTimelineTarget(null)} />
+            <RightPanel defaultCollapsed timelineTarget={timelineTarget} onClearTimelineTarget={() => setTimelineTarget(null)} />
           </div>
           <InspectorDrawer open={inspectorOpen} onClose={() => setInspectorOpen(false)}>
             <RightPanel timelineTarget={timelineTarget} onClearTimelineTarget={() => setTimelineTarget(null)} />

@@ -37,7 +37,9 @@ export function ComposerToolbar({
   const savedSettings = useRunTimelineStore((s) => Object.values(s.runs).find((run) => run.session_id === currentSessionId && run.metadata?.codex_settings)?.metadata?.codex_settings) as Record<string, unknown> | undefined;
   const codexState = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId)?.engine_state);
   const codexConfig = { ...savedSettings, ...codexState };
-  const codex = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId)?.engine === "codex");
+  const codex = useSessionStore((s) => s.currentSessionId
+    ? s.sessions.find((session) => session.id === s.currentSessionId)?.engine === "codex"
+    : s.newSessionEngine === "codex");
 
   const tokenToneClass = overLimit
     ? "text-status-error font-semibold"
@@ -54,6 +56,70 @@ export function ComposerToolbar({
         ? "bg-status-warning"
         : "bg-accent";
 
+  return (
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-1">
+      {alwaysAllow && <Button type="button" size="sm" variant="danger" role="switch" aria-checked="true"
+        onClick={() => { setAlwaysAllow(false); toast.info("始终授权已关闭", "工具调用将再次弹窗询问。"); }}
+        title="点击关闭始终授权">始终授权已开启 · 关闭</Button>}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+        {cancelling && (
+          <span
+            data-testid="message-input-stopping"
+            className="text-[11px] text-status-warning transition-opacity duration-200"
+          >
+            {strings.chat.input.stopping}
+          </span>
+        )}
+        {!codex && <ContextIndicator warningOnly />}
+        <div className="flex min-w-0 flex-col items-end gap-1">
+          <span
+            data-testid="message-input-token-count"
+            aria-label={`输入字符 ${valueLength}/${MAX_INPUT_CHARS}`}
+            className={`text-[11px] transition-colors duration-200 ${nearLimit ? "" : "sr-only"} ${tokenToneClass}`}
+          >
+            {valueLength}/{MAX_INPUT_CHARS}
+          </span>
+          <div
+            data-testid="message-input-token-meter"
+            className={`${nearLimit ? "w-16" : "sr-only"} h-0.5 overflow-hidden rounded-full bg-surface-3`}
+            aria-hidden
+          >
+            <div
+              className={`h-full rounded-full transition-all duration-200 ${meterToneClass}`}
+              style={{ width: `${usagePct}%` }}
+            />
+          </div>
+        </div>
+        {nearLimit && (
+          <span
+            data-testid="message-input-token-warning"
+            className={`hidden min-w-[74px] text-right text-[11px] sm:inline ${
+              critical ? "text-status-error" : "text-status-warning"
+            }`}
+            aria-live="polite"
+          >
+            {overLimit ? "已超限" : critical ? "即将超限" : "接近上限"}
+          </span>
+        )}
+        {!codex && <ModelSelector variant="inline" />}
+        {codex && <span className="text-xs text-ink-2" data-testid="codex-model-config">
+          Codex CLI 配置：{typeof codexConfig?.model === "string" ? codexConfig.model : "尚未确认"}
+          {typeof codexConfig?.modelProvider === "string" ? ` · ${codexConfig.modelProvider}` : ""}
+          {typeof codexConfig?.reasoningEffort === "string" ? ` · ${codexConfig.reasoningEffort}` : ""}
+        </span>}
+      </div>
+    </div>
+  );
+}
+
+/** Less frequent controls remain available in the composer options. */
+export function ComposerSafetyControls(): JSX.Element {
+  const alwaysAllow = usePermissionStore((s) => s.alwaysAllow);
+  const setAlwaysAllow = usePermissionStore((s) => s.setAlwaysAllow);
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
+  const codex = useSessionStore((s) => s.currentSessionId
+    ? s.sessions.find((session) => session.id === s.currentSessionId)?.engine === "codex"
+    : s.newSessionEngine === "codex");
   const handleExportSession = async () => {
     if (!currentSessionId) {
       toast.error(strings.chat.menu.exportFailed, strings.chat.menu.noSession);
@@ -73,8 +139,7 @@ export function ComposerToolbar({
     );
   };
 
-  return (
-    <div className="flex flex-wrap sm:flex-nowrap items-center gap-x-2 gap-y-1 sm:gap-y-0 border-t border-line/60 px-2.5 py-1.5">
+  return <div className="flex flex-wrap items-center gap-2 border-b border-line pb-2">
       <Button
         variant="ghost"
         size="sm"
@@ -108,53 +173,6 @@ export function ComposerToolbar({
       >
         <Download size={12} />
       </IconButton>
-      <div className="flex min-w-0 flex-1 flex-wrap sm:flex-nowrap items-center justify-end gap-x-2 gap-y-1 sm:gap-y-0">
-        {cancelling && (
-          <span
-            data-testid="message-input-stopping"
-            className="text-[11px] text-status-warning transition-opacity duration-200"
-          >
-            {strings.chat.input.stopping}
-          </span>
-        )}
-        {!codex && <ContextIndicator />}
-        <div className="flex min-w-[72px] flex-col items-end gap-1 sm:min-w-[92px]">
-          <span
-            data-testid="message-input-token-count"
-            aria-label={`输入字符 ${valueLength}/${MAX_INPUT_CHARS}`}
-            className={`text-[11px] transition-colors duration-200 ${tokenToneClass}`}
-          >
-            {valueLength}/{MAX_INPUT_CHARS}
-          </span>
-          <div
-            data-testid="message-input-token-meter"
-            className="h-0.5 w-full overflow-hidden rounded-full bg-surface-3"
-            aria-hidden
-          >
-            <div
-              className={`h-full rounded-full transition-all duration-200 ${meterToneClass}`}
-              style={{ width: `${usagePct}%` }}
-            />
-          </div>
-        </div>
-        {nearLimit && (
-          <span
-            data-testid="message-input-token-warning"
-            className={`hidden min-w-[74px] text-right text-[11px] sm:inline ${
-              critical ? "text-status-error" : "text-status-warning"
-            }`}
-            aria-live="polite"
-          >
-            {overLimit ? "已超限" : critical ? "即将超限" : "接近上限"}
-          </span>
-        )}
-        {!codex && <ModelSelector variant="inline" />}
-        {codex && <span className="text-xs text-ink-2" data-testid="codex-model-config">
-          Codex CLI 配置：{typeof codexConfig?.model === "string" ? codexConfig.model : "尚未确认"}
-          {typeof codexConfig?.modelProvider === "string" ? ` · ${codexConfig.modelProvider}` : ""}
-          {typeof codexConfig?.reasoningEffort === "string" ? ` · ${codexConfig.reasoningEffort}` : ""}
-        </span>}
-      </div>
-    </div>
-  );
+    {!codex && <ContextIndicator />}
+  </div>;
 }

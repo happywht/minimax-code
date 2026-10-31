@@ -56,8 +56,6 @@ export function ChatPanel({
 }: ChatPanelProps): JSX.Element {
   const sessions = useSessionStore((s) => s.sessions);
   const currentId = useSessionStore((s) => s.currentSessionId);
-  const createSession = useSessionStore((s) => s.create);
-  const creatingSession = useSessionStore((s) => s.creating);
   const refreshSessions = useSessionStore((s) => s.refresh);
   const renameSession = useSessionStore((s) => s.rename);
   const archiveSession = useSessionStore((s) => s.archive);
@@ -207,8 +205,8 @@ export function ChatPanel({
       className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
     >
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 border-b border-line bg-surface-0 px-3 py-2.5 sm:px-4">
-        <div className="flex min-w-0 flex-1 basis-full items-center gap-2">
+      <header className="flex min-h-14 items-center gap-2 px-4 sm:px-7">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <MessageSquare size={14} className="shrink-0 text-minimax-muted" />
           {editing ? (
             <input
@@ -271,8 +269,11 @@ export function ChatPanel({
             </span>
           )}
         </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-1">
-          <span className="text-xs text-ink-2" data-testid="session-engine">{current ? (current.engine === "codex" ? "Codex" : "Native") : "未选择会话"}</span>
+        <div className="flex shrink-0 items-center gap-1">
+          <details className="relative">
+            <summary className="cursor-pointer list-none rounded-lg px-2 py-1.5 text-xs text-ink-2 hover:bg-surface-2" title="会话引擎与交接"><span data-testid="session-engine">{current ? (current.engine === "codex" ? "Codex" : "Native") : `${newEngine === "codex" ? "Codex" : "Native"} · 新会话`}</span> ▾</summary>
+            <div className="absolute right-0 z-30 mt-1 flex min-w-48 flex-col gap-2 rounded-xl border border-line bg-surface-1 p-3 shadow-pop">
+              <span className="text-xs text-ink-2">新会话引擎</span>
           <select aria-label="新会话引擎" value={newEngine}
             onChange={(event) => setNewEngine(event.target.value as "native" | "codex")}
             className="max-w-36 rounded border border-line bg-surface-1 text-xs text-ink-1">
@@ -287,16 +288,8 @@ export function ChatPanel({
             onClick={() => { if (current) setHandoff({ source: current.id, target: newEngine }); }}
             className="rounded-md border border-line px-2 py-1 text-xs text-ink-1 hover:bg-surface-2 disabled:opacity-50"
             title="先选择与当前会话不同的可用引擎，然后审阅交接内容">切换并交接</button>
-          <button
-            type="button"
-            data-testid="chat-header-new"
-            onClick={() => { if (allowScopeChange()) void createSession(DEFAULT_SESSION_TITLE, undefined, newEngine); }}
-            disabled={creatingSession}
-            className="rounded-md border border-line px-2 py-1 text-xs text-ink-0 hover:bg-surface-2 disabled:cursor-wait disabled:opacity-50"
-            title={strings.chat.header.newTask}
-          >
-            {strings.chat.header.newButton}
-          </button>
+            </div>
+          </details>
           <button
             type="button"
             data-testid="chat-search-toggle"

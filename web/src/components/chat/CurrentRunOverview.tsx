@@ -124,7 +124,8 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       setPlanDraftMessage("计划已加入草稿并切换到执行模式；请核对、设置预算后发送。");
     } else setPlanDraftMessage(detail.result ?? "聊天输入区未就绪，请稍后重试。");
   };
-  return <div className="shrink-0 border-b border-line bg-surface-1 px-4 py-2 text-xs">
+  if (!run && !stale && !error) return null;
+  return <div className="shrink-0 px-4 pb-2 text-xs sm:px-7">
     {requestId && <div className="mb-2 flex flex-wrap items-center justify-between gap-2" role="status">
       <span className="font-medium text-status-warning">{run?.status === "awaiting_approval" ? "当前任务等待授权" : "当前任务等待回答"}</span>
       <Button type="button" size="sm" variant="secondary" onClick={openRequest}>{run?.status === "awaiting_approval" ? "查看授权请求" : "回答问题"}</Button>

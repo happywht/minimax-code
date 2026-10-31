@@ -39,7 +39,7 @@ import { Button, Checkbox, IconButton, Input, Modal, DropdownMenu } from "../../
 import { strings } from "../../ui/strings";
 import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../../lib/defaultTitles";
 import { typedIPC } from "../../ipc";
-import { useChat, useSessionStore, type SessionMeta } from "../../stores";
+import { useChat, usePermissionStore, useSessionStore, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
 import { APP_VERSION } from "../../version";
 
@@ -94,13 +94,15 @@ export function Sidebar({
   const selectAllVisible = useSessionStore((s) => s.selectAllVisible);
   const batchArchiveSessions = useSessionStore((s) => s.batchArchiveSessions);
   const batchMoveToProject = useSessionStore((s) => s.batchMoveToProject);
-  const [navigationGroup, setNavigationGroup] = useState<NavigationGroup | null>("projects");
+  const [navigationGroup, setNavigationGroup] = useState<NavigationGroup | null>(null);
   useEffect(() => {
     if (view === "task-dashboard") setNavigationGroup("projects");
     else if (["artifacts", "attachments", "office", "research", "run-artifacts"].includes(view)) setNavigationGroup("deliveries");
     else if (["scheduled", "workflows", "webhooks"].includes(view)) setNavigationGroup("automation");
-    else if (["chat", "skills", "agents", "preview"].includes(view)) setNavigationGroup("work");
+    else if (["skills", "agents", "preview"].includes(view)) setNavigationGroup("work");
+    else if (view === "chat") setNavigationGroup(null);
   }, [view]);
+  const [expandedSessionProjects, setExpandedSessionProjects] = useState<Set<string>>(() => new Set());
   const [historyQuery, setHistoryQuery] = useState("");
   const [batchMoveOpen, setBatchMoveOpen] = useState(false);
   const [remoteSearchSessions, setRemoteSearchSessions] = useState<SessionMeta[] | null>(null);
@@ -111,6 +113,7 @@ export function Sidebar({
   // so we key off the count and the run status instead of the array ref.
   const chatMessageCount = useChat((s) => s.messages.length);
   const chatStatus = useChat((s) => s.status);
+  const pendingPermissions = usePermissionStore((s) => s.pending);
 
   // Modal state for project operations.
   const [createOpen, setCreateOpen] = useState(false);
@@ -405,18 +408,28 @@ export function Sidebar({
   // move it. Rows are queried from the DOM so navigation follows the
   // rendered order (sessions are grouped by project, so the flat
   // filteredSessions order doesn't match the DOM order).
+  const displayedSessions = useCallback((projectId: string, rows: SessionMeta[]) => {
+    if (searchMode || expandedSessionProjects.has(projectId) || rows.length <= 5) return rows;
+    const recent = rows.slice(0, 5);
+    const priorityIds = new Set([currentId, ...Object.values(pendingPermissions).map((request) => request.session_id)]);
+    return [...recent, ...rows.filter((row) => priorityIds.has(row.id) && !recent.some((item) => item.id === row.id))];
+  }, [searchMode, expandedSessionProjects, currentId, pendingPermissions]);
+  const renderedSessions = useMemo(() => Array.from(sessionsByProject.entries())
+    .filter(([projectId]) => effectiveExpandedIds.has(projectId))
+    .flatMap(([projectId, rows]) => displayedSessions(projectId, rows)),
+  [sessionsByProject, effectiveExpandedIds, displayedSessions]);
   const sessionListRef = useRef<HTMLDivElement>(null);
   const [rovingId, setRovingId] = useState<string | null>(null);
   const visibleSessionIds = useMemo(
-    () => new Set(filteredSessions.map((s) => s.id)),
-    [filteredSessions],
+    () => new Set(renderedSessions.map((s) => s.id)),
+    [renderedSessions],
   );
   // Fallback chain: last roving target → current session → first row,
   // each only while still visible (filter/search can invalidate them).
   const activeRovingId =
     (rovingId !== null && visibleSessionIds.has(rovingId) ? rovingId : null) ??
     (currentId !== null && visibleSessionIds.has(currentId) ? currentId : null) ??
-    filteredSessions[0]?.id ??
+    renderedSessions[0]?.id ??
     null;
 
   const focusSessionRow = useCallback((target: HTMLButtonElement) => {
@@ -458,12 +471,14 @@ export function Sidebar({
   const renderProjectGroup = (project: Project) => {
     const sessionsInProject = sessionsByProject.get(project.id) ?? [];
     const expanded = effectiveExpandedIds.has(project.id);
+    const shown = displayedSessions(project.id, sessionsInProject);
+    const hiddenCount = sessionsInProject.length - shown.length;
     return (
       <div key={project.id} className="space-y-0.5">
         {renderProjectHeader(project, sessionsInProject)}
         {expanded && (
           <ul className="space-y-0.5 pl-2">
-            {sessionsInProject.map((s) => (
+            {shown.map((s) => (
               <SessionRow
                 key={s.id}
                 session={s}
@@ -477,6 +492,12 @@ export function Sidebar({
                 onRowKeyDown={handleSessionRowKeyDown}
               />
             ))}
+            {!searchMode && sessionsInProject.length > 5 && <li>
+              <button type="button" className="ml-2 rounded-md px-2 py-1 text-xs text-ink-2 hover:bg-surface-3 hover:text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                aria-expanded={expandedSessionProjects.has(project.id)} onClick={() => setExpandedSessionProjects((previous) => {
+                  const next = new Set(previous); if (next.has(project.id)) next.delete(project.id); else next.add(project.id); return next;
+                })}>{expandedSessionProjects.has(project.id) ? "收起更多任务" : `展开另外 ${hiddenCount} 个任务`}</button>
+            </li>}
             {!searchMode && sessionsInProject.length === 0 && (
               <li className="px-2 py-1 text-[11px] italic text-ink-2">暂无任务</li>
             )}
@@ -489,13 +510,13 @@ export function Sidebar({
   const visibleCount = filteredSessions.length;
   const selectionActive = selectedSessionIds.size > 0;
   const selectedCount = selectedSessionIds.size;
-  const allVisibleSelected = visibleCount > 0 && selectedCount === visibleCount;
+  const allVisibleSelected = renderedSessions.length > 0 && renderedSessions.every((row) => selectedSessionIds.has(row.id));
 
   const handleSelectAllVisible = () => {
     if (allVisibleSelected) {
       clearSessionSelection();
     } else {
-      selectAllVisible(filteredSessions.map((s) => s.id));
+      selectAllVisible(renderedSessions.map((s) => s.id));
     }
   };
 
@@ -522,8 +543,8 @@ export function Sidebar({
       className="flex h-full w-60 max-w-full shrink-0 flex-col border-r border-line bg-surface-1"
     >
       {/* Brand */}
-      <div className="flex items-center gap-2.5 border-b border-line px-3 py-3">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-subtle text-accent">
+      <div className="flex items-center gap-2.5 px-4 pb-2 pt-5">
+        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-accent text-accent-contrast">
           <Sparkles size={14} />
         </div>
         <div className="min-w-0">
@@ -540,11 +561,12 @@ export function Sidebar({
       </div>
 
       {/* New task */}
-      <div className="flex gap-1.5 px-3 py-3">
+      <div className="flex gap-1.5 px-3 pb-3 pt-2">
         <Button
           size="sm"
           icon={<Plus size={14} />}
-          className="flex-1"
+          variant="primary"
+          className="h-9 flex-1 rounded-xl"
           loading={creatingSession}
           disabled={creatingSession}
           onClick={() => { if (allowScopeChange()) void createSession(DEFAULT_SESSION_TITLE, currentProject.id, newSessionEngine); }}
@@ -581,11 +603,11 @@ export function Sidebar({
       </div>
 
       {/* Four daily areas; each child retains the existing view/filter behavior. */}
-      <nav aria-label="日常导航" className="max-h-[42%] shrink-0 space-y-1 overflow-y-auto px-2 pb-2" data-testid="sidebar-nav">
+      <nav aria-label="日常导航" className="max-h-[38%] shrink-0 space-y-0.5 overflow-y-auto px-2 pb-2" data-testid="sidebar-nav">
+        <NavItem icon={<History size={14} />} label="任务状态与结果" selected={view === "task-dashboard"} onClick={() => onViewChange?.("task-dashboard")} testId="sidebar-nav-task-dashboard" />
         {([
           { id: "projects" as const, label: "项目与任务", icon: <Folder size={14} />, items: <>
             <NavItem icon={<Folder size={14} />} label="项目与任务列表" selected={navigationGroup === "projects" && view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-projects" />
-            <NavItem icon={<History size={14} />} label="任务状态与结果" selected={view === "task-dashboard"} onClick={() => onViewChange?.("task-dashboard")} testId="sidebar-nav-task-dashboard" />
             <NavItem icon={<History size={14} />} label="任务历史" selected={view === "chat" && filter === "history"} onClick={() => { onViewChange?.("chat"); setFilter("history"); }} testId="sidebar-nav-history" />
             <NavItem icon={<Archive size={14} />} label="已归档" selected={view === "chat" && filter === "archived"} onClick={() => { onViewChange?.("chat"); setFilter("archived"); }} testId="sidebar-nav-archived" />
           </> },
@@ -620,7 +642,7 @@ export function Sidebar({
       </nav>
 
       {/* Project / Session list */}
-      <div className="mt-3 flex min-h-0 flex-1 flex-col">
+      <div className="mt-1 flex min-h-0 flex-1 flex-col border-t border-line/60">
         {selectionActive ? (
           <div
             data-testid="sidebar-batch-toolbar"

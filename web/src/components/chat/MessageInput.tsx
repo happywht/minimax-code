@@ -21,7 +21,7 @@ import { useMentionPicker } from "./useMentionPicker";
 import { useMentionContext } from "./useMentionContext";
 import { AttachmentRows } from "./AttachmentRows";
 import { MentionPickerDropdown } from "./MentionPickerDropdown";
-import { ComposerToolbar } from "./ComposerToolbar";
+import { ComposerSafetyControls, ComposerToolbar } from "./ComposerToolbar";
 import { TaskTemplates } from "./TaskTemplates";
 import { DocumentTaskTemplate } from "./DocumentTaskTemplate";
 import { SpreadsheetTaskTemplate } from "./SpreadsheetTaskTemplate";
@@ -73,6 +73,15 @@ export function MessageInput({
   const budgetText = budgetScope.host === budgetHost && budgetScope.session === sessionId ? budgetScope.value : "";
   const budgetNumber = budgetText ? Number(budgetText) : undefined;
   const budgetValid = !budgetText || (/^[1-9]\d*$/.test(budgetText) && budgetNumber !== undefined && Number.isSafeInteger(budgetNumber));
+  const optionsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const dismiss = (event: PointerEvent) => {
+      const options = optionsRef.current;
+      if (budgetValid && options?.open && event.target instanceof Node && !options.contains(event.target)) options.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [budgetValid]);
 
   const codex = useSessionStore((s) => sessionId
     ? s.sessions.find((session) => session.id === sessionId)?.engine === "codex"
@@ -237,29 +246,19 @@ export function MessageInput({
       onSubmit={handleSubmit}
       data-testid={testId}
       data-floating="false"
-      className="max-h-[55%] shrink-0 overflow-y-auto border-t border-line bg-surface-0/92 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-surface-0/78 sm:px-4 sm:py-3"
+      className="max-h-[55%] shrink-0 overflow-y-auto bg-surface-0 px-3 pb-3 pt-1 sm:px-6 sm:pb-5"
     >
       <div
         onDragOver={attachments.handleDragOver}
         onDragLeave={attachments.handleDragLeave}
         onDrop={attachments.handleDrop}
         className={
-          "relative mx-auto w-full max-w-[780px] rounded-lg border bg-surface-1/95 shadow-pop backdrop-blur transition-colors duration-150 supports-[backdrop-filter]:bg-surface-1/85 " +
+          "relative mx-auto w-full max-w-[780px] rounded-2xl border bg-surface-2 shadow-sm transition-colors duration-150 " +
           (attachments.dragging
             ? "border-accent ring-2 ring-accent/30"
             : "border-line focus-within:border-line-strong")
         }
       >
-        <details className="border-b border-line px-2.5 py-1 text-xs text-ink-2">
-          <summary className="cursor-pointer break-all py-1 text-ink-1">提交位置 · {serviceLabel(ipc.agentBaseUrl)} / {project?.name ?? (projectId ? "项目加载中或未知" : "未指定项目")} / {sessionId ? session?.title ?? "会话加载中或未知" : "新会话"} / 目录配置：{session?.workspace_path || project?.root_path || "未指定或未知"}</summary>
-          <div className="flex flex-wrap gap-x-3 gap-y-1 pb-1" aria-label="任务提交位置">
-          <span>服务：{serviceLabel(ipc.agentBaseUrl)}</span>
-          <span>会话：{sessionId ? session?.title ?? "加载中或未知" : "发送时新建"}</span>
-          <span>{sessionId ? "会话所属项目" : "新会话项目"}：{project?.name ?? (projectId ? "加载中或未知" : "未指定")}</span>
-          {session?.workspace_path ? <span>会话工作区：{session.workspace_path}</span> :
-            <span>项目目录：{project?.root_path || "未指定或未知"}（实际执行目录以运行详情为准）</span>}
-          </div>
-        </details>
         {/* Drop zone overlay */}
         {attachments.dragging && (
           <div
@@ -269,46 +268,28 @@ export function MessageInput({
             <span className="text-xs font-medium text-accent">{strings.chat.input.dropFilesHere}</span>
           </div>
         )}
-        <details className="border-b border-line px-2.5 py-1 text-xs text-ink-2">
-          <summary className="cursor-pointer py-1 text-ink-1">任务模板与资料{restrictNetworkTools ? " · 已限制联网工具" : ""}</summary>
-        <TaskTemplates
-          disabled={disabled}
-          codex={codex}
-          onSelect={(text) => {
-            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
-            mention.closePicker();
-            draft.ref.current?.focus();
-          }}
-        />
-        {!codex && <ResearchTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
-          onPrepare={(text, restricted) => {
-            changeRestriction(restricted);
-            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
-            mention.closePicker();
-            draft.ref.current?.focus();
-          }} />}
-        {!codex && <DocumentTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
-          onPrepare={(text) => {
-            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
-            mention.closePicker();
-            draft.ref.current?.focus();
-          }} />}
-        {!codex && <SpreadsheetTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
-          onPrepare={(text) => {
-            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
-            mention.closePicker();
-            draft.ref.current?.focus();
-          }} />}
-        {(!codex || restrictNetworkTools) && <label className="block px-2.5 py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制此任务的联网工具（允许读取已保存来源、提问及按写入权限新建 Markdown/TXT 文件；禁用 shell、MCP 和其他工具）。模型服务可能联网；不提供系统网络隔离。{codex && "此限制不支持 Codex，请先关闭或选择 Native。"}</label>}
-        <ProjectAttachmentImport sessionId={sessionId} projectId={projectId} host={budgetHost} />
-        </details>
         <AttachmentRows
           attachedFiles={attachments.attachedFiles}
           attachedImages={attachments.attachedImages}
           onRemoveFile={attachments.removeFile}
           onRemoveImage={attachments.removeImage}
         />
-        <div className="flex items-end gap-1 px-2 py-2 sm:gap-2 sm:px-2.5">
+        <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-3">
+          <textarea
+            ref={draft.ref}
+            aria-label={strings.chat.input.messageLabel}
+            name="message"
+            autoComplete="off"
+            value={draft.value}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            placeholder={streaming ? "当前任务进行中；可在下方排队新任务" : "描述目标、相关资料和期望结果…"}
+            rows={2}
+            title="Enter 发送 · Shift + Enter 换行"
+            data-testid="message-input-textarea"
+            disabled={disabled}
+            className="min-h-[64px] w-full resize-none bg-transparent px-1 py-1 text-[15px] leading-6 text-ink-0 placeholder:text-ink-2 focus:outline-none"
+          />
           <IconButton
             aria-label={strings.chat.input.attachFile}
             data-testid="message-attach-btn"
@@ -345,21 +326,102 @@ export function MessageInput({
             data-testid="message-file-input"
             onChange={attachments.handleFileSelect}
           />
-          <textarea
-            ref={draft.ref}
-            aria-label={strings.chat.input.messageLabel}
-            name="message"
-            autoComplete="off"
-            value={draft.value}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            placeholder={streaming ? "当前任务进行中；可在下方排队新任务" : "描述目标、相关资料和期望结果…"}
-            rows={2}
-            title="Enter 发送 · Shift + Enter 换行"
-            data-testid="message-input-textarea"
+
+        <label className="flex items-center gap-1">
+          <select
+            aria-label="任务模式"
+            data-testid="execution-mode"
+            value={executionMode}
             disabled={disabled}
-            className="min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-ink-0 placeholder:text-ink-2 focus:outline-none"
-          />
+            onChange={(event) => setExecutionMode(event.target.value as "execute" | "plan")}
+            className="rounded border bg-transparent px-2 py-1"
+          >
+            <option value="execute">执行</option>
+            <option value="plan">只读规划</option>
+          </select>
+        </label>
+        <ComposerToolbar
+          valueLength={draft.value.length}
+          overLimit={draft.overLimit}
+          usagePct={draft.usagePct}
+          nearLimit={draft.nearLimit}
+          critical={draft.critical}
+          cancelling={cancelling}
+        />
+          <details ref={optionsRef} className="relative" open={!budgetValid ? true : undefined} onKeyDown={(event) => {
+            if (event.key === "Escape" && budgetValid) { event.stopPropagation(); event.currentTarget.open = false; event.currentTarget.querySelector<HTMLElement>("summary")?.focus(); }
+          }}>
+            <summary className="cursor-pointer list-none rounded-lg px-2 py-1.5 text-xs text-ink-1 hover:bg-surface-3" title="项目、目录、资料与任务高级选项">上下文与选项{restrictNetworkTools ? " · 已限制联网" : ""}{budgetText ? ` · ${budgetText} tokens` : ""}</summary>
+            <div className="fixed bottom-24 right-4 z-50 max-h-[min(60vh,32rem)] w-[min(28rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-line bg-surface-1 p-3 shadow-pop">
+              <ComposerSafetyControls />
+              {codex && <p className="mt-2 text-[11px] text-ink-2">文本文件内容会插入草稿；移除文件标签不会删除文字。图片最多 5 张、总计 4 MiB，随请求持久保存在本地数据库及 Codex 线程中；模型是否支持图片由 Codex 决定。@ 和 # 按普通文本发送。</p>}
+        <div className="space-y-2 border-b border-line py-3 text-xs" aria-label="任务提交位置">
+          <p className="font-medium text-ink-0">任务上下文</p>
+          <dl className="grid grid-cols-[4rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-ink-2">
+            <dt>服务地址</dt><dd className="break-all text-ink-1">{serviceLabel(ipc.agentBaseUrl)}</dd>
+            <dt>项目</dt><dd className="break-all text-ink-1">{project?.name ?? (projectId ? "加载中或未知" : "未指定")}</dd>
+            <dt>会话</dt><dd className="break-all text-ink-1">{sessionId ? session?.title ?? "加载中或未知" : "发送时新建"}</dd>
+            <dt>引擎</dt><dd className="text-ink-1">{sessionId && !session ? "加载中或未知" : (sessionId ? session?.engine === "codex" : codex) ? "Codex" : "Native"}{!sessionId ? "（新会话）" : ""}</dd>
+            {sessionId && <><dt>模型</dt><dd className="break-all text-ink-1">{session?.engine === "codex" ? "由 Codex CLI 配置；实际模型以运行详情为准" : session?.model_id || "会话未记录；实际模型以运行详情为准"}</dd></>}
+            <dt>目录配置</dt><dd className="break-all text-ink-1">{session?.workspace_path || project?.root_path || "未指定或未知"}</dd>
+          </dl>
+          <p className="text-ink-2">实际执行主机和目录以任务运行详情为准。</p>
+        </div>
+        <details className="py-3 text-xs text-ink-2">
+          <summary className="cursor-pointer py-1 text-ink-1">任务模板与资料{restrictNetworkTools ? " · 已限制联网工具" : ""}</summary>
+        <TaskTemplates
+          disabled={disabled}
+          codex={codex}
+          onSelect={(text) => {
+            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
+            mention.closePicker();
+            draft.ref.current?.focus();
+          }}
+        />
+        {!codex && <ResearchTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
+          onPrepare={(text, restricted) => {
+            changeRestriction(restricted);
+            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
+            mention.closePicker();
+            draft.ref.current?.focus();
+          }} />}
+        {!codex && <DocumentTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
+          onPrepare={(text) => {
+            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
+            mention.closePicker();
+            draft.ref.current?.focus();
+          }} />}
+        {!codex && <SpreadsheetTaskTemplate project={projectId} session={sessionId} host={budgetHost} disabled={disabled}
+          onPrepare={(text) => {
+            draft.setValue((previous) => previous ? `${previous}\n\n${text}` : text);
+            mention.closePicker();
+            draft.ref.current?.focus();
+          }} />}
+        {(!codex || restrictNetworkTools) && <label className="block px-2.5 py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制此任务的联网工具（允许读取已保存来源、提问及按写入权限新建 Markdown/TXT 文件；禁用 shell、MCP 和其他工具）。模型服务可能联网；不提供系统网络隔离。{codex && "此限制不支持 Codex，请先关闭或选择 Native。"}</label>}
+        <ProjectAttachmentImport sessionId={sessionId} projectId={projectId} host={budgetHost} />
+        </details>
+        <div className="border-t border-line py-2 text-xs text-ink-2">
+        <details className="min-w-0" open={!budgetValid ? true : undefined}>
+          <summary className="cursor-pointer py-1 text-ink-1">高级选项{captureFileChanges ? " · 采集文件变化" : ""}{budgetText ? ` · 上限 ${budgetText} tokens` : ""}</summary>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={captureFileChanges} disabled={disabled}
+            onChange={(event) => setCaptureFileChanges(event.target.checked)} />
+          采集任务前后文件变化（受限于 Git 可见文件）
+        </label>
+        <label className="flex flex-wrap items-center gap-2 px-2 pb-1 text-xs text-ink-1">
+          下一任务 token 上限
+          <input aria-label="下一任务 token 上限" inputMode="numeric" pattern="[0-9]*" value={budgetText} maxLength={16}
+            onChange={(event) => setBudgetScope({ host: budgetHost, session: sessionId, value: event.target.value })}
+            placeholder="空白：服务默认" className="w-36 rounded border border-line bg-surface-0 px-2 py-1 text-ink-0" />
+          <span className="text-ink-2">空白沿用服务默认（当前值未知）；正整数用于接下来新任务及其子任务。</span>
+        </label>
+        {!budgetValid && <p role="alert" className="px-2 text-xs text-status-error">请输入安全范围内的正整数，或留空使用服务默认。</p>}
+        <p className="px-2 pb-1 text-[11px] text-ink-2">这是 token 数量，不是金额或 Coding Plan 费用上限。日限额另行生效；Native 在请求前估算，Codex 按已观察用量事后控制，均不能保证严格费用上限。切换会话或连接变化会清空此输入。</p>
+        </details>
+        </div>
+            </div>
+          </details>
+        <QueuedTaskInput sessionId={sessionId} budgetTokens={budgetNumber} budgetValid={budgetValid} />
           {streaming ? (
             <Button
               variant="danger"
@@ -408,7 +470,7 @@ export function MessageInput({
             </>
           )}
         </div>
-        {codex && <p className="px-2.5 text-[11px] text-ink-2">文本文件内容会插入草稿；移除文件标签不会删除文字。图片最多 5 张、总计 4 MiB，随请求持久保存在本地数据库及 Codex 线程中；模型是否支持图片由 Codex 决定。@ 和 # 按普通文本发送。</p>}
+        {codex && (attachments.attachedFiles.length > 0 || attachments.attachedImages.length > 0) && <p className="px-2.5 pb-2 text-[11px] text-ink-2">文本文件内容会插入草稿；移除文件标签不会删除文字。图片最多 5 张、总计 4 MiB，随请求持久保存在本地数据库及 Codex 线程中；模型是否支持图片由 Codex 决定。@ 和 # 按普通文本发送。</p>}
         {!codex && <MentionPickerDropdown
           picker={mention.picker}
           filtered={mention.filtered}
@@ -418,48 +480,7 @@ export function MessageInput({
         {streaming && <p role="status" className="mx-2 rounded bg-accent-subtle px-2 py-1.5 text-xs text-ink-1">
           {cancelling ? "正在请求停止，请稍候。" : "当前任务进行中。可停止任务，或在下方排队另一个新任务。"}
         </p>}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-2 py-1 text-xs text-ink-2">
-        <label className="flex items-center gap-2">
-          任务模式
-          <select
-            aria-label="任务模式"
-            data-testid="execution-mode"
-            value={executionMode}
-            disabled={disabled}
-            onChange={(event) => setExecutionMode(event.target.value as "execute" | "plan")}
-            className="rounded border bg-transparent px-2 py-1"
-          >
-            <option value="execute">执行</option>
-            <option value="plan">只读规划</option>
-          </select>
-        </label>
-        <details className="min-w-0 flex-1" open={!budgetValid ? true : undefined}>
-          <summary className="cursor-pointer py-1 text-ink-1">高级选项{captureFileChanges ? " · 采集文件变化" : ""}{budgetText ? ` · 上限 ${budgetText} tokens` : ""}</summary>
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={captureFileChanges} disabled={disabled}
-            onChange={(event) => setCaptureFileChanges(event.target.checked)} />
-          采集任务前后文件变化（受限于 Git 可见文件）
-        </label>
-        <label className="flex flex-wrap items-center gap-2 px-2 pb-1 text-xs text-ink-1">
-          下一任务 token 上限
-          <input aria-label="下一任务 token 上限" inputMode="numeric" pattern="[0-9]*" value={budgetText} maxLength={16}
-            onChange={(event) => setBudgetScope({ host: budgetHost, session: sessionId, value: event.target.value })}
-            placeholder="空白：服务默认" className="w-36 rounded border border-line bg-surface-0 px-2 py-1 text-ink-0" />
-          <span className="text-ink-2">空白沿用服务默认（当前值未知）；正整数用于接下来新任务及其子任务。</span>
-        </label>
-        {!budgetValid && <p role="alert" className="px-2 text-xs text-status-error">请输入安全范围内的正整数，或留空使用服务默认。</p>}
-        <p className="px-2 pb-1 text-[11px] text-ink-2">这是 token 数量，不是金额或 Coding Plan 费用上限。日限额另行生效；Native 在请求前估算，Codex 按已观察用量事后控制，均不能保证严格费用上限。切换会话或连接变化会清空此输入。</p>
-        </details>
-        </div>
-        <ComposerToolbar
-          valueLength={draft.value.length}
-          overLimit={draft.overLimit}
-          usagePct={draft.usagePct}
-          nearLimit={draft.nearLimit}
-          critical={draft.critical}
-          cancelling={cancelling}
-        />
-        <QueuedTaskInput sessionId={sessionId} budgetTokens={budgetNumber} budgetValid={budgetValid} />
+
 
       </div>
     </form>

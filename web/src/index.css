@@ -13,28 +13,28 @@
   color-scheme: dark;
 
   /* Surfaces — deep neutral with a cool undertone */
-  --surface-0: #090b0f;          /* app canvas */
-  --surface-1: #0e1117;          /* sidebar / topbar */
-  --surface-2: #141821;          /* cards, panels */
-  --surface-3: #1a1f2b;          /* hover / elevated */
+  --surface-0: #111215;          /* app canvas */
+  --surface-1: #18191d;          /* sidebar / topbar */
+  --surface-2: #202126;          /* cards, panels */
+  --surface-3: #2a2b31;          /* hover / elevated */
   --surface-overlay: rgb(9 11 15 / 0.72);
 
   /* Borders — low-contrast hairlines, stronger variant for emphasis */
-  --line: #1f2430;
-  --line-strong: #2c3342;
+  --line: #2a2a2c;
+  --line-strong: #41403f;
 
   /* Text */
-  --ink-0: #eef1f7;              /* primary */
-  --ink-1: #9aa4b8;              /* secondary */
-  --ink-2: #76839d;              /* tertiary / placeholders — AA 4.7:1 on surface-2 */
+  --ink-0: #eeedea;              /* primary */
+  --ink-1: #b1b0ad;              /* secondary */
+  --ink-2: #999894;              /* tertiary / placeholders */
 
-  /* Accent — indigo-violet, tuned for both themes */
-  --accent: #7c8cff;
-  --accent-hover: #95a3ff;
-  --accent-active: #6a79f0;
+  /* Accent — warm neutral, shared by both themes */
+  --accent: #c5a78f;
+  --accent-hover: #d6bca7;
+  --accent-active: #b69378;
   --accent-contrast: #0b0d14;    /* text on accent fill */
-  --accent-subtle: rgb(124 140 255 / 0.14);
-  --accent-ring: rgb(124 140 255 / 0.45);
+  --accent-subtle: rgb(197 167 143 / 0.15);
+  --accent-ring: rgb(197 167 143 / 0.55);
 
   /* Status semantics */
   --status-error: #f87171;
@@ -75,12 +75,12 @@
   --ink-1: #57606f;              /* AA 5.6:1 on #fff */
   --ink-2: #66707e;              /* AA 4.7:1 on surface-0 */
 
-  --accent: #5a32a3;             /* AA 6.4:1 on #fff */
-  --accent-hover: #6c44bd;
-  --accent-active: #4c2a8c;
+  --accent: #79533d;             /* warm brown */
+  --accent-hover: #8c624b;
+  --accent-active: #674732;
   --accent-contrast: #ffffff;
-  --accent-subtle: rgb(90 50 163 / 0.09);
-  --accent-ring: rgb(90 50 163 / 0.35);
+  --accent-subtle: rgb(121 83 61 / 0.09);
+  --accent-ring: rgb(121 83 61 / 0.45);
 
   --status-error: #b91c1c;       /* AA 6.5:1 on #fff */
   --status-warning: #b45309;

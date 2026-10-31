@@ -19,7 +19,6 @@ import { useChat, useSessionStore, useSubAgentStore } from "../../stores";
 import { SubAgentResultCard } from "../right-panel/SubAgentResultCard";
 import { useMessageWindow } from "../../lib/useMessageWindow";
 import { useSmartScroll } from "../../lib/useSmartScroll";
-import { EmptyState } from "../../ui";
 import { strings } from "../../ui/strings";
 import type { Message } from "../../types/ipc";
 import { ToolCallGroup, TOOL_GROUP_MIN } from "./ToolCallGroup";
@@ -161,19 +160,15 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
       {messages.length === 0 && finishedRuns.length === 0 && loadingMessages ? (
         <MessageListSkeleton />
       ) : messages.length === 0 && finishedRuns.length === 0 ? (
-        <div data-testid="empty-state" className="mx-auto mt-3 max-w-lg px-2 sm:mt-6 sm:px-4">
-          <EmptyState
-            icon={<Sparkles size={24} />}
-            title="从一个清楚的目标开始"
-            hint="描述目标、涉及的资料或目录，以及你希望得到的结果。选择示例会添加到输入框，可继续编辑。"
-            action={
-              <div className="mt-2 grid w-full grid-cols-1 gap-2 text-left">
-                <Suggestion text="请先了解当前项目，再提出实现目标的步骤；有不确定的地方先问我。" />
-                <Suggestion text="请阅读相关文件，解释现有实现，并指出需要我注意的限制。" />
-                <Suggestion text="请根据我提供的资料整理一份报告，标明来源和待确认的信息。" />
-              </div>
-            }
-          />
+        <div data-testid="empty-state" className="mx-auto flex min-h-full max-w-2xl flex-col justify-center px-2 pb-6 sm:px-4">
+          <div className="mb-5 flex h-10 w-10 items-center justify-center rounded-2xl bg-accent-subtle text-accent"><Sparkles size={19} /></div>
+          <h2 className="text-2xl font-semibold tracking-tight text-ink-0 sm:text-3xl">从一个想法开始</h2>
+          <p className="mt-2 max-w-lg text-sm leading-6 text-ink-2">描述你的目标、相关资料和期望结果。也可以从下面的示例开始。</p>
+          <div className="mt-6 grid gap-2 text-left sm:grid-cols-3">
+            <Suggestion label="规划任务" text="请先了解当前项目，再提出实现目标的步骤；有不确定的地方先问我。" />
+            <Suggestion label="理解代码" text="请阅读相关文件，解释现有实现，并指出需要我注意的限制。" />
+            <Suggestion label="整理资料" text="请根据我提供的资料整理一份报告，标明来源和待确认的信息。" />
+          </div>
         </div>
       ) : (
         <div
@@ -337,11 +332,11 @@ function estimateRowSize(row: MessageListRow | undefined): number {
   return Math.min(260, 92 + textLength / 5);
 }
 
-function Suggestion({ text }: { text: string }): JSX.Element {
+function Suggestion({ label, text }: { label: string; text: string }): JSX.Element {
   return (
     <button
       type="button"
-      className="rounded-md border border-line bg-surface-2 px-3 py-2 text-left text-ink-0 hover:border-accent/40"
+      className="group min-h-20 rounded-xl border border-line bg-surface-1 px-3 py-3 text-left transition-colors hover:border-accent/40 hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
       onClick={() => {
         // The composer reads its value from local state, so we just
         // fire a custom event the MessageInput listens for. This keeps
@@ -349,7 +344,8 @@ function Suggestion({ text }: { text: string }): JSX.Element {
         window.dispatchEvent(new CustomEvent("minimax:suggestion", { detail: text }));
       }}
     >
-      {text}
+      <span className="block text-xs font-medium text-ink-0">{label}</span>
+      <span className="mt-1 block line-clamp-2 text-xs leading-5 text-ink-2">{text}</span>
     </button>
   );
 }

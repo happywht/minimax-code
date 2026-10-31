@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ send: vi.fn(), engine: "native", status: "idle", sessionId: "s1" }));
@@ -13,7 +13,7 @@ vi.mock("./useAttachments", () => ({ useAttachments: () => ({
 vi.mock("./useVoiceInput", () => ({ useVoiceInput: () => ({ listening: false, toggleVoice: vi.fn() }) }));
 vi.mock("./useMentionPicker", () => ({ useMentionPicker: () => ({ picker: null, filtered: [], agentsError: null, updateForInput: vi.fn(), handleKeyDown: vi.fn(), closePicker: vi.fn(), select: vi.fn() }) }));
 vi.mock("./useMentionContext", () => ({ useMentionContext: () => ({ loading: false, buildContext: vi.fn() }) }));
-vi.mock("./ComposerToolbar", () => ({ ComposerToolbar: () => null }));
+vi.mock("./ComposerToolbar", () => ({ ComposerToolbar: () => null, ComposerSafetyControls: () => null }));
 vi.mock("./MentionPickerDropdown", () => ({ MentionPickerDropdown: () => null }));
 import { MessageInput } from "./MessageInput";
 
@@ -22,6 +22,7 @@ describe("task templates in the composer", () => {
 
   it("adds an editable template without sending or replacing the existing draft", () => {
     render(<MessageInput />);
+    fireEvent.click(screen.getByText("上下文与选项"));
     fireEvent.click(screen.getByText("任务模板与资料"));
     const input = screen.getByTestId("message-input-textarea") as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "已有目标：研究水务" } });
@@ -37,6 +38,7 @@ describe("task templates in the composer", () => {
   it("disables template insertion while a run is active", () => {
     state.status = "streaming";
     render(<MessageInput />);
+    fireEvent.click(screen.getByText("上下文与选项"));
     fireEvent.click(screen.getByText("任务模板与资料"));
     expect(screen.getByRole("button", { name: "专题研究" })).toBeDisabled();
     expect(state.send).not.toHaveBeenCalled();
@@ -45,6 +47,7 @@ describe("task templates in the composer", () => {
   it("offers office templates and preserves the current engine", () => {
     state.engine = "codex";
     render(<MessageInput />);
+    fireEvent.click(screen.getByText("上下文与选项"));
     fireEvent.click(screen.getByText("任务模板与资料"));
     expect(screen.getByText("当前引擎的附件和办公工具能力可能不同")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "资料成稿" }));
@@ -56,4 +59,17 @@ describe("task templates in the composer", () => {
     expect(state.send).not.toHaveBeenCalled();
     expect(state.engine).toBe("codex");
   });
+});
+
+
+it("shows one clear scope summary for the selected session", () => {
+  state.engine = "native";
+  render(<MessageInput />);
+  fireEvent.click(screen.getByText("上下文与选项"));
+  const scope = within(screen.getByLabelText("任务提交位置"));
+  expect(scope.getByText("服务地址")).toBeVisible();
+  expect(scope.getByText("项目", { selector: "dt" })).toBeVisible();
+  expect(scope.getByText("会话")).toBeVisible();
+  expect(scope.getByText("目录配置")).toBeVisible();
+  expect(scope.getByText("Native")).toBeVisible();
 });

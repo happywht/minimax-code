@@ -40,7 +40,7 @@ export function TopBar({
   return (
     <header
       data-testid={testId}
-      className="flex h-11 w-full shrink-0 items-center justify-between gap-1 border-b border-line bg-surface-1 px-2 sm:gap-2 md:px-3"
+      className="flex h-12 w-full shrink-0 items-center justify-between gap-1 border-b border-line/60 bg-surface-1 px-2 sm:gap-2 md:px-4"
     >
       <div
         data-testid="app-topbar-left"
