@@ -129,6 +129,29 @@ def _scan(root: Path, *, restricted=False) -> dict[str, str]:
     return result
 
 
+def _scan_git_files(root: Path, names: list[str]) -> dict[str, str]:
+    """Capture the selected Git paths before copying, including deletions."""
+    result: dict[str, str] = {}
+    total = 0
+    for relative in names:
+        if not _included(relative):
+            continue
+        path = _path(root, relative)
+        digest = _digest(path)
+        if digest is None:
+            continue
+        total += path.stat().st_size
+        if len(result) >= MAX_FILES or total > MAX_BYTES:
+            raise ValueError("Child workspace snapshot exceeds its file/byte limit")
+        result[relative] = digest
+    return result
+
+
+def _file_modes(root: Path, snapshot: dict[str, str]) -> dict[str, int]:
+    return {relative: stat.S_IMODE(_path(root, relative).stat().st_mode)
+            for relative in snapshot}
+
+
 def _validate_restricted_mounts(root: Path) -> None:
     from ..app import get_execution_profiles
     from ..process_workspace import validate_process_workspace
@@ -286,6 +309,8 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
             names = (await _git(parent, "ls-files", "-z", "--cached", "--others",
                                 "--exclude-standard")).split("\0")
             relative_files = sorted(set(p for p in names if p))
+            source_snapshot = _scan_git_files(parent, relative_files)
+            source_modes = _file_modes(parent, source_snapshot)
             await _git(parent, "worktree", "add", "--detach", "--no-checkout", str(child.root), revision)
             await _git(child.root, "read-tree", revision)
             child.record.update(kind="git_worktree", revision=revision)
@@ -294,6 +319,7 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
             if not restricted:
                 source_snapshot = _scan(parent)
             relative_files = sorted(source_snapshot)
+            source_modes = _file_modes(parent, source_snapshot)
         if restricted:
             _validate_restricted_mounts(parent)
             _validate_restricted_mounts(child.root)
@@ -336,17 +362,14 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
             current_files = sorted(set(p for p in current_names if p))
             if current_revision != revision or current_files != relative_files:
                 raise ValueError("Source workspace changed during preparation")
-            current_snapshot = {}
-            for relative in current_files:
-                if _included(relative):
-                    digest = _digest(_path(parent, relative))
-                    if digest is not None:
-                        current_snapshot[relative] = digest
+            current_snapshot = _scan_git_files(parent, current_files)
         else:
             current_snapshot = _scan(parent, restricted=restricted)
-            if current_snapshot != source_snapshot:
-                raise ValueError("Source workspace changed during preparation")
-        if current_snapshot != baseline or _scan(child.root, restricted=restricted) != baseline:
+        if (current_snapshot != source_snapshot or current_snapshot != baseline
+                or _scan(child.root, restricted=restricted) != baseline
+                or _file_modes(parent, current_snapshot) != source_modes
+                or _file_modes(child.root, baseline) != source_modes
+                or source_identity != (parent.stat().st_dev, parent.stat().st_ino)):
             raise ValueError("Source workspace changed during preparation")
         child.record["state"] = "running"
         child.save()
