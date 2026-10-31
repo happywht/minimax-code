@@ -331,7 +331,27 @@ class CheckpointManager:
                 # Do not create parent directories: recheck the full existing path before publish.
                 if _checkpoint_file(root, relative) != target or not target.parent.is_dir():
                     raise ValueError("Destination parent is unavailable")
-                await asyncio.to_thread(atomic_create_bytes, target, data)
+                # Cancelling to_thread does not stop its worker. Keep this
+                # restore (and its caller's workspace reservation) alive until
+                # publication has actually finished, even on repeated cancel.
+                publication = asyncio.create_task(
+                    asyncio.to_thread(atomic_create_bytes, target, data)
+                )
+                try:
+                    await asyncio.shield(publication)
+                except asyncio.CancelledError:
+                    while not publication.done():
+                        try:
+                            await asyncio.shield(publication)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
+                    try:
+                        publication.result()
+                    except Exception:
+                        logger.exception("Checkpoint publication failed during cancellation")
+                    raise
                 restored.append(relative)
         except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
             warnings.append(f"restore {relative}: {exc}")
