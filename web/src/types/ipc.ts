@@ -522,6 +522,7 @@ export interface ScheduleContext {
   budget_tokens: number;
   timezone: string;
   restart_missed_policy?: "coalesce" | "skip";
+  notification_policy?: "all" | "attention";
   validate_command?: string;
   permission_rules?: { tool_pattern: string; action: string }[];
 }

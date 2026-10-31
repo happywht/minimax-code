@@ -127,7 +127,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
     const context: ScheduleContext = { project_id: draftContext.project_id, provider_id: draftContext.provider_id,
       model: draftContext.model, reasoning_effort: draftContext.reasoning_effort, mode: draftContext.mode,
       budget_tokens: draftContext.budget_tokens, timezone: draftContext.timezone,
-      restart_missed_policy: draftContext.restart_missed_policy };
+      restart_missed_policy: draftContext.restart_missed_policy, notification_policy: draftContext.notification_policy };
     const intent: CreateIntent = { name: draftName.trim(), cron: draftCron.trim(), prompt: draftPrompt.trim(), context,
       enabled: draftEnabled, expected_service_id: serviceId, idempotency_key: crypto.randomUUID() };
     try { sessionStorage.setItem(createStorageKey(createScope), JSON.stringify(intent)); }
@@ -145,7 +145,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
     setDraftName(`${job.name}（副本）`); setDraftCron(job.cron); setDraftPrompt(job.prompt);
     setDraftContext(source ? { project_id: source.project_id, provider_id: source.provider_id, model: source.model,
       reasoning_effort: source.reasoning_effort, mode: source.mode, budget_tokens: source.budget_tokens,
-      timezone: source.timezone, restart_missed_policy: source.restart_missed_policy } : emptyScheduleContext());
+      timezone: source.timezone, restart_missed_policy: source.restart_missed_policy, notification_policy: source.notification_policy } : emptyScheduleContext());
     setDraftEnabled(false); onDraftEdit?.();
     document.getElementById("scheduled-job-name")?.focus();
   };
@@ -181,7 +181,7 @@ function ScheduledTab({onOpenSession, onDraftEdit, active = true, serviceId, dra
       setDraftPrompt(`请先核对下列历史运行结果和可能的副作用，再根据需要执行后续工作。\n来源：计划 ${job.id}，发生 ${occurrence.id}，运行 ${runId}，状态 ${status}。\n结果摘录${excerpt.length < originalText.length ? "（仅前 2000 字符）" : ""}：\n${excerpt}`);
       setDraftContext({ project_id: source.project_id, provider_id: source.provider_id, model: source.model,
         reasoning_effort: source.reasoning_effort, mode: source.mode, budget_tokens: source.budget_tokens,
-        timezone: source.timezone, restart_missed_policy: source.restart_missed_policy });
+        timezone: source.timezone, restart_missed_policy: source.restart_missed_policy, notification_policy: source.notification_policy });
       setDraftEnabled(false); onDraftEdit?.(); document.getElementById("scheduled-job-name")?.focus();
       toast.success("已准备后续计划草稿", "请编辑并核对项目、配置、预算和权限；尚未创建或运行计划。");
     } catch (failure) { if (current()) toast.error("无法准备后续草稿", failure instanceof Error ? failure.message : String(failure)); }

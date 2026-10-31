@@ -472,6 +472,7 @@ class ScheduleContext(_Base):
     validate_command: str = ""
     timezone: str = "Asia/Shanghai"
     restart_missed_policy: Literal["coalesce", "skip"] = "coalesce"
+    notification_policy: Literal["all", "attention"] = "all"
 
 
 class ScheduleRunNowParams(BaseModel):

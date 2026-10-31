@@ -246,7 +246,13 @@ class ScheduleOccurrencesDAO:
             # the actual occurrence outcome. Stable ids prevent reconciliation
             # from creating duplicate notifications for the same terminal state.
             entry = None
-            if status not in {"pending", "running"}:
+            try:
+                context = loads_json(row["context"])
+            except (TypeError, ValueError):
+                context = None
+            quiet_completion = (status == "completed" and isinstance(context, dict)
+                                and context.get("notification_policy") == "attention")
+            if status not in {"pending", "running"} and not quiet_completion:
                 notification_id = "ntf_sched_" + hashlib.sha256(
                     f"{occurrence_id}:{status}".encode()
                 ).hexdigest()[:32]

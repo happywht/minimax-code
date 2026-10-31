@@ -131,8 +131,48 @@ async def test_occurrence_settlement_notifies_after_durable_update(scheduled):
     await task
     occurrence = await scheduled.scheduler._occurrences.get(ack["occurrence_id"])
     assert occurrence["status"] == "completed"
+    assert await scheduled.db.fetchone("SELECT id FROM notifications WHERE source_id LIKE ?", (f'%{occurrence["id"]}%',))
     assert any(event.get("event") == "schedule.updated" and
                event.get("data", {}).get("occurrence_id") == occurrence["id"] for event in events)
+
+
+async def test_attention_notification_policy_uses_occurrence_snapshot(scheduled):
+    import json
+
+    scheduled.options["notification_policy"] = "attention"
+    job = await create(scheduled)
+    assert job["context"]["notification_policy"] == "attention"
+    ack = await scheduled.scheduler.run_now(job["id"], idempotency_key="quiet", expected_revision=1)
+    task = scheduled.scheduler._occurrence_tasks[ack["occurrence_id"]]
+    # A later plan edit must not change the already claimed occurrence.
+    changed = {**job["context"], "notification_policy": "all"}
+    await scheduled.db.execute("UPDATE scheduled_jobs SET context=? WHERE id=?", (json.dumps(changed), job["id"]))
+    scheduled.release.set()
+    await task
+    occurrence = await scheduled.scheduler._occurrences.get(ack["occurrence_id"])
+    assert occurrence["status"] == "completed"
+    assert occurrence["context"]["notification_policy"] == "attention"
+    assert await scheduled.db.fetchone("SELECT id FROM notifications WHERE source_id LIKE ?", (f'%{occurrence["id"]}%',)) is None
+    assert (await scheduled.scheduler._tasks.get(occurrence["task_id"]))["status"] == "completed"
+
+
+async def test_attention_policy_still_notifies_budget_pause(scheduled):
+    scheduled.options["notification_policy"] = "attention"
+    scheduled.result_flags = {"budget_exhausted": True}
+    job = await create(scheduled)
+    ack = await scheduled.scheduler.run_now(job["id"], idempotency_key="budget-alert", expected_revision=1)
+    task = scheduled.scheduler._occurrence_tasks[ack["occurrence_id"]]
+    scheduled.release.set()
+    await task
+    occurrence = await scheduled.scheduler._occurrences.get(ack["occurrence_id"])
+    assert occurrence["status"] == "budget_paused"
+    assert await scheduled.db.fetchone("SELECT id FROM notifications WHERE source_id LIKE ?", (f'%{occurrence["id"]}%',))
+    assert not (await scheduled.scheduler._dao.get(job["id"]))["enabled"]
+
+
+async def test_schedule_rejects_unknown_notification_policy(scheduled):
+    with pytest.raises(ValueError, match="notification policy"):
+        await capture_context(scheduled.db, {**scheduled.options, "notification_policy": "silent"})
 
 
 async def test_manual_concurrency_replay_lease_and_fresh_conversations(scheduled):

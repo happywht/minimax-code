@@ -28,7 +28,7 @@ _CONTEXT_FIELDS = frozenset({
     "provider_id", "protocol", "provider_fingerprint", "model", "reasoning_effort",
     "context_window", "mode", "budget_tokens", "validate_command",
     "permission_policy_version", "permission_rules", "hooks_policy", "timezone",
-    "restart_missed_policy",
+    "restart_missed_policy", "notification_policy",
 })
 
 
@@ -84,6 +84,9 @@ async def capture_context(db, options: dict) -> dict:
     restart_policy = options.get("restart_missed_policy", "coalesce")
     if not isinstance(restart_policy, str) or restart_policy not in {"coalesce", "skip"}:
         raise ValueError("Unsupported restart missed-run policy")
+    notification_policy = options.get("notification_policy", "all")
+    if not isinstance(notification_policy, str) or notification_policy not in {"all", "attention"}:
+        raise ValueError("Unsupported schedule notification policy")
     if bool(options.get("provider_id")) != bool(options.get("model")):
         raise ValueError("Provider and model must be selected together")
     if options.get("provider_id") and options.get("model"):
@@ -121,6 +124,7 @@ async def capture_context(db, options: dict) -> dict:
         "hooks_policy": "disabled",
         "timezone": timezone,
         "restart_missed_policy": restart_policy,
+        "notification_policy": notification_policy,
     }
 
 
