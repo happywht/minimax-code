@@ -39,7 +39,9 @@ class EditFileTool(Tool):
         "retains its original line endings. Supply the SHA-256 from a "
         "fresh read_file after reviewing the relevant context. For multiple "
         "changes to one file, pass edits instead of old_string/new_string: "
-        "they are applied in order and written only if every edit matches."
+        "they are applied in order and written only if every edit matches. "
+        "Set preview=true to inspect the proposed diff without writing; "
+        "apply later with the same arguments and baseline hash."
     )
     parameters = {
         "type": "object",
@@ -77,6 +79,11 @@ class EditFileTool(Tool):
                     "current hash — re-read the file, then reapply your edit."
                 ),
             },
+            "preview": {
+                "type": "boolean",
+                "default": False,
+                "description": "Compute the proposed diff without writing or creating a backup. A later edit rechecks expected_sha256.",
+            },
         },
         "required": ["path", "expected_sha256"],
         "additionalProperties": False,
@@ -86,6 +93,9 @@ class EditFileTool(Tool):
         path = kwargs.get("path")
         if not isinstance(path, str) or not path:
             return ToolResult.fail("'path' must be a non-empty string")
+        preview = kwargs.get("preview", False)
+        if not isinstance(preview, bool):
+            return ToolResult.fail("'preview' must be a boolean")
         edits = kwargs.get("edits")
         if edits is not None:
             if any(key in kwargs for key in ("old_string", "new_string", "replace_all")):
@@ -124,7 +134,7 @@ class EditFileTool(Tool):
         # in-flight run as an advisory warning. Never blocks.
         run_id = current_run_id()
         concurrent_writer = in_flight_writer(target, exclude=run_id)
-        if run_id:
+        if run_id and not preview:
             claim_write(target, run_id)
 
         # v1.5.0 sandbox: edit_file's internal read routes through the
@@ -136,7 +146,7 @@ class EditFileTool(Tool):
         # both collapse onto ``target``.
         try:
             read_target = overlay_read_target(target)
-            write_target = redirect_write_target(target)
+            write_target = target if preview else redirect_write_target(target)
         except OSError as exc:
             return ToolResult.fail(str(exc))
 
@@ -212,6 +222,27 @@ class EditFileTool(Tool):
             updated = "".join(pieces)
             replacements += len(chosen)
 
+        changed_lines, removed, added = _line_delta(original, updated)
+        diff = "".join(
+            difflib.unified_diff(
+                original.splitlines(keepends=True),
+                updated.splitlines(keepends=True),
+                fromfile=str(target),
+                tofile=str(target),
+                n=2,
+            )
+        )
+        if preview:
+            return ToolResult.ok(output={
+                "path": str(target), "preview": True, "replacements": replacements,
+                "edits_matched": len(edits), "changed_lines": changed_lines,
+                "lines_removed": removed, "lines_added": added, "diff": diff,
+                "previous_sha256": previous_sha,
+                "proposed_sha256": hashlib.sha256(updated.encode("utf-8")).hexdigest(),
+                "warning": "Preview only; no file was written. Reapply with the same expected_sha256 to check the baseline again.",
+                **({"concurrent_writer": concurrent_writer} if concurrent_writer else {}),
+            }, preview=True, replacements=replacements, lines_removed=removed, lines_added=added)
+
         try:
             from ..backup import BackupManager
 
@@ -228,17 +259,6 @@ class EditFileTool(Tool):
 
         # Hash the bytes that actually landed.
         new_sha = file_sha256(write_target)
-
-        changed_lines, removed, added = _line_delta(original, updated)
-        diff = "".join(
-            difflib.unified_diff(
-                original.splitlines(keepends=True),
-                updated.splitlines(keepends=True),
-                fromfile=str(target),
-                tofile=str(target),
-                n=2,
-            )
-        )
 
         # R16 — mirror the successful edit onto the causal file-change bus.
         # Fail-open: a bus failure must never break the tool that just edited.
@@ -315,24 +335,21 @@ def _nearby_newline(text: str, start: int, end: int) -> str:
 
 
 def _line_delta(old: str, new: str) -> tuple[list[int], int, int]:
-    """Return the indices of lines that changed plus add/remove counts.
-
-    Cheap heuristic: compute the set of line hashes on each side
-    and return the indices (1-indexed) that differ. We do not try
-    to detect *moved* blocks.
-    """
+    """Return changed line indices and counts from the line-level diff."""
     old_lines = old.splitlines()
     new_lines = new.splitlines()
-    old_set = set(enumerate(old_lines))
-    new_set = set(enumerate(new_lines))
     changed: set[int] = set()
-    for i, line in enumerate(old_lines):
-        if (i, line) not in new_set:
-            changed.add(i + 1)
-    for i, line in enumerate(new_lines):
-        if (i, line) not in old_set:
-            changed.add(i + 1)
-    return sorted(changed), len(old_lines) - len(new_lines), len(new_lines) - len(old_lines)
+    removed = added = 0
+    for tag, old_start, old_end, new_start, new_end in difflib.SequenceMatcher(
+        None, old_lines, new_lines
+    ).get_opcodes():
+        if tag == "equal":
+            continue
+        changed.update(range(old_start + 1, old_end + 1))
+        changed.update(range(new_start + 1, new_end + 1))
+        removed += old_end - old_start
+        added += new_end - new_start
+    return sorted(changed), removed, added
 
 
 def _closest_hint(text: str, target: str, max_lines: int = 2) -> str:
