@@ -584,6 +584,8 @@ function mockHandle(
     case "attachment.list_xlsx_sheets":
     case "attachment.extract_xlsx":
       throw new Error("演示模式不支持读取 XLSX，请连接真实后端。");
+    case "attachment.preview_csv":
+      throw new Error("演示模式不支持 CSV 表格预览，请连接真实后端。");
     case "attachment.generate_report_pair":
     case "attachment.generate_pdf":
     case "attachment.generate_docx":

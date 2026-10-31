@@ -71,6 +71,8 @@ export type AttachmentGenerateDocxParams = {
   project_id: string; expected_service_id: string; filename: string; title: string;
 } & DocxContent;
 export interface AttachmentGetResult { attachment: AttachmentOriginal; preview_text: string }
+export type CsvDelimiter = "comma" | "semicolon" | "tab";
+export interface AttachmentCsvPreview { project_id: string; session_id: string; service_id: string; attachment_id: string; sha256: string; delimiter: CsvDelimiter; headers: string[]; rows: string[][]; total_rows: number; truncated: boolean }
 export type ReportFormat = "docx" | "pdf";
 export type AttachmentReportPairParams = AttachmentGenerateDocxParams & { formats?: ReportFormat[] };
 export type ReportPairItem = { format: ReportFormat; status: "saved"; attachment: AttachmentOriginal; preview_text: string }

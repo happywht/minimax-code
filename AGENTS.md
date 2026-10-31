@@ -20,7 +20,7 @@ Browser (Vite SPA, localhost:5173)
   |  WebSocket /ws  (server-push streaming events)
   v
 Python Agent (FastAPI + asyncio, 127.0.0.1:8765)
-  |- IPCServer (243 methods: 40 dotted namespaces + 3 standalone methods)
+  |- IPCServer (254 methods: 40 dotted namespaces + 3 standalone methods)
   |- AgentCore (conversation loop + LLM streaming)
   |- ToolRegistry (built-in tools + skill/MCP bridges)
   |- SkillRuntime (SKILL.md loader + registry)
@@ -169,15 +169,15 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 
 ### IPC 命名空间
 
-共 **243 个注册方法、40 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
+共 **254 个注册方法、40 个带点号命名空间，另有 3 个无点号方法**。方法级完整清单见 `docs/ipc-contract.md` Appendix A，由 `agent/tests/test_ipc_contract_doc.py` 双向守护（新 handler 无文档锚点即测试红）。下表数量同样由测试核对。
 
 | 前缀 | 方法数 | 用途 | Handler 文件 |
 |------|--------|------|-------------|
 | `agent.*` | 12 | 消息发送、子 agent 管理 | `builtins.py`, `handlers_agents.py` |
 | `audit.*` | 3 | 审计日志查询 | `handlers_audit.py` |
 | `artifact.*` | 4 | 项目文本成果登记、列表与预览 | `handlers_artifacts.py` |
-| `attachment.*` | 10 | 项目附件原件列表与有界预览；字节走认证 HTTP | `handlers_attachments.py` |
-| `budget.*` | 2 | 共享预算账本与责任核定 | `handlers_budget.py` |
+| `attachment.*` | 11 | 项目附件原件列表与有界预览；字节走认证 HTTP | `handlers_attachments.py` |
+| `budget.*` | 4 | 共享预算账本与责任核定 | `handlers_budget.py` |
 | `checkpoint.*` | 6 | 上下文检查点 | `handlers_checkpoint.py` |
 | `codebase.*` | 5 | 代码库索引、检索与当前源码读取 | `handlers_codebase.py` |
 | `crash.*` | 3 | 崩溃恢复会话 | `handlers_crash.py` |
@@ -199,9 +199,9 @@ Python 测试隔离策略：默认使用空 keyring、临时数据目录，并�
 | `plugins.*` | 5 | 插件启用/禁用 | `handlers_plugins.py` |
 | `project.*` | 6 | 项目 CRUD | `handlers_projects.py` |
 | `provider.*` | 7 | 多 Provider 接入 | `handlers_providers.py` |
-| `run.*` | 17 | 持久接单、幂等、取消、恢复及事件 | `handlers_runs.py` |
+| `run.*` | 21 | 持久接单、幂等、取消、恢复及事件 | `handlers_runs.py` |
 | `runner.*` | 2 | Runner 状态 | `handlers_runner.py` |
-| `runtime.*` | 4 | 运行时信息 | `handlers_runtime.py` |
+| `runtime.*` | 5 | 运行时信息 | `handlers_runtime.py` |
 | `schedule.*` | 10 | 定时任务 CRUD、启停及到期时间预览 | `handlers_scheduled.py` |
 | `secrets.*` | 3 | API 密钥管理 | `handlers_secrets.py` |
 | `session.*` | 12 | 会话 CRUD/归档/批量 | `handlers_sessions.py` |

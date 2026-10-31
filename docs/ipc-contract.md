@@ -1909,12 +1909,14 @@ document the migration in this file.
 | `attachment.ocr_pdf_page` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language, page}` | 手动渲染并 OCR 指定 PDF 物理页，返回临时未核验文本及页号 |
 | `attachment.ocr_image` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, language}` | 手动执行本地 PNG/JPEG OCR，返回临时未核验文本 |
 | `attachment.read_document` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, unit, offset}` | 读取匹配原件的 PDF 物理页、DOCX 正文段落或 UTF-8 TXT/CSV 有界文本片段，返回来源、位置与下一游标 |
+| `attachment.preview_csv` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, delimiter?}` | 以指定分隔符只读解析 CSV，返回身份、分隔符、表头、预览行、总行数与截断状态 |
 | `attachment.extract_xlsx` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256, sheet_name, use_formula_cache?}` | 复核会话、服务与附件后返回受控完整工作表行及日期、百分比、货币列；显式缓存模式额外返回 `formula_cells` 坐标，不计算公式 |
 | `attachment.list_xlsx_sheets` | `{project_id, session_id, expected_service_id, attachment_id, expected_sha256}` | 复核会话、服务与原件后返回最多 32 个工作表的名称及可见状态，不读取行或计算公式 |
 | `attachment.list` | `{project_id, cursor?, query?}` | `{attachments, service_id, next_cursor}`，每页最多 200 条元数据，不含预览。可选 query（1–240 字符）按名称区分大小写作字面子串匹配，不读取或搜索原件；搜索游标绑定项目、服务和 query，继续时必须使用相同参数。无 query 保持原游标行为 |
 | `attachment.get` | `{project_id, attachment_id}` | `{attachment, preview_text}`，核对原件后返回有界纯文本 |
 
 严格拒绝额外字段；project_id 为非空、最长 128 字符，attachment_id 为 `att_` 加 32 位小写十六进制。
+`attachment.preview_csv` 的 delimiter 为 `comma`（默认）、`semicolon` 或 `tab`，不自动检测。完整校验最多 1 MiB、1000 数据行、100 列、5000 格和每格 4096 字符；返回最多 100 行及 64 KiB 单元格文本。使用引号规则，拒绝无效 UTF-8、NUL、畸形行或超限，不执行公式；返回前复核会话、项目和服务，不改变原件或存储的预览状态。
 项目须存在，不要求 root_path。服务身份复用 artifact_service，项目删除后历史行/字节保留，但 API 不再可访问。
 attachment 字段：id、project_id、service_id、snapshot_id、original_name（1–240 个无控制显示字符）、
 declared_type、recognized_type、size_bytes（0–10485760）、sha256、version、parser_status、parser_version:1|2、parser_scope、parser_reason、

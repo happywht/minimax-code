@@ -11,6 +11,7 @@ import { DocumentCitationDraft } from "./DocumentCitationDraft";
 import { AttachmentVersions } from "./AttachmentVersions";
 import { PdfOriginalPreview } from "./PdfOriginalPreview";
 import { XlsxTablePreview } from "./XlsxTablePreview";
+import { AttachmentCsvPreview } from "./AttachmentCsvPreview";
 import { SearchableTextPreview } from "./SearchableTextPreview";
 import { ReportSectionsEditor, readEditableSections } from "./ReportSectionsEditor";
 import { ReportResearchPicker } from "./ReportResearchPicker";
@@ -345,6 +346,8 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         <ReportTextExcerpt key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} truncated={state.selected.preview_truncated || state.selected.parser_status === "truncated"} onInsert={insertAttachmentExcerpt} />}
       <PdfOriginalPreview attachment={state.selected} />
       <XlsxTablePreview key={`${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} preview={state.preview} />
+      {state.selected.declared_type === "csv" && state.selected.recognized_type === "utf8_text" &&
+        <AttachmentCsvPreview key={`csv:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />}
       {["parsed", "empty", "truncated"].includes(state.selected.parser_status)
         ? <SearchableTextPreview key={`${state.selected.id}:${state.selected.sha256}`} text={state.preview} label="附件纯文本预览" className="whitespace-pre-wrap break-words rounded border border-line bg-surface-1 p-3" />
         : <p role="status">当前状态不提供文本预览；可下载保存的原件。</p>}

@@ -145,6 +145,7 @@ export interface TypedIPC {
   readAttachmentDocument(params: import("../types/ipc").AttachmentDocumentParams): Promise<import("../types/ipc").AttachmentDocumentResult>;
   listAttachments(projectId: string, cursor?: string, query?: string): Promise<import("../types/ipc").AttachmentListResult>;
   getAttachment(projectId: string, attachmentId: string): Promise<import("../types/ipc").AttachmentGetResult>;
+  previewAttachmentCsv(params: { project_id: string; session_id: string; expected_service_id: string; attachment_id: string; expected_sha256: string; delimiter: import("../types/ipc").CsvDelimiter }): Promise<import("../types/ipc").AttachmentCsvPreview>;
   generateOfficeXlsx(params: import("../types/ipc").OfficeGenerateParams): Promise<import("../types/ipc").OfficeGetResult>;
   generateOfficeAnalysis(params: import("../types/ipc").OfficeAnalysisParams): Promise<import("../types/ipc").OfficeAnalysisResult>;
   listOfficeDeliveries(projectId: string, cursor?: string, query?: string): Promise<import("../types/ipc").OfficeListResult>;
@@ -691,6 +692,7 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     listAttachments: (projectId, cursor, query) => client.request("attachment.list", { project_id: projectId, ...(cursor === undefined ? {} : { cursor }), ...(query === undefined ? {} : { query }) }),
     // Preview results retain versioned parser scope/reason independently of quality.
     getAttachment: (projectId, attachmentId) => client.request("attachment.get", { project_id: projectId, attachment_id: attachmentId }),
+    previewAttachmentCsv: (params) => client.request("attachment.preview_csv", params),
     generateOfficeXlsx: (params) => client.request("office.generate_xlsx", params),
     generateOfficeAnalysis: (params) => client.request("office.generate_analysis", params),
     listOfficeDeliveries: (projectId, cursor, query) => client.request("office.list", { project_id: projectId, ...(cursor ? { cursor } : {}), ...(query ? { query } : {}) }),

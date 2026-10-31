@@ -13,6 +13,7 @@ from .protocol import (
     AttachmentGeneratePairWithResearchParams,
     AttachmentGetParams,
     AttachmentExtractXlsxParams,
+    AttachmentPreviewCsvParams,
     AttachmentXlsxParams,
     AttachmentListParams,
     AttachmentReadDocumentParams,
@@ -116,6 +117,39 @@ def register_attachment_handlers(server):
 
     async def list_xlsx_sheets(params, ctx):
         await xlsx_operation(params, ctx, listing=True)
+
+    async def preview_csv(params, ctx):
+        try:
+            from ..csv_preview import preview_csv as parse_csv
+            from .host_session_gate import require_host_session
+            request = AttachmentPreviewCsvParams.model_validate(params)
+            service = await get_attachment_service()
+
+            async def check_scope():
+                await require_host_session(request.session_id)
+                session = await service.dao.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (request.session_id,))
+                if not session or session["project_id"] != request.project_id or await service.dao.service_id() != request.expected_service_id:
+                    raise ValueError("Session, project or service binding changed")
+
+            await check_scope()
+            meta = await service.dao.get(request.project_id, request.attachment_id)
+            if meta["declared_type"] != "csv" or meta["size_bytes"] > 1024 * 1024 or meta["sha256"] != request.expected_sha256:
+                raise ValueError("Select the same CSV attachment of at most 1 MiB")
+            original, data = await service.content(request.project_id, request.attachment_id)
+            if original["recognized_type"] != "utf8_text" or original["sha256"] != request.expected_sha256:
+                raise ValueError("CSV attachment identity changed")
+            result = parse_csv(data, request.delimiter)
+            await check_scope()
+            await ctx.reply({**result, "project_id": request.project_id, "session_id": request.session_id,
+                             "service_id": request.expected_service_id, "attachment_id": request.attachment_id,
+                             "sha256": request.expected_sha256})
+        except ValidationError:
+            await ctx.reply_error(INVALID_PARAMS, "Invalid CSV preview parameters")
+        except (ValueError, OSError) as exc:
+            await ctx.reply_error(-32000, str(exc))
+        except Exception:
+            logger.exception("attachment.preview_csv failed")
+            await ctx.reply_error(INTERNAL_ERROR, "CSV preview failed")
 
     async def read_document(params, ctx):
         try:
@@ -235,6 +269,7 @@ def register_attachment_handlers(server):
     server.register("attachment.ocr_pdf_page", ocr_pdf)
     server.register("attachment.ocr_image", ocr_image)
     server.register("attachment.read_document", read_document)
+    server.register("attachment.preview_csv", preview_csv)
     server.register("attachment.extract_xlsx", extract_xlsx)
     server.register("attachment.list_xlsx_sheets", list_xlsx_sheets)
     server.register("attachment.generate_report_pair", handler(AttachmentGeneratePairWithResearchParams, "generate_report_pair"))

@@ -51,6 +51,46 @@ async def upload(client, data, filename="original.txt", headers=None):
                              content=data, headers=headers)
 
 
+@pytest.mark.parametrize("dialect,separator", [("comma", ","), ("semicolon", ";"), ("tab", "\t")])
+async def test_csv_preview_explicit_format_is_bound_and_read_only(upload_client, monkeypatch, dialect, separator):
+    from minimax_code.ipc import host_session_gate
+    from minimax_code.storage.dao.sessions import SessionsDAO
+
+    client, service, db, _ = upload_client
+    await SessionsDAO(db).create(id="s", project_id="p")
+    async def allow_session(_session):
+        return None
+    monkeypatch.setattr(host_session_gate, "require_host_session", allow_session)
+    raw = f'id{separator}value\n"A{separator}B"{separator}=1+1\n'.encode()
+    row = (await upload(client, raw, "data.csv")).json()["attachment"]
+    params = {"project_id": "p", "session_id": "s", "expected_service_id": row["service_id"],
+              "attachment_id": row["id"], "expected_sha256": row["sha256"], "delimiter": dialect}
+    response = (await rpc(client, "attachment.preview_csv", params))["result"]
+    assert response["headers"] == ["id", "value"]
+    assert response["rows"] == [[f"A{separator}B", "=1+1"]]
+    assert response["delimiter"] == dialect and response["total_rows"] == 1 and not response["truncated"]
+    assert (await service.content("p", row["id"]))[1] == raw
+    assert (await service.dao.get("p", row["id"]))["parser_status"] == row["parser_status"]
+    assert "error" in await rpc(client, "attachment.preview_csv", {**params, "expected_sha256": "0" * 64})
+    assert "error" in await rpc(client, "attachment.preview_csv", {**params, "expected_service_id": "svc_" + "0" * 32})
+    assert "error" in await rpc(client, "attachment.preview_csv", {**params, "project_id": "other"})
+
+
+def test_csv_preview_limits_and_invalid_rows():
+    from minimax_code.csv_preview import preview_csv
+
+    result = preview_csv(("a\n" + "x\n" * 101).encode(), "comma")
+    assert len(result["rows"]) == 100 and result["total_rows"] == 101 and result["truncated"]
+    assert len(preview_csv(",".join(f"c{i}" for i in range(100)).encode(), "comma")["headers"]) == 100
+    with pytest.raises(ValueError, match="column"):
+        preview_csv(",".join(f"c{i}" for i in range(101)).encode(), "comma")
+    for raw in (b'a;b\n"unterminated;1', b"a;b\nx", b"a\n\0"):
+        with pytest.raises(ValueError):
+            preview_csv(raw, "semicolon")
+    with pytest.raises(ValueError, match="limit"):
+        preview_csv(("a\n" + "x\n" * 1001).encode(), "comma")
+
+
 @pytest.mark.parametrize("case", ["formula", "empty", "rejected"])
 async def test_xlsx_actual_upload_persisted_preview_and_identical_download(upload_client, case):
     pytest.importorskip("openpyxl")

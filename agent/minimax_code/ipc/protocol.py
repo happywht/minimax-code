@@ -229,6 +229,10 @@ class AttachmentExtractXlsxParams(AttachmentXlsxParams):
     use_formula_cache: bool = False
 
 
+class AttachmentPreviewCsvParams(AttachmentXlsxParams):
+    delimiter: Literal["comma", "semicolon", "tab"] = "comma"
+
+
 class AttachmentReadDocumentParams(ArtifactListParams):
     session_id: str = Field(min_length=1, max_length=128)
     expected_service_id: str = Field(pattern=r"^svc_[0-9a-f]{32}$")
