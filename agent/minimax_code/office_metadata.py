@@ -140,7 +140,7 @@ def validate_report(value: object) -> dict:
                 "deduplicate_by", "group_by", "sort_by", "summaries", "counts"
             }
             _require(type(processing) is dict
-                     and set(processing) - {"calculated_columns", "fill_missing"} == processing_keys
+                     and set(processing) - {"calculated_columns", "fill_missing", "pivot_by"} == processing_keys
                      and type(processing["version"]) is int and processing["version"] == 1,
                      "Invalid Office processing description")
             source = processing["source"]
@@ -210,7 +210,9 @@ def validate_report(value: object) -> dict:
                          and type(processing["calculated_columns"]) is list
                          and 1 <= len(processing["calculated_columns"]) <= 10
                          and all(type(item) is dict for item in processing["calculated_columns"])))
-                     and (processing["group_by"] is None or type(processing["group_by"]) is dict),
+                     and (processing["group_by"] is None or type(processing["group_by"]) is dict)
+                     and ("pivot_by" not in processing or (type(processing["pivot_by"]) is dict
+                          and processing["group_by"] is None and not processing["summaries"])),
                      "Invalid Office processing operations")
     checks = (("cell_check", "passed"), ("chart_reference_check", "passed")) if chart else (
         ("formula_count", 0), ("external_relationship_count", 0),

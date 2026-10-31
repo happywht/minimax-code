@@ -14,7 +14,7 @@ from ...execution import require_write_access
 from ...office_xlsx import canonical
 from .base import ToolResult
 from .generate_xlsx_from_csv import (
-    GenerateXlsxFromCsvTool, calculate_columns_spec, csv_to_spec, deduplicate_spec, fill_missing_spec, filter_spec, group_spec, sort_spec,
+    GenerateXlsxFromCsvTool, calculate_columns_spec, csv_to_spec, deduplicate_spec, fill_missing_spec, filter_spec, group_spec, pivot_spec, PivotConfig, sort_spec,
 )
 
 _MESSAGES = {
@@ -49,6 +49,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
         "Optional sort_by orders up to three output columns after grouping, with stable ties and blanks last. "
         "Optional group_by produces static grouped values: blank keys form a group, count excludes blanks, "
         "sum, average, min and max ignore blanks and are blank when all values are blank; average rounds half-up. "
+        "Optional pivot_by creates a static cross-tab with explicit buckets; every category must be listed or filtered out. Count excludes blank values; sum and average ignore blanks, with average rounded half-up. "
         "Formula cells are never imported: "
         "replace formulas with independently verified values in a copy. Hidden rows/columns, merged cells, "
         "charts, filters, error cells, ambiguous date/number formats and zero-padded identifiers are rejected. "
@@ -69,7 +70,7 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
     }
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None, expected_sha256=None, expected_service_id=None, source_delivery_id=None) -> ToolResult:
+                  columns: list[dict[str, Any]], source_sheet: str, summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None, expected_sha256=None, expected_service_id=None, source_delivery_id=None, pivot_by=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -127,6 +128,10 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
             if deduplicate_by is not None:
                 spec = deduplicate_spec(spec, deduplicate_by)
             removed_duplicate_count = matched_row_count - len(spec["rows"])
+            if pivot_by is not None and (group_by is not None or summaries):
+                raise ValueError("pivot_by cannot be combined with group_by or summaries")
+            if pivot_by is not None:
+                spec = pivot_spec(spec, pivot_by)
             if group_by is not None:
                 if summaries:
                     raise ValueError("group_by cannot be combined with summaries")
@@ -150,6 +155,8 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                            "removed_duplicates": removed_duplicate_count,
                            "output_rows": len(spec["rows"])},
             }
+            if pivot_by is not None:
+                processing["pivot_by"] = PivotConfig.model_validate(pivot_by).model_dump()
             if source_delivery_id is not None:
                 processing["source"]["delivery_id"] = source_delivery_id
             if fill_results is not None:
@@ -182,6 +189,9 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
                 result.output["matched_row_count"] = matched_row_count
                 result.output["deduplicate_by"] = deduplicate_by or []
                 result.output["removed_duplicate_count"] = removed_duplicate_count
+                if pivot_by is not None:
+                    result.output["pivot_by"] = processing["pivot_by"]
+                    result.output["pivot_notice"] = "Static cross-tab; count excludes blanks, sum and average ignore blanks. Source facts and business quality are unverified."
                 if group_by is not None:
                     result.output["group_by"] = group_by
                     result.output["group_count"] = len(spec["rows"])

@@ -309,6 +309,80 @@ def group_spec(spec: dict, group_by: dict) -> dict:
     }).model_dump()
 
 
+class PivotBucket(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=80)
+    value: str | int | float | bool | None
+
+
+class PivotConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    row_column: str
+    category_column: str
+    value_column: str
+    operation: Literal["count", "sum", "average"]
+    buckets: list[PivotBucket] = Field(min_length=1, max_length=19)
+    decimals: int = Field(default=2, ge=0, le=8)
+
+
+def pivot_spec(spec: dict, pivot_by: dict) -> dict:
+    """Create a bounded, explicit cross-tab without silently discarding categories."""
+    source = XlsxSpec.model_validate(spec)
+    config = PivotConfig.model_validate(pivot_by)
+    names = {column.name: index for index, column in enumerate(source.columns)}
+    if any(name not in names for name in (config.row_column, config.category_column, config.value_column)):
+        raise ValueError("Pivot columns must be selected output columns")
+    row_index, category_index, value_index = (names[config.row_column], names[config.category_column], names[config.value_column])
+    if config.operation != "count" and source.columns[value_index].kind != "number":
+        raise ValueError("Pivot sum and average require a numeric value column")
+    # Validate bucket values using the same exact types and limits as source cells.
+    bucket_values = []
+    for bucket in config.buckets:
+        if bucket.value == "":
+            raise ValueError("Use null for a blank pivot category")
+        checked = XlsxSpec.model_validate({"sheet_name": source.sheet_name,
+            "columns": [source.columns[category_index].model_dump()], "rows": [[bucket.value]]}).rows[0][0]
+        if any(checked == existing for existing in bucket_values):
+            raise ValueError("Pivot bucket values must be unique")
+        bucket_values.append(checked)
+    groups: dict[Any, list[list[Any]]] = {}
+    for row in source.rows:
+        category = row[category_index]
+        bucket_index = next((i for i, value in enumerate(bucket_values)
+                             if category == value), None)
+        if bucket_index is None:
+            raise ValueError("Pivot contains an unspecified category; include every category or filter first")
+        cells = groups.setdefault(row[row_index], [[] for _ in bucket_values])
+        if row[value_index] is not None:
+            cells[bucket_index].append(row[value_index])
+    rows = []
+    with localcontext() as context:
+        context.prec = 80
+        for key, buckets in groups.items():
+            values = []
+            for members in buckets:
+                if config.operation == "count":
+                    value = len(members)
+                elif not members:
+                    value = None
+                else:
+                    result = sum((Decimal(str(member)) for member in members), Decimal(0))
+                    if config.operation == "average":
+                        result = (result / len(members)).quantize(Decimal(1).scaleb(-config.decimals), rounding=ROUND_HALF_UP)
+                    try:
+                        value = int(result) if result == result.to_integral_value() else float(result)
+                    except (OverflowError, ValueError) as exc:
+                        raise ValueError("Pivot result cannot be represented safely") from exc
+                    if not math.isfinite(value) or Decimal(str(value)) != result:
+                        raise ValueError("Pivot result cannot be represented safely")
+                values.append(value)
+            rows.append([key, *values])
+    return XlsxSpec.model_validate({"sheet_name": source.sheet_name,
+        "columns": [source.columns[row_index].model_dump(),
+                    *[{"name": bucket.name, "kind": "number"} for bucket in config.buckets]],
+        "rows": rows}).model_dump()
+
+
 def deduplicate_spec(spec: dict, columns: list[str]) -> dict:
     """Keep the first row for each exact combination of selected output values."""
     source = XlsxSpec.model_validate(spec)
@@ -441,7 +515,8 @@ class GenerateXlsxFromCsvTool(Tool):
         "Text supports case-sensitive contains, not_contains, starts_with and ends_with with nonempty "
         "values; blank cells never match these operators. "
         "Use calculated_column or calculated_columns (1–10 ordered calculations), not both, before filters. Each may reference earlier numeric results. Add, subtract, multiply or divide numeric columns; division rounds half-up to 0–8 decimals (default 2) and rejects zero divisors. Blank operands yield blank; results are static. "
-        "Apply filters, optional deduplicate_by, optional group_by, then optional sort_by before summaries and chart. "
+        "Apply filters, optional deduplicate_by, optional group_by or pivot_by, then optional sort_by before summaries and chart. "
+        "pivot_by creates a static cross-tab from explicit category buckets; all categories must be listed or filtered out. Count excludes blank values; sum and average ignore blanks and return blank when no values exist. Average rounds half-up. "
         "deduplicate_by uses exact output-column values and keeps the first matching row; blanks match blanks. "
         "Sort uses up to three output columns, typed values, stable ties and blanks last. "
         "group_by accepts one column or an ordered columns list for composite grouping and produces only grouped rows: "
@@ -506,6 +581,16 @@ class GenerateXlsxFromCsvTool(Tool):
                         "decimals": {"type": "integer", "minimum": 0, "maximum": 8},
                     }, "required": ["column", "name", "operation"], "additionalProperties": False}},
             }, "required": ["metrics"], "additionalProperties": False},
+            "pivot_by": {"type": "object", "properties": {
+                "row_column": {"type": "string"}, "category_column": {"type": "string"},
+                "value_column": {"type": "string"}, "operation": {"type": "string", "enum": ["count", "sum", "average"]},
+                "decimals": {"type": "integer", "minimum": 0, "maximum": 8},
+                "buckets": {"type": "array", "minItems": 1, "maxItems": 19, "items": {
+                    "type": "object", "properties": {"name": {"type": "string"},
+                        "value": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]}},
+                    "required": ["name", "value"], "additionalProperties": False}},
+                }, "required": ["row_column", "category_column", "value_column", "operation", "buckets"],
+                "additionalProperties": False},
             "summaries": GenerateTableXlsxTool.parameters["properties"]["summaries"],
             "chart": GenerateTableXlsxTool.parameters["properties"]["chart"],
         }, "required": ["attachment_id", "filename", "request_key", "sheet_name", "columns"],
@@ -520,7 +605,7 @@ class GenerateXlsxFromCsvTool(Tool):
         self.generator = GenerateTableXlsxTool(db, session_id, project_id)
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None) -> ToolResult:
+                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None, pivot_by=None) -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -549,6 +634,10 @@ class GenerateXlsxFromCsvTool(Tool):
             if deduplicate_by is not None:
                 spec = deduplicate_spec(spec, deduplicate_by)
             removed_duplicate_count = matched_row_count - len(spec["rows"])
+            if pivot_by is not None and (group_by is not None or summaries):
+                raise ValueError("pivot_by cannot be combined with group_by or summaries")
+            if pivot_by is not None:
+                spec = pivot_spec(spec, pivot_by)
             if group_by is not None:
                 if summaries:
                     raise ValueError("group_by cannot be combined with summaries")
@@ -569,6 +658,8 @@ class GenerateXlsxFromCsvTool(Tool):
                            "removed_duplicates": removed_duplicate_count,
                            "output_rows": len(spec["rows"])},
             }
+            if pivot_by is not None:
+                processing["pivot_by"] = PivotConfig.model_validate(pivot_by).model_dump()
             if fill_results is not None:
                 processing["fill_missing"] = fill_results
             if calculated_columns is not None:
@@ -594,6 +685,9 @@ class GenerateXlsxFromCsvTool(Tool):
                 result.output["matched_row_count"] = matched_row_count
                 result.output["deduplicate_by"] = deduplicate_by or []
                 result.output["removed_duplicate_count"] = removed_duplicate_count
+                if pivot_by is not None:
+                    result.output["pivot_by"] = processing["pivot_by"]
+                    result.output["pivot_notice"] = "Static cross-tab; count excludes blanks, sum and average ignore blanks. Source facts and business quality are unverified."
                 if group_by is not None:
                     result.output["group_by"] = group_by
                     result.output["group_count"] = len(spec["rows"])
