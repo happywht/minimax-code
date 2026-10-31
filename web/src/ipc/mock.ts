@@ -818,6 +818,7 @@ function mockHandle(
     case "run.child_workspace":
       throw new Error("演示模式没有真实子任务工作区");
     case "run.verify_collected":
+    case "run.verify_project":
       throw new Error("演示模式不能运行项目验证命令");
     case "run.input_image":
       throw new Error("演示模式没有已保存的 Codex 输入图片");

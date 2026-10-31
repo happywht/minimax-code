@@ -3,6 +3,7 @@ import { ipc, typedIPC } from "../../ipc";
 import { useSessionStore } from "../../stores";
 import type { AgentRun, RunWorkspaceDiffResult } from "../../types/ipc";
 import { Button, DiffLines } from "../../ui";
+import { RunManualVerification } from "./RunManualVerification";
 
 /** Keep matching file patches intact so their context and headers remain visible. */
 function filterDiff(diff: string, query: string): string {
@@ -312,6 +313,7 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
     </div>}
     {result && <div className="mt-2 space-y-2">
       <p className="break-all">当前工作区：{result.workspace}</p>
+      <RunManualVerification run={run} review={result} />
       <p>这是当前共享工作区的状态，可能包含用户或其他任务的修改，不能归因于此任务。未跟踪文件需手动选择才读取预览；已提交变更不在此视图中。</p>
       <label className="block">搜索文件名或差异内容
         <input value={search} onChange={(event) => setSearch(event.target.value)}

@@ -625,6 +625,20 @@ class RunVerifyCollectedParams(BaseModel):
     confirmed: Literal[True]
 
 
+class RunVerifyProjectParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    source_run_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=128)
+    expected_service_id: str = Field(min_length=1, max_length=128)
+    expected_workspace: str = Field(min_length=1, max_length=4096)
+    expected_workspace_identity: str = Field(pattern=r"^\d+:\d+$")
+    expected_command: str = Field(min_length=1, max_length=500)
+    expected_cursor: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    confirmed: Literal[True]
+
+
 class RunOutputPageParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     run_id: str = Field(min_length=1, max_length=128)

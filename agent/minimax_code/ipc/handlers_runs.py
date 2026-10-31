@@ -908,7 +908,8 @@ def register_run_handlers(server: Any) -> None:
                 raise HandlerError(INVALID_PARAMS, "Scheduled continuation must retain its original cumulative budget")
             if run.get("mode") == "team":
                 raise HandlerError(INVALID_PARAMS, "Team runs cannot be resumed; review their results and start a new run explicitly")
-            if (run.get("metadata") or {}).get("manual_team_validation"):
+            if ((run.get("metadata") or {}).get("manual_team_validation")
+                    or (run.get("metadata") or {}).get("manual_project_validation")):
                 raise HandlerError(INVALID_PARAMS, "Review validation results before starting a new explicit validation")
             bound = {"expected_service_id", "expected_session_id", "expected_project_id", "expected_cursor"}
             if bound & request.model_fields_set:
@@ -1272,6 +1273,8 @@ def register_run_handlers(server: Any) -> None:
     server.register("run.research_get", research_handler(RunResearchGetParams, detail=True))
     server.register("run.child_workspace", handle_child_workspace)
     server.register("run.verify_collected", handle_verify_collected)
+    from .run_manual_verification import verify_project
+    server.register("run.verify_project", verify_project)
     server.register("run.child_list", handle_child_list)
     server.register("run.output_page", handle_output_page)
     server.register("run.input_image", handle_input_image)

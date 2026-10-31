@@ -60,7 +60,7 @@ export function RunRecoveryActions({ run, refresh, expectedService, onEditingCha
     ...(codex ? (!run.metadata?.codex_thread_id ? ["Codex 线程"] : []) : (!run.metadata?.model_snapshot ? ["模型快照"] : [])),
   ];
   if (!resumable && missingContext.length) return null;
-  if (resumable && (run.mode === "team" || run.metadata?.manual_team_validation)) return <p className="mt-2 text-xs text-status-warning">
+  if (resumable && (run.mode === "team" || run.metadata?.manual_team_validation || run.metadata?.manual_project_validation)) return <p className="mt-2 text-xs text-status-warning">
     此运行不能直接接续。请先核对成员结果、工作区和可能的外部副作用，再明确发起新任务或验证。
   </p>;
   if (resumable && missingContext.length) return <div className="mt-2 space-y-1 text-xs text-status-warning" data-testid="run-recovery-unavailable">

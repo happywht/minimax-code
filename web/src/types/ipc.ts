@@ -1687,6 +1687,11 @@ export interface RunWorkspaceDiffResult {
   staged_diff: string;
   untracked: string[];
 }
+export interface RunVerifyProjectParams {
+  source_run_id: string; session_id: string; project_id: string; expected_service_id: string;
+  expected_workspace: string; expected_workspace_identity: string; expected_command: string;
+  expected_cursor: number; idempotency_key: string; confirmed: true;
+}
 
 export type PatchLineKind = "context" | "add" | "delete" | "meta";
 
