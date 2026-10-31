@@ -223,30 +223,40 @@ def register_checkpoint_handlers(
             # Resolve cwd after the row lookup — the checkpoint's owning
             # session decides the project-scoped root (v1.3.0).
             workdir = await _resolve_checkpoint_cwd(p, row)
-            mgr = await manager_factory()
-            checkpoint = _row_to_checkpoint(row)
-            if "tracked_file" in p:
-                if "untracked_file" in p or "expected_sha256" in p:
-                    raise HandlerError(INVALID_PARAMS, "tracked_file cannot be combined with untracked options")
-                if not row.get("source_root"):
-                    raise HandlerError(INVALID_PARAMS, "Tracked file recovery requires a recorded repository root")
-                try:
-                    result = await mgr.restore_tracked_file(workdir, checkpoint, _string_required(p, "tracked_file"))
-                except ValueError as exc:
-                    raise HandlerError(INVALID_PARAMS, str(exc)) from exc
-            elif "untracked_file" in p:
-                relative = _string_required(p, "untracked_file")
-                expected = p.get("expected_sha256")
-                if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
-                    raise HandlerError(INVALID_PARAMS, "expected_sha256 must be a lowercase SHA-256 digest")
-                try:
-                    result = mgr.restore_untracked_file(workdir, checkpoint, relative, **({"expected_sha256": expected} if expected is not None else {}))
-                except ValueError as exc:
-                    raise HandlerError(INVALID_PARAMS, str(exc)) from exc
-            else:
-                if "expected_sha256" in p:
-                    raise HandlerError(INVALID_PARAMS, "expected_sha256 requires untracked_file")
-                result = await mgr.restore(workdir, checkpoint)
+            from ..runs import get_run_service
+
+            try:
+                async with get_run_service(ctx.server).workspace_maintenance(str(workdir)) as verify_workspace:
+                    # The session binding can change while the reservation is acquired.
+                    if await _resolve_checkpoint_cwd(p, row) != workdir:
+                        raise ValueError("Checkpoint workspace changed; retry after review")
+                    mgr = await manager_factory()
+                    verify_workspace()
+                    checkpoint = _row_to_checkpoint(row)
+                    if "tracked_file" in p:
+                        if "untracked_file" in p or "expected_sha256" in p:
+                            raise HandlerError(INVALID_PARAMS, "tracked_file cannot be combined with untracked options")
+                        if not row.get("source_root"):
+                            raise HandlerError(INVALID_PARAMS, "Tracked file recovery requires a recorded repository root")
+                        try:
+                            result = await mgr.restore_tracked_file(workdir, checkpoint, _string_required(p, "tracked_file"))
+                        except ValueError as exc:
+                            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+                    elif "untracked_file" in p:
+                        relative = _string_required(p, "untracked_file")
+                        expected = p.get("expected_sha256")
+                        if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+                            raise HandlerError(INVALID_PARAMS, "expected_sha256 must be a lowercase SHA-256 digest")
+                        try:
+                            result = mgr.restore_untracked_file(workdir, checkpoint, relative, **({"expected_sha256": expected} if expected is not None else {}))
+                        except ValueError as exc:
+                            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+                    else:
+                        if "expected_sha256" in p:
+                            raise HandlerError(INVALID_PARAMS, "expected_sha256 requires untracked_file")
+                        result = await mgr.restore(workdir, checkpoint)
+            except ValueError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             await ctx.reply({"result": _result_to_dict(result)})
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)

@@ -8,6 +8,7 @@ are durably admitted before scheduling; cross-engine scheduling remains separate
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import uuid
@@ -116,11 +117,44 @@ class RunService:
         self._by_run: dict[str, RunJob] = {}
         self._admissions: set[asyncio.Task[Any]] = set()
         self._admission_lock = asyncio.Lock()
+        self._maintenance_workspaces: set[str] = set()
         self._accepted_admissions: set[asyncio.Task[Any]] = set()
         self._draining = False
         self._shutdown_started = False
         self._drain_task: asyncio.Task[None] | None = None
         self._drain_jobs: set[RunJob] = set()
+
+    @contextlib.asynccontextmanager
+    async def workspace_maintenance(self, workspace: str):
+        """Reserve a workspace for an explicit checkpoint operation.
+
+        Admission and maintenance use the same lock, so neither can pass its
+        overlap check while the other is being registered. This only coordinates
+        RunService jobs in this process; external writers are not locked.
+        """
+        identity = _workspace_identity(workspace)
+        async with self._admission_lock:
+            if self._closing:
+                raise RunServiceClosing("Run service is shutting down")
+            if any(_workspace_overlaps(workspace, reserved)
+                   for reserved in self._maintenance_workspaces):
+                raise ValueError("Workspace has another checkpoint operation in progress")
+            if any(job.workspace and _workspace_overlaps(workspace, job.workspace)
+                   for jobs in self._jobs.values() for job in jobs):
+                raise ValueError("Workspace has an active or queued run; wait for it to finish")
+            if _workspace_identity(workspace) != identity:
+                raise ValueError("Workspace changed before checkpoint operation")
+            self._maintenance_workspaces.add(workspace)
+        def verify() -> None:
+            if _workspace_identity(workspace) != identity:
+                raise ValueError("Workspace changed during checkpoint operation")
+
+        try:
+            yield verify
+        finally:
+            # No await: cancellation cannot strand a reservation, and all
+            # reservation changes run on the same event loop.
+            self._maintenance_workspaces.discard(workspace)
 
     def submit(
         self, session_id: str, operation: Callable[[RunJob], Awaitable[Any]], *,
@@ -142,8 +176,11 @@ class RunService:
         queue = self._jobs.setdefault(session_id, [])
         if job is None and len(queue) >= 32:
             raise RuntimeError("Session queue is full (32 pending tasks)")
-        lock = self._locks.setdefault(session_id, asyncio.Lock())
         job = job or RunJob(session_id)
+        if job.workspace and any(_workspace_overlaps(job.workspace, reserved)
+                                 for reserved in self._maintenance_workspaces):
+            raise ValueError("Workspace has a checkpoint operation in progress; wait for it to finish")
+        lock = self._locks.setdefault(session_id, asyncio.Lock())
         queue.append(job)
         if self._draining:
             self._drain_jobs.add(job)
@@ -275,6 +312,11 @@ class RunService:
                         if existing is not None:
                             validate_recovery_retry(existing, resumed_from_id, budget_tokens)
                             return existing, self._by_run.get(existing["id"]), False
+
+                    if any(_workspace_overlaps(workspace, reserved)
+                           for reserved in self._maintenance_workspaces):
+                        raise ValueError(
+                            "Workspace has a checkpoint operation in progress; wait for it to finish")
 
                     # Reservations cover queued jobs as well as execution and
                     # finalization. Reject rather than wait: a parent can await
