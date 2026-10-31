@@ -2045,8 +2045,9 @@ async def handle_agent_cancel(params: Any, ctx: Context) -> None:
 #: across task domains — the actual task state lives in the conversation
 #: history the send-message pipeline replays.
 _CONTINUE_PROMPT = (
-    "[continue] The previous turn stopped after reaching its iteration "
-    "budget mid-task. Continue from where it stopped: review the "
+    "[continue] The previous turn stopped at an iteration or model output "
+    "limit. Any tool calls cut off by the output limit were not executed. "
+    "Continue from where it stopped: review the "
     "conversation history above (including earlier tool results), skip "
     "work that is already done, finish the remaining steps, and then "
     "give the final answer."

@@ -989,7 +989,8 @@ def register_run_handlers(server: Any) -> None:
             if continuation:
                 content = (f"[Continue truncated run {run['id']}. Inspect the existing workspace and "
                            "prior conversation, verify what has already happened, and continue only "
-                           "unfinished work. Do not blindly repeat unconfirmed writes.]" + note)
+                           "unfinished work. Tool calls cut off by a model output limit were not "
+                           "executed. Do not blindly repeat unconfirmed writes.]" + note)
             elif isinstance(content, list):
                 content = [*content, {"type": "text", "text": note}]
             else:

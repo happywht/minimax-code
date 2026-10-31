@@ -78,6 +78,16 @@ stopping early when the model produces a final answer or the user
 cancels. Iterations and compactions are summed across blocks in the
 reply envelope (`blocks`, `compactions`) and the run's metadata.
 
+A Native provider response ending at its output limit is also marked truncated,
+including when it contains no tool calls. Its partial text is retained and the
+existing continuation flow applies. Any tool calls in that response are
+removed before history replay and are not dispatched: a valid-looking argument
+may still be incomplete. Earlier completed calls are unaffected. Automatic
+continuation remains opt-in and subject to the same block and token budgets;
+manual continuation retains the existing review and workspace checks. This
+handling depends on the provider reporting the output-limit finish reason.
+This change has not been tested or exercised.
+
 **Handoff nudge (v1.1.1).** Two triggers append one ephemeral user note
 to an LLM call — never persisted, never merged into history: (a)
 context pressure (reported prompt usage ≥90% of the window even after

@@ -388,7 +388,7 @@ class AgentRunResult:
     tool_results: list[ToolResult] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     cancelled: bool = False
-    truncated: bool = False  # hit max_iterations
+    truncated: bool = False  # iteration or model output limit
     # v1.1.0: how many intra-loop compactions ran this turn (0 when the
     # turn never crossed the threshold). Surfaces in final metadata so
     # the UI / telemetry can show "compacted N×" per message.
@@ -1151,50 +1151,40 @@ class AgentCore:
                     int(response.usage.get("prompt_tokens") or 0) or None
                 )
 
-                # Persist the assistant message that came out of this
-                # LLM call (may contain tool_calls).
                 policy_workspace()
                 assistant_msg = response.message
+                tool_calls = _extract_tool_calls(assistant_msg)
+                if response.finish_reason == "length":
+                    # Even syntactically valid arguments can be incomplete when
+                    # the provider stops at its output limit. Never dispatch a
+                    # partial batch. Retain its text, but omit the calls from
+                    # replay so the next block does not see orphan tool calls.
+                    truncated = True
+                    final_text = assistant_msg.get("content") or ""
+                    final_message = {key: value for key, value in assistant_msg.items()
+                                     if key != "tool_calls"}
+                    metadata = {**response.metadata, "truncated": True,
+                                "truncation_reason": "output_limit",
+                                "discarded_tool_calls": len(tool_calls)}
+                    messages.append(final_message)
+                    await self._maybe_persist(session_id, {**final_message, "metadata": metadata})
+                    await self._emit_chunk("", True, metadata)
+                    await self._emit_status("output_limit", {"iteration": iterations,
+                                                              "discarded_tool_calls": len(tool_calls)})
+                    await self._fire_turn_abort(reason=TurnAbortReason.OUTPUT_LIMIT)
+                    break
+
+                # Persist a copy carrying usage without leaking metadata into
+                # the provider's next protocol message.
                 messages.append(assistant_msg)
-                # v1.1.3 — persist a copy carrying the per-call usage
-                # metadata (tokens_in/tokens_out/thinking_count). The
-                # metadata lives on the LLMResponse, not on the message
-                # dict, and merging it into ``assistant_msg`` itself would
-                # leak a non-protocol key into the LLM history sent on the
-                # next iteration's API call — so only the persisted copy
-                # sees it. Before this, every regular-completion row hit
-                # the DB with metadata=NULL / tokens=0, and the context
-                # indicator fell back to 0 after any session reload.
                 await self._maybe_persist(
                     session_id, {**assistant_msg, "metadata": response.metadata}
                 )
-
-                tool_calls = _extract_tool_calls(assistant_msg)
-                # v1.2.1: "length" + pending tool calls means the output
-                # budget cut the turn mid-tool-arguments — the arguments
-                # JSON may be incomplete and will land in
-                # _prepare_tool_call as "malformed JSON args". Log the
-                # truncation loudly so the root cause is discoverable
-                # (raise MINIMAX_CODE_MAX_OUTPUT_TOKENS if it recurs).
-                if response.finish_reason == "length" and tool_calls:
-                    logger.warning(
-                        "turn hit the output-token limit (%d) with %d pending "
-                        "tool call(s); their arguments may be truncated and "
-                        "fail to parse — raise MINIMAX_CODE_MAX_OUTPUT_TOKENS "
-                        "if this recurs",
-                        self.config.max_output_tokens, len(tool_calls),
-                    )
                 if not tool_calls:
-                    # Final answer.
                     final_text = assistant_msg.get("content") or ""
                     final_message = assistant_msg
-                    # Attach the per-turn metadata to the done=True
-                    # chunk so the UI can paint the "思考 N 次" line.
-                    # All earlier chunks passed ``metadata=None``; the
-                    # store keeps the latest non-null value per message.
                     await self._emit_chunk("", True, response.metadata)
                     await self._emit_status("done", {"iterations": iterations})
-                    # R25 — turn-done lifecycle hook.
                     await self._fire_turn_done(iterations=iterations)
                     break
 

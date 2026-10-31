@@ -58,6 +58,7 @@ class TurnAbortReason(StrEnum):
     DISCONNECTED = "disconnected"
     INTERRUPTED = "interrupted"
     MAX_ITERATIONS = "max_iterations"
+    OUTPUT_LIMIT = "output_limit"
 
 
 # -- turn lifecycle ---------------------------------------------------------
