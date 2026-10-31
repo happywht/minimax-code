@@ -237,7 +237,7 @@ export function MessageInput({
       onSubmit={handleSubmit}
       data-testid={testId}
       data-floating="false"
-      className="shrink-0 border-t border-line bg-surface-0/92 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-surface-0/78 sm:px-4 sm:py-3"
+      className="max-h-[55%] shrink-0 overflow-y-auto border-t border-line bg-surface-0/92 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-surface-0/78 sm:px-4 sm:py-3"
     >
       <div
         onDragOver={attachments.handleDragOver}
@@ -250,13 +250,16 @@ export function MessageInput({
             : "border-line focus-within:border-line-strong")
         }
       >
-        <div className="flex flex-wrap gap-x-3 gap-y-1 border-b border-line px-2.5 py-2 text-xs text-ink-2" aria-label="任务提交位置">
+        <details className="border-b border-line px-2.5 py-1 text-xs text-ink-2">
+          <summary className="cursor-pointer break-all py-1 text-ink-1">提交位置 · {serviceLabel(ipc.agentBaseUrl)} / {project?.name ?? (projectId ? "项目加载中或未知" : "未指定项目")} / {sessionId ? session?.title ?? "会话加载中或未知" : "新会话"} / 目录配置：{session?.workspace_path || project?.root_path || "未指定或未知"}</summary>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 pb-1" aria-label="任务提交位置">
           <span>服务：{serviceLabel(ipc.agentBaseUrl)}</span>
           <span>会话：{sessionId ? session?.title ?? "加载中或未知" : "发送时新建"}</span>
           <span>{sessionId ? "会话所属项目" : "新会话项目"}：{project?.name ?? (projectId ? "加载中或未知" : "未指定")}</span>
           {session?.workspace_path ? <span>会话工作区：{session.workspace_path}</span> :
             <span>项目目录：{project?.root_path || "未指定或未知"}（实际执行目录以运行详情为准）</span>}
-        </div>
+          </div>
+        </details>
         {/* Drop zone overlay */}
         {attachments.dragging && (
           <div
@@ -352,6 +355,7 @@ export function MessageInput({
             onKeyDown={handleKeyDown}
             placeholder={streaming ? "当前任务进行中；可在下方排队新任务" : "描述目标、相关资料和期望结果…"}
             rows={2}
+            title="Enter 发送 · Shift + Enter 换行"
             data-testid="message-input-textarea"
             disabled={disabled}
             className="min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-ink-0 placeholder:text-ink-2 focus:outline-none"
@@ -414,7 +418,7 @@ export function MessageInput({
         {streaming && <p role="status" className="mx-2 rounded bg-accent-subtle px-2 py-1.5 text-xs text-ink-1">
           {cancelling ? "正在请求停止，请稍候。" : "当前任务进行中。可停止任务，或在下方排队另一个新任务。"}
         </p>}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-2 py-2 text-xs text-ink-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-2 py-1 text-xs text-ink-2">
         <label className="flex items-center gap-2">
           任务模式
           <select
@@ -429,7 +433,7 @@ export function MessageInput({
             <option value="plan">只读规划</option>
           </select>
         </label>
-        <details className="w-full" open={!budgetValid ? true : undefined}>
+        <details className="min-w-0 flex-1" open={!budgetValid ? true : undefined}>
           <summary className="cursor-pointer py-1 text-ink-1">高级选项{captureFileChanges ? " · 采集文件变化" : ""}{budgetText ? ` · 上限 ${budgetText} tokens` : ""}</summary>
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={captureFileChanges} disabled={disabled}
@@ -456,7 +460,7 @@ export function MessageInput({
           cancelling={cancelling}
         />
         <QueuedTaskInput sessionId={sessionId} budgetTokens={budgetNumber} budgetValid={budgetValid} />
-        {!streaming && <p className="px-2.5 pb-2 text-[11px] text-ink-2">Enter 发送 · Shift + Enter 换行；运行中可排队新任务。</p>}
+
       </div>
     </form>
   );

@@ -8,6 +8,7 @@ beforeEach(() => {
   localStorage.clear();
   useSessionStore.setState({ currentSessionId: "s1", currentProjectId: "p1", sessions: [] });
   vi.spyOn(ipc, "onSideCar").mockReturnValue(() => {});
+  vi.spyOn(typedIPC, "getServiceIdentity").mockResolvedValue({ service_id: "service-1" });
   vi.spyOn(useRunTimelineStore.getState(), "loadForSession").mockResolvedValue();
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); });
@@ -38,6 +39,7 @@ it("does not clear a request when the user changes session during admission", as
   fireEvent.click(screen.getByText("排队一个新任务"));
   fireEvent.change(screen.getByLabelText("排队任务内容"), { target: { value: "keep" } });
   fireEvent.click(screen.getByText("提交排队任务"));
+  await waitFor(() => expect(call).toHaveBeenCalledOnce());
   const request = call.mock.calls[0][0];
   useSessionStore.setState({ currentSessionId: "s2" });
   view.rerender(<QueuedTaskInput sessionId="s2" />);

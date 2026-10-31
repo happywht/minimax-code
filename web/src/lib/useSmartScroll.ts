@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObje
 export interface UseSmartScrollOptions {
   contentKey: unknown;
   thresholdPx?: number;
+  enabled?: boolean;
 }
 
 export interface SmartScrollState<T extends HTMLElement> {
@@ -16,6 +17,7 @@ export interface SmartScrollState<T extends HTMLElement> {
 export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
   contentKey,
   thresholdPx = 50,
+  enabled = true,
 }: UseSmartScrollOptions): SmartScrollState<T> {
   const containerRef = useRef<T>(null);
   const followingRef = useRef(true);
@@ -114,7 +116,7 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
 
   useLayoutEffect(() => {
     const el = containerRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
+    if (!enabled || !el || typeof ResizeObserver === "undefined") return;
     let resizeFrame: number | null = null;
     const observer = new ResizeObserver(() => {
       if (resizeFrame != null) cancelFrame(resizeFrame);
@@ -130,9 +132,10 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
       observer.disconnect();
       if (resizeFrame != null) cancelFrame(resizeFrame);
     };
-  }, [contentKey, scrollToBottom]);
+  }, [contentKey, enabled, scrollToBottom]);
 
   useLayoutEffect(() => {
+    if (!enabled) { previousKeyRef.current = contentKey; return; }
     if (Object.is(previousKeyRef.current, contentKey)) return;
     previousKeyRef.current = contentKey;
 
@@ -149,7 +152,7 @@ export function useSmartScroll<T extends HTMLElement = HTMLDivElement>({
         setNewContentCount((count) => count + 1);
       }
     });
-  }, [contentKey, scrollToBottom]);
+  }, [contentKey, enabled, scrollToBottom]);
 
   useEffect(() => {
     return () => {

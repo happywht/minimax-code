@@ -1,5 +1,5 @@
 import { allowScopeChange } from "../../lib/scopeChangeGuard";
-﻿/**
+/**
  * Chat container — header (session title + actions) on top, message
  * list in the middle. The composer lives in a sibling component so the
  * text input doesn't re-render the message list on every keystroke.
@@ -208,7 +208,7 @@ export function ChatPanel({
     >
       {/* Header */}
       <header className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 border-b border-line bg-surface-0 px-3 py-2.5 sm:px-4">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="flex min-w-0 flex-1 basis-full items-center gap-2">
           <MessageSquare size={14} className="shrink-0 text-minimax-muted" />
           {editing ? (
             <input
@@ -230,7 +230,7 @@ export function ChatPanel({
           ) : (
             <h2
               data-testid="chat-header-title"
-              className="truncate text-sm font-medium text-minimax-fg"
+              className="min-w-0 truncate text-sm font-medium text-minimax-fg"
               onDoubleClick={startEditing}
               title={strings.chat.header.renameHint}
             >
@@ -252,7 +252,7 @@ export function ChatPanel({
           <span
             data-testid="chat-header-status"
             className={
-              "ml-2 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] " +
+              "ml-2 inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] " +
               toneClass[headerStatus.tone]
             }
           >
@@ -271,11 +271,11 @@ export function ChatPanel({
             </span>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-1">
           <span className="text-xs text-ink-2" data-testid="session-engine">{current ? (current.engine === "codex" ? "Codex" : "Native") : "未选择会话"}</span>
           <select aria-label="新会话引擎" value={newEngine}
             onChange={(event) => setNewEngine(event.target.value as "native" | "codex")}
-            className="rounded border border-line bg-surface-1 text-xs text-ink-1">
+            className="max-w-36 rounded border border-line bg-surface-1 text-xs text-ink-1">
             <option value="native">Native</option>
             {engines.filter((engine) => engine.id === "codex").map((engine) => (
               <option key={engine.id} value="codex" disabled={!engine.available}>

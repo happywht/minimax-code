@@ -86,6 +86,9 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [visited, setVisited] = useState<Set<SettingsTab>>(() => new Set([initialTab]));
   const [advanced, setAdvanced] = useState(() => TAB_GROUPS.some((group) => group.advanced && group.tabs.some((item) => item.id === initialTab)));
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(
+    TAB_GROUPS.filter((group) => group.advanced && !group.tabs.some((item) => item.id === initialTab)).map((group) => group.label),
+  ));
   const [scope, setScope] = useState<{ host: string; service: string } | null>(null);
   const scopeRef = useRef<{ host: string; service: string } | null>(null);
   const tabRef = useRef(tab); tabRef.current = tab;
@@ -179,14 +182,21 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           className="flex max-w-full shrink-0 gap-2 overflow-x-auto overscroll-x-contain border-b border-line bg-surface-1 px-2 py-2 sm:px-3 md:w-52 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:px-3 md:py-4"
           aria-label={strings.settings.page.sections}
         >
-          <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((value) => !value)} className="shrink-0 rounded-md px-2 py-1.5 text-left text-xs text-ink-1 hover:bg-surface-2 md:order-2">{advanced ? "收起进阶设置" : "展开进阶设置"}</button>
-          {TAB_GROUPS.filter((group) => !group.advanced || advanced).map((group) => (
-            <div key={group.label} className="flex shrink-0 gap-1 md:flex-col">
-              <div className="hidden px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-2 md:block">
-                {group.label}
-              </div>
+          <button type="button" aria-expanded={advanced} onClick={() => {
+            if (advanced) setCollapsedGroups((previous) => new Set([...previous, ...TAB_GROUPS.filter((group) => group.advanced).map((group) => group.label)]));
+            setAdvanced((value) => !value);
+          }} className="shrink-0 rounded-md px-2 py-1.5 text-left text-xs text-ink-1 hover:bg-surface-2 md:order-2">{advanced ? "收起进阶设置" : "展开进阶设置"}</button>
+          {TAB_GROUPS.filter((group) => !group.advanced || advanced || group.tabs.some((item) => item.id === tab)).map((group) => (
+            <div key={group.label} className="flex shrink-0 flex-col gap-1">
+              <button type="button" aria-expanded={!collapsedGroups.has(group.label)} onClick={() => setCollapsedGroups((previous) => {
+                const next = new Set(previous);
+                if (next.has(group.label)) next.delete(group.label); else next.add(group.label);
+                return next;
+              })} className="rounded px-2 py-1 text-left text-[11px] font-medium text-ink-2 hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+                {collapsedGroups.has(group.label) ? "▸" : "▾"} {group.label}
+              </button>
               <div className="flex gap-1 md:flex-col">
-                {group.tabs.map((item) => (
+                {group.tabs.filter((item) => !collapsedGroups.has(group.label) || item.id === tab).map((item) => (
                   <TabButton
                     key={item.id}
                     id={item.id}

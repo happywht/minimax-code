@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({ send: vi.fn(), engine: "native", status: "idle", sessionId: "s1" }));
 vi.mock("../../stores", () => ({
   useChat: Object.assign((select: (v: unknown) => unknown) => select({ status: state.status, send: state.send, cancel: vi.fn(), executionMode: "execute", setExecutionMode: vi.fn() }), { setState: vi.fn() }),
-  useSessionStore: (select: (v: unknown) => unknown) => select({ currentSessionId: state.sessionId, sessions: [{ id: state.sessionId, engine: state.engine }] }),
+  useSessionStore: (select: (v: unknown) => unknown) => select({ currentSessionId: state.sessionId, currentProjectId: "p1", projects: [{ id: "p1", name: "项目" }], sessions: [{ id: state.sessionId, project_id: "p1", engine: state.engine }] }),
 }));
 vi.mock("./useAttachments", () => ({ useAttachments: () => ({
   attachedFiles: [], attachedImages: [], dragging: false, fileInputRef: { current: null }, imageInputRef: { current: null },
@@ -22,6 +22,7 @@ describe("task templates in the composer", () => {
 
   it("adds an editable template without sending or replacing the existing draft", () => {
     render(<MessageInput />);
+    fireEvent.click(screen.getByText("任务模板与资料"));
     const input = screen.getByTestId("message-input-textarea") as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "已有目标：研究水务" } });
     fireEvent.click(screen.getByRole("button", { name: "专题研究" }));
@@ -36,6 +37,7 @@ describe("task templates in the composer", () => {
   it("disables template insertion while a run is active", () => {
     state.status = "streaming";
     render(<MessageInput />);
+    fireEvent.click(screen.getByText("任务模板与资料"));
     expect(screen.getByRole("button", { name: "专题研究" })).toBeDisabled();
     expect(state.send).not.toHaveBeenCalled();
   });
@@ -43,6 +45,7 @@ describe("task templates in the composer", () => {
   it("offers office templates and preserves the current engine", () => {
     state.engine = "codex";
     render(<MessageInput />);
+    fireEvent.click(screen.getByText("任务模板与资料"));
     expect(screen.getByText("当前引擎的附件和办公工具能力可能不同")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "资料成稿" }));
     fireEvent.click(screen.getByRole("button", { name: "表格处理" }));

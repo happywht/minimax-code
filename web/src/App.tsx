@@ -407,10 +407,7 @@ export default function App() {
           onOpenSettings={() => openSettings("models")}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onToggleInspector={() => setInspectorOpen(true)}
-          onTogglePreview={() => {
-            setOverlayView(null);
-            setView((v) => v === "preview" ? "chat" : "preview");
-          }}
+          onTogglePreview={() => handleViewChange(view === "preview" && !overlayView ? "chat" : "preview")}
           onToggleCommandPalette={() => paletteRef.current?.toggle()}
           previewActive={view === "preview"}
         />
@@ -421,12 +418,9 @@ export default function App() {
         <StorageBanner degraded={storageDegraded} />
         <CommandPalette
           ref={paletteRef}
-          onOpenSkills={() => setOverlayView("skills")}
+          onOpenSkills={() => handleViewChange("skills")}
           onOpenSettings={(tab) => openSettings(tab)}
-          onTogglePreview={() => {
-            setOverlayView(null);
-            setView((v) => v === "preview" ? "chat" : "preview");
-          }}
+          onTogglePreview={() => handleViewChange(view === "preview" && !overlayView ? "chat" : "preview")}
         />
         <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {/* Desktop sidebar — always visible on md+ */}

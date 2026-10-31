@@ -59,7 +59,8 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
     showNewContentButton,
     newContentCount,
     scrollToBottom,
-  } = useSmartScroll<HTMLDivElement>({ contentKey: scrollContentKey, thresholdPx: 50 });
+  } = useSmartScroll<HTMLDivElement>({ contentKey: scrollContentKey, thresholdPx: 50, enabled: messages.length > 0 || Object.values(runs).some((run) =>
+    (run.status === "completed" || run.status === "failed") && (sessionId == null || run.parent_session_id === sessionId)) });
 
   // Completed sub-agent runs scoped to the current session, sorted
   // by finished time so the cards appear in the right order.
@@ -160,7 +161,7 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
       {messages.length === 0 && finishedRuns.length === 0 && loadingMessages ? (
         <MessageListSkeleton />
       ) : messages.length === 0 && finishedRuns.length === 0 ? (
-        <div data-testid="empty-state" className="mx-auto mt-8 max-w-lg px-2 sm:mt-16 sm:px-4">
+        <div data-testid="empty-state" className="mx-auto mt-3 max-w-lg px-2 sm:mt-6 sm:px-4">
           <EmptyState
             icon={<Sparkles size={24} />}
             title="从一个清楚的目标开始"
