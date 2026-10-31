@@ -94,9 +94,12 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         async def still_bound() -> bool:
             from ..storage.dao.projects import ProjectsDAO
             current = await sessions.get(job.session_id)
-            return (current is not None and current.get("project_id") == job.project_id
+            if not (current is not None and current.get("project_id") == job.project_id
                     and (not job.project_id or await ProjectsDAO(db).get(str(job.project_id)) is not None)
-                    and str(await resolve_root_for_session(job.session_id)) == job.workspace)
+                    and str(await resolve_root_for_session(job.session_id)) == job.workspace):
+                return False
+            job.verify_workspace()
+            return True
 
         def unverified(reason: str) -> dict[str, Any]:
             receipt["verification"] = {**evidence, "verdict": "unknown", "reason": reason, "requires_review": True}
@@ -130,8 +133,17 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
             return unverified("validation_workspace_changed")
         await conversation._save("running", message=True, result={**receipt, "run_status": "running"})
         await emit("run.updated", {"run": await dao.get_run(job.run_id)})
-        with execution_scope(ExecutionPolicy(workspace=Path(job.workspace))):
-            result = await run_validate_command(job.validate_command, cwd=job.workspace, timeout_s=resolve_validate_timeout())
+        try:
+            # Bind the process policy to the admission identity, not a fresh
+            # snapshot taken after the approval and persistence awaits above.
+            identity = job.workspace_identity
+            if not identity:
+                return unverified("validation_workspace_changed")
+            with execution_scope(ExecutionPolicy(workspace=Path(job.workspace),
+                    _workspace_identity=(identity["device"], identity["inode"]))):
+                result = await run_validate_command(job.validate_command, cwd=job.workspace, timeout_s=resolve_validate_timeout())
+        except (OSError, ValueError, RuntimeError, PermissionError):
+            return unverified("validation_workspace_changed")
         if job.cancel_requested:
             raise asyncio.CancelledError
         receipt["verification"] = verification_evidence(status=status, engine="codex", mode=request.mode,
