@@ -87,26 +87,38 @@ def register_checkpoint_handlers(
             ckpt_dao = await dao_factory()
             mgr = await manager_factory()
             checkpoint_id = f"ckpt_{uuid.uuid4().hex[:12]}"
-            snapshot = await mgr.create(
-                cwd=workdir,
-                checkpoint_id=checkpoint_id,
-                session_id=session_id,
-                label=label,
-                message=message,
-            )
-            row = await ckpt_dao.create(
-                session_id=session_id,
-                label=label,
-                message=message,
-                git_stash_ref=snapshot.git_stash_ref,
-                branch=snapshot.branch,
-                tracked_files=snapshot.tracked_files,
-                untracked_files=snapshot.untracked_files,
-                has_untracked_snapshot=snapshot.has_untracked_snapshot,
-                checkpoint_id=checkpoint_id,
-                created_at=snapshot.created_at,
-                source_root=str(workdir),
-            )
+            from ..runs import get_run_service
+
+            try:
+                async with get_run_service(ctx.server).workspace_maintenance(str(workdir)) as verify_workspace:
+                    if await _resolve_cwd(p, session_id=session_id) != workdir:
+                        raise ValueError("Checkpoint workspace changed; retry after review")
+                    verify_workspace()
+                    snapshot = await mgr.create(
+                        cwd=workdir,
+                        checkpoint_id=checkpoint_id,
+                        session_id=session_id,
+                        label=label,
+                        message=message,
+                    )
+                    if await _resolve_cwd(p, session_id=session_id) != workdir:
+                        raise ValueError("Checkpoint workspace changed during capture; retry after review")
+                    verify_workspace()
+                    row = await ckpt_dao.create(
+                        session_id=session_id,
+                        label=label,
+                        message=message,
+                        git_stash_ref=snapshot.git_stash_ref,
+                        branch=snapshot.branch,
+                        tracked_files=snapshot.tracked_files,
+                        untracked_files=snapshot.untracked_files,
+                        has_untracked_snapshot=snapshot.has_untracked_snapshot,
+                        checkpoint_id=checkpoint_id,
+                        created_at=snapshot.created_at,
+                        source_root=str(workdir),
+                    )
+            except ValueError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             await ctx.reply({"checkpoint": row, "warnings": snapshot.warnings[:100],
                              "warnings_truncated": len(snapshot.warnings) > 100})
         except HandlerError as exc:
