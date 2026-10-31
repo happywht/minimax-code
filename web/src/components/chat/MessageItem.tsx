@@ -104,17 +104,17 @@ export const MessageItem = React.memo(function MessageItem({
   }
 
   const bubbleClass = isUser
-    ? "group relative max-w-[80%] rounded-2xl rounded-br-md bg-accent py-2 pl-9 pr-4 text-sm text-accent-contrast shadow-sm transition-colors duration-200"
+    ? "group relative max-w-[88%] rounded-2xl bg-surface-2 py-3 pl-10 pr-10 text-sm text-ink-0"
     : isSystem
       ? "max-w-[80%] rounded-lg border border-status-error/30 bg-[var(--status-error-subtle)] px-3 py-1.5 text-xs italic text-status-error transition-colors duration-200"
-      : "group relative max-w-[85%] rounded-2xl rounded-bl-md border py-2 pl-4 pr-9 text-sm shadow-sm transition-colors duration-200 " +
+      : "group relative w-full py-3 pl-1 pr-9 text-sm transition-colors duration-200 " +
         (isFailed
           ? "border-status-error/40 bg-[var(--status-error-subtle)] text-status-error"
           : isCancelling
             ? "border-status-warning/30 bg-[var(--status-warning-subtle)] text-ink-0"
             : isCancelled
               ? "border-line bg-surface-1 text-ink-1"
-              : "border-line bg-surface-2 text-ink-0");
+              : "text-ink-0");
   const canEdit = !codex && isUser && !message.streaming;
   const canDelete = !codex && !isSystem && !message.streaming;
   const canPreparePlan = isAssistant && !!sessionId && planRun?.session_id === sessionId &&
@@ -165,14 +165,14 @@ export const MessageItem = React.memo(function MessageItem({
           <MessageCopyOverlay
             messageId={message.id}
             text={message.text}
-            onAccent={isUser}
+            onAccent={false}
           />
         )}
         {!isSystem && (
           <div
             className={
               "absolute top-1.5 z-10 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100 " +
-              (isUser ? "right-1.5" : "left-1.5")
+              "left-1.5"
             }
           >
             <MessageActionMenu

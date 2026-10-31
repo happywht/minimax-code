@@ -14,7 +14,7 @@
  */
 import { lazy, Suspense, useMemo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, Sparkles } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useChat, useSessionStore, useSubAgentStore } from "../../stores";
 import { SubAgentResultCard } from "../right-panel/SubAgentResultCard";
 import { useMessageWindow } from "../../lib/useMessageWindow";
@@ -161,14 +161,8 @@ export function MessageList({ testId = "message-list", searchQuery }: MessageLis
         <MessageListSkeleton />
       ) : messages.length === 0 && finishedRuns.length === 0 ? (
         <div data-testid="empty-state" className="mx-auto flex min-h-full max-w-2xl flex-col justify-center px-2 pb-6 sm:px-4">
-          <div className="mb-5 flex h-10 w-10 items-center justify-center rounded-2xl bg-accent-subtle text-accent"><Sparkles size={19} /></div>
-          <h2 className="text-2xl font-semibold tracking-tight text-ink-0 sm:text-3xl">从一个想法开始</h2>
-          <p className="mt-2 max-w-lg text-sm leading-6 text-ink-2">描述你的目标、相关资料和期望结果。也可以从下面的示例开始。</p>
-          <div className="mt-6 grid gap-2 text-left sm:grid-cols-3">
-            <Suggestion label="规划任务" text="请先了解当前项目，再提出实现目标的步骤；有不确定的地方先问我。" />
-            <Suggestion label="理解代码" text="请阅读相关文件，解释现有实现，并指出需要我注意的限制。" />
-            <Suggestion label="整理资料" text="请根据我提供的资料整理一份报告，标明来源和待确认的信息。" />
-          </div>
+          <h2 className="text-2xl font-medium tracking-tight text-ink-0 sm:text-3xl">今天想做什么？</h2>
+          <p className="mt-3 text-sm text-ink-2">写下你的想法，或者添加文件开始。</p>
         </div>
       ) : (
         <div
@@ -330,22 +324,4 @@ function estimateRowSize(row: MessageListRow | undefined): number {
   if (row.message.role === "user") return Math.min(180, 48 + textLength / 4);
   if (row.message.role === "tool") return 54;
   return Math.min(260, 92 + textLength / 5);
-}
-
-function Suggestion({ label, text }: { label: string; text: string }): JSX.Element {
-  return (
-    <button
-      type="button"
-      className="group min-h-20 rounded-xl border border-line bg-surface-1 px-3 py-3 text-left transition-colors hover:border-accent/40 hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-      onClick={() => {
-        // The composer reads its value from local state, so we just
-        // fire a custom event the MessageInput listens for. This keeps
-        // the components decoupled.
-        window.dispatchEvent(new CustomEvent("minimax:suggestion", { detail: text }));
-      }}
-    >
-      <span className="block text-xs font-medium text-ink-0">{label}</span>
-      <span className="mt-1 block line-clamp-2 text-xs leading-5 text-ink-2">{text}</span>
-    </button>
-  );
 }

@@ -21,13 +21,9 @@ export function InspectorHeader({
   const meta = tabMeta(activeTab);
   return (
     <header className="flex items-center justify-between border-b border-line px-3 py-2">
-      <div className="min-w-0">
-        <span className="block text-[11px] font-semibold uppercase tracking-wider text-ink-2">
+      <div className="min-w-0" title={meta.label}>
+        <span className="block text-xs font-medium text-ink-1">
           {strings.rightPanel.shell.inspector}
-        </span>
-        <span className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-ink-1">
-          <span className="flex items-center text-accent">{meta.icon}</span>
-          <span className="truncate">{meta.label}</span>
         </span>
       </div>
       <IconButton

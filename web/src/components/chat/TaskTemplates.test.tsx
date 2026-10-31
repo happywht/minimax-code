@@ -28,7 +28,7 @@ describe("task templates in the composer", () => {
     expect(select).toHaveBeenCalledWith(expect.stringContaining("读取相关网页原文"));
     view.unmount();
     render(<MessageInput />);
-    fireEvent.click(screen.getByText("上下文与选项"));
+    fireEvent.click(screen.getByText("任务设置"));
     expect(screen.queryByText("任务模板与资料")).not.toBeInTheDocument();
     expect(screen.getByTestId("message-attach-btn")).toBeEnabled();
   });
@@ -45,7 +45,7 @@ describe("task templates in the composer", () => {
     render(<MessageInput />);
     const note = screen.getByText(/Codex 使用独立模型配置/);
     expect(note).not.toBeVisible();
-    fireEvent.click(screen.getByText("上下文与选项"));
+    fireEvent.click(screen.getByText("任务设置"));
     expect(note).toBeVisible();
     expect(note).toHaveTextContent("历史与外部线程绑定");
     expect(note).toHaveTextContent("图片最多 5 张");
@@ -65,7 +65,7 @@ describe("task templates in the composer", () => {
 it("shows one clear scope summary for the selected session", () => {
   state.engine = "native";
   render(<MessageInput />);
-  fireEvent.click(screen.getByText("上下文与选项"));
+  fireEvent.click(screen.getByText("任务设置"));
   const scope = within(screen.getByLabelText("任务提交位置"));
   expect(scope.getByText("服务地址")).toBeVisible();
   expect(scope.getByText("项目", { selector: "dt" })).toBeVisible();

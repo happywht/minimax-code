@@ -47,28 +47,27 @@ export type SettingsTab = "hosts" | "models" | "providers" | "permissions" | "sc
 
 const TAB_GROUPS: Array<{
   label: string;
-  advanced?: boolean;
   tabs: Array<{ id: SettingsTab; icon: JSX.Element; label: string; testId: string }>;
 }> = [
-  { label: "日常设置", tabs: [
+  { label: "基本设置", tabs: [
     { id: "models", icon: <Cpu size={12} />, label: strings.settings.page.tabModels, testId: "settings-tab-models" },
     { id: "providers", icon: <Globe size={12} />, label: strings.settings.page.tabProviders, testId: "settings-tab-providers" },
     { id: "hosts", icon: <Server size={12} />, label: "远程主机", testId: "settings-tab-hosts" },
     { id: "permissions", icon: <ShieldAlert size={12} />, label: strings.settings.page.tabPermissions, testId: "settings-tab-permissions" },
     { id: "data", icon: <Database size={12} />, label: "数据与诊断", testId: "settings-tab-data" },
   ] },
-  { label: "扩展与工作区", advanced: true, tabs: [
+  { label: "扩展与工作区", tabs: [
     { id: "mcp-servers", icon: <Blocks size={12} />, label: strings.settings.page.tabMcp, testId: "settings-tab-mcp-servers" },
     { id: "memory", icon: <Brain size={12} />, label: strings.settings.page.tabMemory, testId: "settings-tab-memory" },
     { id: "plugins", icon: <Puzzle size={12} />, label: strings.settings.page.tabPlugins, testId: "settings-tab-plugins" },
     { id: "worktrees", icon: <GitBranch size={12} />, label: strings.settings.page.tabWorktrees, testId: "settings-tab-worktrees" },
   ] },
-  { label: "自动化", advanced: true, tabs: [
+  { label: "自动化", tabs: [
     { id: "scheduled", icon: <CalendarClock size={12} />, label: strings.settings.page.tabScheduled, testId: "settings-tab-scheduled" },
     { id: "workflows", icon: <Workflow size={12} />, label: strings.settings.page.tabWorkflows, testId: "settings-tab-workflows" },
     { id: "webhooks", icon: <Webhook size={12} />, label: strings.settings.page.tabWebhooks, testId: "settings-tab-webhooks" },
   ] },
-  { label: "Agent 与审计", advanced: true, tabs: [
+  { label: "Agent 与审计", tabs: [
     { id: "agents", icon: <Bot size={12} />, label: strings.settings.page.tabAgents, testId: "settings-tab-agents" },
     { id: "teams", icon: <Users size={12} />, label: strings.settings.page.tabTeams, testId: "settings-tab-teams" },
     { id: "audit", icon: <ScrollText size={12} />, label: strings.settings.page.tabAudit, testId: "settings-tab-audit" },
@@ -85,10 +84,6 @@ export interface SettingsPageProps {
 export function SettingsPage({ testId = "settings-page", onClose, initialTab = "models", onEdit }: SettingsPageProps): JSX.Element {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [visited, setVisited] = useState<Set<SettingsTab>>(() => new Set([initialTab]));
-  const [advanced, setAdvanced] = useState(() => TAB_GROUPS.some((group) => group.advanced && group.tabs.some((item) => item.id === initialTab)));
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(
-    TAB_GROUPS.filter((group) => group.advanced && !group.tabs.some((item) => item.id === initialTab)).map((group) => group.label),
-  ));
   const [scope, setScope] = useState<{ host: string; service: string } | null>(null);
   const scopeRef = useRef<{ host: string; service: string } | null>(null);
   const tabRef = useRef(tab); tabRef.current = tab;
@@ -157,7 +152,7 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
               {strings.settings.page.title}
             </h1>
             <p className="text-pretty text-[11px] text-ink-2">
-              模型、提供商、主机和权限优先展示；诊断与备份在“数据与诊断”。切换页面保留草稿，离开或切换服务会丢失未保存内容。
+              切换设置项会保留草稿；离开或切换服务会丢失未保存内容。
             </p>
           </div>
           {onClose && (
@@ -171,45 +166,40 @@ export function SettingsPage({ testId = "settings-page", onClose, initialTab = "
           )}
         </div>
       </header>
-      <div className="border-b border-line px-4 py-2 text-xs text-ink-2" role="status">
-        当前服务地址：{scope?.host ?? ipc.agentBaseUrl} · 服务身份：{ready ? scope?.service : "待确认"}。模型、凭据和权限属于当前服务，项目相关配置以对应页面说明为准。
+      <div className="border-b border-line/60 px-4 py-2 text-xs text-ink-2 md:px-6" role="status">
+        <details>
+          <summary className="cursor-pointer">当前服务：{scope?.host ?? ipc.agentBaseUrl} · {ready ? "已确认" : "待确认"}</summary>
+          <p className="pt-1">服务身份：{ready ? scope?.service : "待确认"}。模型、凭据和权限属于当前服务，项目相关配置以对应页面说明为准。</p>
+        </details>
         {scopeNotice && <p className="text-status-warning">{scopeNotice}</p>}
         {!ready && <p className="text-status-warning">{scopeError || "正在确认服务身份…"} {scopeError && <button type="button" className="underline" onClick={() => void confirmScope()}>重新确认</button>}</p>}
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
         <nav
           data-testid="settings-nav"
-          className="flex max-w-full shrink-0 gap-2 overflow-x-auto overscroll-x-contain border-b border-line bg-surface-1 px-2 py-2 sm:px-3 md:w-52 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:px-3 md:py-4"
+          className="shrink-0 border-b border-line/60 bg-surface-1 px-4 py-3 md:w-56 md:overflow-y-auto md:border-b-0 md:border-r md:px-3 md:py-4"
           aria-label={strings.settings.page.sections}
         >
-          <button type="button" aria-expanded={advanced} onClick={() => {
-            if (advanced) setCollapsedGroups((previous) => new Set([...previous, ...TAB_GROUPS.filter((group) => group.advanced).map((group) => group.label)]));
-            setAdvanced((value) => !value);
-          }} className="shrink-0 rounded-md px-2 py-1.5 text-left text-xs text-ink-1 hover:bg-surface-2 md:order-2">{advanced ? "收起进阶设置" : "展开进阶设置"}</button>
-          {TAB_GROUPS.filter((group) => !group.advanced || advanced || group.tabs.some((item) => item.id === tab)).map((group) => (
-            <div key={group.label} className="flex shrink-0 flex-col gap-1">
-              <button type="button" aria-expanded={!collapsedGroups.has(group.label)} onClick={() => setCollapsedGroups((previous) => {
-                const next = new Set(previous);
-                if (next.has(group.label)) next.delete(group.label); else next.add(group.label);
-                return next;
-              })} className="rounded px-2 py-1 text-left text-[11px] font-medium text-ink-2 hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-                {collapsedGroups.has(group.label) ? "▸" : "▾"} {group.label}
-              </button>
-              <div className="flex gap-1 md:flex-col">
-                {group.tabs.filter((item) => !collapsedGroups.has(group.label) || item.id === tab).map((item) => (
-                  <TabButton
-                    key={item.id}
-                    id={item.id}
-                    current={tab}
-                    onClick={selectTab}
-                    icon={item.icon}
-                    label={item.label}
-                    testId={item.testId}
-                  />
-                ))}
+          <label className="flex items-center gap-3 text-xs text-ink-2 md:hidden">
+            设置分类
+            <select aria-label="设置分类" value={tab} onChange={(event) => selectTab(event.target.value as SettingsTab)} className="min-w-0 flex-1 rounded-lg border border-line bg-surface-0 px-3 py-2 text-sm text-ink-0">
+              {TAB_GROUPS.map((group) => <optgroup key={group.label} label={group.label}>
+                {group.tabs.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              </optgroup>)}
+            </select>
+          </label>
+          <div className="hidden space-y-5 md:block">
+            {TAB_GROUPS.map((group) => (
+              <div key={group.label}>
+                <p className="px-2.5 pb-1.5 text-[11px] font-medium text-ink-2">{group.label}</p>
+                <div className="space-y-0.5">
+                  {group.tabs.map((item) => (
+                    <TabButton key={item.id} id={item.id} current={tab} onClick={selectTab} icon={item.icon} label={item.label} testId={item.testId} />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </nav>
         {scope && <div key={JSON.stringify([scope.host, scope.service])} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           {!ready && <div className="absolute inset-0 z-10 bg-surface-overlay/90" aria-hidden="true" />}
@@ -252,9 +242,9 @@ function TabButton({
       data-testid={testId}
       onClick={() => onClick(id)}
       className={
-        "flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left text-xs transition-colors duration-150 md:w-full " +
+        "flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 md:w-full " +
         (active
-          ? "bg-accent-subtle font-medium text-accent"
+          ? "bg-surface-3 font-medium text-ink-0"
           : "text-ink-1 hover:bg-surface-2 hover:text-ink-0")
       }
     >

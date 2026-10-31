@@ -16,8 +16,8 @@ export function InspectorTabBar({ testId, activeTab, onSelect }: InspectorTabBar
   // Keep a selected secondary panel visible even after closing the list.
   const visibleTabs = INSPECTOR_TABS.filter((tab) => expanded || PRIMARY_TABS.includes(tab.id) || tab.id === activeTab);
   return (
-    <div className="border-b border-line px-2 py-2">
-      <div role="tablist" aria-label={strings.rightPanel.shell.panelsAria} className="grid grid-cols-2 gap-1">
+    <div className="flex items-center gap-1 border-b border-line px-2 py-1.5">
+      <div role="tablist" aria-label={strings.rightPanel.shell.panelsAria} className={`flex min-w-0 flex-1 gap-0.5 ${expanded ? "flex-wrap" : "overflow-x-auto"}`}>
         {visibleTabs.map((tab) => {
           const selected = activeTab === tab.id;
           return (
@@ -38,16 +38,16 @@ export function InspectorTabBar({ testId, activeTab, onSelect }: InspectorTabBar
                 onSelect(target.id);
                 event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-testid="${testId}-tab-${target.id}"]`)?.focus();
               }}
-              className={`flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${selected ? "bg-accent-subtle font-medium text-ink-0" : "text-ink-1 hover:bg-surface-3"}`}>
+              className={`flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${selected ? "bg-surface-3 font-medium text-ink-0" : "text-ink-2 hover:bg-surface-3 hover:text-ink-0"}`}>
               <span className={selected ? "shrink-0 text-accent" : "shrink-0 text-ink-2"}>{tab.icon}</span>
               <span className="truncate">{tab.label}</span>
             </button>
           );
         })}
       </div>
-      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}
-        className="mt-1 flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs text-ink-2 hover:bg-surface-3 hover:text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />} 更多面板
+      <button type="button" aria-label="更多面板" title={expanded ? "收起面板" : "更多面板"} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}
+        className="flex shrink-0 items-center rounded-md p-1.5 text-ink-2 hover:bg-surface-3 hover:text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       </button>
     </div>
   );

@@ -7,7 +7,7 @@
  * ``useMentionPicker``. Presentational pieces are split into
  * ``AttachmentRows``, ``MentionPickerDropdown`` and ``ComposerToolbar``.
  */
-import { Camera, Mic, MicOff, Paperclip, Send, Square } from "lucide-react";
+import { Mic, MicOff, Paperclip, Send, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ipc } from "../../ipc";
 import { useChat, useSessionStore } from "../../stores";
@@ -370,22 +370,13 @@ export function MessageInput({
             className="min-h-[64px] w-full resize-none bg-transparent px-1 py-1 text-[15px] leading-6 text-ink-0 placeholder:text-ink-2 focus:outline-none"
           />
           <DropdownMenu align="left" testId="message-attach-btn" trigger={
-            <IconButton aria-label={strings.chat.input.attachFile} title="添加文件" className="h-8 w-8"><Paperclip size={14} /></IconButton>
+            <IconButton aria-label={strings.chat.input.attachFile} title="添加文件" disabled={disabled} className="h-8 w-8"><Paperclip size={14} /></IconButton>
           } items={[
             { id: "text", label: "文本文件（内容加入草稿）", onClick: () => attachments.fileInputRef.current?.click() },
             { id: "image", label: "图片", onClick: () => attachments.imageInputRef.current?.click() },
             { id: "document", label: "PDF、Word、Excel 等文件", onClick: () => setProjectFileOpen(true) },
           ]} />
           <ProjectAttachmentImport sessionId={sessionId} projectId={projectId} host={budgetHost} open={projectFileOpen} onClose={() => setProjectFileOpen(false)} />
-          <IconButton
-            aria-label={strings.chat.input.attachImage}
-            data-testid="message-image-btn"
-            onClick={() => attachments.imageInputRef.current?.click()}
-            title={strings.chat.input.attachAnImage}
-            className="h-8 w-8"
-          >
-            <Camera size={14} />
-          </IconButton>
           <input
             ref={attachments.imageInputRef}
             type="file"
@@ -412,7 +403,7 @@ export function MessageInput({
             value={executionMode}
             disabled={disabled}
             onChange={(event) => setExecutionMode(event.target.value as "execute" | "plan")}
-            className="rounded border bg-transparent px-2 py-1"
+            className="rounded-lg border-0 bg-transparent px-2 py-1.5 text-xs text-ink-1 hover:bg-surface-3"
           >
             <option value="execute">执行</option>
             <option value="plan">只读规划</option>
@@ -429,7 +420,7 @@ export function MessageInput({
           <details ref={optionsRef} className="relative" open={!budgetValid ? true : undefined} onToggle={(event) => { if (event.currentTarget.open) placeOptions(); }} onKeyDown={(event) => {
             if (event.key === "Escape" && budgetValid) { event.stopPropagation(); event.currentTarget.open = false; event.currentTarget.querySelector<HTMLElement>("summary")?.focus(); }
           }}>
-            <summary className="cursor-pointer list-none rounded-lg px-2 py-1.5 text-xs text-ink-1 hover:bg-surface-3" title="项目、目录与任务设置">上下文与选项{restrictNetworkTools ? " · 已限制联网" : ""}{budgetText ? ` · ${budgetText} tokens` : ""}</summary>
+            <summary className="cursor-pointer list-none rounded-lg px-2 py-1.5 text-xs text-ink-1 hover:bg-surface-3" title="项目、目录与任务设置">任务设置{restrictNetworkTools ? " · 限制联网" : ""}{budgetText ? ` · ${budgetText} tokens` : ""}</summary>
             <div style={optionsPosition} className="fixed z-50 overflow-y-auto rounded-xl border border-line bg-surface-1 p-3 shadow-pop">
               <ComposerSafetyControls />
               {codex && <p className="mt-2 text-[11px] text-ink-2">Codex 使用独立模型配置；会话历史与外部线程绑定，如需修改历史，请新建会话并交接上下文。文本文件内容会插入草稿；移除文件标签不会删除文字。图片最多 5 张、总计 4 MiB，随请求持久保存在本地数据库及 Codex 线程中；模型是否支持图片由 Codex 决定。@ 和 # 按普通文本发送。</p>}
@@ -446,8 +437,7 @@ export function MessageInput({
           <p className="text-ink-2">实际执行主机和目录以任务运行详情为准。</p>
         </div>
         <div className="border-t border-line py-2 text-xs text-ink-2">
-        <details className="min-w-0" open={!budgetValid ? true : undefined}>
-          <summary className="cursor-pointer py-1 text-ink-1">任务设置{captureFileChanges ? " · 采集文件变化" : ""}{budgetText ? ` · 上限 ${budgetText} tokens` : ""}</summary>
+        <div className="min-w-0 space-y-2">
         {(!codex || restrictNetworkTools) && <label className="block py-2 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制联网工具：仅允许读取已保存来源、提问及按写权限新建 Markdown/TXT；禁用 shell、MCP 等。模型服务仍可能联网，并非网络隔离。{codex && "此限制不支持 Codex，请先关闭或选择 Native。"}</label>}
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={captureFileChanges} disabled={disabled}
@@ -459,11 +449,11 @@ export function MessageInput({
           <input aria-label="下一任务 token 上限" inputMode="numeric" pattern="[0-9]*" value={budgetText} maxLength={16}
             onChange={(event) => setBudgetScope({ host: budgetHost, session: sessionId, value: event.target.value })}
             placeholder="空白：服务默认" className="w-36 rounded border border-line bg-surface-0 px-2 py-1 text-ink-0" />
-          <span className="text-ink-2">空白沿用服务默认（当前值未知）；正整数用于接下来新任务及其子任务。</span>
+          <span className="text-ink-2">留空使用服务默认。</span>
         </label>
         {!budgetValid && <p role="alert" className="px-2 text-xs text-status-error">请输入安全范围内的正整数，或留空使用服务默认。</p>}
-        <p className="px-2 pb-1 text-[11px] text-ink-2">Token 上限并非费用上限；日限额仍生效。Native 按请求前估算、Codex 按已观察用量事后控制，均不保证严格费用上限。切换会话或连接变化会清空此输入。</p>
-        </details>
+        <p className="px-2 pb-1 text-[11px] text-ink-2">Token 上限不等于费用上限，也不能保证严格限制用量。</p>
+        </div>
         </div>
             </div>
           </details>
@@ -494,10 +484,7 @@ export function MessageInput({
           agentsError={mention.agentsError}
           onSelect={(option) => void mention.select(option)}
         />}
-        {streaming && <p role="status" className="px-3 pb-2 text-xs text-ink-2">
-          {cancelling ? "正在停止会话及排队任务，请稍候。" : "发送将创建独立的下一任务；不会中途追加。当前任务结束前排队，若已结束则可能立即开始。"}
-          {attachments.attachedImages.length > 0 && " 待确认请求的文字和图片会暂存在此浏览器，以便安全重试。"}
-        </p>}
+        {cancelling && <p role="status" className="px-3 pb-2 text-xs text-ink-2">正在停止会话及排队任务…</p>}
         {!!sessionId && !queue.ready && <p role="status" className="px-3 pb-2 text-xs text-ink-2">正在检查此会话的待确认请求…</p>}
         {queue.busy && streaming && <p role="status" className="px-3 pb-2 text-xs text-ink-2">下一任务接单正在确认；完成后可停止会话。</p>}
         {queueMessage && <p role="status" className="break-words px-3 pb-2 text-xs text-status-warning">{queueMessage}</p>}

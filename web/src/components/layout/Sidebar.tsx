@@ -33,7 +33,6 @@ import {
 } from "lucide-react";
 import { NavItem } from "./NavItem";
 import { SessionRow } from "./SessionRow";
-import { UserBadge } from "./UserBadge";
 import { SkeletonLine } from "./Skeleton";
 import { Button, Checkbox, IconButton, Input, Modal, DropdownMenu } from "../../ui";
 import { strings } from "../../ui/strings";
@@ -41,7 +40,6 @@ import { DEFAULT_SESSION_TITLE, DEFAULT_WORKTREE_TITLE } from "../../lib/default
 import { typedIPC } from "../../ipc";
 import { useChat, usePermissionStore, useSessionStore, type SessionMeta } from "../../stores";
 import type { Project } from "../../types/ipc";
-import { APP_VERSION } from "../../version";
 
 export interface SidebarProps {
   testId?: string;
@@ -540,11 +538,11 @@ export function Sidebar({
   return (
     <aside
       data-testid={testId}
-      className="flex h-full w-60 max-w-full shrink-0 flex-col border-r border-line bg-surface-1"
+      className="flex h-full w-64 max-w-full shrink-0 flex-col border-r border-line/60 bg-surface-1"
     >
       {/* Brand */}
-      <div className="flex items-center gap-2.5 px-4 pb-2 pt-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-accent text-accent-contrast">
+      <div className="flex items-center gap-2.5 px-4 pb-3 pt-5">
+        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-surface-3 text-accent">
           <Sparkles size={14} />
         </div>
         <div className="min-w-0">
@@ -554,9 +552,6 @@ export function Sidebar({
           >
             MiniMax Code
           </h1>
-          <p className="truncate text-[11px] text-ink-2">
-            {strings.layout.sidebar.brandTagline} · v{APP_VERSION}
-          </p>
         </div>
       </div>
 
@@ -566,14 +561,14 @@ export function Sidebar({
           size="sm"
           icon={<Plus size={14} />}
           variant="primary"
-          className="h-9 flex-1 rounded-xl"
+          className="h-10 flex-1 rounded-xl"
           loading={creatingSession}
           disabled={creatingSession}
           onClick={() => { if (allowScopeChange()) void createSession(DEFAULT_SESSION_TITLE, currentProject.id, newSessionEngine); }}
           title={`在「${currentProject.name}」使用 ${newSessionEngine === "codex" ? "Codex" : "Native"} 创建新任务`}
           data-testid="sidebar-new-task"
         >
-          新任务 · {newSessionEngine === "codex" ? "Codex" : "Native"}
+          新任务
         </Button>
         <DropdownMenu
           align="left"
@@ -603,21 +598,21 @@ export function Sidebar({
       </div>
 
       {/* Four daily areas; each child retains the existing view/filter behavior. */}
-      <nav aria-label="日常导航" className="max-h-[38%] shrink-0 space-y-0.5 overflow-y-auto px-2 pb-2" data-testid="sidebar-nav">
-        <NavItem icon={<History size={14} />} label="任务状态与结果" selected={view === "task-dashboard"} onClick={() => onViewChange?.("task-dashboard")} testId="sidebar-nav-task-dashboard" />
+      <nav aria-label="日常导航" className="max-h-[40%] shrink-0 space-y-0.5 overflow-y-auto px-3 pb-3" data-testid="sidebar-nav">
+        <NavItem icon={<LayoutDashboard size={15} />} label="对话" selected={view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-chat" />
+        <NavItem icon={<History size={15} />} label="任务总览" selected={view === "task-dashboard"} onClick={() => onViewChange?.("task-dashboard")} testId="sidebar-nav-task-dashboard" />
         {([
-          { id: "projects" as const, label: "项目与任务", icon: <Folder size={14} />, items: <>
-            <NavItem icon={<Folder size={14} />} label="项目与任务列表" selected={navigationGroup === "projects" && view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-projects" />
-            <NavItem icon={<History size={14} />} label="任务历史" selected={view === "chat" && filter === "history"} onClick={() => { onViewChange?.("chat"); setFilter("history"); }} testId="sidebar-nav-history" />
+          { id: "projects" as const, label: "筛选会话", icon: <Folder size={14} />, items: <>
+            <NavItem icon={<Folder size={14} />} label="全部会话" selected={navigationGroup === "projects" && view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-projects" />
+            <NavItem icon={<History size={14} />} label="历史会话" selected={view === "chat" && filter === "history"} onClick={() => { onViewChange?.("chat"); setFilter("history"); }} testId="sidebar-nav-history" />
             <NavItem icon={<Archive size={14} />} label="已归档" selected={view === "chat" && filter === "archived"} onClick={() => { onViewChange?.("chat"); setFilter("archived"); }} testId="sidebar-nav-archived" />
           </> },
-          { id: "work" as const, label: "当前工作", icon: <LayoutDashboard size={14} />, items: <>
-            <NavItem icon={<LayoutDashboard size={14} />} label="当前会话" selected={navigationGroup === "work" && view === "chat" && filter === "all"} onClick={() => { onViewChange?.("chat"); setFilter("all"); }} testId="sidebar-nav-chat" />
+          { id: "work" as const, label: "工作工具", icon: <LayoutDashboard size={14} />, items: <>
             <NavItem icon={<Search size={14} />} label="工作区预览" selected={view === "preview"} onClick={() => onViewChange?.("preview")} testId="sidebar-nav-preview" />
             <NavItem icon={<Wrench size={14} />} label="技能" selected={view === "skills"} onClick={() => { onViewChange?.("skills"); setFilter("skills"); }} testId="sidebar-nav-skills" />
             <NavItem icon={<Bot size={14} />} label="Agent 管理" selected={view === "agents"} onClick={() => { onViewChange?.("agents"); setFilter("all"); }} testId="sidebar-nav-agents" />
           </> },
-          { id: "deliveries" as const, label: "交付物", icon: <Archive size={14} />, items: <>
+          { id: "deliveries" as const, label: "成果", icon: <Archive size={14} />, items: <>
             <NavItem icon={<Folder size={14} />} label="文本成果" selected={view === "artifacts"} onClick={() => onViewChange?.("artifacts")} testId="sidebar-nav-artifacts" />
             <NavItem icon={<Folder size={14} />} label="项目附件与报告" selected={view === "attachments"} onClick={() => onViewChange?.("attachments")} testId="sidebar-nav-attachments" />
             <NavItem icon={<Folder size={14} />} label="办公成果与表格" selected={view === "office"} onClick={() => onViewChange?.("office")} testId="sidebar-nav-office" />
@@ -632,7 +627,7 @@ export function Sidebar({
         ]).map((group) => <div key={group.id}>
           <button type="button" aria-expanded={navigationGroup === group.id} aria-controls={`sidebar-group-${group.id}`}
             onClick={() => setNavigationGroup((current) => current === group.id ? null : group.id)}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs font-semibold text-ink-0 hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[13px] text-ink-1 hover:bg-surface-3 hover:text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
             data-testid={`sidebar-area-${group.id}`}>
             <span className="text-ink-2">{group.icon}</span><span className="flex-1">{group.label}</span>{navigationGroup === group.id ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           </button>
@@ -642,7 +637,7 @@ export function Sidebar({
       </nav>
 
       {/* Project / Session list */}
-      <div className="mt-1 flex min-h-0 flex-1 flex-col border-t border-line/60">
+      <div className="flex min-h-0 flex-1 flex-col border-t border-line/60 pt-2">
         {selectionActive ? (
           <div
             data-testid="sidebar-batch-toolbar"
@@ -690,7 +685,7 @@ export function Sidebar({
           </div>
         ) : (
           <div className="flex items-center justify-between px-4 pt-1 text-[11px] font-medium uppercase tracking-wide text-ink-2">
-            <span>项目</span>
+            <span>项目与会话</span>
             <div className="flex items-center gap-1.5">
               <span data-testid="sidebar-session-count">{visibleCount}</span>
               <IconButton
@@ -777,34 +772,17 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="shrink-0 border-t border-line bg-surface-1">
-        <div className="px-2 py-2">
-          <NavItem
-            icon={<Plug size={14} />}
-            label="连接手机"
-            onClick={onMobileClick}
-            testId="sidebar-mobile"
-          />
-        </div>
-        {stats != null && (
-          <div className="flex items-center justify-between border-b border-line px-3 py-1.5 text-[11px] text-ink-2">
-            <span data-testid="sidebar-stats-sessions">{stats.total_sessions} 会话</span>
-            <span data-testid="sidebar-stats-messages">{stats.total_messages} 消息</span>
+      {/* Secondary account controls stay available without competing with conversations. */}
+      <div className="shrink-0 border-t border-line/60 px-3 py-2">
+        <NavItem icon={<Plug size={14} />} label="连接手机" onClick={onMobileClick} testId="sidebar-mobile" />
+        <details className="px-2 text-[11px] text-ink-2">
+          <summary className="cursor-pointer py-1">服务信息</summary>
+          <div className="flex justify-between pb-1">
+            {stats != null && <><span data-testid="sidebar-stats-sessions">{stats.total_sessions} 会话</span><span data-testid="sidebar-stats-messages">{stats.total_messages} 消息</span></>}
+            {stats == null && statsError && <span role="status" data-testid="sidebar-stats-error">{strings.layout.sidebar.statsUnavailable}</span>}
           </div>
-        )}
-        {stats == null && statsError && (
-          <div
-            role="status"
-            data-testid="sidebar-stats-error"
-            className="border-b border-line px-3 py-1.5 text-[11px] text-status-error"
-          >
-            {strings.layout.sidebar.statsUnavailable}
-          </div>
-        )}
-        <div className="border-t border-line p-2">
-          <UserBadge name="当前用户" email="数据属于当前服务" plan="个人版" />
-        </div>
+          <p className="pb-1">数据属于当前服务 · 个人版</p>
+        </details>
       </div>
 
       {/* Create project modal */}

@@ -2,7 +2,7 @@
  * TopBar — the 40px header strip across the top of the app.
  */
 import type { ReactNode } from "react";
-import { Command, Eye, Menu, PanelRight, Settings as SettingsIcon } from "lucide-react";
+import { Command, Eye, Menu, MoreHorizontal, PanelRight, Settings as SettingsIcon } from "lucide-react";
 import { GitStatusBar } from "./GitStatusBar";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
@@ -40,7 +40,7 @@ export function TopBar({
   return (
     <header
       data-testid={testId}
-      className="flex h-12 w-full shrink-0 items-center justify-between gap-1 border-b border-line/60 bg-surface-1 px-2 sm:gap-2 md:px-4"
+      className="flex h-14 w-full shrink-0 items-center justify-between gap-1 border-b border-line/50 bg-surface-0 px-3 sm:gap-2 md:px-5"
     >
       <div
         data-testid="app-topbar-left"
@@ -59,7 +59,6 @@ export function TopBar({
           </IconButton>
         )}
         <WorkspaceSwitcher />
-        <GitStatusBar />
       </div>
       <div
         data-testid="app-topbar-right"
@@ -86,31 +85,27 @@ export function TopBar({
         >
           <Command size={14} />
         </IconButton>
-        {onTogglePreview && (
-          <Button
-            size="sm"
-            variant={previewActive ? "subtle" : "ghost"}
-            icon={<Eye size={14} />}
-            onClick={onTogglePreview}
-            data-testid="app-topbar-preview"
-            className="hidden sm:inline-flex"
-          >
-            {strings.layout.topbar.preview}
-          </Button>
-        )}
-        <NotificationBell />
-        <ThemeToggle />
-        <Button
-          size="sm"
-          variant="ghost"
-          icon={<SettingsIcon size={14} />}
-          onClick={onOpenSettings}
-          aria-label={strings.layout.topbar.settings}
-          title={strings.layout.topbar.settings}
-          data-testid="app-topbar-settings"
-        >
-          <span className="hidden sm:inline">{strings.layout.topbar.settings}</span>
-        </Button>
+        <details className="relative">
+          <summary aria-label="更多操作" title="更多操作" className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-lg text-ink-1 hover:bg-surface-3 hover:text-ink-0 [&::-webkit-details-marker]:hidden">
+            <MoreHorizontal size={17} />
+          </summary>
+          <div className="absolute right-0 top-full z-50 mt-2 flex w-56 flex-col items-stretch gap-2 rounded-xl border border-line bg-surface-1 p-3 shadow-pop">
+            <div className="text-xs font-medium text-ink-2">仓库状态</div>
+            <GitStatusBar />
+            <div className="flex items-center gap-1 border-t border-line pt-2">
+              {onTogglePreview && (
+                <Button size="sm" variant={previewActive ? "subtle" : "ghost"} icon={<Eye size={14} />} onClick={onTogglePreview} data-testid="app-topbar-preview">
+                  {strings.layout.topbar.preview}
+                </Button>
+              )}
+              <NotificationBell />
+              <ThemeToggle />
+              <IconButton aria-label={strings.layout.topbar.settings} title={strings.layout.topbar.settings} onClick={onOpenSettings} data-testid="app-topbar-settings">
+                <SettingsIcon size={14} />
+              </IconButton>
+            </div>
+          </div>
+        </details>
       </div>
     </header>
   );

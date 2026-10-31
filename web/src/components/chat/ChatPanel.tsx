@@ -13,9 +13,7 @@ import {
   Archive,
   Download,
   Loader2,
-  MessageSquare,
   MoreHorizontal,
-  Pencil,
   RefreshCw,
   Search,
   Trash2,
@@ -133,6 +131,18 @@ export function ChatPanel({
     const disabled = !current;
     return [
       {
+        id: "rename",
+        label: strings.chat.header.rename,
+        disabled,
+        onClick: startEditing,
+      },
+      {
+        id: "refresh",
+        label: strings.chat.header.refreshSessions,
+        icon: <RefreshCw size={14} />,
+        onClick: () => void refreshSessions(),
+      },
+      {
         id: "export",
         label: strings.chat.menu.exportMarkdown,
         icon: <Download size={14} />,
@@ -174,7 +184,7 @@ export function ChatPanel({
         },
       },
     ];
-  }, [archiveSession, current, removeSession]);
+  }, [archiveSession, current, refreshSessions, removeSession, startEditing]);
 
   const headerStatus = (() => {
     if (connectionState !== "connected") return { label: "连接状态待确认", tone: "amber" };
@@ -207,7 +217,6 @@ export function ChatPanel({
       {/* Header */}
       <header className="flex min-h-14 items-center gap-2 px-4 sm:px-7">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <MessageSquare size={14} className="shrink-0 text-minimax-muted" />
           {editing ? (
             <input
               ref={inputRef}
@@ -235,18 +244,7 @@ export function ChatPanel({
               {current?.title ?? DEFAULT_SESSION_TITLE}
             </h2>
           )}
-          {current && !editing && (
-            <button
-              type="button"
-              data-testid="chat-header-rename-btn"
-              onClick={startEditing}
-              className="shrink-0 rounded p-0.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-              title={strings.chat.header.rename}
-              aria-label={strings.chat.header.rename}
-            >
-              <Pencil size={12} />
-            </button>
-          )}
+          {headerStatus.tone !== "emerald" && (
           <span
             data-testid="chat-header-status"
             className={
@@ -259,6 +257,7 @@ export function ChatPanel({
             )}
             {headerStatus.label}
           </span>
+          )}
           {error && !currentId && <span data-testid="chat-header-error" role="alert" title={error} className="min-w-0 truncate text-xs text-status-error">{error}</span>}
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -297,16 +296,6 @@ export function ChatPanel({
             aria-label={strings.chat.header.search}
           >
             <Search size={12} />
-          </button>
-          <button
-            type="button"
-            data-testid="chat-header-refresh"
-            onClick={() => void refreshSessions()}
-            className="rounded-md p-1.5 text-minimax-muted hover:bg-minimax-border hover:text-minimax-fg"
-            title={strings.chat.header.refresh}
-            aria-label={strings.chat.header.refreshSessions}
-          >
-            <RefreshCw size={12} />
           </button>
           <DropdownMenu
             align="right"

@@ -403,19 +403,6 @@ export default function App() {
         data-testid="app-root"
         className="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-ink-0"
       >
-        <TopBar
-          onOpenSettings={() => openSettings("models")}
-          onToggleSidebar={() => setSidebarOpen((v) => !v)}
-          onToggleInspector={() => setInspectorOpen(true)}
-          onTogglePreview={() => handleViewChange(view === "preview" && !overlayView ? "chat" : "preview")}
-          onToggleCommandPalette={() => paletteRef.current?.toggle()}
-          previewActive={view === "preview"}
-        />
-        {tunnelPage() && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2 text-xs text-ink-2" role="status">
-          <span>远端隧道标签页 · 当前服务：{ipc.agentBaseUrl}。会话和项目独立；连接状态不表示任务仍在运行。</span>
-          {tunnelPage()?.returnOrigin && <a className="text-accent underline" href={tunnelPage()?.returnOrigin ?? undefined} target="_blank" rel="noopener noreferrer">打开来源页面</a>}
-        </div>}
-        <StorageBanner degraded={storageDegraded} />
         <CommandPalette
           ref={paletteRef}
           onOpenSkills={() => handleViewChange("skills")}
@@ -458,6 +445,19 @@ export default function App() {
             </div>
           )}
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <TopBar
+          onOpenSettings={() => openSettings("models")}
+          onToggleSidebar={() => setSidebarOpen((v) => !v)}
+          onToggleInspector={() => setInspectorOpen(true)}
+          onTogglePreview={() => handleViewChange(view === "preview" && !overlayView ? "chat" : "preview")}
+          onToggleCommandPalette={() => paletteRef.current?.toggle()}
+          previewActive={view === "preview"}
+        />
+        {tunnelPage() && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2 text-xs text-ink-2" role="status">
+          <span>远端隧道标签页 · 当前服务：{ipc.agentBaseUrl}。会话和项目独立；连接状态不表示任务仍在运行。</span>
+          {tunnelPage()?.returnOrigin && <a className="text-accent underline" href={tunnelPage()?.returnOrigin ?? undefined} target="_blank" rel="noopener noreferrer">打开来源页面</a>}
+        </div>}
+        <StorageBanner degraded={storageDegraded} />
             <WorkbenchNavigator view={overlayView ?? view} connection={connState} onNavigate={handleViewChange} />
             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
             {view === "preview" ? (
