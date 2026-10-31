@@ -44,6 +44,18 @@ describe("P2#33: session quick-switch race condition", () => {
     });
   });
 
+  it("uses the selected engine when the first message creates a session", async () => {
+    const originalCreate = useSessionStore.getState().create;
+    const create = vi.fn().mockRejectedValue(new Error("stop after session request"));
+    useSessionStore.setState({ currentSessionId: null, newSessionEngine: "codex", create });
+    try {
+      await useChat.getState().send("new task");
+      expect(create).toHaveBeenCalledWith("new task", undefined, "codex");
+    } finally {
+      useSessionStore.setState({ create: originalCreate, newSessionEngine: "native" });
+    }
+  });
+
   it("keeps a cancelled response cancelled instead of marking it completed", async () => {
     useSessionStore.setState({ currentSessionId: "cancelled-session" });
     vi.mocked(typedIPC.sendMessage).mockResolvedValueOnce({
@@ -109,9 +121,11 @@ describe("P2#33: session quick-switch race condition", () => {
     });
 
     // Switch to session A (slow)
+    useSessionStore.setState({ currentSessionId: sessionA });
     const loadPromiseA = useChat.getState().loadMessages(sessionA);
 
     // Immediately switch to session B (fast) — this should win
+    useSessionStore.setState({ currentSessionId: sessionB });
     await useChat.getState().loadMessages(sessionB);
 
     // Wait for session A's response to arrive
@@ -139,7 +153,10 @@ describe("P2#33: session quick-switch race condition", () => {
     });
 
     // Rapid-fire switch through all sessions
-    const promises = sessions.map((sid) => useChat.getState().loadMessages(sid));
+    const promises = sessions.map((sid) => {
+      useSessionStore.setState({ currentSessionId: sid });
+      return useChat.getState().loadMessages(sid);
+    });
     await Promise.all(promises);
 
     // Only the last session's messages should be present
@@ -161,7 +178,9 @@ describe("P2#33: session quick-switch race condition", () => {
       return { messages: [{ id: "m-b", role: "user", text: "B ok", streaming: false, created_at: 1 }] };
     });
 
+    useSessionStore.setState({ currentSessionId: sessionA });
     const loadPromiseA = useChat.getState().loadMessages(sessionA);
+    useSessionStore.setState({ currentSessionId: sessionB });
     await useChat.getState().loadMessages(sessionB);
     await loadPromiseA;
 
@@ -187,6 +206,7 @@ describe("P2#33: session quick-switch race condition", () => {
       ],
     });
 
+    useSessionStore.setState({ currentSessionId: "session-with-tools" });
     await useChat.getState().loadMessages("session-with-tools");
 
     const [toolMessage] = useChat.getState().messages;

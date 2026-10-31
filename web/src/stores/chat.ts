@@ -738,7 +738,8 @@ export const useChat = create<ChatState>((set, get) => ({
       if (!sessionId) {
         const title =
           displayText.replace(/\s+/g, " ").trim().slice(0, 60) || DEFAULT_SESSION_TITLE;
-        sessionId = await useSessionStore.getState().create(title);
+        const sessions = useSessionStore.getState();
+        sessionId = await sessions.create(title, undefined, sessions.newSessionEngine);
       } else {
         const sessions = useSessionStore.getState();
         const current = sessions.sessions.find((session) => session.id === sessionId);

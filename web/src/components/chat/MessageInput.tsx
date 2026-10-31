@@ -74,7 +74,9 @@ export function MessageInput({
   const budgetNumber = budgetText ? Number(budgetText) : undefined;
   const budgetValid = !budgetText || (/^[1-9]\d*$/.test(budgetText) && budgetNumber !== undefined && Number.isSafeInteger(budgetNumber));
 
-  const codex = useSessionStore((s) => s.sessions.find((session) => session.id === sessionId)?.engine === "codex");
+  const codex = useSessionStore((s) => sessionId
+    ? s.sessions.find((session) => session.id === sessionId)?.engine === "codex"
+    : s.newSessionEngine === "codex");
   const restrictionKey = `minimax-code:network-restriction:${budgetHost}:${sessionId ?? "new"}`;
   const [restriction, setRestriction] = useState(() => ({ key: restrictionKey, value: readNetworkRestriction(restrictionKey) }));
   if (restriction.key !== restrictionKey) setRestriction({ key: restrictionKey, value: readNetworkRestriction(restrictionKey) });
@@ -143,6 +145,10 @@ export function MessageInput({
     if (!hasText && !hasImages) return;
 
     if (codex) {
+      if (restrictNetworkTools) {
+        useChat.setState({ error: "当前联网工具限制仅支持 Native；请关闭该限制或选择 Native 后再发送。" });
+        return;
+      }
       const images = attachments.attachedImages;
       const totalBytes = images.reduce((total, image) => total + Math.floor(image.data.length * 3 / 4) - (image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0), 0);
       if (images.some((image) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(image.media_type)) || totalBytes > 4 * 1024 * 1024) {
@@ -172,6 +178,7 @@ export function MessageInput({
       const record = state.sessions.find((item) => item.id === originalSession);
       const projectRecord = state.projects.find((item) => item.id === (originalRecord?.project_id ?? originalProject));
       if (state.currentSessionId !== originalSession || state.currentProjectId !== originalProject ||
+          (!originalSession && state.newSessionEngine !== original.newSessionEngine) ||
           record?.project_id !== originalRecord?.project_id || record?.workspace_path !== originalRecord?.workspace_path ||
           record?.workspace_mode !== originalRecord?.workspace_mode || record?.engine !== originalRecord?.engine ||
           projectRecord?.root_path !== originalProjectRecord?.root_path) scopeChanged = true;
@@ -289,7 +296,7 @@ export function MessageInput({
             mention.closePicker();
             draft.ref.current?.focus();
           }} />}
-        {!codex && <label className="block px-2.5 py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制此任务的联网工具（允许读取已保存来源、提问及按写入权限新建 Markdown/TXT 文件；禁用 shell、MCP 和其他工具）。模型服务可能联网；不提供系统网络隔离。</label>}
+        {(!codex || restrictNetworkTools) && <label className="block px-2.5 py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制此任务的联网工具（允许读取已保存来源、提问及按写入权限新建 Markdown/TXT 文件；禁用 shell、MCP 和其他工具）。模型服务可能联网；不提供系统网络隔离。{codex && "此限制不支持 Codex，请先关闭或选择 Native。"}</label>}
         <ProjectAttachmentImport sessionId={sessionId} projectId={projectId} host={budgetHost} />
         </details>
         <AttachmentRows
