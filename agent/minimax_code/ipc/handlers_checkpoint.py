@@ -251,9 +251,14 @@ def register_checkpoint_handlers(
                         if not row.get("source_root"):
                             raise HandlerError(INVALID_PARAMS, "Tracked file recovery requires a recorded repository root")
                         try:
-                            result = await mgr.restore_tracked_file(workdir, checkpoint, _string_required(p, "tracked_file"))
+                            result = await mgr.restore_tracked_file(
+                                workdir, checkpoint, _string_required(p, "tracked_file"),
+                                **({"destination": _string_required(p, "destination")} if "destination" in p else {}),
+                            )
                         except ValueError as exc:
                             raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+                    elif "destination" in p:
+                        raise HandlerError(INVALID_PARAMS, "destination requires tracked_file")
                     elif "untracked_file" in p:
                         relative = _string_required(p, "untracked_file")
                         expected = p.get("expected_sha256")

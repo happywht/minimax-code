@@ -2309,9 +2309,10 @@ function mockHandle(
     }
 
     case "checkpoint.restore": {
-      const p = params as { checkpoint_id: string; untracked_file?: string; tracked_file?: string };
+      const p = params as { checkpoint_id: string; untracked_file?: string; tracked_file?: string; destination?: string };
       const checkpoint = mockCheckpoints.get(p.checkpoint_id);
       if (!checkpoint) throw new Error(`unknown checkpoint: ${p.checkpoint_id}`);
+      if (p.destination !== undefined && p.tracked_file === undefined) throw new Error("destination requires tracked_file");
       if (p.untracked_file !== undefined || p.tracked_file !== undefined) throw new Error("模拟模式无法恢复实际文件");
       return {
         result: {

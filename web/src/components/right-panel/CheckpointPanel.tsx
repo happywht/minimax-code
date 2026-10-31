@@ -37,6 +37,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
   const [restoreDetails, setRestoreDetails] = useState<Record<string, string[]>>({});
   const [previews, setPreviews] = useState<Record<string, NonNullable<CheckpointDiffResult["untracked_preview"]>>>({});
   const [restoring, setRestoring] = useState(false);
+  const [trackedDestinations, setTrackedDestinations] = useState<Record<string, string>>({});
   const [rebindPaths, setRebindPaths] = useState<Record<string, string>>({});
   const [rebindTrusted, setRebindTrusted] = useState<Record<string, boolean>>({});
   const [rebinding, setRebinding] = useState<string | null>(null);
@@ -169,23 +170,24 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     }
   };
 
-  const handleRestoreTrackedFile = async (ckpt: Checkpoint, path: string) => {
+  const handleRestoreTrackedFile = async (ckpt: Checkpoint, path: string, destination?: string) => {
     if (!ckpt.source_root || restoring) return;
+    const target = destination ?? path;
     const accepted = await requestConfirmation({
       title: `恢复已跟踪文件 ${path}`,
-      description: "从检查点捕获的工作树版本创建此文件，仅当目标不存在且父目录已存在时进行；不恢复暂存状态或文件权限。快照可能不可用，文件上限为 16 MiB。",
+      description: `从检查点捕获的工作树版本创建 ${target}；仅当目标不存在且父目录已存在时进行，不恢复暂存状态或文件权限。快照可能不可用，文件上限为 16 MiB。`,
       confirmLabel: "恢复此文件",
     });
     if (!accepted) return;
     setRestoring(true);
     try {
-      const { result } = await typedIPC.restoreCheckpoint(ckpt.id, { tracked_file: path });
+      const { result } = await typedIPC.restoreCheckpoint(ckpt.id, { tracked_file: path, ...(destination ? { destination } : {}) });
       const details = [...result.warnings];
       if (result.skipped_existing.length) details.push(`目标已存在，未覆盖：${result.skipped_existing.join(", ")}`);
       if (!result.restored && !details.length) details.push("没有文件被恢复。");
       setRestoreDetails((prev) => ({ ...prev, [ckpt.id]: details }));
       if (details.length) toast.error("文件未恢复", details.join("；"));
-      else toast.success("文件已恢复", path);
+      else toast.success("文件已恢复", target);
       setExpandedDiff(null);
     } catch (err) {
       toast.error("文件恢复失败", err instanceof Error ? err.message : String(err));
@@ -432,12 +434,22 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                         {ckpt.source_root && ckpt.git_stash_ref && ckpt.tracked_files.length > 0 && (
                           <div className="mt-2 text-[11px]">
                             <p>单独恢复检查点记录的已跟踪改动：仅创建缺失目标；父目录须已存在。删除的快照条目无法恢复。</p>
-                            {ckpt.tracked_files.map((path) => (
-                              <div key={path} className="flex items-center justify-between gap-2">
-                                <span className="break-all">{path}</span>
-                                <Button size="sm" variant="secondary" disabled={restoring} onClick={() => void handleRestoreTrackedFile(ckpt, path)}><RotateCcw size={10} />恢复此文件</Button>
-                              </div>
-                            ))}
+                            {ckpt.tracked_files.map((path) => {
+                              const key = JSON.stringify([ckpt.id, path]);
+                              const destination = (trackedDestinations[key] ?? "").trim();
+                              return (
+                                <div key={path} className="mt-2 border-t border-minimax-border pt-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="break-all">{path}</span>
+                                    <Button size="sm" variant="secondary" disabled={restoring} onClick={() => void handleRestoreTrackedFile(ckpt, path)}><RotateCcw size={10} />恢复原路径</Button>
+                                  </div>
+                                  <label className="mt-1 block">恢复副本到仓库内的新相对路径（父目录须已存在）
+                                    <input className="mt-1 w-full rounded border border-minimax-border bg-minimax-bg p-1" value={trackedDestinations[key] ?? ""} onChange={(event) => setTrackedDestinations((prev) => ({ ...prev, [key]: event.target.value }))} />
+                                  </label>
+                                  <Button size="sm" variant="secondary" disabled={restoring || !destination} onClick={() => void handleRestoreTrackedFile(ckpt, path, destination)}>创建副本</Button>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                         <div className="mt-2 text-[11px]">

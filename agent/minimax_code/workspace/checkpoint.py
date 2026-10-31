@@ -292,6 +292,7 @@ class CheckpointManager:
 
     async def restore_tracked_file(
         self, cwd: str | Path, checkpoint: Checkpoint, relative: str,
+        *, destination: str | None = None,
     ) -> CheckpointRestoreResult:
         """Create a missing regular file from the captured working-tree commit."""
         require_write_access()
@@ -301,13 +302,19 @@ class CheckpointManager:
         ):
             raise ValueError("File is not recorded in this tracked checkpoint")
         root = require_directory(cwd)
-        target = _checkpoint_file(root, relative)
+        destination = relative if destination is None else destination
+        parts = Path(destination).parts
+        if len(destination) > 4096 or any(part.casefold() == ".git" for part in parts):
+            raise ValueError("Destination is too long or inside Git metadata")
+        if os.name == "nt" and any(":" in part or part.rstrip(" .") != part for part in parts):
+            raise ValueError("Destination contains an unsafe Windows path component")
+        target = _checkpoint_file(root, destination)
         warnings: list[str] = []
         skipped: list[str] = []
         restored: list[str] = []
         try:
             if target.exists() or target.is_symlink():
-                skipped.append(relative)
+                skipped.append(destination)
             else:
                 # Literal pathspec plus exact returned name prevents directory and wildcard matches.
                 rc, out, _, err = await _run_git(
@@ -329,7 +336,7 @@ class CheckpointManager:
                 if proc.returncode != 0:
                     raise ValueError("Snapshot blob is unavailable")
                 # Do not create parent directories: recheck the full existing path before publish.
-                if _checkpoint_file(root, relative) != target or not target.parent.is_dir():
+                if _checkpoint_file(root, destination) != target or not target.parent.is_dir():
                     raise ValueError("Destination parent is unavailable")
                 # Cancelling to_thread does not stop its worker. Keep this
                 # restore (and its caller's workspace reservation) alive until
@@ -352,9 +359,9 @@ class CheckpointManager:
                     except Exception:
                         logger.exception("Checkpoint publication failed during cancellation")
                     raise
-                restored.append(relative)
+                restored.append(destination)
         except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
-            warnings.append(f"restore {relative}: {exc}")
+            warnings.append(f"restore {relative} to {destination}: {exc}")
         return CheckpointRestoreResult(
             checkpoint_id=checkpoint.id, restored=bool(restored), applied_stash=False,
             restored_tracked=restored, skipped_existing=skipped, warnings=warnings,

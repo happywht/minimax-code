@@ -584,7 +584,7 @@ export interface TypedIPC {
   listCheckpoints(sessionId: string, opts?: { limit?: number; offset?: number }): Promise<CheckpointListResult>;
   createCheckpoint(opts: { session_id: string; label?: string; message?: string; cwd?: string }): Promise<CheckpointCreateResult>;
   rebindCheckpoint(checkpointId: string, opts: { cwd: string; confirm_rebind: true; confirm_trusted_bundle: true }): Promise<CheckpointCreateResult>;
-  restoreCheckpoint(checkpointId: string, opts?: { cwd?: string; legacy_source_confirmed?: boolean; untracked_file?: string; tracked_file?: string; expected_sha256?: string }): Promise<CheckpointRestoreResult>;
+  restoreCheckpoint(checkpointId: string, opts?: { cwd?: string; legacy_source_confirmed?: boolean; untracked_file?: string; tracked_file?: string; destination?: string; expected_sha256?: string }): Promise<CheckpointRestoreResult>;
   diffCheckpoint(checkpointId: string, opts?: { cwd?: string; legacy_source_confirmed?: boolean }): Promise<CheckpointDiffResult>;
   deleteCheckpoint(checkpointId: string): Promise<CheckpointDeleteResult>;
 
