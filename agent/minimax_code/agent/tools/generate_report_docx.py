@@ -302,6 +302,9 @@ class GenerateReportFromTextTool(GenerateReportPairTool):
         "without retyping its contents. Supply the attachment ID and SHA-256 from "
         "list_project_attachments, a report title and an output filename stem. The complete "
         "original text is used; long text is split into report paragraphs, not summarized. "
+        "Optionally provide saved project page_source_ids and page_excerpt_ranges, or manual "
+        "sources; these are appended to the report as in generate_report_pair. Cite them "
+        "in the original text as [1], [2] in order, with manual sources first. "
         "The original attachment is unchanged. Formatting is plain text, not Markdown rendering. "
         "Each format is saved separately; inspect attachments before retrying an uncertain result."
     )
@@ -312,11 +315,16 @@ class GenerateReportFromTextTool(GenerateReportPairTool):
         "title": {"type": "string"},
         "formats": {"type": "array", "items": {"type": "string", "enum": ["docx", "pdf"]},
                     "minItems": 1, "maxItems": 2, "uniqueItems": True},
+        "sources": GenerateReportDocxTool.parameters["properties"]["sources"],
+        "page_source_ids": GenerateReportDocxTool.parameters["properties"]["page_source_ids"],
+        "page_excerpt_ranges": GenerateReportDocxTool.parameters["properties"]["page_excerpt_ranges"],
     }, "required": ["attachment_id", "expected_sha256", "filename", "title"],
         "additionalProperties": False}
 
     async def run(self, attachment_id: str, expected_sha256: str, filename: str, title: str,
-                  formats: list[str] | None = None) -> ToolResult:
+                  formats: list[str] | None = None, sources: list[dict[str, Any]] | None = None,
+                  page_source_ids: list[str] | None = None,
+                  page_excerpt_ranges: list[dict[str, Any]] | None = None) -> ToolResult:
         try:
             require_write_access()
             if not isinstance(self.project_id, str) or not self.project_id:
@@ -334,7 +342,9 @@ class GenerateReportFromTextTool(GenerateReportPairTool):
             paragraphs = [text[offset:offset + 4096] for offset in range(0, len(text), 4096)]
             if not paragraphs or len(paragraphs) > 100:
                 raise ValueError("Text must be nonempty and fit within 100 report paragraphs")
-            result = await super().run(filename=filename, title=title, paragraphs=paragraphs, formats=formats)
+            result = await super().run(filename=filename, title=title, paragraphs=paragraphs,
+                                       formats=formats, sources=sources, page_source_ids=page_source_ids,
+                                       page_excerpt_ranges=page_excerpt_ranges)
             if isinstance(result.output, dict):
                 result.output["source_attachment"] = {
                     "attachment_id": attachment["id"], "filename": attachment["original_name"],
@@ -356,6 +366,9 @@ class GenerateReportFromArtifactTool(GenerateReportPairTool):
         "a new DOCX and/or PDF attachment. Provide the artifact ID and SHA-256 shown in "
         "the project's artifacts panel, a title and a filename stem. The complete snapshot "
         "is used as plain text; Markdown is not rendered. The original is unchanged. "
+        "Optionally provide saved project page_source_ids and page_excerpt_ranges, or manual "
+        "sources; these are appended to the report as in generate_report_pair. Cite them "
+        "in the snapshot as [1], [2] in order, with manual sources first. "
         "Inspect attachments before retrying an unconfirmed format."
     )
     parameters = {"type": "object", "properties": {
@@ -363,11 +376,16 @@ class GenerateReportFromArtifactTool(GenerateReportPairTool):
         "filename": {"type": "string"}, "title": {"type": "string"},
         "formats": {"type": "array", "items": {"type": "string", "enum": ["docx", "pdf"]},
                     "minItems": 1, "maxItems": 2, "uniqueItems": True},
+        "sources": GenerateReportDocxTool.parameters["properties"]["sources"],
+        "page_source_ids": GenerateReportDocxTool.parameters["properties"]["page_source_ids"],
+        "page_excerpt_ranges": GenerateReportDocxTool.parameters["properties"]["page_excerpt_ranges"],
     }, "required": ["artifact_id", "expected_sha256", "filename", "title"],
         "additionalProperties": False}
 
     async def run(self, artifact_id: str, expected_sha256: str, filename: str, title: str,
-                  formats: list[str] | None = None) -> ToolResult:
+                  formats: list[str] | None = None, sources: list[dict[str, Any]] | None = None,
+                  page_source_ids: list[str] | None = None,
+                  page_excerpt_ranges: list[dict[str, Any]] | None = None) -> ToolResult:
         from ...text_artifacts import ArtifactService
 
         try:
@@ -388,7 +406,9 @@ class GenerateReportFromArtifactTool(GenerateReportPairTool):
             paragraphs = [text[offset:offset + 4096] for offset in range(0, len(text), 4096)]
             if not paragraphs or len(paragraphs) > 100:
                 raise ValueError("Text must be nonempty and fit within 100 report paragraphs")
-            result = await super().run(filename=filename, title=title, paragraphs=paragraphs, formats=formats)
+            result = await super().run(filename=filename, title=title, paragraphs=paragraphs,
+                                       formats=formats, sources=sources, page_source_ids=page_source_ids,
+                                       page_excerpt_ranges=page_excerpt_ranges)
             if isinstance(result.output, dict):
                 result.output["source_artifact"] = {
                     "artifact_id": artifact["id"], "source_path": artifact["source_path"],
