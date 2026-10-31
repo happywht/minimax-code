@@ -139,12 +139,16 @@ def fill_missing_spec(spec: dict, fills: list[dict[str, Any]]) -> tuple[dict, li
     return result, applied
 
 
-def filter_spec(spec: dict, filters: list[dict[str, Any]] | None) -> dict:
+def filter_spec(spec: dict, filters: list[dict[str, Any]] | None, filter_mode: str = "all") -> dict:
     """Filter converted rows using explicit, typed output-column conditions."""
     if filters is None:
         filters = []
     if not isinstance(filters, list) or len(filters) > 10:
         raise ValueError("filters must contain at most 10 conditions")
+    if not isinstance(filter_mode, str) or filter_mode not in {"all", "any"}:
+        raise ValueError("filter_mode must be all or any")
+    if filter_mode == "any" and not filters:
+        raise ValueError("filter_mode any requires at least one filter")
     columns = spec["columns"]
     names = [column["name"] for column in columns]
     if len(set(names)) != len(names):
@@ -226,9 +230,11 @@ def filter_spec(spec: dict, filters: list[dict[str, Any]] | None) -> dict:
                 matched = cell < value
             else:
                 matched = cell <= value
-            if not matched:
+            if filter_mode == "all" and not matched:
                 return False
-        return True
+            if filter_mode == "any" and matched:
+                return True
+        return filter_mode == "all"
 
     return {**spec, "rows": [row for row in spec["rows"] if matches(row)]}
 
@@ -510,7 +516,7 @@ class GenerateXlsxFromCsvTool(Tool):
         "For each column, optional trim removes surrounding Unicode whitespace and null_values maps explicit "
         "exact markers to blank before type conversion; markers are matched after trimming. "
         "Optional fill_missing replaces blank cells with explicit same-type constants before calculations and filters. "
-        "Optional filters use output column names and typed values; all conditions must match. "
+        "Optional filters use output column names and typed values; filter_mode selects all conditions (default) or any condition. "
         "Use in or not_in with 1–20 same-type values to select or exclude exact alternatives; null represents blank. "
         "Text supports case-sensitive contains, not_contains, starts_with and ends_with with nonempty "
         "values; blank cells never match these operators. "
@@ -562,6 +568,8 @@ class GenerateXlsxFromCsvTool(Tool):
                                      "items": {"anyOf": [{"type": "string"}, {"type": "number"},
                                                         {"type": "boolean"}, {"type": "null"}]}}]},
             }, "required": ["column", "operator", "value"], "additionalProperties": False}},
+            "filter_mode": {"type": "string", "enum": ["all", "any"],
+                            "description": "Combine filters with AND (all, default) or OR (any); any requires at least one filter"},
             "deduplicate_by": {"type": "array", "minItems": 1, "maxItems": 20,
                                "uniqueItems": True, "items": {"type": "string"},
                                "description": "Output columns forming the exact duplicate key; keep first row"},
@@ -605,7 +613,7 @@ class GenerateXlsxFromCsvTool(Tool):
         self.generator = GenerateTableXlsxTool(db, session_id, project_id)
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None, pivot_by=None) -> ToolResult:
+                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None, pivot_by=None, filter_mode="all") -> ToolResult:
         try:
             require_write_access()
             if not self.project_id:
@@ -629,7 +637,7 @@ class GenerateXlsxFromCsvTool(Tool):
             spec, calculated_column, calculated_columns = calculate_columns_spec(
                 spec, calculated_column, calculated_columns)
             source_row_count = len(spec["rows"])
-            spec = filter_spec(spec, filters)
+            spec = filter_spec(spec, filters, filter_mode)
             matched_row_count = len(spec["rows"])
             if deduplicate_by is not None:
                 spec = deduplicate_spec(spec, deduplicate_by)
@@ -658,6 +666,8 @@ class GenerateXlsxFromCsvTool(Tool):
                            "removed_duplicates": removed_duplicate_count,
                            "output_rows": len(spec["rows"])},
             }
+            if filter_mode == "any":
+                processing["filter_mode"] = "any"
             if pivot_by is not None:
                 processing["pivot_by"] = PivotConfig.model_validate(pivot_by).model_dump()
             if fill_results is not None:
@@ -680,6 +690,7 @@ class GenerateXlsxFromCsvTool(Tool):
                 if calculated_columns is not None:
                     result.output["calculated_columns"] = calculated_columns
                 result.output["filter_conditions"] = filters or []
+                result.output["filter_mode"] = filter_mode
                 result.output["sort_by"] = sort_by or []
                 result.output["source_row_count"] = source_row_count
                 result.output["matched_row_count"] = matched_row_count
