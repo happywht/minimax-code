@@ -2,7 +2,7 @@
  * Modal — accessible dialog: backdrop, Escape-to-close, focus trap,
  * and entrance animation.
  */
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { IconButton } from "./IconButton";
@@ -32,6 +32,7 @@ export function Modal({
   testId,
 }: ModalProps): JSX.Element {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
   useFocusTrap(dialogRef, true);
 
   useEffect(() => {
@@ -59,6 +60,7 @@ export function Modal({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
         data-testid={testId}
         className={
           "animate-modal-in flex max-h-[85vh] w-full flex-col overflow-hidden rounded-xl " +
@@ -67,7 +69,7 @@ export function Modal({
         }
       >
         <header className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
-          <h2 className="truncate text-sm font-semibold text-ink-0">{title}</h2>
+          <h2 id={titleId} className="min-w-0 truncate text-sm font-semibold text-ink-0">{title}</h2>
           <IconButton
             aria-label={strings.a11y.closeDialog}
             onClick={onClose}
@@ -78,7 +80,7 @@ export function Modal({
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</div>
         {footer != null && (
-          <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-4 py-3">
+          <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-line px-4 py-3">
             {footer}
           </footer>
         )}

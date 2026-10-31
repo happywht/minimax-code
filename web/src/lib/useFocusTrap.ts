@@ -24,6 +24,7 @@ const FOCUSABLE_SELECTOR = [
   "input:not([disabled])",
   "select:not([disabled])",
   "textarea:not([disabled])",
+  "summary",
   '[contenteditable]:not([contenteditable="false"])',
   '[tabindex]:not([tabindex="-1"])',
 ].join(", ");
@@ -36,8 +37,12 @@ const FOCUSABLE_SELECTOR = [
  * rely on the explicit attribute checks instead).
  */
 function isActuallyFocusable(element: HTMLElement): boolean {
-  if (element.hidden) return false;
-  if (element.getAttribute("aria-hidden") === "true") return false;
+  if (element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+  // Closed disclosure content stays mounted, but only its summary is reachable.
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement && !parent.open &&
+        !Array.from(parent.children).some((child) => child.tagName === "SUMMARY" && child.contains(element))) return false;
+  }
   if (typeof element.checkVisibility === "function" && !element.checkVisibility()) {
     return false;
   }
@@ -69,7 +74,7 @@ export function useFocusTrap(
     const container = containerRef.current;
     const focusable = getFocusableChildren(container);
     const autofocused = container.querySelector<HTMLElement>("[autofocus],[data-autofocus]");
-    const initial = autofocused ?? focusable[0];
+    const initial = autofocused && isActuallyFocusable(autofocused) ? autofocused : focusable[0];
     if (initial) {
       initial.focus();
     } else {

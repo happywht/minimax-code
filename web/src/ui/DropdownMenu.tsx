@@ -84,8 +84,17 @@ export function DropdownMenu({
           ref={menuRef}
           role="menu"
           aria-orientation="vertical"
+          onKeyDown={(event) => {
+            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+            const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'));
+            if (!buttons.length) return;
+            const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+            const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 :
+              event.key === "ArrowDown" ? (current + 1) % buttons.length : (current < 0 ? buttons.length - 1 : (current - 1 + buttons.length) % buttons.length);
+            event.preventDefault(); buttons[index].focus();
+          }}
           className={[
-            "absolute top-full z-50 mt-1 min-w-[9rem] rounded-md border border-line",
+            "absolute top-full z-50 mt-1 max-h-[min(60vh,24rem)] min-w-[9rem] max-w-[min(90vw,24rem)] overflow-y-auto rounded-md border border-line",
             "bg-surface-1 py-1 shadow-lg",
             align === "right" ? "right-0" : "left-0",
           ].join(" ")}
@@ -100,7 +109,7 @@ export function DropdownMenu({
               onClick={() => handleItemClick(item)}
               className={[
                 "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px]",
-                "transition-colors duration-150 focus-visible:outline-none",
+                "transition-colors duration-150 focus-visible:bg-accent-subtle focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent",
                 "disabled:cursor-not-allowed disabled:opacity-50",
                 item.danger
                   ? "text-status-error hover:bg-status-error/10"

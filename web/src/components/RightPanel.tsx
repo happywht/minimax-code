@@ -70,7 +70,7 @@ export function RightPanel({
   return (
     <aside
       data-testid={testId}
-      className="flex h-full w-64 shrink-0 flex-col border-l border-line bg-surface-1 transition-all duration-200 xl:w-[280px]"
+      className="flex h-full w-64 max-w-full shrink-0 flex-col border-l border-line bg-surface-1 transition-all duration-200 xl:w-[280px]"
     >
       <InspectorHeader
         testId={testId}

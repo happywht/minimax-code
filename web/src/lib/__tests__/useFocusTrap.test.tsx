@@ -226,10 +226,12 @@ vi.mock("../../stores", () => ({
       pending: { "req-1": { request_id: "req-1", tool: "bash", args: { cmd: "ls" }, received_at: 1 } },
       resolve: vi.fn(),
     }),
+  useSessionStore: (sel: (s: Record<string, unknown>) => unknown) =>
+    sel({ currentProjectId: null, currentSessionId: null, sessions: [] }),
   useGitStore: (sel: (s: Record<string, unknown>) => unknown) =>
     sel({
       lastDiff: null, lastLog: null, loading: false,
-      fetchDiff: vi.fn(), fetchLog: vi.fn(),
+      fetchDiff: vi.fn().mockResolvedValue(undefined), fetchLog: vi.fn().mockResolvedValue(undefined),
     }),
 }));
 

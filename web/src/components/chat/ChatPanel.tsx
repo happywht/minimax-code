@@ -195,10 +195,10 @@ export function ChatPanel({
   })();
 
   const toneClass: Record<string, string> = {
-    amber: "text-amber-300 bg-amber-500/10 border-amber-500/30",
+    amber: "text-status-warning bg-[var(--status-warning-subtle)] border-status-warning/30",
     accent: "text-minimax-accent bg-minimax-accent/10 border-minimax-accent/30",
-    red: "text-status-error bg-red-500/10 border-red-500/30",
-    emerald: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30",
+    red: "text-status-error bg-[var(--status-error-subtle)] border-status-error/30",
+    emerald: "text-status-success bg-[var(--status-success-subtle)] border-status-success/30",
   };
 
   return (
