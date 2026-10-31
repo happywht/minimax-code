@@ -78,7 +78,11 @@ export function CsvLookupJoin({ table, kinds, onApply }: { table: CsvTable; kind
   } catch (reason) { error = reason instanceof Error ? reason.message : "无法匹配"; }
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>从另一 CSV 按键追加列</legend>
-    <p>读取本地 UTF-8 CSV（最多 1 MiB，1000 行、20 列）作为右表。可选 1–3 对字段，所有字段须按原始文本精确匹配，区分大小写，不去空白、不进行类型转换；任一键为空不参与匹配。右表完整非空键组合重复时整次拒绝，当前表重复组合可匹配同一右表行。保留当前表所有行及顺序，未匹配追加空白，右表多余行忽略；追加列默认文本，公式样文字不执行。</p>
+    <p>按 1–3 对字段匹配 CSV；空键不匹配，右表重复键会拒绝。保留当前行顺序，未匹配留空；不执行公式。</p>
+    <details className="text-xs text-ink-2"><summary>查看匹配规则</summary>
+      <p>右表为 UTF-8 CSV，最多 1 MiB、1000 行和 20 列。匹配区分大小写，不去空白或转换类型。</p>
+      <p>当前表重复键可匹配同一右表行；右表多余行忽略，追加列默认为文本。</p>
+    </details>
     <label>选择右表 CSV <input aria-label="选择匹配右表 CSV" type="file" accept=".csv,text/csv" disabled={busy || !project || !session || !service} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void load(file); }} /></label>
     {busy && <p role="status">正在读取本地文件…</p>}{notice && <p role="status">{notice}</p>}
     {right && <><p className="break-all">右表：{right.name} · SHA-256 {right.sha256} · {right.table.rows.length} 行。文件不上传；后续若需交付处理口径，请将此身份及规则填写到成果处理说明。</p>

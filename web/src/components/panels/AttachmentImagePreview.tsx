@@ -57,7 +57,7 @@ export function AttachmentImagePreview({ attachment, project, session, service, 
 
   if (!eligible) return null;
   return <section className="space-y-2 rounded border border-line p-2 text-xs" aria-label="图片原件预览">
-    <p>浏览器显示经过字节大小和 SHA-256 校验的原件；动画图片可能自动播放。显示内容不代表业务或视觉质量已验收。</p>
+    <p>浏览器显示经过字节大小和 SHA-256 校验的原件；动画图片可能自动播放。</p><p>显示内容不代表业务或视觉质量已验收。</p>
     {!scope && <p role="status">请在当前项目选择会话后查看原件。</p>}
     {attachment.size_bytes > LIMIT && <p role="status">图片超过 5 MiB 预览上限；可下载完整原件。</p>}
     {ipc.isMock && <p role="status">演示模式不提供图片原件预览。</p>}

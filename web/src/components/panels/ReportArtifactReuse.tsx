@@ -115,7 +115,7 @@ export function ReportArtifactReuse({ project, session, service, host, onApply, 
       <p>准备时重新读取完整快照；请核对内容后再追加到报告，原文件不变。</p>
       <Button type="button" size="sm" variant="secondary" disabled={busy || !project || !session || !service || transfer.project_id !== project || transfer.service_id !== service || (transferRequiresRun && !transfer.run_id)} onClick={() => void prepare(transfer)}>{transferRequiresRun ? "准备此任务成果" : "准备此项目成果"}</Button>
       <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { setCandidate(null); onClearTransfer?.(); }}>放弃待复用成果</Button></div>}
-    <p>复用已登记文本成果的完整快照：每行追加为报告段落，空行省略；Markdown 和 CSV 均作为纯文本。原文件不变，内容需核对。</p>
+    <p>复用已登记文本成果的完整快照：每行追加为报告段落，空行省略；Markdown 和 CSV 均作为纯文本。</p><p>原文件不变，内容需核对。</p>
     <div className="flex gap-2"><Input aria-label="搜索可复用文本成果" maxLength={240} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按路径搜索" />
       <Button type="button" variant="secondary" disabled={busy || !project || !session || !service} onClick={() => void list()}>搜索成果</Button></div>
     {rows.map((row) => <div key={row.id} className="flex flex-wrap items-center gap-2"><span className="break-all">{row.source_path} · v{row.version} · {row.size_bytes} 字节</span>

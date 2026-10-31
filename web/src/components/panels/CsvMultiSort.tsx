@@ -37,7 +37,7 @@ export function CsvMultiSort({ table, onApply }: { table: CsvTable; onApply: (ne
   const changed = sorted?.some((item, index) => item.index !== index) ?? false;
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>多列排序</legend>
-    <p>按条件顺序比较，前一列相同时才比较下一列；各列空字符串始终排在最后，相同键保持当前顺序。文本按 UTF-16 码元比较，不去空白；数字列整列须符合安全精度规则。更改列结构或列名会重置条件。排序仅修改草稿，可撤销，原文件不变。</p>
+    <p>按条件顺序排序，空字符串排最后，同键保持原顺序。文本按 UTF-16 比较；数字需符合安全精度。仅修改草稿，可撤销。</p>
     {keys.map((key, index) => <div key={index} className="flex flex-wrap items-end gap-2">
       <span>优先级 {index + 1}</span>
       <label>列 <select aria-label={`多列排序 ${index + 1} 列`} value={key.column} onChange={(event) => change(index, { column: Number(event.target.value) })}>

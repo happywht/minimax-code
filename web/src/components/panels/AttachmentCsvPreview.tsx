@@ -39,7 +39,7 @@ export function AttachmentCsvPreview({ attachment, project, session, service, ho
     finally { if (current()) setBusy(false); }
   };
   return <section className="space-y-2 rounded border border-line p-3"><h3>CSV 表格预览</h3>
-    <p>明确选择分隔符，不自动猜测；最多 1 MiB、1000 数据行、100 列及 5000 格。仅显示最多 100 行和 64 KiB 的表格内容，不执行公式或修改原件。</p>
+    <p>明确选择分隔符，不自动猜测；最多 1 MiB、1000 数据行、100 列及 5000 格。</p><p>仅显示最多 100 行和 64 KiB 的表格内容，不执行公式或修改原件。</p>
     <label>预览分隔符 <select aria-label="CSV 预览分隔符" value={delimiter} onChange={(event) => {
       ++epoch.current; setDelimiter(event.target.value as CsvDelimiter); setResult(null); setBusy(false); setError("");
     }}><option value="comma">逗号</option><option value="semicolon">分号</option><option value="tab">制表符</option></select></label>{" "}

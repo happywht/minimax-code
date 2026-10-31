@@ -132,7 +132,7 @@ export function SpreadsheetTaskTemplate({ project, session, host, disabled, onPr
       {rightRow?.declared_type === "csv" && <label>右表分隔符 <select aria-label="右表 CSV 分隔符" value={rightDelimiter} disabled={busy || disabled} onChange={(event) => setRightDelimiter(event.target.value as "comma" | "semicolon" | "tab")} className={field}><option value="comma">逗号</option><option value="semicolon">分号</option><option value="tab">制表符</option></select></label>}
       {rightRow?.declared_type === "xlsx" && <label>可见工作表 <input aria-label="右表工作表名称" value={rightSheet} maxLength={31} disabled={busy || disabled} onChange={(event) => setRightSheet(event.target.value)} className={field} /></label>}
       <label>右表键字段 <input aria-label="右表键字段" value={rightKey} maxLength={80} disabled={busy || disabled} onChange={(event) => setRightKey(event.target.value)} className={field} /></label>
-      <p className="w-full text-ink-2">CSV 分隔符由用户分别指定，不自动猜测。键类型需一致，文本区分大小写；空键不匹配；展开重复键会生成所有匹配组合，可能增加行数。前导零标识应使用文本。</p>
+      <p className="w-full text-ink-2">分别指定分隔符；键类型须一致，区分大小写，空键不匹配。展开重复键可能增加行数；前导零请用文本。</p>
     </div>}
     <div className="mt-2"><Button type="button" size="sm" disabled={!ready || busy || disabled} onClick={() => void prepare()}>生成任务草稿</Button></div>
     {!project || !session ? <p>请先选择项目中的现有会话。</p> : null}

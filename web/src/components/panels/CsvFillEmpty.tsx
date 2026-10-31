@@ -19,7 +19,7 @@ export function CsvFillEmpty({ table, kinds, onApply }: { table: CsvTable; kinds
   } catch (reason) { error = reason instanceof Error ? reason.message : "填充值无效"; }
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>用指定值填充空单元格</legend>
-    <p>只填所选列的空字符串，空格不算空；不会修改其他单元格或列类型。数字和布尔值按当前列类型校验，文本按原文保留，不计算公式。操作只改变草稿，可撤销。</p>
+    <p>只填空字符串，空格不算空；按列类型校验，不计算公式。仅修改草稿，可撤销。</p>
     <div className="flex flex-wrap gap-2"><label>填充列 <select aria-label="指定值填充列" value={column} onChange={(event) => setColumn(Number(event.target.value))}>
       {table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"} · {kinds[index]}）</option>)}
     </select></label><label>填充值 <textarea aria-label="空值填充值" rows={2} maxLength={8192} value={value} onChange={(event) => setValue(event.target.value)} /></label></div>

@@ -91,7 +91,7 @@ export function HostPreviewAttachment({ host, preview, active }: { host: RemoteH
   };
   return <div className="space-y-1 border-t border-line pt-2 text-xs">
     <p>保存预览快照为当前会话的项目附件</p>
-    <p>仅手动保存完整预览文件（最多 10 MiB）；屏幕可能只显示前 64 KiB，过滤的控制字符仍在附件中。内容可能包含凭据，请按需操作。不会自动发送到对话。</p>
+    <p>仅手动保存完整预览文件（最多 10 MiB）；屏幕可能只显示前 64 KiB，过滤的控制字符仍在附件中。</p><p>内容可能包含凭据，请按需操作。不会自动发送到对话。</p>
     <p className="break-all">当前项目：{projectId || "未选择"} · 会话：{sessionId || "未选择"}</p>
     {preview && <label className="block">附件显示名<Input aria-label="预览快照附件名称" value={name} disabled={busy} onChange={(event) => setName(event.target.value)} /></label>}
     <Button type="button" size="sm" variant="secondary" disabled={busy || !!pending || !preview || !active || !host.enabled || !sessionId || !projectId || !validName(name)} onClick={() => void save()}>{busy ? "保存中…" : "保存预览到项目附件"}</Button>

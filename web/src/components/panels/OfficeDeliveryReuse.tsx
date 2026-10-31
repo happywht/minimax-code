@@ -62,7 +62,7 @@ export function OfficeDeliveryReuse({ selected, project, session, service, host,
     finally { if (current(ticket)) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2">
-    <p>从所选纯数据成果读取完整受支持的工作表，载入表格草稿继续编辑；原件不变。单元格先转为文本，需自行重选数字或布尔列；不保留样式、公式、图表或打印设置。业务内容未经核验。</p>
+    <p>读取工作表到草稿，原件不变。单元格转为文本；样式、公式和图表等不保留。业务内容未经核验。</p>
     <Button type="button" variant="secondary" disabled={busy || filePending || !project || !session || !service || ipc.isMock} onClick={() => void prepare()}>准备继续编辑此成果</Button>
     {candidate && <div className="space-y-2"><p>将替换 CSV/表格编辑草稿并把输出文件名设为 {attachment.original_name}；已转换的 JSON、运行关联和汇总配置仍保留，请检查后再生成。请先核对前 10 行：</p>
       <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{serializeOfficeCsv({ headers: candidate.table.headers, rows: candidate.table.rows.slice(0, 10) })}</pre>

@@ -98,7 +98,7 @@ export function ReportTextExport({ project, session, service, host, draft, disab
     } catch (error) { if (ticket === epoch.current) setNotice(error instanceof Error ? error.message : String(error)); }
     finally { if (ticket === epoch.current) setBusy(false); }
   };
-  return <div className="space-y-1 rounded border border-line p-2"><p>导出可编辑 TXT：保留正文、章节顺序和表格数据（每行 JSON 数组），并重新读取所选附件及研究来源。文本不还原排版，不登记项目附件；内容、引用和业务事实需核对。</p>
+  return <div className="space-y-1 rounded border border-line p-2"><p>导出可编辑 TXT，包含正文和表格数据；不保留排版或登记附件。请核对内容、引用和事实。</p>
     <Button type="button" variant="secondary" disabled={disabled || busy || !project || !session || !service || ipc.isMock} onClick={() => void exportText()}>导出可编辑报告 TXT</Button>
     {busy && <p role="status">正在核对来源并准备文本…</p>}{notice && <p role="status">{notice}</p>}</div>;
 }

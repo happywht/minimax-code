@@ -147,7 +147,7 @@ export function AttachmentDocumentReader({ attachment, project, session, service
       {result?.next_cursor && <Button type="button" variant="secondary" disabled={busy} onClick={() => void read(result.next_cursor!)}>读取下一片段</Button>}</div>
     <div className="space-y-2 border-t border-line pt-3" aria-label="文档内容搜索">
       <h4 className="font-medium">搜索文档文字</h4>
-      <p className="text-xs text-ink-1">区分大小写的原文匹配；每次搜索最多两个片段，继续搜索才能覆盖后续位置。匹配不跨页或段落；范围和 OCR 限制同上。</p>
+      <p className="text-xs text-ink-1">区分大小写的原文匹配；每次搜索最多两个片段，继续搜索才能覆盖后续位置。匹配不跨页或段落；</p><p className="text-xs text-ink-1">范围和 OCR 限制同上。</p>
       <Input aria-label="搜索文字" value={query} maxLength={128} onChange={event => { setQuery(event.target.value); setMatches([]); setSearchCursor(null); setSearched(false); }} disabled={busy} />
       <Button type="button" variant="secondary" disabled={busy || !query || !project || !session || !service || ipc.isMock} onClick={() => void search({ unit: 1, offset: 0 }, true)}>从头搜索</Button>
       {searchCursor && <Button type="button" variant="secondary" disabled={busy} onClick={() => void search(searchCursor, false)}>继续搜索</Button>}

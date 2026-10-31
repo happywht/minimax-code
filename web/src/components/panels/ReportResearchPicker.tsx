@@ -115,7 +115,7 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2">
-    <p>项目研究来源：从此服务实际读取的记录中选择；手工来源在前，所选来源按下方顺序编号。页面与报告事实未自动核验，来源独立于任务和会话保留；删除项目后无法使用。</p>
+    <p>选择本服务记录的研究来源，按所列顺序编号。事实未经核验；删除项目会删除来源。</p>
     {!session || !project ? <p>请先选择当前项目的会话。</p> : <>
       <div className="flex gap-2"><Input aria-label="搜索报告研究来源" maxLength={200} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="标题、网址或摘录" />
         <Button type="button" disabled={busy || !service} onClick={() => void search(query, 0)}>搜索来源</Button></div>
@@ -130,7 +130,7 @@ export function ReportResearchPicker({ project, session, service, selected, onCh
       <div className="flex gap-2"><Button type="button" variant="secondary" disabled={busy || offset === 0} onClick={() => void search(applied, Math.max(0, offset - 20))}>上一页</Button>
         <Button type="button" variant="secondary" disabled={busy || rows.length < 20 || offset >= 10000} onClick={() => void search(applied, offset + 20)}>下一页</Button></div>
     </>}
-    {onInsertExcerpts && selected.length > 0 && <div className="rounded border border-line p-2"><p>勾选最多 10 条来源，按当前编号顺序批量追加各自参考摘录。先逐条重新读取，任何来源不可用则不追加；正文和引用需人工核对。</p>
+    {onInsertExcerpts && selected.length > 0 && <div className="rounded border border-line p-2"><p>勾选最多 10 条来源，按当前编号顺序批量追加各自参考摘录。先逐条重新读取，任何来源不可用则不追加；</p><p>正文和引用需人工核对。</p>
       <Button type="button" variant="secondary" disabled={busy || !service || !batchIds.length} onClick={() => void insertBatch()}>批量追加所选 {batchIds.length} 条摘录到正文</Button></div>}
     {selected.map((row, i) => <div key={row.page_source_id} className="rounded border border-line p-2">
       {onInsertExcerpts && <label><input type="checkbox" checked={batchIds.includes(row.page_source_id)} disabled={busy || (batchIds.length >= 10 && !batchIds.includes(row.page_source_id))}

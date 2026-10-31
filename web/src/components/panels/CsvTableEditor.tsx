@@ -130,7 +130,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
     return value === filterValue;
   });
   return <div className="space-y-2" data-testid="csv-table-editor">
-    <p>编辑的数据仅在本页面；行号以当前表格为准（含表头），源 CSV 不变。恢复会还原本次读取的表格并将列类型重置为文本。</p>
+    <p>编辑的数据仅在本页面；行号以当前表格为准（含表头），源 CSV 不变。</p><p>恢复会还原本次读取的表格并将列类型重置为文本。</p>
     <p>可撤销最近 20 次表格编辑，包括列类型快照；重新读取表格或离开编辑器后历史会清空。</p>
     <p>列清理会去除该列每个数据单元格的首尾空白，可能改变文本；不会自动清理。</p>
     <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" disabled={!past.length} onClick={undo}>撤销表格编辑</Button>
@@ -142,7 +142,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
       <Button type="button" variant="secondary" onClick={() => { onChange(original, original.headers.map(() => "text" as const)); setPage(0); }}>恢复读取时的表格</Button></div>
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>逐行计算新列</legend>
-      <p>按当前草稿的两列计算静态数值，空值产生空结果；不自动更新，修改源数据后需重新计算。无效数字或超出安全精度时整次操作不会改变草稿，可撤销。</p>
+      <p>按两列计算静态数值；空值产生空结果，源数据变更后需重算。无效数字或精度超限会阻止操作，可撤销。</p>
       <div className="flex flex-wrap gap-2">
         <label>新列名 <input aria-label="计算列名称" value={calculationName} onChange={(event) => setCalculationName(event.target.value)} /></label>
         <label>左列 <select aria-label="计算左列" value={calculationLeft} onChange={(event) => setCalculationLeft(Number(event.target.value))}>{table.headers.map((header, index) => <option key={index} value={index}>{header || `第 ${index + 1} 列`}</option>)}</select></label>
@@ -167,7 +167,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
     <CsvLookupJoin table={table} kinds={kinds} onApply={(next, nextKinds) => { onChange(next, nextKinds); setPage(0); }} />
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>按列排序</legend>
-      <p>文本按 UTF-16 码元顺序、区分大小写；数字使用表格的安全精度规则，非法数字会拒绝排序。空字符串始终排在最后，相同值保持原顺序。只改变草稿，可撤销。</p>
+      <p>文本按 UTF-16 码元顺序、区分大小写；数字使用表格的安全精度规则，非法数字会拒绝排序。</p><p>空字符串始终排在最后，相同值保持原顺序。只改变草稿，可撤销。</p>
       <div className="flex flex-wrap gap-2">
         <label>排序列 <select aria-label="排序列" value={sortColumn} onChange={(event) => setSortColumn(Number(event.target.value))}>
           {table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"}）</option>)}
@@ -180,7 +180,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
     </fieldset>
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>按条件筛选行</legend>
-      <p>比较原始文本，区分大小写，不自动去除空白；空值仅指空字符串。应用后只保留匹配行，原附件和 CSV 不变，可撤销。</p>
+      <p>比较原始文本，区分大小写，不自动去除空白；空值仅指空字符串。</p><p>应用后只保留匹配行，原附件和 CSV 不变，可撤销。</p>
       <div className="flex flex-wrap gap-2">
         <label>筛选列 <select aria-label="筛选列" value={filterColumn} onChange={(event) => setFilterColumn(Number(event.target.value))}>
           {table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"}）</option>)}
@@ -195,7 +195,7 @@ export function CsvTableEditor({ table, original, kinds, onChange: applyChange }
     </fieldset>
     <fieldset className="space-y-2 rounded border border-line p-2">
       <legend>按列去重</legend>
-      <p>选择关键列后预览待删除数量；所有所选列的原始文本完全相同才算重复，空字符串也参与匹配。保留当前顺序中的第一行，不自动去除空白或忽略大小写。</p>
+      <p>选择关键列后预览待删除数量；所有所选列的原始文本完全相同才算重复，空字符串也参与匹配。</p><p>保留当前顺序中的第一行，不自动去除空白或忽略大小写。</p>
       <div className="flex flex-wrap gap-3">{table.headers.map((header, index) => <label key={index}>
         <input type="checkbox" checked={dedupeColumns.includes(index)} onChange={(event) => setDedupeColumns((old) =>
           event.target.checked ? [...old, index].sort((a, b) => a - b) : old.filter((column) => column !== index))} /> 第 {index + 1} 列（{header || "未命名"}）

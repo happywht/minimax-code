@@ -110,7 +110,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false, onPrep
   return <section className="flex h-full flex-col gap-3 overflow-auto p-4" aria-label="项目研究来源">
     <div className="flex items-center justify-between"><h2 className="text-lg font-semibold">项目研究来源</h2>
       {!embedded && <div className="flex gap-2"><Button variant="secondary" onClick={onText}>文本成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div>}</div>
-    <p className="text-sm text-ink-1">仅展示本项目在此服务读取并记录的网页。页面内容和报告事实未自动核验；来源独立于所属任务和会话保存；删除项目会删除来源记录。所属任务 ID 可能已不存在。</p>
+    <p className="text-sm text-ink-1">显示本项目的网页记录；内容和事实未经核验。来源独立于任务和会话，删除项目会删除来源。</p>
     <ManualResearch project={project} session={session} service={visible ? service : null} reportService={reportService} reportTransferPending={reportTransferPending} onPrepareReport={onPrepareReport} />
     {!project || !session ? <p role="status">请先选择当前项目的会话。</p> : <>
       <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); if (adding) return; setOffset(0); setApplied(query); }}>
@@ -169,7 +169,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false, onPrep
         <Button type="button" variant="secondary" loading={adding}
           disabled={adding || loading || !passage || passage.id !== selected.page_source_id || passage.text.length > 4000}
           onClick={() => { if (passage) void addToDraft([selected.page_source_id], passage); }}>将选中原文和出处加入草稿</Button>
-        <p className="text-xs text-ink-2">选中保存摘录中的文字后可加入草稿，每次最多 4000 个字符；提交前重新读取并核对原文，不访问网页或发送消息。</p>
+        <p className="text-xs text-ink-2">选中保存摘录中的文字后可加入草稿，每次最多 4000 个字符；</p><p className="text-xs text-ink-2">提交前重新读取并核对原文，不访问网页或发送消息。</p>
         {(selected.excerpt_truncated || selected.truncated) && <p>网页内容或摘录已截断，不代表全文。</p>}
       </div>}
     </>}

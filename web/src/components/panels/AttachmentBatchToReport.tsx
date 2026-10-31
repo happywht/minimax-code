@@ -51,7 +51,7 @@ export function AttachmentBatchToReport({ project, session, service, host, items
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <details className="space-y-2 rounded border border-line p-3"><summary>批量整理附件首段到报告</summary>
-    <p>从已加载附件中按选择顺序选择最多 10 份 PDF、DOCX、UTF-8 TXT 或 CSV；可先在附件列表加载更多。每份仅读取第一个可读取单元的开头最多 600 个 Unicode 字符，并附资料引用；不是全文或自动核验。PDF 不做 OCR，DOCX 仅正文和表格段落，CSV 为原始文本。</p>
+    <p>最多选择 10 份附件；每份只引用首个可读单元的前 600 字符，未经核验。PDF 不做 OCR，DOCX 仅读正文和表格段落。</p>
     <div className="max-h-48 overflow-auto">{eligible.map((row) => <label key={row.id} className="block break-all"><input type="checkbox" checked={selected.some((item) => item.id === row.id)}
       disabled={busy || (selected.length >= 10 && !selected.some((item) => item.id === row.id))} onChange={(event) => { const checked = event.target.checked;
         setSelected((previous) => checked ? [...previous, row] : previous.filter((item) => item.id !== row.id)); }} /> {row.original_name} · v{row.version} · {row.id}</label>)}</div>

@@ -299,7 +299,7 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
     {error && <p role="alert" className="break-words text-status-warning">{error}</p>}
     {comparison && <div className="mt-2 space-y-1">
       {comparison.available === true ? <>
-        <p>两次有界采样之间的变化，可能包括用户或其他任务的修改，不能归因于此任务。只比较 Git 可见普通文件，不含忽略文件及私有运行数据。点击路径可筛选当前工作区差异；当前状态可能已改变，删除的文件也可能没有当前差异。</p>
+        <p>两次采样间的变化可能来自其他人或任务，不能归因于此任务。</p><p>仅比较 Git 可见的普通文件，不含忽略文件和私有运行数据。</p><p>点击路径筛选当前差异；状态可能已变化，删除的文件可能无当前差异。</p>
         {([['added', '新增'], ['modified', '修改'], ['deleted', '删除']] as const).map(([key, label]) =>
           <details key={key}><summary>{label}（{Array.isArray(comparison[key]) ? comparison[key].length : 0}）</summary>
             <ul className="max-h-40 overflow-auto">
@@ -314,7 +314,7 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
     {result && <div className="mt-2 space-y-2">
       <p className="break-all">当前工作区：{result.workspace}</p>
       <RunManualVerification run={run} review={result} />
-      <p>这是当前共享工作区的状态，可能包含用户或其他任务的修改，不能归因于此任务。未跟踪文件需手动选择才读取预览；已提交变更不在此视图中。</p>
+      <p>共享工作区可能含其他修改，不能归因于此任务。未跟踪文件须手选；不显示已提交变更。</p>
       <label className="block">搜索文件名或差异内容
         <input value={search} onChange={(event) => setSearch(event.target.value)}
           className="mt-1 block w-full rounded border border-line bg-surface-1 px-2 py-1 text-ink-0"
@@ -333,7 +333,7 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
         <label className="block">交接意见或后续目标<textarea value={handoffNote} disabled={loading} maxLength={4000} onChange={(event) => setHandoffNote(event.target.value)} className="mt-1 block w-full rounded border border-line bg-surface-1 p-2 text-ink-0" rows={3} /></label>
         <Button type="button" size="sm" disabled={loading || !handoffNote.trim()} onClick={() => void appendHandoff()}>将所选差异追加到草稿</Button>{" "}
         <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => { setHandoff([]); setHandoffNote(""); }}>清除所选差异</Button>
-        <p>每项最多 4000 字符、合计最多 20000 字符；不完整的差异会标明。请先检查内容是否适合分享。不会自动发送或执行验证。</p>
+        <p>每项最多 4000 字，合计 20000 字；不完整会标明。请检查分享内容，不会自动发送或验证。</p>
       </div>}
       {selected && <div className="space-y-2 rounded border border-line p-2">
         <p className="break-all">已选择：{selected.block.split("\n")[0]}（{selected.scope === "working" ? "未暂存" : "已暂存"}）。追加前会重新读取并核对这份差异。</p>
@@ -359,7 +359,7 @@ export function RunWorkspaceDiff({ run }: { run: AgentRun }): JSX.Element {
         </label>
         <Button type="button" size="sm" disabled={loading || !untrackedNote.trim()} onClick={() => void appendUntrackedReview()}>将文件审阅意见追加到草稿</Button>{" "}
         <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => { setPreview(null); setUntrackedNote(""); }}>取消文件审阅</Button>
-        <p>追加前重新读取完整文件并核对归属；草稿只附前 12000 字符，不会自动发送或执行验证。请先检查是否适合分享。</p>
+        <p>追加前核对文件归属和分享内容；草稿仅附前 12000 字，不会自动发送或验证。</p>
       </div>}
     </div>}
   </div>;

@@ -76,7 +76,7 @@ export function ChildResultsHandoff({ sessionId }: { sessionId: string }): JSX.E
   return <div className="mb-2 space-y-2 rounded border border-line p-2 text-xs" aria-label="子任务结果交接">
     <Button size="sm" variant="secondary" disabled={!available || busy} onClick={() => void load()}>读取子任务并准备交接</Button>
     {!available && <p>请先切换到所属项目会话。</p>}
-    {snapshot && <><p>选择最多 5 个已结束且当前服务未发现仍在运行的子任务；只显示最近 {snapshot.limit} 条持久记录。状态与文本不证明验证或交付。</p>
+    {snapshot && <><p>最多选择 5 个已结束且未发现运行中的子任务。仅显示最近 {snapshot.limit} 条记录；状态与文本不证明验证或交付。</p>
       {!rows.length && <p>本次读取没有可选择的已结束子任务。</p>}
       <div className="max-h-64 space-y-1 overflow-auto">{rows.map((row) => <details key={row.run_id} className="rounded border border-line p-1">
         <summary className="break-all">{row.agent_name || row.agent_id || "子任务"} · {row.status}{row.partial ? " · 部分结果" : ""} · {row.run_id}</summary>

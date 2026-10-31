@@ -110,7 +110,7 @@ export function ArtifactEditCopy({ artifact }: { artifact: TextArtifact }): JSX.
     finally { if (current(ticket)) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2 text-sm">
-    <p>编辑已登记快照的本地副本，可下载、保存为项目附件或追加到聊天草稿；不会修改项目源文件或已登记版本。切换成果、项目、会话或服务会丢弃编辑。</p>
+    <p>编辑快照副本，原件不变；可下载、保存为附件或追加草稿。切换成果、项目、会话或服务会丢弃编辑。</p>
     {text === null ? <Button type="button" size="sm" variant="secondary" disabled={busy || !project || !session || ipc.isMock} onClick={() => void prepare()}>编辑文本副本</Button> : <>
       <textarea aria-label="文本成果副本" className="min-h-48 w-full rounded border border-line bg-surface-1 p-2 font-mono" value={text} disabled={busy}
         onChange={(event) => { revision.current++; setText(event.target.value); }} />

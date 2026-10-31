@@ -49,7 +49,10 @@ export function AttachmentImageOcr({ attachment, project, session, service, host
   };
   return <div className="space-y-2 rounded border border-line p-3" aria-label={isPdf ? "本地 PDF OCR" : "本地图片 OCR"}>
     <h4 className="font-medium">手动本地{isPdf ? " PDF 单页" : "图片"} OCR</h4>
-    <p className="text-xs text-ink-1">{isPdf ? "仅识别指定物理页，文档最多 200 页、渲染页最多 1200 万像素；不代表全文。需要本机安装 PyMuPDF。" : "仅静态 PNG/JPEG，最多 1200 万像素。"}结果可能有错漏，未经核验。识别结果仅临时显示，不自动加入对话或修改原件。需要本机安装 Pillow、tesserocr、Tesseract 和对应语言数据；不会自动下载。资源限制不是网络或文件系统沙箱。</p>
+    <p className="text-xs text-ink-1">{isPdf ? "仅识别指定物理页，不代表全文。" : "仅支持静态 PNG/JPEG。"}结果可能有错漏，仅临时显示，不会加入对话或修改原件。资源限制不是网络或文件系统沙箱。</p>
+    <details className="text-xs text-ink-2"><summary>查看识别要求</summary>
+      <p>{isPdf ? "文档最多 200 页、渲染页最多 1200 万像素；需安装 PyMuPDF。" : "图片最多 1200 万像素。"}</p><p>需在本机安装 Pillow、tesserocr、Tesseract 和对应语言数据，不会自动下载。</p>
+    </details>
     {isPdf && <label>物理页序号 <input aria-label="OCR 物理页序号" type="number" min={1} max={200} value={page} disabled={busy} onChange={(e) => { setPage(e.target.value); setResult(null); }} /></label>}
     <label>识别语言 <select aria-label="OCR 识别语言" value={language} disabled={busy} onChange={(e) => { setLanguage(e.target.value as AttachmentOcrParams["language"]); setResult(null); }}>
       <option value="eng+chi_sim">简体中文 + 英文</option><option value="chi_sim">简体中文</option><option value="eng">英文</option>

@@ -61,7 +61,7 @@ export function PdfOriginalPreview({ attachment }: { attachment: AttachmentOrigi
 
   if (!eligible) return null;
   return <div className="space-y-2 rounded border border-line p-2 text-xs">
-    <p>原件由浏览器内置 PDF 查看器解析，并非隔离环境；文档可能包含外链或交互，查看器可能访问外部资源。内容和版式未经过可信性或视觉验收。</p>
+    <p>原件由浏览器内置 PDF 查看器解析，并非隔离环境；文档可能包含外链或交互，查看器可能访问外部资源。</p><p>内容和版式未经过可信性或视觉验收。</p>
     {!scope && <p role="status">请在当前项目选择会话后查看原件。</p>}
     {!parsed && <p role="status">PDF 文本解析不可用或失败，无法在此预览；可下载原件。</p>}
     {attachment.size_bytes > PREVIEW_LIMIT && <p role="status">PDF 超过 5 MiB 预览上限；可下载完整原件。</p>}

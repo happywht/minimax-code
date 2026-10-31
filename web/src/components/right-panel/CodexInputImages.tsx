@@ -108,7 +108,7 @@ export function CodexInputImages({ run }: { run: AgentRun }): JSX.Element | null
   return <div className="space-y-1 text-xs text-ink-2">
     <Button type="button" size="sm" variant="secondary" disabled={busy || currentSession !== run.session_id || currentProject !== boundProject || (run.metadata?.project_id ?? null) !== boundProject}
       onClick={() => void load(0)}>查看任务输入图片</Button>
-    <p>按需从当前服务读取原任务图片；可选择并确认加入当前草稿，不会自动发送。旧记录或纯文本任务可能没有图片。</p>
+    <p>可读取并选择原任务图片加入草稿，不会自动发送；旧记录或纯文本任务可能没有图片。</p>
     {notice && <p role="status" className="break-words">{notice}</p>}
     {image && image.session_id === currentSession && image.project_id === currentProject && image.project_id === boundProject && <div className="space-y-1">
       <p>第 {image.index + 1} / {image.count} 张 · {image.media_type}</p>

@@ -94,7 +94,7 @@ function PluginsTab(): JSX.Element {
           </Button>
         }
       />
-      <p className="text-xs text-ink-2">禁用后不再启动该插件的后续 Hook；已经启动的进程可能继续运行。启停覆盖仅在当前服务进程有效，重载会恢复清单设置。</p>
+      <p className="text-xs text-ink-2">禁用后不再启动该插件的后续 Hook；已经启动的进程可能继续运行。</p><p className="text-xs text-ink-2">启停覆盖仅在当前服务进程有效，重载会恢复清单设置。</p>
 
       {loadError && (
         <ErrorBanner

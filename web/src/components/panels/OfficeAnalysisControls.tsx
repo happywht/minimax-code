@@ -13,7 +13,7 @@ export function OfficeAnalysisControls({ spec, value, onChange }: { spec: Office
   return <details className="rounded border border-line p-3">
     <summary>可选：静态汇总和图表</summary>
     <p>配置基于下方 JSON 表格。CSV 编辑后请先点击转换；汇总值写入单元格，不是公式，修改数据不会自动重算。</p>
-    <p>计数统计非空值（含 0 和 false）；求和与平均值只接受数字列并忽略空白。空列求和为 0，平均为空；平均按指定小数位十进制四舍五入。</p>
+    <p>计数统计非空值（含 0 和 false）；求和与平均值只接受数字列并忽略空白。空列求和为 0，平均为空；</p><p>平均按指定小数位十进制四舍五入。</p>
     <p>汇总最多 20 项、原表最多 18 列，并受最终 1000 行及 5000 格限制。</p>
     {!spec && <p role="status">请先提供有效的表格 JSON 才能选择列。</p>}
     {value.summaries.map((summary, index) => {
@@ -33,7 +33,7 @@ export function OfficeAnalysisControls({ spec, value, onChange }: { spec: Office
     <label className="block"><input type="checkbox" checked={!!value.chart} onChange={(event) => onChange({ ...value,
       chart: event.target.checked ? { kind: "bar", category_column: "", value_column: "", title: "数据图表" } : null })} />生成图表成果</label>
     {value.chart && <div className="space-y-1">
-      <p>图表仅引用原始数据行，需要至少一行；类别列为文本或数字，数值列为数字。附件预览不显示图表，请下载后查看；业务和视觉未验收。</p>
+      <p>图表仅引用原始数据行，需要至少一行；类别列为文本或数字，数值列为数字。附件预览不显示图表，请下载后查看；</p><p>业务和视觉未验收。</p>
       <p>图表会登记到办公成果；结果不明时可刷新，或以相同输入重试。</p>
       <label>图表类型<select aria-label="图表类型" value={value.chart.kind} onChange={(event) => patchChart({ kind: event.target.value as OfficeChart["kind"] })}><option value="bar">柱状图</option><option value="line">折线图</option></select></label>{" "}
       <label>类别列<select aria-label="图表类别列" value={value.chart.category_column} onChange={(event) => patchChart({ category_column: event.target.value })}>

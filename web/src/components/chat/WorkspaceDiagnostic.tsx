@@ -65,6 +65,6 @@ export function WorkspaceDiagnostic(): JSX.Element | null {
     <button type="button" disabled={busy} onClick={() => void check()}>{busy ? "检查目录中…" : "检查当前会话目录"}</button>
     {error && <p role="status">{error}</p>}
     {result && <div role="status"><p>{result.status === "ok" ? "目录已检查" : result.status === "error" ? "目录不可用" : "目录状态未知"} · {sources[result.source]}{result.path ? `：${result.path}` : ""}</p>
-      <p>{guidance(result)}</p><p>未判断映射驱动器是否远程，也未测试写入权限、模型连接或远程执行；目录检查不是操作系统沙盒。</p></div>}
+      <p>{guidance(result)}</p><p>未检查远程驱动器、写入权限或模型连接；目录检查不等于沙盒。</p></div>}
   </section>;
 }

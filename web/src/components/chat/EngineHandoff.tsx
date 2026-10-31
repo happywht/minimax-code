@@ -160,8 +160,8 @@ export function EngineHandoff({ sessionId, target, onClose }: { sessionId: strin
   };
   return <Modal title={`切换到 ${target === "codex" ? "Codex" : "Native"} 并交接`} onClose={close} widthClass="max-w-2xl" testId="engine-handoff">
     <div className="space-y-3 text-sm">
-      <p>创建同项目的新会话；不会修改原会话，不迁移工具状态、权限、预算或 Codex 线程，也不自动发送。新会话使用项目默认目录。</p>
-      <p>这里只展示有界历史摘录，不是自动验证的总结。可能包含密码、隐私或其他敏感内容；请删除不应带入的内容并补充约束。</p>
+      <p>新会话使用项目默认目录；工具状态、权限、预算和外部线程不会迁移，也不会自动发送。</p>
+      <p>以下是未核验的历史摘录，请删除敏感内容并补充约束。</p>
       {snapshot && <p className="break-all text-xs text-ink-2">项目：{originProject.current ?? "inbox"} · 服务：{snapshot.service} · 地址：{originHost.current} · 来源：{sessionId}</p>}
       {snapshot && (snapshot.source.workspace_mode === "worktree" || !!snapshot.source.workspace_path) && <p className="break-all text-status-warning">来源工作区：{snapshot.source.workspace_path}（{snapshot.source.workspace_mode === "worktree" ? "独立工作区" : "自定义目录"}）；新会话项目目录：{snapshot.targetRoot}。不会复制或合并文件；两个目录可能不同，请先核对文件与原运行。</p>}
       {snapshot && (snapshot.runs.some((run) => active.has(run.status)) || snapshot.messages.some((item) => item.streaming)) && <p role="status" className="text-status-warning">原会话仍有运行或未完成消息；交接仅是读取时快照，不会停止原任务。</p>}

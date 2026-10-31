@@ -58,6 +58,6 @@ export function HostFileBrowser({ host, onSelect, onSelectDirectory }: { host: R
         <span>{entry.kind === "directory" ? "目录" : "文件"}：{entry.name}</span></li>)}</ul>
       {!listing.entries.length && <p>没有可显示的普通文件或目录。</p>}
     </div>}
-    <p className="text-xs text-ink-2">通过受信 SSH 读取，不跟随路径中的符号链接，不显示特殊文件。选择目录或文件不会传输。按目录原有顺序分批读取；目录变化可能导致翻页重复或遗漏，请在确认传输前核对。</p>
+    <p className="text-xs text-ink-2">通过受信 SSH 浏览；不跟随符号链接，不显示特殊文件。选择不会传输文件；</p><p className="text-xs text-ink-2">目录变化可能导致翻页重复或遗漏，请在传输前核对。</p>
   </div>;
 }

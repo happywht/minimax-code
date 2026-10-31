@@ -87,9 +87,9 @@ export function ReportDocumentReuse({ attachment, project, session, service, hos
     finally { if (current(ticket)) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2">
-    <p>将文档可读取范围的文字转为可编辑正文。DOCX 按正文及表格内段落，PDF 按物理页提取文字；合并单元内空白，不保留表格结构、版式、图片、页眉页脚或其他未提取内容，也不做 OCR。请对照原件核对，原件不变。</p>
+    <p>提取可读文字到正文，原件不变；不保留版式、图片或表格结构，也不做 OCR。请对照原件核对。</p>
     <Button type="button" variant="secondary" disabled={busy || !project || !session || !service || ipc.isMock} onClick={() => void prepare()}>{busy ? "正在读取…" : "准备文档文字到报告"}</Button>
-    {candidate !== null && <div className="space-y-2"><p>已读取接口支持的全部范围，非原件完整内容。文字可能包含原文标题和参考文献；报告标题及来源列表不会自动解析。可替换普通正文，或追加到普通正文/所选章节。请先核对：</p>
+    {candidate !== null && <div className="space-y-2"><p>已读取支持的范围，并非原件全文；标题和来源不自动解析。请先核对，再替换或追加正文。</p>
       <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words">{candidate}</pre>
       <Button type="button" disabled={busy} onClick={() => void apply("replace")}>确认替换普通正文</Button>
       {attachment.recognized_type === "docx" && <Button type="button" variant="secondary" disabled={busy} onClick={() => void apply("same-name")}>替换正文并准备同名 DOCX 新版本</Button>}

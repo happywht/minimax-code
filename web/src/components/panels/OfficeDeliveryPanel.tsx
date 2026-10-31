@@ -218,9 +218,9 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
     <p className="break-all text-xs text-ink-1">当前项目 {project ?? "未选择"} · Agent {host} · 服务 {scoped ? state.serviceId : "刷新中"}</p>
     <p className="text-sm text-ink-1">仅新建单表 XLSX，不覆盖原件；不计算公式，不做版式或业务核验。</p>
     <details className="text-sm text-ink-1"><summary className="cursor-pointer">表格范围与限制</summary>
-      <p>1–20 列、最多 1000 数据行，含表头最多 5000 格；输入 1 MiB、文件 2 MiB。空串作为空白；数字最多 15 有效位，长编号请用 text。</p>
-      <p>不生成或计算公式、宏、外链。可选静态汇总或图表；不做 PDF/OCR、版式、打印分页或业务核验，文本预览不还原 Excel 排版。</p>
-      <p>在当前 Agent 服务登记不可变新文件；关联已有 run 只作来源引用，不改变其状态。切换页面只停止本页等待，已提交结果可刷新找回。旧版生成的图表仍在项目附件中，不会自动补登记。</p>
+      <p>1–20 列、最多 1000 数据行，含表头最多 5000 格；输入 1 MiB、文件 2 MiB。</p><p>空串作为空白；数字最多 15 有效位，长编号请用 text。</p>
+      <p>不生成或计算公式、宏或外链；可选静态汇总和图表。预览不还原排版，业务与版式未经核验。</p>
+      <p>生成不可变新文件；关联运行仅作来源引用。切换页面不会取消已提交任务，可刷新找回结果。</p>
     </details>
     {ipc.isMock && <p role="status">演示模式不生成 Office 文件；请连接真实后端及 attachments 可选依赖。</p>}
     <div className="space-y-2 rounded border border-line p-3"><h3 className="font-semibold">已有表格成果</h3>
@@ -257,7 +257,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         <Button variant="secondary" disabled={state.busy || ipc.isMock || inputStatus === "needs_review" || filePending || !!candidate || converting} onClick={() => { const next = crypto.randomUUID(); setKey(next); submit(next); }}>按当前文件名和输入生成新文件</Button></div>
       {inputs[`${state.selected.delivery.service_id}:${state.selected.delivery.id}`] ? <Button variant="secondary" onClick={() => saveJson(inputs[`${state.selected!.delivery.service_id}:${state.selected!.delivery.id}`], "office-input.json")}>下载此成果的输入 JSON</Button> :
         <p role="status">此成果的输入未保存在当前页面，请使用生成时另行保存的输入 JSON 复验；当前编辑器内容不一定匹配。</p>}
-      <p>校验报告不是数字签名。空串已按空白规范化。输入快照仅保留到离开页面或切换项目；图表输入包含图表配置及原始数据行数。</p>
+      <p>校验报告不是数字签名。空串已按空白规范化。输入快照仅保留到离开页面或切换项目；</p><p>图表输入包含图表配置及原始数据行数。</p>
       {state.selected.attachment.preview_truncated && <p role="status">预览已截断（A1:T100 / 1500 格 / 64 KiB）；可下载完整文件。</p>}
       <XlsxTablePreview key={`${state.selected.attachment.id}:${state.selected.attachment.sha256}`} attachment={state.selected.attachment} preview={state.selected.preview_text} />
       <pre className="whitespace-pre-wrap break-words rounded border border-line p-3" aria-label="办公成果纯文本预览">{state.selected.preview_text}</pre>
@@ -290,7 +290,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
     }} />
     <details className="rounded border border-line p-3">
       <summary>从 CSV 创建表格输入</summary>
-      <p>首行为列名，逗号分隔；支持引号内逗号和换行。默认全部为文本，保留前导零和公式样文字；空字符串变空白。转换会替换下方 JSON，源 CSV 不会被修改。</p>
+      <p>首行为列名，默认文本；支持引号内逗号和换行。转换会替换下方 JSON，不修改源 CSV。</p>
       <label>选择本地 UTF-8 CSV 文件（最多 1 MiB）<input aria-label="选择本地 CSV 文件" type="file" accept=".csv,text/csv" onClick={cancelFileRead} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) readCsvFile(file); }} /></label>
       <p>文件仅在本页读取，不会上传或保存为项目附件。生成时提交转换后的表格数据。</p>
       {filePending && <p role="status">正在读取文件；现有草稿保留。</p>}
@@ -302,7 +302,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         {csvTable.headers.map((name, index) => <label key={index} className="flex items-center gap-2">{name}<select aria-label={`第 ${index + 1} 列类型`} value={kinds[index]} onChange={(event) => { setKinds((old) => old.map((kind, i) => i === index ? event.target.value as typeof kind : kind)); setInputStatus("needs_review"); }}>
           <option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option></select></label>)}
         {originalCsvTable && <CsvTableEditor table={csvTable} original={originalCsvTable} kinds={kinds} onChange={(next, nextKinds) => { setCsvTable(next); if (nextKinds) setKinds(nextKinds); setTableDirty(next !== originalCsvTable); setInputStatus("needs_review"); setFormError(null); }} />}
-        <p>下载的是当前表格的新文件，不修改原件。CSV 仅保存单元格文本，不保存列类型；表格软件可能将公式样文本解释为公式或自动转换数据。带类型 JSON 按所选列类型保存，空字符串转为空值，数字和布尔值会规范化。</p>
+        <p>下载新文件，不修改原件。CSV 不保存类型，表格软件可能将公式样文本作为公式或自动转换数据；JSON 保留所选类型。</p>
         <div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={() => { saveCsv(csvTable); setFormError(null); }}>下载当前表格 CSV</Button>
           <Button type="button" variant="secondary" onClick={() => { try { saveJson(csvToOfficeSpec(csvTable, kinds), "表格处理结果.json"); setFormError(null); } catch (error) { setFormError(error instanceof Error ? error.message : "导出失败"); } }}>下载带类型表格 JSON</Button></div>
         <Button type="button" variant="secondary" disabled={converting || filePending || !!candidate} onClick={() => void convert()}>转换为表格输入</Button>
@@ -318,7 +318,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
       <Textarea aria-label="结构化表格 JSON" rows={12} value={source} onChange={(event) => { setSource(event.target.value); setInputStatus((old) => old === "needs_review" ? old : "independent"); edited(); }} />
       <OfficeAnalysisControls spec={analysisSpec} value={analysis} onChange={(next) => { setAnalysis(next); edited(); }} />
       <fieldset className="space-y-2 rounded border border-line p-2"><legend>成果处理说明（可选，用户填写）</legend>
-        <p>说明会与成果回执一起保存并可下载；不会写入 XLSX，不自动追踪编辑或核验来源及业务结果。请在修改数据后更新，不要填写不必要的敏感信息。</p>
+        <p>说明随回执保存和下载，不写入 XLSX；来源及业务结果未经核验。修改数据后请更新，避免填写不必要的敏感信息。</p>
         {cacheNotice && <div className="rounded border border-line p-2"><p className="break-all">本次表格导入涉及公式缓存：{cacheNotice} 请核对后记录到处理说明；独立 JSON 不一定来自该表格。</p>
           <Button type="button" variant="secondary" onClick={() => {
             const next = [operatorNotes.limitations, cacheNotice].filter(Boolean).join("\n");

@@ -107,7 +107,7 @@ export function ProjectAttachmentImport({ sessionId, projectId, host, open, onCl
   if (!open) return null;
   return createPortal(<Modal title="添加文件到项目" onClose={onClose}>
     <form className="space-y-3 text-sm" onSubmit={(event) => { event.preventDefault(); event.stopPropagation(); }}>
-      <p className="text-xs text-ink-2">支持 PDF、Word、Excel 等文件，最大 10 MiB。文件先保存到当前项目；可将文件引用加入聊天草稿。保存或引用不代表模型已读取原件。</p>
+      <p className="text-xs text-ink-2">支持 PDF、Word、Excel 等，最大 10 MiB。保存或引用不代表模型已读取。</p>
       {(!sessionId || !projectId) && <p role="status" className="text-status-warning">请先选择项目和会话。</p>}
       <label className="block text-xs text-ink-1">选择文件 <input ref={input} aria-label="选择要导入项目的附件" type="file"
         disabled={busy || !sessionId || !projectId} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setSaved(null); setNotice(""); }} /></label>

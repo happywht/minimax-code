@@ -251,9 +251,9 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     </div>}
     {excerptNotice && <p role="status">{excerptNotice}</p>}
     <p className="text-sm text-ink-1">最大 10 MiB。每次上传保留独立原件；同名文件创建新版本。</p>
-    <details className="text-sm text-ink-1"><summary className="cursor-pointer">支持的预览及解析限制</summary><p>TXT / CSV 严格 UTF-8 预览，最多 64 KiB / 2000 行；CSV 公式只作文本。可选 DOCX 解析仅包含正文段落和表格，保留位置标签；不含页眉页脚、修订、文本框、批注、脚注或图片文字。可选 PDF 解析按物理页序提取已有文字，最多 200 页，不保证版式或表格结构；扫描图片未尝试 OCR。可选 XLSX 解析只预览有界单元格、公式文本和未验证缓存，不计算公式，不执行宏或访问外链。</p></details>
+    <details className="text-sm text-ink-1"><summary className="cursor-pointer">支持的预览及解析限制</summary><p>预览有大小限制；DOCX 和 PDF 仅提取部分文字，扫描件不做 OCR。XLSX 缓存未经验证，不计算公式或执行宏。</p></details>
     <p className="text-sm text-ink-1">原件保存、可解析、质量验证与交付是不同状态；当前质量均为未验证。附件不会自动加入对话上下文。</p>
-    {ipc.isMock && <p role="status">演示模式：原件仅保存在本页内存，刷新后清空；Office 容器只标记候选 ZIP。PDF / DOCX / XLSX 解析需要真实后端可选依赖。</p>}
+    {ipc.isMock && <><p role="status">演示模式的原件仅存在页面内存，刷新会清空；PDF / DOCX / XLSX 解析需真实后端依赖。</p></>}
     {attachmentTransfer && onClearAttachmentTransfer && <RunAttachmentTransfer transfer={attachmentTransfer} project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host} onClear={onClearAttachmentTransfer} />}
     <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (file) void state.upload(file); }}>
       <input aria-label="选择附件原件" type="file" disabled={state.busy} onChange={(event) => { setFile(event.target.files?.[0] ?? null); event.target.value = ""; }} />
@@ -417,7 +417,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
           const restoredMarkers = reportMarkers(draft.body, draft.sections, draft.structured);
           setCitationNeedsReview(restoredMarkers === null || restoredMarkers.length > 0);
         }} />
-      <p>填写标题与正文（每行一个段落），可粘贴已核对的资料和来源。生成独立新文件，不修改附件原件；不进行版式渲染或事实核验。</p>
+      <p>填写标题和正文，生成新文件，不修改原件；版式和事实未经核验。</p>
       {researchTransfer && onClearResearchTransfer && <ReportResearchTransfer ids={researchTransfer} project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host}
         selected={researchSources} manualCount={sources.length} ranges={researchRanges}
         draftVersion={JSON.stringify([docName, title, body, format, structured, sections, visualSections, excerptSection, sources, researchSources, researchRanges, documentCitations, researchNeedsReview, citationNeedsReview, documentReview])}
@@ -506,8 +506,8 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         const next = event.target.value as "docx" | "pdf" | "both"; setFormat(next);
         setDocName((name) => `${name.replace(/\.(docx|pdf)$/i, "")}${next === "both" ? "" : `.${next}`}`);
       }}><option value="docx">DOCX</option><option value="pdf">PDF</option><option value="both">DOCX + PDF</option></select></label>
-      {format === "both" && <p>文件名填写不带扩展名的公共名称。逐项保存；同一输入已有结果后，请选择单一格式重试或修改输入以创建新版本。不确定结果时先刷新附件。</p>}
-      {format !== "docx" && <p>PDF 需要已安装的中文 TrueType 字体；缺失或字符不受支持时请按提示配置。表格最多 10 列、每表 1000 格。</p>}
+      {format === "both" && <><p>填写不带扩展名的名称，逐项保存；结果不确定时先刷新附件。已有结果后，选择单一格式重试或修改输入。</p></>}
+      {format !== "docx" && <><p>PDF 需要已安装的中文 TrueType 字体；缺失或字符不受支持时请按提示配置。</p><p>表格最多 10 列、每表 1000 格。</p></>}
       {pdfTableLimitExceeded && <p role="alert">当前表格超过 PDF 限制。请缩减表格，或选择仅生成 DOCX；原内容不会自动删减。</p>}
       <Input aria-label="报告文件名" value={docName} onChange={(event) => setDocName(event.target.value)} />
       <Input aria-label="报告标题" value={title} onChange={(event) => setTitle(event.target.value)} />

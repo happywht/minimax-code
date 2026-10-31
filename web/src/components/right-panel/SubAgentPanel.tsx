@@ -234,7 +234,7 @@ function ChildHistory({ sessionId }: { sessionId: string }): JSX.Element {
     finally { lock.current = false; if (current()) setBusy(false); }
   };
   return <details className="mb-2 rounded border border-line p-2 text-xs"><summary>浏览子任务历史</summary>
-    <p>按创建时间倒序，每页 50 条；活动但无法确认仍在运行的记录需要核对。历史可能随新记录或删除变化。</p>
+    <p>按创建时间倒序，每页 50 条。无法确认是否运行的记录须核对；历史可能变化。</p>
     <button type="button" disabled={busy} onClick={() => void load(false)}>读取／刷新历史</button>
     <ul>{rows.map((item) => <li key={item.run_id}><details><summary className="break-all">{item.agent_name || "子 Agent"} · {item.run_id} · {item.status}{!["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(item.status) && !item.live ? " · 状态待核对" : ""}</summary>
       <p className="break-all">父运行：{item.parent_run_id}{item.partial ? " · 部分结果" : ""}</p><p>任务：{item.prompt}</p>
@@ -734,7 +734,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
     </div>}
     {review && <div className="space-y-1">
       <p>父目录：{review.root} · {review.kind} · {review.state}</p>
-      {review.recovery_snapshot && <p className="break-all">中断后的只读快照：{review.child_path}。进程及副作用可能仍未结束，内容可能继续变化；请先核对相关进程，再手动保全和处理文件。此快照不能收集或自动恢复。</p>}
+      {review.recovery_snapshot && <p className="break-all">中断后的只读快照：{review.child_path}。进程及副作用可能持续，内容可能变化；核对进程后手动保全文件。快照不能收集或自动恢复。</p>}
       <p>对比当前父目录与子任务结果；同期用户修改不归因于 Agent。普通独立目录不是操作系统沙盒。</p>
       {!review.recovery_snapshot && !!review.collection_attempts?.length && <details open><summary>收集历史（最近 50 次）</summary>
         {review.collection_attempts.map((attempt) => <div key={attempt.id} className="my-1 rounded border border-line p-2">
@@ -788,7 +788,7 @@ export function ChildWorkspaceReview({ runId, sessionId, teamRunId, allowCollect
       {!review.recovery_snapshot && <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected" || review.files.some((f) => !!f.conflict)} onClick={() => void invoke(true)}>收集已审阅的无冲突变化</button>}
       {!review.recovery_snapshot && review.files.some((f) => !!f.conflict) && review.files.some((f) => !f.conflict && f.parent_sha256 !== f.child_sha256) && <button type="button" disabled={(!allowCollect && !review.team_collection?.eligible) || busy || review.state === "collected"} onClick={() => void invoke(true, true)}>仅收集无冲突文件，跳过冲突</button>}
       {!allowCollect && <p>{review.team_collection?.eligible ? "已保存成员完成及受管任务收束记录；请自行核对相关进程并明确确认。" : `不能收集：${review.team_collection?.reason || "缺少停止或成员完成证据"}。`} 工作副本不是操作系统沙箱。</p>}
-      {!review.recovery_snapshot && <p>可对小型 UTF-8 文件手动合并；删除及其他冲突需在外部处理。执行中出现错误时可能部分写入，请核对文件。</p>}
+      {!review.recovery_snapshot && <p>可手动合并小型 UTF-8 文件；删除及其他冲突须在外部处理。出错可能部分写入，请核对文件。</p>}
     </div>}
   </div>;
 }

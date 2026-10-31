@@ -65,7 +65,7 @@ export function XlsxTablePreview({ attachment, preview }: { attachment: Attachme
   const sheet = parsed.sheets[sheetIndex] ?? parsed.sheets[0];
   return <section className="space-y-2 rounded border border-line p-2 text-xs" aria-label="XLSX 表格预览">
     <p>仅显示后端解析的存储记录，最多 A1:T100、1500 格和 64 KiB；「—」表示未显示，不代表单元格为空。格式、合并单元格、图表及布局不还原。</p>
-    <p>数字按原始存储值显示，不按日期、货币或百分比格式推断；ISO 日期保留原文。公式不执行，缓存可能缺失或过期，均未核验。</p>
+    <p>数字按原始存储值显示，不按日期、货币或百分比格式推断；ISO 日期保留原文。</p><p>公式不执行，缓存可能缺失或过期，均未核验。</p>
     {attachment.preview_truncated && <p role="status">预览已截断，未显示的区域及工作表不可推断；可下载完整原件。</p>}
     {parsed.error ? <p role="alert">结构化预览无法读取；可查看原始解析记录或下载原件。</p> : !sheet ?
       <p role="status">预览范围没有可显示的非空记录；不代表整个文件为空。</p> : <>

@@ -14,7 +14,7 @@ export function CsvGroupEditor({ table, kinds, onApply }: { table: CsvTable; kin
   useEffect(() => { setKey(0); setAdditionalKeys([]); setMetric(0); setError(null); }, [table.headers]);
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>按列分组汇总</legend>
-    <p>可按一列或多列组合分组，逐列按类型比较，空值单独成组，按首次出现顺序输出；结果列先是首个分组列，再按原表顺序排列其他分组列，最后为汇总列。行数包含所有行；求和忽略空值，全为空时结果为空。汇总为静态值，替换当前草稿，可撤销，原文件不变。</p>
+    <p>按所选列分组，空值单独成组；行数包含所有行，求和忽略空值。结果为静态草稿，可撤销，原文件不变。</p>
     <div className="flex flex-wrap gap-2">
       <label>首个分组列 <select aria-label="分组列" value={key} onChange={(event) => { const next = Number(event.target.value); setKey(next); setAdditionalKeys((old) => old.filter((column) => column !== next)); }}>{table.headers.map((header, index) => <option key={index} value={index}>{header || `第 ${index + 1} 列`}</option>)}</select></label>
       <label>汇总方式 <select aria-label="分组汇总方式" value={operation} onChange={(event) => setOperation(event.target.value as typeof operation)}><option value="count">行数</option><option value="sum">求和</option></select></label>

@@ -75,7 +75,11 @@ export function ProjectXlsxImport({ project, session, service, disabled = false,
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   return <details className="rounded border border-line p-3"><summary>从项目 XLSX 读取表格</summary>
-    <p>选择本服务当前项目的 XLSX 原件（最多 2 MiB），读取受支持的完整可见工作表，再选择数据行和列载入草稿；原件不修改。默认拒绝公式，可显式选择仅读取公式的已存储缓存；不会执行或重算公式，缓存可能缺失或过期。只支持完整有界 A1:T1001、最多 5000 格；隐藏行列、合并单元格、图表、筛选、错误值和不明确的数字格式会拒绝。日期变成 ISO 文本；百分比和货币保留底层数值（25% 为 0.25），样式、货币符号和 Excel 排版不保留。缓存导入功能尚未运行验证。</p>
+    <p>读取 XLSX 到草稿，不修改原件。默认拒绝公式；可选缓存可能过期，且导入功能尚未运行验证。</p>
+    <details className="text-xs text-ink-2"><summary>查看格式限制</summary>
+      <p>最多 2 MiB、5000 格；仅支持完整可见工作表 A1:T1001。不支持隐藏行列、合并单元格、图表、筛选或错误值。</p>
+      <p>日期转文本，百分比和货币保留底层数值；样式和排版不保留。不明确的数字格式会被拒绝。</p>
+    </details>
     {!project || !session || !service ? <p>请先选择项目会话并连接服务。</p> : <>
       <div className="flex gap-2"><Input aria-label="搜索项目 XLSX 附件" maxLength={240} value={query} disabled={busy || disabled} onChange={(event) => setQuery(event.target.value)} placeholder="按名称搜索" /><Button type="button" variant="secondary" disabled={busy || disabled} onClick={() => void list()}>读取项目 XLSX 附件</Button></div>
       {loaded && !items.length && <p>{cursor ? "当前已加载页没有受支持的 XLSX，可继续加载。" : "没有匹配的受支持 XLSX。"}</p>}

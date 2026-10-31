@@ -39,7 +39,7 @@ export function ScheduleTimePreview({ cron, timezone, serviceId }: { cron: strin
   };
   return <div className="my-2 space-y-1 text-xs">
     <Button type="button" size="sm" variant="secondary" disabled={busy || !serviceId || !cron.trim() || !timezone.trim()} onClick={() => void preview()}>{busy ? "计算中…" : "预览未来到期时间"}</Button>
-    <p className="text-ink-2">按当前服务的 Cron 规则和计划时区计算，最多 5 次；不会创建或触发计划。停用、错过周期、服务停机及执行准入等会影响实际运行。</p>
+    <p className="text-ink-2">按当前服务的 Cron 规则和计划时区计算，最多 5 次；不会创建或触发计划。</p><p className="text-ink-2">停用、错过周期、服务停机及执行准入等会影响实际运行。</p>
     {message && <p role="status" className="break-words text-status-error">{message}</p>}
     {result && <div role="status"><p>计算时刻：{result.calculated_at}；计划时区：{result.timezone}</p>
       {result.times.length ? <ol className="list-inside list-decimal">{result.times.map((time) => <li key={time}>{displayTime(time, result.timezone)}</li>)}</ol> : <p>没有可计算的未来到期时间。</p>}</div>}

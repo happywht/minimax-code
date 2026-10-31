@@ -20,7 +20,7 @@ export function CsvCombineColumns({ table, onApply }: { table: CsvTable; onApply
   else if (new TextEncoder().encode(JSON.stringify(next)).length > 1048576) error = "新增列后草稿超过 1 MiB。";
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>拼接多列</legend>
-    <p>按当前表格列顺序拼接原始文本，保留来源列，新列为文本。空字符串默认参与拼接；可选择跳过空字符串，空格不视为空。结果是静态快照，不随来源列更改自动更新；只改草稿，可撤销。</p>
+    <p>按列顺序拼接文本，保留原列；空格不算空。新列为静态文本，不随来源更新；仅修改草稿，可撤销。</p>
     <div className="flex flex-wrap gap-3">{table.headers.map((header, index) => <label key={index}><input type="checkbox" checked={columns.includes(index)} onChange={(event) => setColumns((old) => event.target.checked ? [...old, index].sort((a, b) => a - b) : old.filter((item) => item !== index))} /> 第 {index + 1} 列（{header || "未命名"}）</label>)}</div>
     <div className="flex flex-wrap gap-2"><label>新列名 <input aria-label="拼接新列名" value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label>分隔文本 <input aria-label="拼接分隔文本" maxLength={100} value={separator} onChange={(event) => setSeparator(event.target.value)} /></label>

@@ -117,24 +117,31 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
       }));
     } catch (err) { if (runId.current === sourceRun) setError(err instanceof Error ? err.message : String(err)); }
   };
-  return <div data-testid="run-budget" className="my-2 space-y-1 text-xs text-minimax-muted">
+  return <div data-testid="run-budget" className="my-2 min-w-0 space-y-1 break-words text-xs text-minimax-muted">
     <div className="flex justify-between"><strong>预算账本</strong><button type="button" onClick={() => void load()}>刷新额度</button></div>
+    {!state && !error && <p>正在读取预算，未知用量尚未确认为零。</p>}
+    {state && <p role="status" className={targets.length || state.day_blockers?.total || budget?.unknown_attempts ? "text-status-warning" : ""}>
+      {budget ? `共享预算：已知${budget.usage_complete ? "" : "至少"} ${budget.known_tokens} token；未知请求 ${budget.unknown_attempts} 项。` : "旧任务预算不完整。"}
+      {(targets.length > 0 || !!state.day_blockers?.total || !!budget?.unknown_attempts) && " 存在待核对责任，未知用量不等于零。"}
+    </p>}
+    {budget?.pause_reason && <p role="status">{reasons[budget.pause_reason] ?? budget.pause_reason}</p>}
+    <details>
+      <summary>查看账本与核定</summary>
     {budget ? <>
       <p>{budget.enforcement === "reactive" ? "Codex · 用量通知驱动中断" : "Native · 请求发送前估算预留"}</p>
       <p>任务累计已知{budget.usage_complete ? "" : "至少"} {budget.known_tokens} · 预留/核定责任 {budget.reserved_tokens} · 结果不明请求 {budget.unknown_attempts}</p>
       <p>剩余估算 {budget.remaining_estimate ?? "未设置上限"} · 累计上限 {budget.limit_tokens ?? "未设置"}</p>
-      <p>此额度由同一预算家族的父子任务及恢复运行共享，以下合计并非当前运行独占。</p>
+      <p>父子任务及恢复运行共享此预算。</p>
       <p>本机 {budget.day.day} · 已知{budget.day.usage_complete === true ? "" : "至少"} {budget.day.known_tokens} · 预留/核定责任 {budget.day.reserved_tokens} · 当日上限 {budget.daily_limit ?? "未设置"}</p>
       <p data-testid="daily-budget-completeness">{budget.day.usage_complete === true
         ? "当日用量证据完整（截至当前快照）"
         : budget.day.usage_complete === false ? "当日用量证据未完整" : "当日用量完整性未知"}
         {budget.day.accounting_resolved === true ? " · 无待核对的未知责任；活动请求可能尚未结束。" : ""}</p>
       <p>{budget.enforcement === "reactive" ? "引擎内部调用无法预先预留；通知缺失或重置时暂停核对。" : "按当前请求与输出上限估算；实际用量可能超过估算。"} 价格/币种未知。</p>
-      {budget.pause_reason && <p role="status">{reasons[budget.pause_reason] ?? budget.pause_reason}</p>}
       <details>
         <summary>查看共享预算请求明细（{state?.attempts.length ?? 0} 项）</summary>
-        <p>展示全部请求；预留估算和核定责任不是测得用量。旧记录缺少归属时显示未知。</p>
-        {state?.attempts.map((attempt) => <div key={attempt.id} className="mt-1 rounded border border-minimax-border p-1">
+        <p>预留和核定责任并非实测用量；旧记录归属可能未知。</p>
+        {state?.attempts.map((attempt) => <div key={attempt.id} className="mt-1 min-w-0 break-all rounded border border-minimax-border p-1">
           <p>请求 {attempt.id} · {attemptStates[attempt.state] ?? attempt.state}</p>
           <p>归属运行：{attempt.run_id ? <>{attempt.run_id}{attempt.run_id === run.id ? "（当前运行）" : "（共享预算的其他运行）"}</> : "未知"}</p>
           <p>已知用量 {attempt.known_tokens ?? "未知"} · 请求预留估算 {attempt.estimated_tokens} · 核定责任 {attempt.liability_tokens ?? "未核定"}</p>
@@ -143,7 +150,7 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
       </details>
     </> : !error && <p>{state ? "该旧任务没有完整预算家族；恢复前需核对历史责任。" : "正在读取，未知用量尚未确认为零。"}</p>}
     {!!state?.day_blockers?.total && <div>
-      <p>当日结果不明请求共 {state.day_blockers.total} 项，每页最多 20 项；须逐项核对，核定历史日账不会清除这些请求。翻页期间记录可能变化，刷新可从头查看。</p>
+      <p>当日未知请求 {state.day_blockers.total} 项，须逐项核对；核定日账不会清除请求。每页 20 项，记录可能变化。</p>
       {state.day_blockers.items.filter((item) => item.family_id !== budget?.family_id).map((item) => <div key={item.attempt_id}>
         <span>请求 {item.attempt_id} · 已知下界 {item.known_tokens ?? "未知"} </span>
         {item.session_id && item.run_id ? <button type="button" onClick={() => void reviewOwner(item.session_id!, item.run_id!)}>查看责任任务 {item.run_id}</button> : <span>所属任务记录缺失，请核查数据库备份。</span>}
@@ -153,14 +160,18 @@ export function RunBudgetPanel({ run }: { run: AgentRun }): JSX.Element {
     </div>}
     {!!targets.length && <fieldset className="space-y-1 rounded border border-minimax-border p-2">
       <legend>明确核定未确认责任</legend>
-      <p>核定额度仅授权记账，不会生成测得用量，也不会重置累计花费。核定任务或请求责任前，须等待共享预算的所有运行停止。</p>
-      <label>核定 token 责任<input aria-label="核定 token 责任" type="number" min="0" value={liability} onChange={(event) => { setLiability(event.target.value); setAcknowledged(false); }} /></label>
-      <label>核对依据<input aria-label="预算核对依据" value={reason} onChange={(event) => { setReason(event.target.value); setAcknowledged(false); }} /></label>
+      <p>核定仅用于记账，不是实测用量，也不重置花费。核定任务或请求前须等待共享运行停止。</p>
+      <label className="block">核定 token 责任<input className="block w-full min-w-0" aria-label="核定 token 责任" type="number" min="0" value={liability} onChange={(event) => { setLiability(event.target.value); setAcknowledged(false); }} /></label>
+      <label className="block">核对依据<input className="block w-full min-w-0" aria-label="预算核对依据" value={reason} onChange={(event) => { setReason(event.target.value); setAcknowledged(false); }} /></label>
       <label><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />确认依据与责任额度</label>
       {targets.map((target) => <button key={`${target.target}:${target.id}`} type="button"
         disabled={pending || active || !acknowledged || !reason.trim() || liability === "" || !Number.isSafeInteger(Number(liability)) || Number(liability) < target.minimum}
-        onClick={() => void reconcile(target)}>{target.label}（至少 {target.minimum}）</button>)}
+        className="block max-w-full truncate text-left" title={`${target.label}（至少 ${target.minimum}）`}
+        aria-label={`${target.label}（至少 ${target.minimum}）`}
+        onClick={() => void reconcile(target)}>{target.target === "attempt" && target.id.length > 20
+          ? `核定请求 ${target.id.slice(0, 8)}…${target.id.slice(-8)} 责任` : target.label}（至少 {target.minimum}）</button>)}
     </fieldset>}
+    </details>
     {error && <p role="alert">预算状态未知：{error}</p>}
   </div>;
 }

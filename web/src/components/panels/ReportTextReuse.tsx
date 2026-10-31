@@ -52,7 +52,7 @@ export function ReportTextReuse({ attachment, project, session, service, host, d
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2">
-    <p>将完整 UTF-8 TXT 作为报告正文复用，或附带附件身份追加到普通正文或选定章节。原件保持不变；文本按行转换为段落，追加时跳过空行，报告使用新排版。</p>
+    <p>将完整 UTF-8 TXT 作为报告正文复用，或附带附件身份追加到普通正文或选定章节。原件保持不变；</p><p>文本按行转换为段落，追加时跳过空行，报告使用新排版。</p>
     <Button type="button" variant="secondary" disabled={busy || !project || !service} onClick={() => void prepare()}>{busy ? "正在读取原件…" : "准备复用完整文本"}</Button>
     {notice && <p role="status">{notice}</p>}
     {candidate !== null && <><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{candidate}</pre>

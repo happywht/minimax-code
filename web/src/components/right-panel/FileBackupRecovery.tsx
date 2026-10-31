@@ -55,7 +55,7 @@ export function FileBackupRecovery(): JSX.Element {
   };
   return <div className="space-y-2 rounded border border-line p-2">
     <p className="font-medium">文件编辑备份</p>
-    <p>仅显示当前会话工作区中带清单且摘要匹配的原生文件编辑备份；不涵盖全部备份来源。摘要匹配不证明来源可信。</p>
+    <p>仅显示当前工作区有清单且摘要匹配的原生编辑备份；不涵盖全部备份，摘要匹配不证明可信。</p>
     <button type="button" disabled={!session || !project || busy} onClick={() => void load()}>查看可用备份</button>
     {list && <><p className="break-all">工作区：{list.workspace}</p>
       {list.items.length === 0 ? <p>未找到可用备份。</p> : <ul className="space-y-1">{list.items.map((item) => <li key={item.id} className="break-all">

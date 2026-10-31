@@ -23,7 +23,7 @@ export function CsvNumericFilter({ table, onApply }: { table: CsvTable; onApply:
   } catch (reason) { error = reason instanceof Error ? reason.message : "无法筛选"; }
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>按数值区间筛选</legend>
-    <p>边界包含在结果中，留空表示无该边界；空单元格不保留。数字使用表格转换的精度规则，列中有无效数字时不会修改草稿。操作可撤销，原 CSV 不变。</p>
+    <p>边界包含端点，留空表示无边界；空单元格不保留。无效数字会阻止操作；仅修改草稿，可撤销。</p>
     <div className="flex flex-wrap gap-2">
       <label>数值列 <select aria-label="数值筛选列" value={column} onChange={(event) => setColumn(Number(event.target.value))}>
         {table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"}）</option>)}

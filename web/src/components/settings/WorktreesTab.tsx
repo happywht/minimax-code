@@ -260,17 +260,17 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
   };
   return <div className="space-y-2 rounded border border-line p-3 text-xs" aria-label="工作树未提交差异">
     <p className="break-all">工作树会话：{session.id} · {session.workspace_path}</p>
-    <p>分别显示已跟踪文件差异和未跟踪文件路径，不包含已提交变更，不能作为完整合并预览。读取不会添加、合并、提交或验证。</p>
+    <p>分别显示已跟踪文件差异和未跟踪文件路径，不包含已提交变更，不能作为完整合并预览。</p><p>读取不会添加、合并、提交或验证。</p>
     <Button size="sm" disabled={busy} onClick={() => void load()}>读取／刷新差异</Button>{" "}
     <Button size="sm" disabled={busy || !session.project_id} onClick={() => void readCommits()}>比较已提交变更</Button>{" "}
     <Button size="sm" variant="ghost" disabled={busy} onClick={onClose}>关闭</Button>
     {error && <p role="alert">{error}</p>}
     {committed && <div className="space-y-1 rounded border border-line p-2"><p className="break-all">目标：{committed.target} · 分支 {committed.target_branch} · HEAD {committed.target_head}</p>
       <p className="break-all">工作树 HEAD：{committed.source_head} · 共同祖先：{committed.merge_base}</p>
-      <p>这是共同祖先到工作树 HEAD 的提交差异，目标分支可能也有自己的提交；不包含未提交文件，不预测冲突，也不是验证通过。</p>
+      <p>这是共同祖先到工作树 HEAD 的提交差异，目标分支可能也有自己的提交；</p><p>不包含未提交文件，不预测冲突，也不是验证通过。</p>
       <details><summary>提交摘要（{committed.commits.length}{committed.commits_truncated ? "，已截断" : ""}）</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{committed.commits.join("\n") || "无独有提交"}</pre></details>
       <details open><summary>已提交差异</summary><div className="max-h-80 overflow-auto"><DiffLines text={committed.diff} emptyText="无已提交差异" /></div></details>
-      <Button size="sm" disabled={busy} onClick={() => void mergeReviewed()}>合并已审阅提交</Button><p>工作树有未提交内容时不会合并；合并及验证期间源和目标目录不能接收新的本服务任务，已有相关任务须先结束。外部进程仍可能修改文件；如发生冲突，Git 合并状态会保留供处理。</p></div>}
+      <Button size="sm" disabled={busy} onClick={() => void mergeReviewed()}>合并已审阅提交</Button><p>工作树有未提交内容时不会合并；合并及验证期间源和目标目录不能接收新的本服务任务，已有相关任务须先结束。</p><p>外部进程仍可能修改文件；如发生冲突，Git 合并状态会保留供处理。</p></div>}
     {mergeResult && <div role="status" className="space-y-1 rounded border border-line p-2">
       <p>{mergeResult.merged ? "合并完成。" : mergeReasons[mergeResult.reason ?? ""] ?? `未合并：${mergeResult.reason ?? "原因未知"}`}</p>
       {mergeResult.merge_commit && <p className="break-all">合并提交：{mergeResult.merge_commit}</p>}

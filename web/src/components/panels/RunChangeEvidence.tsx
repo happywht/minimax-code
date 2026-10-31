@@ -22,7 +22,7 @@ export function RunChangeEvidence({ steps, workspace }: { steps: AgentRunStep[];
   return <section className="mt-2 space-y-2 rounded border border-line p-2 text-xs" aria-label="任务前后文件采样">
     <h4 className="font-medium">任务前后文件采样</h4>
     <p className="break-all">采样绑定目录：{workspace || "未记录"}</p>
-    <p className="text-ink-2">比较执行前后的有界采样，只记录路径，不保存文件内容或差异。结果可能包含用户或其他任务的同期修改，不能证明由此任务产生；忽略文件和私有运行数据不在范围内。</p>
+    <p className="text-ink-2">比较执行前后的有界采样，只记录路径，不保存文件内容或差异。</p><p className="text-ink-2">结果可能包含用户或其他任务的同期修改，不能证明由此任务产生；忽略文件和私有运行数据不在范围内。</p>
     {!observations.length ? <p>没有已保存的采样记录；可能未启用、尚未完成或记录未保存，无法判断文件是否变化。</p> : <>
       <label className="block">筛选采样路径<input aria-label="筛选采样路径" value={query} maxLength={200} onChange={(event) => setQuery(event.target.value)}
         className="mt-1 block w-full rounded border border-line bg-surface-0 p-1" placeholder="输入路径关键词" /></label>

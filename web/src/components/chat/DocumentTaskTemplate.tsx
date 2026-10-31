@@ -88,7 +88,7 @@ export function DocumentTaskTemplate({ project, session, host, disabled, onPrepa
   };
   return <details className="border-b border-line/60 px-2.5 py-2 text-xs text-ink-1">
     <summary className="cursor-pointer">附件成稿工作流</summary>
-    <p className="my-2 text-ink-2">选择当前项目已登记的资料，填写目标后生成可编辑请求；不会自动发送。支持 TXT、CSV、PDF 和 DOCX 的受限读取，扫描件不会自动 OCR。</p>
+    <p className="my-2 text-ink-2">选择项目资料并生成草稿，不会自动发送。扫描件不自动 OCR。</p>
     <label className="block">成稿目标、读者和要求
       <textarea aria-label="成稿目标、读者和要求" value={goal} maxLength={2000} disabled={busy || disabled} onChange={(event) => setGoal(event.target.value)} className="mt-1 block w-full rounded border border-line bg-surface-0 p-1" />
     </label>

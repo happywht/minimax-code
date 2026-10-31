@@ -115,7 +115,7 @@ export function ScheduleManualTrigger({ job, serviceId }: { job: ScheduledJob; s
       <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void recoverReceipt(pending)}>找回原接单回执</Button>
         <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void submit(pending, true)}>重试原请求</Button>
         <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => void discard()}>清除本地记录</Button></div></div>}
-    <details><summary>导入立即运行恢复记录</summary><p>从原标签页复制记录后粘贴；仅匹配服务身份和计划 ID，不自动运行。数据库克隆可能复用服务身份，请人工确认远端主机。</p>
+    <details><summary>导入立即运行恢复记录</summary><p>从原标签页复制记录后粘贴；仅匹配服务身份和计划 ID，不自动运行。</p><p>数据库克隆可能复用服务身份，请人工确认远端主机。</p>
       <Textarea aria-label={`${job.name} 导入立即运行记录`} rows={3} value={input} disabled={busy || !!pending} onChange={(event) => setInput(event.target.value)} />
       <Button type="button" size="sm" variant="secondary" disabled={busy || !!pending || !input.trim()} onClick={importRecord}>填入恢复记录</Button></details>
     {receipt && <p className="break-all">发生记录：{receipt.occurrence_id} · 读取时状态：{receipt.status}；请在发生历史中核对最新状态。</p>}

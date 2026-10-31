@@ -240,13 +240,13 @@ export function ScheduleRunDetail({ occurrence, onVerified, onOpenSession, onFol
           <RunTextArtifacts key={`${host}:${view.serviceId}:${project}:${occurrence.session_id}:${run.id}`} runId={run.id} sessionId={occurrence.session_id} projectId={project} serviceId={view.serviceId} review />
         </details> : <p>选择该运行所属项目并重新确认服务后，可读取登记关联的文本成果。</p>}
         {sameStatus && ["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(run.status) && serviceId === view.serviceId && <div className="mt-2 space-y-1 rounded border border-line p-2">
-          <p>将本次结果用于后续任务：目标是当前会话，必须属于同一项目；草稿不会自动发送，后续运行使用当前配置、预算和授权。</p>
+          <p>将本次结果用于后续任务：目标是当前会话，必须属于同一项目；</p><p>草稿不会自动发送，后续运行使用当前配置、预算和授权。</p>
           {activeProject !== project || !activeSession ? <p>请先选择该计划所属项目的目标会话，再返回这里准备草稿。</p> :
             <FollowupRunDraft run={run} allowOtherSession scheduleScope={{ serviceId: view.serviceId, jobId: occurrence.job_id,
               occurrenceId: occurrence.id, revision: occurrence.revision, workspace: occurrence.context.workspace! }} />}
         </div>}
         {sameStatus && text && onFollowup && serviceId === view.serviceId && ["completed", "failed", "cancelled", "interrupted", "budget_paused"].includes(run.status) && <div className="mt-2 space-y-1 rounded border border-line p-2">
-          <p>可将结果前 2000 字符用于新的定时计划草稿。内容可能含凭据或敏感信息；先核对。计划默认停用，不会自动创建或运行；创建时重新核对项目、配置、预算和权限。</p>
+          <p>可将结果前 2000 字符用于新的定时计划草稿。内容可能含凭据或敏感信息；先核对。</p><p>计划默认停用，不会自动创建或运行；创建时重新核对项目、配置、预算和权限。</p>
           <label className="flex items-start gap-2"><input type="checkbox" checked={includeResult} onChange={(event) => setIncludeResult(event.target.checked)} />选择上述结果摘录用于后续计划草稿</label>
           <Button type="button" size="sm" variant="secondary" disabled={!includeResult} onClick={() => onFollowup(occurrence, text, run.status)}>准备后续定时计划草稿</Button>
         </div>}

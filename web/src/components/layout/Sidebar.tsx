@@ -846,7 +846,8 @@ export function Sidebar({
           <Input aria-label="项目根目录" value={settingsRoot} disabled={settingsSaving} onChange={(event) => setSettingsRoot(event.target.value)} placeholder="已有的绝对目录，留空为默认目录" /></label>
         <label className="mt-3 block text-xs text-ink-1">任务验证命令
           <Input aria-label="任务验证命令" value={settingsValidate} maxLength={500} disabled={settingsSaving} onChange={(event) => setSettingsValidate(event.target.value)} placeholder="例如 pytest -q；留空关闭自动验证" /></label>
-        <p className="mt-3 text-xs text-ink-2">Native 可写任务正常完成后自动执行；Codex 正常完成后会先请求一次主机执行授权。结果显示在时间线，规划模式不执行。设置只作用于之后接收的任务；已有会话若绑定独立工作区，仍使用其工作区。命令可读写宿主文件并访问网络，请只填写信任的命令。</p>
+        <p className="mt-3 text-xs text-ink-2">命令可读写宿主文件和访问网络，请仅填写信任的命令。Codex 执行前会请求授权。</p>
+        <details className="text-xs text-ink-2"><summary>查看执行范围</summary><p>Native 可写任务或 Codex 任务正常完成后执行；规划模式不执行。设置仅影响之后的任务；已有独立工作区不变。</p></details>
       </Modal>}
 
       {/* Rename project modal */}

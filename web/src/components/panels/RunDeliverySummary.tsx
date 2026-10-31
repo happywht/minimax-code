@@ -132,7 +132,7 @@ export function RunDeliverySummary({ host, service, project, session, run }: {
     {draft && <><label className="block">摘要草稿<textarea aria-label="交付摘要草稿" className="mt-1 block min-h-64 w-full rounded border border-line bg-surface-0 p-2" value={draft.text} disabled={busy} maxLength={100000} onChange={(event) => { const value = { ...draft, text: event.target.value }; saveDraft(key, value); setDraft(value); }} /></label>
       <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !draft.text.trim()} onClick={() => void download()}>{busy ? "正在核对…" : "核对来源并下载文本"}</Button>
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { if (window.confirm("放弃此摘要草稿？未下载的编辑会丢失。")) { removeDraft(key); setDraft(null); setMessage("草稿已放弃。"); } }}>放弃草稿</Button></div>
-      <p>草稿按服务、项目、当前会话及来源运行保存在本页面内存中；刷新或关闭页面会丢失，未放弃的草稿会触发离开提醒。下载前会重新读取来源，变化时保留编辑并要求重新准备。</p></>}
+      <p>草稿仅保存在本页面，刷新或关闭会丢失。下载前重新读取来源；变化时需重新准备。</p></>}
     {message && <p role="status" className="break-words">{message}</p>}
   </section>;
 }

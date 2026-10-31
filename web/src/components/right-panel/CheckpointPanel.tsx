@@ -120,7 +120,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
     if (!legacyReady(ckpt) || restoring || !previews[ckpt.id]) return;
     const accepted = await requestConfirmation({
       title: `应用检查点「${ckpt.label}」`,
-      description: "这会尝试应用 Git stash 并复制未跟踪文件，不是精确撤销。整体应用不核对各副本的预览摘要；请先保护当前修改。预检不会锁定工作区，并发修改或 Git 冲突可能导致部分结果。已有未跟踪文件不会被覆盖。",
+      description: "将尝试应用 Git stash 并复制未跟踪文件，并非精确撤销。整体应用不核对副本预览摘要，请先保护修改。预检不锁定工作区；并发修改或冲突可能导致部分结果。已有未跟踪文件不会被覆盖。",
       confirmLabel: "应用检查点",
     });
     if (!accepted) return;
@@ -424,7 +424,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                         className="max-h-40 overflow-auto rounded bg-minimax-bg p-2"
                         data-testid={`${testId}-diff-body-${ckpt.id}`}
                       >
-                        <p className="text-[11px] text-minimax-muted">已跟踪文件显示的是检查点捕获的补丁，不是当前工作区的撤销预览。未跟踪文件状态可能随时变化，恢复时会重新检查。</p>
+                        <p className="text-[11px] text-minimax-muted">已跟踪文件显示检查点补丁，并非当前撤销预览。未跟踪文件状态可能变化，恢复时会重查。</p>
                         <DiffLines
                           text={diffs[ckpt.id] ?? ""}
                           emptyText={strings.rightPanel.checkpoint.noDiff}
@@ -433,7 +433,7 @@ export function CheckpointPanel({ testId = "checkpoint-panel" }: CheckpointPanel
                         <Button size="sm" variant="secondary" disabled={restoring || !previews[ckpt.id]} data-testid={`${testId}-restore-${ckpt.id}`} onClick={() => void handleApplyCheckpoint(ckpt)}>应用检查点（非精确撤销）</Button>
                         {ckpt.source_root && ckpt.git_stash_ref && ckpt.tracked_files.length > 0 && (
                           <div className="mt-2 text-[11px]">
-                            <p>单独恢复检查点记录的已跟踪改动：仅创建缺失目标；父目录须已存在。删除的快照条目无法恢复。</p>
+                            <p>仅创建缺失目标，父目录须已存在；删除的快照条目无法恢复。</p>
                             {ckpt.tracked_files.map((path) => {
                               const key = JSON.stringify([ckpt.id, path]);
                               const destination = (trackedDestinations[key] ?? "").trim();

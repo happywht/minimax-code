@@ -32,7 +32,7 @@ export function CsvReplaceEditor({ table, onApply }: { table: CsvTable; onApply:
 
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>按列查找替换</legend>
-    <p>只替换所选列的数据单元格，不改表头；按原文区分大小写，逐个替换不重叠的匹配，不使用正则或特殊替换符。替换文本为空时删除匹配内容；空查找不可应用。原件不变，可撤销。</p>
+    <p>替换所选列的原文，区分大小写，不使用正则；空替换会删除匹配内容。原件不变，可撤销。</p>
     <div className="flex flex-wrap gap-2">
       <label>替换列 <select aria-label="替换列" value={column} onChange={(event) => setColumn(Number(event.target.value))}>
         {table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"}）</option>)}

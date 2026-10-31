@@ -103,7 +103,7 @@ export function RunReferenceRecovery({ onLocate }: { onLocate: (target: Referenc
           snapshot.run.id !== selected.run_id || snapshot.run.session_id !== selected.session_id || snapshot.run.metadata?.project_id !== selected.project_id ||
           snapshot.steps.some((step) => step.run_id !== selected.run_id || step.session_id !== selected.session_id)) throw new Error("服务、会话或运行归属已变化");
       if (session !== selected.session_id || project !== selected.project_id) {
-        const accepted = await requestConfirmation({ title: "切换到原项目和会话？", description: "切换会离开当前输入内容并清除未发送的附件或正在读取的文件。请先保存需要保留的草稿；只打开已有运行，不会执行任务。", confirmLabel: "切换并查看" });
+        const accepted = await requestConfirmation({ title: "切换到原项目和会话？", description: "切换会离开当前输入并清除未发送附件或正在读取的文件，请先保存草稿。仅打开已有运行，不会执行。", confirmLabel: "切换并查看" });
         if (!accepted || !current()) return;
         const identity = await typedIPC.getServiceIdentity();
         if (!current() || identity.service_id !== selected.service_id) throw new Error("服务身份已变化");
@@ -125,7 +125,7 @@ export function RunReferenceRecovery({ onLocate }: { onLocate: (target: Referenc
   };
   return <details className="border-b border-line p-3 text-xs" onToggle={(event) => { if (!event.currentTarget.open) { epoch.current++; setResult(null); setMessage(""); } }}>
     <summary>用定位记录找回运行</summary>
-    <p>先连接并登录原远端服务，再粘贴记录。只读取原运行，不重跑或迁移；服务身份可能随数据库克隆，请自行确认实际主机。</p>
+    <p>连接并登录原远端服务后粘贴记录。仅读取，不重跑或迁移；服务身份可能被克隆，请核对主机。</p>
     <Textarea aria-label="运行定位记录" rows={3} value={input} disabled={busy} onChange={(event) => { setInput(event.target.value); setResult(null); setMessage(""); }} />
     <Button size="sm" variant="secondary" disabled={busy || !input.trim()} onClick={() => void find()}>核对并读取运行</Button>
     {message && <p role="status" className="break-words">{message}</p>}

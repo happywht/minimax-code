@@ -17,7 +17,7 @@ export function CsvFillDown({ table, onApply }: { table: CsvTable; onApply: (nex
   });
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>向下填充空单元格</legend>
-    <p>按当前行顺序，将所选列上方最近的非空原文复制到空字符串单元格；开头没有来源的空值保留。空格不是空值，筛选或排序会改变填充来源。仅修改草稿，可撤销；列类型不变，生成时仍会校验类型和精度。</p>
+    <p>用上方最近非空值填充空字符串；空格不算空，排序或筛选会改变来源。仅修改草稿，可撤销；生成时校验类型和精度。</p>
     <label>填充列 <select aria-label="向下填充列" value={column} onChange={(event) => setColumn(Number(event.target.value))}>
       {table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"}）</option>)}
     </select></label>

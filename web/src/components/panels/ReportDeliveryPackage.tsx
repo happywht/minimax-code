@@ -59,7 +59,7 @@ export function ReportDeliveryPackage({ attachment, project, session, service, h
     finally { if (ticket === epoch.current) { setBusy(false); controller.current = null; } }
   };
   return <details className="space-y-2 rounded border border-line p-2"><summary>准备报告交付包</summary>
-    <p>下载 ZIP，包含此 DOCX/PDF 原件、附件身份和下方用户填写的说明。说明不会自动从报告或来源记录提取，未核验事实；不会修改或重新登记报告。请先填写实际来源、访问时间和处理范围。</p>
+    <p>ZIP 含报告原件、附件身份和手填说明。请填写实际来源、时间和处理范围；内容未经核验，报告不变。</p>
     <label className="block">资料来源与访问时间（用户填写）<Textarea aria-label="报告交付资料来源" rows={3} maxLength={2000} value={sources} disabled={busy} onChange={(event) => setSources(event.target.value)} /></label>
     <label className="block">成稿及处理口径（用户填写）<Textarea aria-label="报告交付处理口径" rows={3} maxLength={2000} value={method} disabled={busy} onChange={(event) => setMethod(event.target.value)} /></label>
     <label className="block">限制和待核对事项（用户填写）<Textarea aria-label="报告交付限制" rows={3} maxLength={2000} value={limitations} disabled={busy} onChange={(event) => setLimitations(event.target.value)} /></label>
@@ -74,7 +74,7 @@ export function ReportDeliveryPackage({ attachment, project, session, service, h
         return data as DeliveryNotes;
       }}
       apply={(data) => { setSources(data.sources); setMethod(data.method); setLimitations(data.limitations); }} />
-    <p className="text-xs text-ink-2">说明随 ZIP 下载，也可单独导出为本地草稿并在同一服务、项目、会话和报告版本恢复；不会自动保存到项目。文件可能包含敏感信息。附件哈希和身份不是数字签名，不代表事实、来源、OCR 或版式已验证。</p>
+    <p className="text-xs text-ink-2">说明可能含敏感信息，不自动保存到项目。附件哈希和身份不是签名，不代表内容、来源或版式已验证。</p>
     <Button type="button" variant="secondary" disabled={busy || !project || !session || !service || ipc.isMock} onClick={() => void download()}>下载报告及说明交付包</Button>
     {busy && <p role="status">正在核对附件并打包…</p>}{notice && <p role="status">{notice}</p>}
   </details>;

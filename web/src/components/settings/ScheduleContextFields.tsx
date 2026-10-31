@@ -32,7 +32,7 @@ export function ScheduleContextFields({ value, onChange }: { value: ScheduleCont
   const projectAvailable = projects.some((project) => project.id === value.project_id && project.id !== "inbox" && !!project.root_path);
   const modelAvailable = models.some((model) => model.provider_id === value.provider_id && model.id === value.model);
   return <div className="grid grid-cols-2 gap-2 text-xs" data-testid="schedule-context-fields">
-    <p className="col-span-2 text-ink-2">Local / Native · 独立会话 · 权限保存为快照，后续全局允许不扩展授权；自动任务禁用全局与插件钩子</p>
+    <p className="col-span-2 text-ink-2">Local / Native · 独立会话 · 权限保存为快照，后续全局允许不扩展授权；</p><p className="col-span-2 text-ink-2">自动任务禁用全局与插件钩子</p>
     <label>项目与目录<select aria-label="调度项目" className="w-full bg-surface-2" value={value.project_id} onChange={(event) => patch({ project_id: event.target.value })}>
       <option value="">选择项目</option>{value.project_id && !projectAvailable && <option value={value.project_id}>已保存项目当前不可用：{value.project_id}</option>}{projects.filter((project) => project.id !== "inbox" && project.root_path).map((project) => <option key={project.id} value={project.id}>{project.name} · {project.root_path}</option>)}
     </select></label>
@@ -48,10 +48,10 @@ export function ScheduleContextFields({ value, onChange }: { value: ScheduleCont
     <label>时区<Input aria-label="调度时区" value={value.timezone} onChange={(event) => patch({ timezone: event.target.value })} /></label>
     <label className="col-span-2">服务重启时的未接单到期周期<select aria-label="重启后错过周期处理" className="block w-full bg-surface-2" value={value.restart_missed_policy ?? "coalesce"} onChange={(event) => patch({ restart_missed_policy: event.target.value as "coalesce" | "skip" })}>
       <option value="coalesce">合并补跑一次（默认）</option><option value="skip">跳过并等待下一次到期</option>
-    </select><span className="text-ink-2">只处理重启时没有当前发生的计划；已接单或待处理的发生仍按原流程处理。服务运行中因任务占用错过的周期仍合并补跑。跳过不会生成发生记录。</span></label>
+    </select><span className="text-ink-2">仅处理重启遗漏的周期；已接单照常运行，运行中错过的周期合并补跑。跳过不留记录。</span></label>
     <label className="col-span-2">运行通知<select aria-label="定时任务通知策略" className="block w-full bg-surface-2" value={value.notification_policy ?? "all"} onChange={(event) => patch({ notification_policy: event.target.value as "all" | "attention" })}>
       <option value="all">完成和需要处理时通知（默认）</option><option value="attention">仅失败或需要处理时通知</option>
-    </select><span className="text-ink-2">仅抑制正常结束的通知；运行历史保留。失败、阻塞、预算暂停、取消、中断及需复核仍通知。系统不会自动判断内容是否有变化。</span></label>
+    </select><span className="text-ink-2">仅关闭正常结束通知；异常仍通知。系统不会判断内容变化。</span></label>
   </div>;
 }
 
@@ -245,7 +245,7 @@ export function ScheduleHistory({ job, expanded, onOpenSession, serviceId, targe
     {expanded && targetOccurrenceId && initialLoaded && !history.some((row) => row.id === targetOccurrenceId) && <p role="status">{stale || error ? "无法确认通知关联的发生记录，请刷新后重试。" : autoLimitReached && cursor ? "已自动查找 10 页，请手动加载更早记录。" : cursor || loadingMore ? "正在查找通知关联的发生记录…" : "通知关联的发生记录已不可用。"}</p>}
     {job.binding_state === "requires_review" && <div className="space-y-2 rounded border border-status-warning/30 bg-surface-1 p-2">
       <p className="font-medium text-status-warning">计划已暂停，需要核对本次发生</p>
-      <p>启用未来计划与继续原运行是不同操作。启用只允许未来按当前计划运行，不自动恢复或重放原步骤；继续原运行请打开其会话并核对后使用恢复入口。</p>
+      <p>启用未来计划与继续原运行是不同操作。启用只允许未来按当前计划运行，不自动恢复或重放原步骤；</p><p>继续原运行请打开其会话并核对后使用恢复入口。</p>
       {stale ? <p>连接状态待刷新，暂不能处理。</p> : active ? <>
         <p className="break-all">发生 {active.id} · 计划快照版本 {active.revision} · 状态 {label(status(active))} · 运行 {active.run_id ?? "尚未接单"}</p>
         {active.run_id ? <ScheduleRunDetail occurrence={active} serviceId={serviceId} activeJobRevision={job.revision} onOpenSession={onOpenSession} onFollowup={onFollowup} onVerified={(value) => { setVerified(value); setAcknowledged(false); }} /> : <p>该发生未绑定运行；请查看原因并重新绑定计划，不能在此确认运行副作用。</p>}

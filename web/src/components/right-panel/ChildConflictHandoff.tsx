@@ -53,12 +53,12 @@ export function ChildConflictHandoff({ review, teamRunId, disabled }: { review: 
     finally { lock.current = false; if (current()) setBusy(false); }
   };
   return <div className="space-y-2 rounded border border-line p-2" aria-label="多文件冲突交接">
-    <p>选择最多 5 项冲突并填写后续目标；仅准备草稿，不修改文件。追加前重新核对审阅版本。</p>
+    <p>最多选择 5 项冲突并填写目标。仅准备草稿，不修改文件；追加前重查审阅版本。</p>
     {!available && <p>请先切换到所属项目会话。</p>}
     <ul className="max-h-40 overflow-auto">{conflicts.map((file) => <li key={file.path} className="break-all"><label><input type="checkbox" checked={selected.includes(file.path)} disabled={disabled || busy || (!selected.includes(file.path) && selected.length >= 5)} onChange={(event) => { const checked = event.target.checked; setSelected((items) => checked ? [...items, file.path] : items.filter((path) => path !== file.path)); }} /> {file.path} · {file.conflict}</label></li>)}</ul>
     {selected.length > 0 && <><label className="block">后续目标或审阅意见<textarea className="mt-1 block w-full rounded border border-line bg-surface-0 p-2" rows={3} maxLength={4000} disabled={disabled || busy} value={note} onChange={(event) => setNote(event.target.value)} /></label>
       <Button size="sm" disabled={!available || disabled || busy || !note.trim()} onClick={() => void append()}>将所选冲突追加到草稿</Button>
-      <p>每项差异最多 4000 字符、合计最多 12000 字符；截断或不可用会标明。请先检查是否适合分享，不会自动发送。</p></>}
+      <p>每项最多 4000 字，合计 12000 字；截断或不可用会标明。请检查分享内容，不会自动发送。</p></>}
     {message && <p role="status" className="break-words">{message}</p>}
     {message === "已添加到当前会话草稿，尚未发送。" && <Button size="sm" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}
   </div>;

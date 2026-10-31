@@ -22,7 +22,7 @@ export function CsvSplitColumn({ table, onApply }: { table: CsvTable; onApply: (
   const matched = pairs.filter((pair) => pair.index >= 0).length;
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>按分隔文本拆分列</legend>
-    <p>按原文区分大小写，仅在首次匹配处拆分；未匹配时左列保留原值、右列为空。保留原列，新增两列为文本，不自动去空白或转换数字；修改仅在草稿，可撤销。</p>
+    <p>按首次匹配拆分，区分大小写；未匹配时右列为空。保留原列，新列为文本；仅修改草稿，可撤销。</p>
     <div className="flex flex-wrap gap-2">
       <label>来源列 <select aria-label="拆分来源列" value={column} onChange={(event) => setColumn(Number(event.target.value))}>{table.headers.map((header, index) => <option key={index} value={index}>第 {index + 1} 列（{header || "未命名"}）</option>)}</select></label>
       <label>分隔文本 <input aria-label="拆分分隔文本" maxLength={100} value={delimiter} onChange={(event) => setDelimiter(event.target.value)} /></label>

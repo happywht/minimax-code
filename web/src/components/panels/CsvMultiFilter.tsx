@@ -37,7 +37,7 @@ export function CsvMultiFilter({ table, onApply }: { table: CsvTable; onApply: (
   } catch (reason) { error = reason instanceof Error ? reason.message : "筛选条件无效"; }
   return <fieldset className="space-y-2 rounded border border-line p-2">
     <legend>组合条件筛选</legend>
-    <p>最多 5 个条件，选择全部满足或任一满足。文本比较区分大小写、不去空白；等于空文本会匹配空字符串。数值边界包含端点、空单元格不匹配；所有数值条件的整列须符合安全精度，即使另一条件已匹配也会校验。列结构或列名变化会重置条件。应用仅修改草稿，可撤销，原文件不变。</p>
+    <p>最多 5 个条件；文本区分大小写且不去空白，数值含边界并校验整列精度。应用仅修改草稿，可撤销。</p>
     <label>组合方式 <select aria-label="组合筛选方式" value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}><option value="all">全部满足（且）</option><option value="any">任一满足（或）</option></select></label>
     {conditions.map((item, index) => <div key={index} className="flex flex-wrap items-end gap-2 rounded border border-line p-2">
       <span>条件 {index + 1}</span><label>列 <select aria-label={`组合筛选条件 ${index + 1} 列`} value={item.column} onChange={(event) => change(index, { column: Number(event.target.value) })}>

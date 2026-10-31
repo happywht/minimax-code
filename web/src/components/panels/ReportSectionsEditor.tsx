@@ -54,7 +54,7 @@ export function ReportSectionsEditor({ value, onChange }: { value: DocxSection[]
     onChange(next); setCopyNotice("已插入副本；标题、表格、引用和内容请按需要编辑并核对。尚未生成文件。");
   };
   return <div className="space-y-3">
-    <p>按顺序编辑章节、段落和表格。选择目标章节可将内容移至该章节末尾；每章至少保留一项内容，且最多 100 项。表格为纯文本；DOCX 每表最多 100 行、20 列，PDF 另有 10 列、1000 格的限制。重复表头始终使用当前首行，移动或删除首行后请重新核对。生成不会核验内容或版式。</p>
+    <p>编辑章节、段落和纯文本表格；每章最多 100 项。移动或删除首行后请核对表头；内容和版式未经核验。</p>
     {value.map((section, si) => {
       const updateBlock = (bi: number, block: DocxBlock) => update(si, { ...section, blocks: section.blocks.map((item, i) => i === bi ? block : item) });
       return <fieldset key={si} className="space-y-2 rounded border border-line p-2">

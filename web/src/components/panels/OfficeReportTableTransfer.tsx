@@ -39,7 +39,7 @@ export function OfficeReportTableTransfer({ table, project, session, service, ho
     setError(""); onPrepare({ rows, source: details });
   };
   return <div className="space-y-2 rounded border border-line p-2">
-    <p>选择当前编辑表格的列和连续数据行，连同表头复制到报告待处理区；报告中还需选择章节并确认。表格是文本快照，原件不修改，公式不计算，业务内容未经核验。</p>
+    <p>选择当前编辑表格的列和连续数据行，连同表头复制到报告待处理区；报告中还需选择章节并确认。</p><p>表格是文本快照，原件不修改，公式不计算，业务内容未经核验。</p>
     <Input aria-label="表格报告来源说明" placeholder="填写原始文件、工作表及筛选或汇总口径" value={source} onChange={(event) => setSource(event.target.value)} />
     <fieldset><legend>选择列（保持当前表格顺序）</legend>{table.headers.map((name, index) => <label key={index} className="mr-3 inline-block"><input type="checkbox" checked={columns.includes(index)} onChange={(event) => {
       const checked = event.target.checked; setColumns((previous) => checked ? [...previous, index].sort((a, b) => a - b) : previous.filter((value) => value !== index));

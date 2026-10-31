@@ -4,7 +4,7 @@ import { RunBudgetPanel } from "./RunBudgetPanel";
 import type { AgentRun, BudgetStateResult } from "../../types/ipc";
 
 const api = vi.hoisted(() => ({ getBudget: vi.fn(), reconcileBudget: vi.fn(), getRunSteps: vi.fn(), getSession: vi.fn(), getServiceIdentity: vi.fn(), setCurrent: vi.fn(), setCurrentProject: vi.fn(), loadForSession: vi.fn(), updateTimeline: vi.fn() }));
-vi.mock("../../ipc", () => ({ typedIPC: api, ipc: {agentBaseUrl: "local"} }));
+vi.mock("../../ipc", () => ({ typedIPC: api, ipc: {agentBaseUrl: "local", onSideCar: () => () => {}} }));
 vi.mock("../../stores", () => ({useSessionStore: {getState: () => ({setCurrent: api.setCurrent, setCurrentProject: api.setCurrentProject, currentSessionId: "owner-session", currentProjectId: "project"})},
   useRunTimelineStore: {getState: () => ({loadForSession: api.loadForSession}), setState: api.updateTimeline}}));
 const run = (id: string): AgentRun => ({ id, session_id: "s", mode: "chat", status: "budget_paused", title: id, created_at: "t" });
@@ -21,10 +21,30 @@ const state = (id: string, reactive = false): BudgetStateResult => {
 
 describe("durable budget", () => {
   beforeEach(() => vi.resetAllMocks());
+  it("shows unknown liability while the ledger and reconciliation form are collapsed", async () => {
+    api.getBudget.mockResolvedValue(state("A"));
+    render(<RunBudgetPanel run={run("A")} />);
+    expect(await screen.findByText(/存在待核对责任，未知用量不等于零/)).toBeVisible();
+    expect(screen.getByText(/存在结果不明的模型请求/)).toBeVisible();
+    expect(screen.getByText("查看账本与核定").closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("查看账本与核定"));
+    expect(screen.getByRole("checkbox")).toBeVisible();
+  });
+  it("keeps the full request ID accessible when its button label is shortened", async () => {
+    const id = "1234567890-middle-abcdefghij";
+    api.getBudget.mockResolvedValue(state(id));
+    render(<RunBudgetPanel run={run(id)} />);
+    fireEvent.click(screen.getByText("查看账本与核定"));
+    const fullLabel = `核定请求 attempt-${id} 责任（至少 0）`;
+    const button = await screen.findByRole("button", {name: fullLabel});
+    expect(button).toHaveAttribute("title", fullLabel);
+    expect(button).toHaveTextContent("attempt-…cdefghij");
+  });
   it("keeps unknown usage distinct from zero and authorizes liability explicitly", async () => {
     api.getBudget.mockResolvedValue(state("A"));
     api.reconcileBudget.mockResolvedValue({ok: true});
     render(<RunBudgetPanel run={run("A")} />);
+    fireEvent.click(screen.getByText("查看账本与核定"));
     await screen.findByText(/任务累计已知至少 12/);
     expect(screen.getByText(/Native · 请求发送前估算预留/)).toBeInTheDocument();
     expect(screen.getByText(/实际用量可能超过估算/)).toBeInTheDocument();
@@ -41,6 +61,7 @@ describe("durable budget", () => {
     let resolveA!: (value: BudgetStateResult) => void;
     api.getBudget.mockImplementation((id: string) => id === "A" ? new Promise((resolve) => { resolveA = resolve; }) : Promise.resolve(state("B", true)));
     const view = render(<RunBudgetPanel run={run("A")} />);
+    fireEvent.click(screen.getByText("查看账本与核定"));
     view.rerender(<RunBudgetPanel run={run("B")} />);
     await screen.findByText(/Codex · 用量通知驱动中断/);
     await act(async () => resolveA(state("A")));
@@ -59,6 +80,7 @@ describe("durable budget", () => {
   it("surfaces missing state as unknown without enabling reconciliation", async () => {
     api.getBudget.mockRejectedValue(new Error("storage offline"));
     render(<RunBudgetPanel run={run("A")} />);
+    fireEvent.click(screen.getByText("查看账本与核定"));
     expect(await screen.findByRole("alert")).toHaveTextContent("预算状态未知：storage offline");
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
@@ -72,6 +94,7 @@ describe("durable budget", () => {
     api.setCurrent.mockReturnValue(true);
     api.getRunSteps.mockResolvedValue({run: {...run("owner-run"), session_id: "owner-session", metadata: {project_id: "project"}}, steps: [], cursor: 0});
     render(<RunBudgetPanel run={run("clean")} />);
+    fireEvent.click(screen.getByText("查看账本与核定"));
     fireEvent.click(await screen.findByRole("button", {name: "查看责任任务 owner-run"}));
     await waitFor(() => expect(api.setCurrent).toHaveBeenCalledWith("owner-session"));
     expect(api.getRunSteps).toHaveBeenCalledWith("owner-run");
@@ -85,6 +108,7 @@ describe("durable budget", () => {
       estimated_tokens: 100, known_tokens: i === 50 ? null : 1, liability_tokens: null, reason: i === 50 ? "stream ended" : null}));
     api.getBudget.mockResolvedValue(response);
     render(<RunBudgetPanel run={run("large")} />);
+    fireEvent.click(screen.getByText("查看账本与核定"));
     await screen.findByText(/任务累计已知至少/);
     fireEvent.click(screen.getByText(/查看共享预算请求明细/));
     expect(screen.getByText(/请求 attempt-50 · 结果不明/)).toBeInTheDocument();
@@ -108,6 +132,7 @@ describe("durable budget", () => {
     response.budget!.day = response.day;
     api.getBudget.mockResolvedValue(response);
     render(<RunBudgetPanel run={run("day")} />);
+    fireEvent.click(screen.getByText("查看账本与核定"));
     const status = await screen.findByTestId("daily-budget-completeness");
     expect(status).toHaveTextContent(label);
     expect(screen.getByText(/本机 2026-10-26/)).toHaveTextContent(lowerBound ? "已知至少 0" : "已知 0");

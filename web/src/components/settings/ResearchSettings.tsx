@@ -34,11 +34,11 @@ export function ResearchSettings(): JSX.Element {
 
   return <section className="space-y-3 border-t border-line pt-4" aria-labelledby="research-settings-title">
     <h3 id="research-settings-title" className="text-xs font-semibold text-ink-1">联网研究</h3>
-    <p className="text-xs text-ink-2">选择支持 JSON 的 SearXNG，或使用 Brave Search API。直接读取网页无需配置；联网仍需授权。配置成功不代表网络或服务可用。</p>
+    <p className="text-xs text-ink-2">选择支持 JSON 的 SearXNG，或使用 Brave Search API。直接读取网页无需配置；</p><p className="text-xs text-ink-2">联网仍需授权。配置成功不代表网络或服务可用。</p>
     <label className="block text-xs text-ink-2">搜索提供方 <select aria-label="搜索提供方" value={provider} disabled={busy} onChange={(event) => setProvider(event.target.value as "searxng" | "brave")}><option value="searxng">SearXNG</option><option value="brave">Brave Search API</option></select></label>
     {provider === "brave" && <><label htmlFor="brave-search-key" className="block text-xs text-ink-2">Brave Search API 密钥（留空保留现有密钥）</label>
       <Input id="brave-search-key" type="password" autoComplete="off" value={braveKey} onChange={(event) => setBraveKey(event.target.value)} disabled={busy} />
-      <p className="text-xs text-ink-2">密钥只保存至当前服务主机的系统密钥环，不回显或写入配置文件。搜索会把查询发送给 Brave，可能产生费用；请查看提供方的条款和配额。</p>
+      <p className="text-xs text-ink-2">密钥只保存至当前服务主机的系统密钥环，不回显或写入配置文件。</p><p className="text-xs text-ink-2">搜索会把查询发送给 Brave，可能产生费用；请查看提供方的条款和配额。</p>
       <p className="text-xs text-ink-2">{config?.brave_key_configured ? "密钥已配置；未检查有效性。" : "未检测到密钥。"}</p>
       <Button size="sm" variant="secondary" disabled={busy || !config?.brave_key_configured || !!braveKey} onClick={() => void save(draft.trim() || null, true)}>清除 Brave 密钥</Button></>}
     <label htmlFor="research-url" className="block text-xs text-ink-2">搜索服务地址</label>

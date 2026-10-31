@@ -423,36 +423,28 @@ export function MessageInput({
             <summary className="cursor-pointer list-none rounded-lg px-2 py-1.5 text-xs text-ink-1 hover:bg-surface-3" title="项目、目录与任务设置">任务设置{restrictNetworkTools ? " · 限制联网" : ""}{budgetText ? ` · ${budgetText} tokens` : ""}</summary>
             <div style={optionsPosition} className="fixed z-50 overflow-y-auto rounded-xl border border-line bg-surface-1 p-3 shadow-pop">
               <ComposerSafetyControls />
-              {codex && <p className="mt-2 text-[11px] text-ink-2">Codex 使用独立模型配置；会话历史与外部线程绑定，如需修改历史，请新建会话并交接上下文。文本文件内容会插入草稿；移除文件标签不会删除文字。图片最多 5 张、总计 4 MiB，随请求持久保存在本地数据库及 Codex 线程中；模型是否支持图片由 Codex 决定。@ 和 # 按普通文本发送。</p>}
-        <div className="space-y-2 border-b border-line py-3 text-xs" aria-label="任务提交位置">
-          <p className="font-medium text-ink-0">任务上下文</p>
-          <dl className="grid grid-cols-[4rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-ink-2">
-            <dt>服务地址</dt><dd className="break-all text-ink-1">{serviceLabel(ipc.agentBaseUrl)}</dd>
-            <dt>项目</dt><dd className="break-all text-ink-1">{project?.name ?? (projectId ? "加载中或未知" : "未指定")}</dd>
-            <dt>会话</dt><dd className="break-all text-ink-1">{sessionId ? session?.title ?? "加载中或未知" : "发送时新建"}</dd>
-            <dt>引擎</dt><dd className="text-ink-1">{sessionId && !session ? "加载中或未知" : (sessionId ? session?.engine === "codex" : codex) ? "Codex" : "Native"}{!sessionId ? "（新会话）" : ""}</dd>
-            {sessionId && <><dt>模型</dt><dd className="break-all text-ink-1">{session?.engine === "codex" ? "由 Codex CLI 配置；实际模型以运行详情为准" : session?.model_id || "会话未记录；实际模型以运行详情为准"}</dd></>}
-            <dt>目录配置</dt><dd className="break-all text-ink-1">{session?.workspace_path || project?.root_path || "未指定或未知"}</dd>
-          </dl>
-          <p className="text-ink-2">实际执行主机和目录以任务运行详情为准。</p>
+              {codex && <p className="mt-2 text-[11px] text-ink-2">Codex 使用独立模型和会话；@、# 按文本发送。</p>}
+        <div className="space-y-1 border-b border-line py-2 text-xs text-ink-2" aria-label="任务提交位置">
+          <p className="truncate" title={`${project?.name ?? "未指定项目"} · ${serviceLabel(ipc.agentBaseUrl)}`}>项目：{project?.name ?? (projectId ? "加载中或未知" : "未指定")} · 服务：{serviceLabel(ipc.agentBaseUrl)}</p>
+          <p className="truncate" title={session?.workspace_path || project?.root_path || "未指定或未知"}>配置目录：{session?.workspace_path || project?.root_path || "未指定或未知"}</p>
+          <p>实际主机与目录以运行详情为准。</p>
         </div>
         <div className="border-t border-line py-2 text-xs text-ink-2">
         <div className="min-w-0 space-y-2">
-        {(!codex || restrictNetworkTools) && <label className="block py-2 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制联网工具：仅允许读取已保存来源、提问及按写权限新建 Markdown/TXT；禁用 shell、MCP 等。模型服务仍可能联网，并非网络隔离。{codex && "此限制不支持 Codex，请先关闭或选择 Native。"}</label>}
+        {(!codex || restrictNetworkTools) && <label className="block py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制联网工具（禁用 shell、MCP 等；模型仍可能联网）{codex && "。Codex 不支持此限制。"}</label>}
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={captureFileChanges} disabled={disabled}
             onChange={(event) => setCaptureFileChanges(event.target.checked)} />
-          采集任务前后文件变化（受限于 Git 可见文件）
+          采集文件变化（仅限 Git 可见文件）
         </label>
         <label className="flex flex-wrap items-center gap-2 px-2 pb-1 text-xs text-ink-1">
           下一任务 token 上限
           <input aria-label="下一任务 token 上限" inputMode="numeric" pattern="[0-9]*" value={budgetText} maxLength={16}
             onChange={(event) => setBudgetScope({ host: budgetHost, session: sessionId, value: event.target.value })}
             placeholder="空白：服务默认" className="w-36 rounded border border-line bg-surface-0 px-2 py-1 text-ink-0" />
-          <span className="text-ink-2">留空使用服务默认。</span>
         </label>
         {!budgetValid && <p role="alert" className="px-2 text-xs text-status-error">请输入安全范围内的正整数，或留空使用服务默认。</p>}
-        <p className="px-2 pb-1 text-[11px] text-ink-2">Token 上限不等于费用上限，也不能保证严格限制用量。</p>
+        <p className="px-2 pb-1 text-[11px] text-ink-2">非费用上限，无法严格限量。</p>
         </div>
         </div>
             </div>
@@ -477,7 +469,7 @@ export function MessageInput({
             title={streaming ? "发送为独立的下一任务，不会中途追加" : strings.chat.input.send}
             aria-label={streaming ? "发送下一任务" : strings.chat.input.send}>{streaming ? "发送下一任务" : "发送"}</Button>
         </div>
-        {codex && (attachments.attachedFiles.length > 0 || attachments.attachedImages.length > 0) && <p className="px-2.5 pb-2 text-[11px] text-ink-2">文本附件内容会插入草稿，移除标签不会删除文字。图片最多 5 张、合计 4 MiB，将持久保存在本地数据库和 Codex 线程中；模型可能不支持图片。</p>}
+        {codex && (attachments.attachedFiles.length > 0 || attachments.attachedImages.length > 0) && <p className="px-2.5 pb-2 text-[11px] text-ink-2">文字已插入草稿。图片最多 5 张、4 MiB，会保存到本地和 Codex 线程。</p>}
         {!codex && <MentionPickerDropdown
           picker={mention.picker}
           filtered={mention.filtered}

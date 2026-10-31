@@ -62,7 +62,7 @@ export function DocumentCitationDraft({ citations, project, session, service, ho
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <details className="space-y-2 rounded border border-line p-2"><summary>根据已选资料引用准备初稿</summary>
-    <p>勾选已加入报告的资料引用，可跨附件和位置整理。先复读并预览，确认时再次核对；只追加选段及待填写的研究框架，不推断事实，不修改原件。</p>
+    <p>勾选已加入报告的资料引用，可跨附件和位置整理。先复读并预览，确认时再次核对；</p><p>只追加选段及待填写的研究框架，不推断事实，不修改原件。</p>
     {citations.map((item, index) => <label key={`${item.ref.attachment_id}:${item.ref.unit}:${item.ref.start}:${index}`} className="block break-all"><input type="checkbox" checked={selected.includes(index)} disabled={busy}
       onChange={(event) => { const checked = event.target.checked; setSelected((previous) => checked ? [...previous, index] : previous.filter((value) => value !== index)); setCandidate(null); }} /> [资料{index + 1}] {item.label}</label>)}
     <Button type="button" variant="secondary" disabled={busy || !selected.length || !project || !session || !service || ipc.isMock} onClick={() => void prepare(false)}>预览资料初稿</Button>

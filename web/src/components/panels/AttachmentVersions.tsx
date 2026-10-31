@@ -62,7 +62,7 @@ export function AttachmentVersions({ attachment, project, session, service, host
   };
   return <div className="space-y-2 rounded border border-line p-2">
     <h4 className="font-medium">同名附件版本</h4>
-    <p>按当前项目中完全相同的文件名查找；同名版本不保证内容或来源有继承关系。比较仅展示有界解析预览，不等于完整文件或质量核验。</p>
+    <p>按同名查找；版本不一定同源。比较仅为有限预览，不代表完整文件或质量核验。</p>
     <Button type="button" variant="secondary" disabled={busy || !project || !service} onClick={() => void list(null)}>查找同名版本</Button>
     {loaded && <><p>已加载 {rows.length} 个同名版本{cursor ? "，仍可能有更早版本" : ""}。</p>
       {rows.map((row) => <div key={row.id} className="break-all rounded border border-line p-2">

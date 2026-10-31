@@ -40,15 +40,14 @@ describe("task templates in the composer", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  it("keeps Codex history and attachment limits available in context options", () => {
+  it("keeps the Codex context note concise", () => {
     state.engine = "codex";
     render(<MessageInput />);
-    const note = screen.getByText(/Codex 使用独立模型配置/);
+    const note = screen.getByText(/Codex 使用独立模型和会话/);
     expect(note).not.toBeVisible();
     fireEvent.click(screen.getByText("任务设置"));
     expect(note).toBeVisible();
-    expect(note).toHaveTextContent("历史与外部线程绑定");
-    expect(note).toHaveTextContent("图片最多 5 张");
+    expect(note).toHaveTextContent("@、# 按文本发送");
   });
 
   it("keeps reusable office templates available independently", () => {
@@ -67,9 +66,7 @@ it("shows one clear scope summary for the selected session", () => {
   render(<MessageInput />);
   fireEvent.click(screen.getByText("任务设置"));
   const scope = within(screen.getByLabelText("任务提交位置"));
-  expect(scope.getByText("服务地址")).toBeVisible();
-  expect(scope.getByText("项目", { selector: "dt" })).toBeVisible();
-  expect(scope.getByText("会话")).toBeVisible();
-  expect(scope.getByText("目录配置")).toBeVisible();
-  expect(scope.getByText("Native")).toBeVisible();
+  expect(scope.getByText(/项目：.*服务：/)).toBeVisible();
+  expect(scope.getByText(/配置目录：/)).toBeVisible();
+  expect(scope.getByText("实际主机与目录以运行详情为准。" )).toBeVisible();
 });

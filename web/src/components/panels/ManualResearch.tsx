@@ -78,11 +78,11 @@ export function ManualResearch({ project, session, service, reportService, repor
     } finally { if (current(ticket)) { setBusy(false); setBatchActive(false); } }
   };
   return <details className="rounded border border-line p-3"><summary>搜索网页并保存来源</summary>
-    <p>点击搜索会将查询发送给设置中的搜索服务，可能产生提供方费用。搜索摘要未经核验，也不是已读取来源；仅点击“读取并保存”才访问对应页面。仅支持公网 HTTPS；已设置的网络拒绝规则仍生效。</p>
+    <p>搜索会发送查询并可能收费；摘要未经核验。点击“读取并保存”才访问公网 HTTPS 页面。</p>
     <p>当前配置：{provider}（不表示网络可用；设置可在 Providers → 联网研究中修改）。</p>
     <label className="block">页内定位词（可选，适用于下方所有读取操作）
       <Input aria-label="页内定位词" maxLength={200} value={focus} disabled={busy} onChange={(e) => setFocus(e.target.value)} placeholder="输入网页中需要引用的原文" /></label>
-    <p>读取时在已下载的文本内查找首个匹配，并保存其上下文；未找到时不保存。仅查找最多 512 KiB 的网页响应，不支持未下载或动态加载的内容。留空则保存开头摘录。</p>
+    <p>读取时在已下载的文本内查找首个匹配，并保存其上下文；未找到时不保存。</p><p>仅查找最多 512 KiB 的网页响应，不支持未下载或动态加载的内容。留空则保存开头摘录。</p>
     <div className="flex gap-2"><Input aria-label="网页搜索内容" maxLength={500} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="输入搜索内容" />
       <Button type="button" disabled={busy || !project || !session || !service || !query.trim()} onClick={() => void search()}>搜索网页</Button></div>
     {searched && !results.length && <p>搜索服务未返回可用结果。</p>}

@@ -117,8 +117,7 @@ export function DailyBudgetSettings(): JSX.Element {
   return <details className="rounded-lg border border-line bg-surface-2 p-3" data-testid="daily-budget-settings">
     <summary className="cursor-pointer text-sm font-semibold">每日 token 预算与账本</summary>
     <div className="mt-3 space-y-2 text-xs text-ink-1">
-      <p>作用于此服务受账本管理的 Native/Codex 请求；新预留按当前设置检查，已在途请求不会被撤回。Codex 在下一次用量通知后按观测值处理。</p>
-      <p>按 token 数量管理，不是货币金额或 Coding Plan 的费用上限。估算和外部 turn 事后控制均可能超出限额，未知用量不能视为零。</p>
+      <p>管理当前服务的 token 用量，不是费用上限；估算可能超限，未知用量不视为零。在途请求不撤回，Codex 按用量通知处理。</p>
       {!ready && <p role="status" className="text-status-warning">{notice || "正在确认服务与账本…"}</p>}
       {ready && data && <>
         <p>服务身份：<span className="break-all">{data.service_id}</span> · 生效日限额：{data.effective_limit === null ? "未配置" : data.effective_limit} token · 来源：{data.source === "settings" ? "界面设置" : data.source === "environment" ? "服务环境" : "未配置"}</p>
@@ -138,7 +137,7 @@ export function DailyBudgetSettings(): JSX.Element {
           <label>选择设置文件 <input aria-label="选择每日预算设置文件" type="file" accept=".json,application/json" disabled={!ready || busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void readImport(file); }} /></label></div>
         {candidate && <div className="space-y-1 rounded bg-surface-1 p-2"><p className="break-all">来源服务：{candidate.sourceService} · 目标服务：{candidate.targetService} · 地址：{candidate.targetHost}</p>
           <p>目标当前保存值：{candidate.expectedSaved ?? "无（使用环境默认）"}；导入后：{candidate.limit ?? "无（使用目标环境默认，可能未设置）"}。</p>
-          <p>可跨服务手动导入；导入会替换目标已保存设置，未保存的上方输入也会被替换。账本、在途请求和环境变量不随文件改变。</p>
+          <p>导入会替换目标设置及未保存输入；账本、在途请求和环境变量不变。</p>
           <div className="flex flex-wrap gap-2"><Button type="button" size="sm" disabled={busy || !ready} onClick={() => void applyImport()}>确认导入目标服务</Button>
             <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { setCandidate(null); setNotice("已取消导入。"); }}>取消</Button></div></div>}
       </div>

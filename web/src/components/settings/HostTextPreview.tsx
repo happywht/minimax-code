@@ -88,7 +88,7 @@ export function HostTextPreview({ host, path, active }: { host: RemoteHost; path
   const clear = () => { epoch.current++; controller.current?.abort(); controller.current = null; setBusy(false); setPreview(null); setMessage(""); };
   return <div className="space-y-1 rounded border border-line p-2">
     <p className="text-xs">远端文本预览</p>
-    <p className="text-xs text-ink-2">仅在点击后通过认证连接读取当前远端路径的整个文件（最大 10 MiB），校验后仅显示前 64 KiB UTF-8 文本，不保存文件。内容可能包含凭据，请按需查看；预览后文件仍可能变化。</p>
+    <p className="text-xs text-ink-2">点击后读取远端完整文件（最多 10 MiB），仅显示前 64 KiB UTF-8 文本，不保存。</p><p className="text-xs text-ink-2">内容可能含凭据，预览后文件仍可能变化。</p>
     <div className="flex gap-2"><Button type="button" size="sm" variant="secondary" disabled={busy || saving.current || !host.enabled || !validPath(path)} onClick={() => void read()}>读取所选文件预览</Button>
       {(!saving.current && (busy || preview)) && <Button type="button" size="sm" variant="secondary" onClick={clear}>{busy ? "取消读取" : "清除预览"}</Button>}</div>
     {message && <p role="status" className="text-xs text-status-error">{message}</p>}

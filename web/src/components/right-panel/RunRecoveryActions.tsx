@@ -65,8 +65,8 @@ export function RunRecoveryActions({ run, refresh, expectedService, onEditingCha
   </p>;
   if (resumable && missingContext.length) return <div className="mt-2 space-y-1 text-xs text-status-warning" data-testid="run-recovery-unavailable">
     <p>无法直接接续：记录缺少{missingContext.join("、")}。</p>
-    <p>请先核对时间线、当前文件和可能的外部副作用，再在合适的会话中发起新任务，并手动提供已完成工作、未完成事项和不确定操作的交接信息。新任务不会自动恢复原运行。</p>
-    {run.status === "budget_paused" && <p>新任务的预算需重新明确；请先查看原运行及子任务的用量记录，未知用量不等于零。</p>}
+    <p>先核对时间线、文件和外部副作用。新任务不会自动恢复，请手动交接进度和不确定事项。</p>
+    {run.status === "budget_paused" && <p>新任务须重新明确预算；先核对原任务及子任务用量，未知不等于零。</p>}
   </div>;
   const sameProject = (selectedProject ?? "inbox") === (project ?? "inbox");
   const current = (ticket: number) => ticket === epoch.current && ipc.agentBaseUrl === host &&
@@ -167,25 +167,25 @@ export function RunRecoveryActions({ run, refresh, expectedService, onEditingCha
     } catch (failure) { if (current(ticket)) setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { inFlight.current = false; if (current(ticket)) setPending(false); }
   };
-  return <div className="mt-2 space-y-2 text-xs text-ink-1" data-testid="run-recovery-actions">
+  return <div className="mt-2 min-w-0 space-y-2 break-words text-xs text-ink-1" data-testid="run-recovery-actions">
     {resumable ? <>
-      <p>恢复会创建关联的新运行，不会自动重放工具步骤，也不是从精确执行位置继续。请先核对记录、当前文件和可能的外部副作用。</p>
+      <p>恢复会创建新运行，不会重放工具或精确续接。请先核对记录、文件和外部副作用。</p>
       {continuation && !scheduledContinuation && <p>此运行达到迭代上限后尚未完成；核对后可在累计预算下继续剩余工作。</p>}
-      {scheduledContinuation && <p>此定时运行达到迭代上限后未完成。核对后可在原发生记录和原预算下继续；后续定时触发仍需按任务状态处理。</p>}
+      {scheduledContinuation && <p>定时运行达到迭代上限。核对后按原记录和预算继续；后续触发仍须按任务状态处理。</p>}
       <Button type="button" size="sm" variant="secondary" disabled={loading || pending || !sameProject || session !== run.session_id} loading={loading} onClick={() => void loadReview()}>读取中断记录并核对</Button>
       {!sameProject && <p>请切换到运行所属项目后核对。</p>}
       {review && <div className="space-y-2 rounded border border-line p-2">
         <p className="break-all">运行 {run.id} · 目录 {String(run.metadata?.workspace_snapshot)} · 服务 {review.service}</p>
         <p>运行状态：{review.snapshot.run.status}；读取时记录版本：{review.snapshot.cursor}。仅展示已持久记录，缺失记录不代表没有副作用。</p>
         {recoveryStep && <p>重启前状态：{String(recoveryStep.payload?.previous_status ?? "未知")}；重启核对标记：{recoveryStep.payload?.requires_review === true ? "需要核对" : recoveryStep.payload?.requires_review === false ? "记录为不需要" : "未知"}。</p>}
-        <p>已记录步骤 {review.snapshot.steps.length} 项；以下显示最近最多 50 项。结果未知的工具调用可能已经产生副作用，须检查当前文件或外部系统。</p>
+        <p>已记录 {review.snapshot.steps.length} 步，显示最近 50 步。未知调用可能已有副作用，请检查文件或外部系统。</p>
         <ol className="max-h-56 space-y-1 overflow-auto">{review.snapshot.steps.slice(-50).map((step) => <li key={step.id} className="break-words rounded bg-surface-1 p-1">
           {step.kind} · {step.tool_name || step.title || "未命名"} · {step.status}{step.payload?.outcome === "unknown" || step.payload?.requires_review === true ? " · 结果未知，需核对" : ""}
           {step.error && <p>{step.error.slice(0, 500)}{step.error.length > 500 ? "…（截断）" : ""}</p>}
         </li>)}</ol>
         {review.snapshot.steps.length > 50 && <p>较早步骤未在此显示，请查看完整时间线。</p>}
         {review.snapshot.steps.some((step) => step.payload?.source === "native_steer" && step.status !== "completed" && typeof step.payload.text === "string") && <div className="space-y-1 rounded border border-line p-2">
-          <p>以下运行中补充未确认生效；请先核对会话记录，避免重复。可将原文显式加入下方交接草稿，确认恢复前仍可编辑。</p>
+          <p>以下补充未确认生效，请先核对记录避免重复。可加入交接草稿并在恢复前编辑。</p>
           {review.snapshot.steps.filter((step) => step.payload?.source === "native_steer" && step.status !== "completed" && typeof step.payload.text === "string").map((step) => {
             const text = String(step.payload?.text ?? "");
             return <div key={step.id} className="space-y-1 rounded bg-surface-1 p-2">
@@ -212,12 +212,12 @@ export function RunRecoveryActions({ run, refresh, expectedService, onEditingCha
           <textarea aria-label="恢复交接" className="mt-1 block w-full rounded border border-line bg-surface-1 p-2" maxLength={4000} value={handoff} disabled={pending || !!attempt} onChange={(event) => { setHandoff(event.target.value); saveEditing({ handoff: event.target.value }); }} />
         </label>
         <p>交接内容会随恢复请求保存并发送给模型；不要填写不应发送的秘密。</p>
-        {draftKey && <div><p>未提交的交接和预算编辑按服务、项目、会话与运行保留在当前页面内存中；刷新或关闭页面会丢失。重新打开后仍需重新核对并勾选。</p>
+        {draftKey && <div><p>未提交编辑仅保留在页面内存，刷新或关闭即丢失；重新打开须再次核对确认。</p>
           <Button type="button" size="sm" variant="ghost" disabled={pending || !!attempt} onClick={() => { if (window.confirm("放弃此运行未提交的恢复交接和预算编辑？")) { retainRecovery(draftKey, null); setHandoff(""); setChangeBudget(false); setBudgetTokens(""); setReviewed(false); } }}>放弃恢复编辑</Button></div>}
         {canChangeBudget && <div className="space-y-1">
           <label className="flex items-center gap-2"><input type="checkbox" checked={changeBudget} disabled={pending || !!attempt} onChange={(event) => { setChangeBudget(event.target.checked); saveEditing({ changeBudget: event.target.checked }); }} />修改累计 token 上限</label>
-          <p>默认保留原运行的累计上限（包括未设置上限）。可保留或提高已有上限；不清除已用额度或未知责任。日额度及账本检查仍然生效；请先核对上方共享预算账本。</p>
-          {changeBudget && <label className="block">恢复 token 上限（累计含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" value={budgetTokens} disabled={pending || !!attempt} onChange={(event) => { setBudgetTokens(event.target.value); saveEditing({ budgetTokens: event.target.value }); }} /></label>}
+          <p>默认保留原累计上限，可提高但不清除用量或未知责任。日额度检查仍生效，请先核对账本。</p>
+          {changeBudget && <label className="block">恢复 token 上限（累计含历史与子任务）<input aria-label="恢复 token 上限" type="number" min="1" className="block w-full min-w-0" value={budgetTokens} disabled={pending || !!attempt} onChange={(event) => { setBudgetTokens(event.target.value); saveEditing({ budgetTokens: event.target.value }); }} /></label>}
         </div>}
         {attempt && <p>存在待确认恢复请求；重试保留原请求 ID 和预算，不会创建新的重试身份。请先核对时间线。</p>}
         {foundRun && <p role="status" className="break-all">已找到该请求接收的关联运行 {foundRun.id}，当前记录状态：{foundRun.status}。请在时间线查看其结果。</p>}

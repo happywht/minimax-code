@@ -88,7 +88,7 @@ export function ProjectCsvImport({ project, session, service, host, draftVersion
     finally { if (ticket === epoch.current) setBusy(false); }
   };
   return <details className="space-y-2 rounded border border-line p-3"><summary>从项目 CSV 附件继续处理</summary>
-    <p>从已登记附件中读取完整 UTF-8 CSV 原件，首行为表头；最多 1 MiB、1000 数据行、20 列和 5000 格。默认列类型为文本，不执行公式；列名需唯一才能转换生成。原件不修改；内容和处理口径需核对。名称搜索区分大小写，每次加载一页附件后筛选 CSV。</p>
+    <p>读取完整 UTF-8 CSV（最多 1 MiB、1000 行、20 列、5000 格）。首行为表头，列名需唯一；原件不变，公式不执行。</p>
     <div className="flex gap-2"><Input aria-label="搜索项目 CSV 附件" value={query} maxLength={240} onChange={(event) => setQuery(event.target.value)} placeholder="按附件名称搜索" />
       <Button type="button" variant="secondary" disabled={busy || disabled || !project || !session || !service || ipc.isMock} onClick={() => void list(false)}>查找项目附件</Button></div>
     {rows.map((row) => <div key={row.id} className="break-all rounded border border-line p-2">{row.original_name} · v{row.version} · {row.id} · {row.size_bytes} 字节
@@ -97,7 +97,7 @@ export function ProjectCsvImport({ project, session, service, host, draftVersion
     {cursor && <Button type="button" variant="secondary" disabled={busy || disabled} onClick={() => void list(true)}>加载更早附件</Button>}
     {candidate && <div className="space-y-2 rounded border border-line p-2"><p className="break-all">已读取完整原件：{candidate.row.original_name} · v{candidate.row.version} · {candidate.row.id} · SHA-256 {candidate.row.sha256}。共 {candidate.table.rows.length} 数据行；下方预览表头和前 5 行。</p>
       <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words">{[candidate.table.headers, ...candidate.table.rows.slice(0, 5)].map((row) => JSON.stringify(row)).join("\n")}</pre>
-      <p>确认会替换当前 CSV 和表格编辑草稿；已转换 JSON、文件名、运行关联、汇总配置和处理说明保持不变。请编辑后重新转换，并自行更新处理说明。</p>
+      <p>确认会替换当前 CSV 和表格编辑草稿；已转换 JSON、文件名、运行关联、汇总配置和处理说明保持不变。</p><p>请编辑后重新转换，并自行更新处理说明。</p>
       <Button type="button" variant="secondary" disabled={busy || disabled} onClick={() => void apply()}>确认替换表格草稿</Button>
       <Button type="button" variant="ghost" disabled={busy} onClick={() => setCandidate(null)}>取消预览</Button></div>}
     {busy && <p role="status">正在读取并核对…</p>}{notice && <p role="status">{notice}</p>}

@@ -63,7 +63,7 @@ function Editor({ run, host }: { run: AgentRun; host: string }): JSX.Element | n
   return <div className="mt-2 text-xs">
     <button type="button" className="underline" onClick={() => setOpen(!open)}>向此 {codex ? "Codex" : "Native"} 任务补充</button>
     {open && <div className="mt-1 space-y-1">
-      <p>{codex ? "发送给当前 Codex 轮次；接受不保证模型已处理。发送结果不确定时不会自动重发，请先核对任务。" : "在当前工具批次结束后的下一轮上下文加入；不会中断正在执行的工具。任务提前结束时可能未使用。"}</p>
+      <p>{codex ? "发送给当前 Codex 轮次；接受不保证已处理。结果不确定时请先核对，不会自动重发。" : "加入当前工具批次后的下一轮，不中断工具；任务提前结束时可能未使用。"}</p>
       {!active && !intent && <p>任务已结束，草稿未发送；可复制内容用于后续任务。</p>}
       <textarea aria-label="运行中补充内容" className="w-full rounded border border-line bg-surface-0 p-2" rows={2}
         maxLength={8000} value={intent?.text ?? text} readOnly={!!intent} onChange={(event) => {

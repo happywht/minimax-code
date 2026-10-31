@@ -49,7 +49,7 @@ export function HostSnapshot({ host }: { host: RemoteHost }): JSX.Element {
 
   return <details className="rounded border border-line p-2">
     <summary>主机运行快照</summary>
-    <p className="text-xs text-ink-2">仅在点击时通过独立 SSH 读取运行时间、根分区、内存和 CPU 占用最高的进程名（不显示命令行）。需要 Linux 的 uptime、df、free、ps 和 head；不判断任务是否持续运行。快照可能包含敏感的进程名称。</p>
+    <p className="text-xs text-ink-2">仅在点击时通过独立 SSH 读取运行时间、根分区、内存和 CPU 占用最高的进程名（不显示命令行）。</p><p className="text-xs text-ink-2">需要 Linux 的 uptime、df、free、ps 和 head；不判断任务是否持续运行。</p><p className="text-xs text-ink-2">快照可能包含敏感的进程名称。</p>
     <Button type="button" size="sm" disabled={busy || !host.enabled} onClick={() => void snapshot()}>读取此主机快照</Button>
     {busy && <p role="status" className="text-xs">正在读取快照…</p>}
     {error && <p role="alert" className="break-words text-xs text-status-error">快照读取失败：{error}。无法据此判断主机是否离线。</p>}

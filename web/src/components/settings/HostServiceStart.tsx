@@ -159,7 +159,7 @@ export function HostServiceStart({ host }: { host: RemoteHost }): JSX.Element {
 
   return <details className="rounded border border-line p-2" onToggle={(event) => { if (!event.currentTarget.open) { epoch.current++; setLogs(null); setStatus(null); setStopAck(false); setMessage(""); } }}>
     <summary>Linux 用户服务管理</summary>
-    <p className="text-xs text-ink-2">使用已信任主机密钥和当前 SSH 用户执行 systemctl --user start。需要远端用户服务管理器可用；自启动设置不立即启动或停止服务，也不设置 linger 或保证机器重启后的运行。</p>
+    <p className="text-xs text-ink-2">使用已信任主机密钥和当前 SSH 用户执行 systemctl --user start。</p><p className="text-xs text-ink-2">需要远端用户服务管理器可用；</p><p className="text-xs text-ink-2">自启动设置不立即启动或停止服务，也不设置 linger 或保证机器重启后的运行。</p>
     <label className="block text-xs">服务 unit<Input aria-label={`${host.name} 服务 unit`} value={unit} disabled={busy} onChange={(event) => { setUnit(event.target.value); setStatus(null); setLogs(null); setStopAck(false); setMessage(""); }} /></label>
     <div className="flex flex-wrap gap-2">
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.service$/.test(unit)} onClick={() => void inspect()}>查询服务状态</Button>
@@ -177,7 +177,7 @@ export function HostServiceStart({ host }: { host: RemoteHost }): JSX.Element {
       <label className="flex items-start gap-2"><input type="checkbox" checked={stopAck} disabled={busy || !status || status.unit !== unit || status.snapshot.LoadState !== "loaded"} onChange={(event) => setStopAck(event.target.checked)} />我已核对目标主机和 unit，理解停止可能中断任务。</label>
       <Button type="button" size="sm" variant="danger" disabled={busy || !host.enabled || !stopAck || !status || status.unit !== unit || status.snapshot.LoadState !== "loaded"} onClick={() => void stop()}>停止服务</Button>
     </div>
-    <p className="text-xs text-ink-2">日志可能包含凭据和敏感内容，未做凭据脱敏；仅在主动请求时读取，请按需查看并谨慎分享。读取所选范围最近条目中的前 16 KiB，截断时可能不含最新条目；不自动采集或上传。</p>
+    <p className="text-xs text-ink-2">日志可能包含凭据和敏感内容，未做凭据脱敏；仅在主动请求时读取，请按需查看并谨慎分享。</p><p className="text-xs text-ink-2">读取所选范围最近条目中的前 16 KiB，截断时可能不含最新条目；不自动采集或上传。</p>
     <div className="flex flex-wrap gap-2 text-xs">
       <label>最近条数<select aria-label="日志最近条数" className="block rounded border border-line bg-surface-2 p-1" disabled={busy} value={logLines} onChange={(event) => { setLogLines(Number(event.target.value) as NonNullable<HostServiceLogsParams["lines"]>); setLogs(null); }}><option value="25">25 条</option><option value="50">50 条</option><option value="100">100 条</option><option value="200">200 条</option></select></label>
       <label>时间范围<select aria-label="日志时间范围" className="block rounded border border-line bg-surface-2 p-1" disabled={busy} value={logSince} onChange={(event) => { setLogSince(event.target.value as NonNullable<HostServiceLogsParams["since"]>); setLogs(null); }}><option value="all">不限时间</option><option value="15m">最近 15 分钟</option><option value="1h">最近 1 小时</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option></select></label>

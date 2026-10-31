@@ -62,6 +62,6 @@ export function OfficeDeliveryPackage({ selected, project, session, service, hos
     finally { if (ticket === epoch.current) { setBusy(false); controller.current = null; } }
   };
   return <div className="space-y-1"><Button type="button" variant="secondary" disabled={busy || !project || !session || !service || ipc.isMock} onClick={() => void download()}>下载 XLSX 与回执交付包</Button>
-    <p className="text-xs text-ink-2">ZIP 包含原始 XLSX、成果身份及校验回执和说明；回执非数字签名，处理说明可能含敏感信息。业务和版式未核验。</p>
+    <p className="text-xs text-ink-2">ZIP 包含原始 XLSX、成果身份及校验回执和说明；回执非数字签名，处理说明可能含敏感信息。</p><p className="text-xs text-ink-2">业务和版式未核验。</p>
     {busy && <p role="status">正在重新核对成果并打包…</p>}{notice && <p role="status">{notice}</p>}</div>;
 }

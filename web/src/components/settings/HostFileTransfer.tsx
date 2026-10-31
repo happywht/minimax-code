@@ -177,7 +177,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     finally { if (valid(ticket)) setBusy(false); }
   };
   return <><HostConnectionRecovery host={host} /><HostServiceStart host={host} /><details className="rounded border border-line p-2" onToggle={(event) => setTransferOpen(event.currentTarget.open)}><summary>上传 / 下载文件</summary>
-    <p className="text-xs text-ink-2">本机路径指运行当前服务的机器，不是浏览器选中的文件；远端路径指此主机的 Linux 绝对路径。仅单文件、显式操作，不自动同步。传输使用独立 SSH/SFTP，服务隧道状态不代表传输可用。</p>
+    <p className="text-xs text-ink-2">本机路径指运行当前服务的机器，不是浏览器选中的文件；远端路径指此主机的 Linux 绝对路径。</p><p className="text-xs text-ink-2">仅单文件、显式操作，不自动同步。传输使用独立 SSH/SFTP，服务隧道状态不代表传输可用。</p>
     <label className="block text-xs">本机文件绝对路径<Input aria-label={`${host.name} 本机传输路径`} value={local} disabled={busy} onChange={(e) => setLocal(e.target.value)} placeholder="C:\\资料\\报告.pdf" /></label>
     <label className="block text-xs">远端文件绝对路径<Input aria-label={`${host.name} 远端传输路径`} value={remote} disabled={busy} onChange={(e) => setRemote(e.target.value)} placeholder="/home/user/report.pdf" /></label>
     <label className="block text-xs">选择浏览器文件（最大 10 MiB）<input ref={browserInput} type="file" aria-label={`${host.name} 浏览器上传文件`} disabled={busy} onChange={(e) => setBrowserFile(e.target.files?.[0] ?? null)} /></label>
@@ -199,8 +199,8 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void transfer("download")}>下载到服务端路径</Button>
       <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void browserTransfer()}>下载到当前浏览器</Button>
       {busy && browserDownload.current && <Button type="button" size="sm" variant="secondary" onClick={() => browserDownload.current?.abort()}>取消浏览器传输</Button>}</div>
-    <p className="text-xs text-ink-2">浏览器下载通过 SSH 执行远端只读命令，仅支持不经过符号链接的普通文件，最大 10 MiB；不写入服务端文件。</p>
-    <p className="text-xs text-ink-2">上传备份位于远端传输记录目录；服务端路径下载只创建新文件，不覆盖已有文件。浏览器下载的保存位置和同名处理由浏览器决定。校验不能证明业务内容正确；响应中断时先核对，不自动重试。</p>
+    <p className="text-xs text-ink-2">浏览器下载通过 SSH 执行远端只读命令，仅支持不经过符号链接的普通文件，最大 10 MiB；</p><p className="text-xs text-ink-2">不写入服务端文件。</p>
+    <p className="text-xs text-ink-2">上传备份位于远端传输记录目录；服务端路径下载只创建新文件，不覆盖已有文件。</p><p className="text-xs text-ink-2">浏览器下载的保存位置和同名处理由浏览器决定。校验不能证明业务内容正确；响应中断时先核对，不自动重试。</p>
     <label className="block text-xs">上传传输编号<Input aria-label={`${host.name} 上传传输编号`} value={manualId} maxLength={32} disabled={busy} onChange={(e) => { setManualId(e.target.value); setRecoveryService(null); setStatus(null); }} /></label>
     <label className="block text-xs">查询用远端路径<Input aria-label={`${host.name} 上传查询路径`} value={manualRemote} disabled={busy} onChange={(e) => { setManualRemote(e.target.value); setRecoveryService(null); setStatus(null); }} /></label>
     <Button type="button" size="sm" variant="secondary" disabled={busy || !host.enabled} onClick={() => void inspect()}>查询上传状态</Button>
@@ -211,7 +211,7 @@ export function HostFileTransfer({ host }: { host: RemoteHost }): JSX.Element {
     </div>}
     <label className="block text-xs">粘贴已保存的恢复记录<Textarea aria-label={`${host.name} 粘贴恢复记录`} value={recoveryInput} disabled={busy} rows={4} onChange={(e) => setRecoveryInput(e.target.value)} /></label>
     <Button type="button" size="sm" variant="secondary" disabled={busy || !recoveryInput.trim()} onClick={() => void applyRecovery()}>填入查询信息</Button>
-    <p className="text-xs text-ink-2">浏览器上传生成的新版恢复记录包含服务身份、主机配置摘要和远端路径；旧版记录须人工核对来源。记录不包含私钥或本机文件路径，请妥善保存。填入不会自动查询或上传，也不会替换本标签页的未决上传记录。</p>
+    <p className="text-xs text-ink-2">新版恢复记录含服务身份、主机配置摘要和远端路径，不含私钥或本机路径；请妥善保存。旧版需人工核对来源。</p><p className="text-xs text-ink-2">填入不会查询、上传或替换未决记录。</p>
     {busy && <p role="status">传输或查询进行中；请勿重复提交。</p>}{message && <p role="status" className="break-words text-xs">{message}</p>}
     {status && <p className="break-all text-xs">状态：{status.publication_state ?? "未知"} · 远端路径：{status.remote_path}{status.backup_path ? ` · 备份：${status.backup_path}` : ""}{status.stderr ? ` · 信息：${status.stderr}` : ""}</p>}
   </details></>;

@@ -231,7 +231,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
   return <section className="flex h-full min-h-0 flex-col gap-3 overflow-auto p-4" aria-label="项目任务状态">
     <div className="flex justify-between gap-2"><div><h2 className="text-lg font-semibold">项目任务状态</h2>
       <p className="break-all text-xs text-ink-2">项目：{name ?? project ?? "未选择"} · 服务：{host} · 身份：{service ?? "待确认"}</p></div><Button size="sm" variant="ghost" onClick={onClose}>关闭</Button></div>
-    <p className="text-sm text-ink-1">按持久运行记录分组，不按会话计数。每组最多显示最近 25 条；已归档会话、未绑定项目的旧记录和内部子任务不在此列表。等待状态不代表审批或问题仍有效。</p>
+    <p className="text-sm text-ink-1">按运行记录分组，每组最多显示最近 25 条；不含归档会话、未绑定项目的旧记录及内部子任务。</p><p className="text-sm text-ink-1">等待状态不代表请求仍有效。</p>
     <div className="flex flex-wrap gap-2">{(Object.keys(groupLabels) as Group[]).map((id) => <Button key={id} type="button" size="sm" variant={group === id ? "primary" : "secondary"} aria-pressed={group === id} disabled={busy} onClick={() => { setGroup(id); setDetail(undefined); setSnapshot(null); remember({ group: id, selected: undefined }); }}>{groupLabels[id]}{groups?.[id] ? ` · ${groups[id].items.length}${groups[id].truncated ? "+" : ""}` : ""}</Button>)}
       <Button type="button" size="sm" variant="ghost" disabled={busy || !project} onClick={() => void refresh()}>刷新</Button></div>
     <form className="flex flex-wrap items-end gap-2 rounded border border-line p-2" onSubmit={(event) => { event.preventDefault(); void searchHistory(query.trim(), 0, searchStatus); }}>
@@ -243,7 +243,7 @@ export function ProjectRunDashboard({ onClose, onOpenSession, onPrepareReport }:
       </select></label>
       <Button type="submit" size="sm" variant="secondary" disabled={busy || !service}>查找</Button>
       {history && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => { setHistory(undefined); historyService.current = null; remember({ search: undefined }); }}>关闭搜索结果</Button>}
-      <p className="w-full text-xs text-ink-2">按状态和关键词搜索项目持久运行；空关键词浏览所选状态。等待处理包括授权、输入、预算暂停和中断；已归档会话和未绑定项目的旧记录不包含在内。</p>
+      <p className="w-full text-xs text-ink-2">按状态和关键词搜索；留空可浏览所选状态。等待处理包括授权、输入、预算暂停和中断。</p>
     </form>
     {history && <div className="space-y-2 rounded border border-line p-2" aria-label="项目运行搜索结果">
       <p className="text-sm">搜索：{appliedQuery || "全部关键词"} · {searchLabels[appliedStatus]} · 从第 {history.offset + 1} 条记录开始</p>

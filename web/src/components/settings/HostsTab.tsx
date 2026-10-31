@@ -159,7 +159,7 @@ export function HostsTab(): JSX.Element {
 
   return <section className="space-y-4" data-testid="settings-hosts">
     <h2 className="text-sm font-semibold">远程主机</h2>
-    <p className="text-xs text-ink-2">通过 SSH 隧道在独立标签页打开远端服务，当前页面保持连接当前服务。远端会话、项目和设置独立，不自动同步或迁移任务。远端需要提供更新后的前端；连接状态不代表任务持续。SSH 隧道不限制远端命令的访问权限，请仅连接可信主机。</p>
+    <p className="text-xs text-ink-2">远端在新标签页打开，数据独立且不同步。隧道不限制远端命令，请仅连接可信主机。</p>
     {error && <p role="alert" className="text-xs text-status-error">{error}</p>}
     <form onSubmit={(event) => void register(event)} className="space-y-2 rounded-md border border-line p-3">
       <h3 className="text-xs font-medium">登记主机</h3>
@@ -197,7 +197,7 @@ export function HostsTab(): JSX.Element {
           <Button size="sm" disabled={busy || !Number.isInteger(Number(hostPorts[host.id])) || Number(hostPorts[host.id]) < 1 || Number(hostPorts[host.id]) > 65535 || Number(hostPorts[host.id]) === host.remote_port} onClick={() => void savePort(host)}>保存端口</Button>
         </div>
         <p className="text-xs text-ink-2">{!host.enabled ? "已禁用 · " : ""}状态：{connection ? STATUS_LABELS[connection.state] : "状态待核对"}</p>
-        {connection?.state === "degraded" && <p className="text-xs text-ink-2">SSH 进程仍在，但远端服务健康检查未通过；会继续检查。请检查远端服务，必要时断开后重新连接。此状态不判断远端任务是否运行。</p>}
+        {connection?.state === "degraded" && <p className="text-xs text-ink-2">SSH 已连接，但远端服务异常；请检查服务。任务状态未知。</p>}
         {!connection && <p className="text-xs text-ink-2">无法确认当前隧道状态；请恢复本地服务连接或刷新状态。</p>}
         <HostSnapshot key={JSON.stringify([host.id, host.hostname, host.username, host.port, host.identity_file, host.enabled, connectionEpoch])} host={host} />
         <HostFileTransfer host={host} />

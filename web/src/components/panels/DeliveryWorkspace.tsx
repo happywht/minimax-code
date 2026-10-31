@@ -95,7 +95,7 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTr
         variant={item.id === tab ? "primary" : "ghost"} aria-current={item.id === tab ? "page" : undefined} onClick={() => switchTab(item.id)}>{item.label}</Button>)}</nav>
       <p className="text-xs text-ink-2">内容和版式需自行核对。刷新或关闭页面会丢失内存草稿和待上传文件，请先导出草稿文件。</p>
       <details className="text-xs text-ink-2"><summary className="cursor-pointer text-ink-1">范围与草稿保留说明</summary>
-        <p className="pt-1">不同类型保存在各自的项目记录中；仅当前会话的明确关联显示为任务成果。办公表格和报告编辑草稿在当前页面内按服务地址、服务身份、项目和会话分别保留；只有返回相同身份才会恢复。报告的研究来源需要重新选择并核对引用；待上传文件也仅在相同身份的页面内保留，需手动上传。刷新或关闭页面后需重新选择文件。</p>
+        <p className="pt-1">草稿仅在本页面按服务、项目和会话保留；刷新会丢失待上传文件。报告来源需重新选择并核对。</p>
       </details>
       {ready && historicalTransfer && !historicalMatches && <p role="alert" className="text-xs text-status-warning">待复用成果的项目、会话或服务已变化，请返回任务看板重新选择。<button type="button" onClick={onClearHistoricalTransfer}>清除</button></p>}
       {!ready && <p role="status" className="text-xs text-status-warning">{error || (!project ? "请先选择项目。" : "正在确认当前服务身份…")}</p>}
@@ -165,14 +165,14 @@ function SessionDeliveries({ binding, target, onClearTarget, onPrepareReport, on
     run.metadata?.project_id === binding.project);
   const visible = target ? (targetMatches && targetRun ? [targetRun] : []) : associated;
   return <div className="space-y-3 text-sm"><h3 className="font-semibold">当前会话的任务关联成果</h3>
-    <p>默认列出当前项目和会话的近期运行及活动运行；指定任务时按 ID 单独读取，包括较早运行。附件来自已记录的工具结果；文本成果需按运行读取登记关联。关联不证明成果由该运行生成，内容均需自行核对。</p>
+    <p>默认列出当前项目和会话的近期运行及活动运行；指定任务时按 ID 单独读取，包括较早运行。</p><p>附件来自已记录的工具结果；文本成果需按运行读取登记关联。关联不证明成果由该运行生成，内容均需自行核对。</p>
     <div className="flex flex-wrap items-end gap-2 rounded border border-line p-2 text-xs" aria-label="查找任务关联成果">
       <label className="min-w-0 flex-1">查找成果记录<input aria-label="查找任务成果" className="mt-1 block w-full rounded border border-line bg-surface-0 p-1" value={deliveryQuery} maxLength={200} onChange={(event) => setDeliveryQuery(event.target.value)} placeholder="文件名、路径或记录 ID" /></label>
       <label>成果类型<select aria-label="筛选任务成果类型" className="mt-1 block rounded border border-line bg-surface-0 p-1" value={deliveryKind} onChange={(event) => setDeliveryKind(event.target.value as typeof deliveryKind)}>
         <option value="all">全部</option><option value="attachments">关联附件</option><option value="text">登记文本成果</option>
       </select></label>
       {(deliveryQuery || deliveryKind !== "all") && <Button type="button" size="sm" variant="ghost" onClick={() => { setDeliveryQuery(""); setDeliveryKind("all"); }}>清除筛选</Button>}
-      <p className="w-full text-ink-2">仅筛选当前显示运行中已记录的附件名称/ID，以及手动读取后已加载的文本路径/ID；不搜索内容或未加载页面。筛选不清除已选预览或登记草稿。</p>
+      <p className="w-full text-ink-2">只筛选已加载的附件名称或 ID、文本路径或 ID；不搜索内容。筛选不清除预览或草稿。</p>
     </div>
     {binding.session && (target && targetMatches ? <Button type="button" size="sm" variant="secondary" disabled={targetBusy} onClick={() => void loadTarget()}>重新读取此任务</Button> :
       <Button type="button" size="sm" variant="secondary" disabled={loading} onClick={() => void load(binding.session)}>刷新运行</Button>)}
