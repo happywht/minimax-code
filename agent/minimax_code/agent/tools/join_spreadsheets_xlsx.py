@@ -25,7 +25,8 @@ class JoinSpreadsheetTool(Tool):
         "Select columns and specify key or an ordered keys array on each side; select right fields to append. "
         "Key lists must have equal length and corresponding types; text is case-sensitive. "
         "A key combination with any blank never matches; duplicate complete right combinations "
-        "reject the request. Left rows and order are preserved; "
+        "reject the request by default. Explicit right_duplicates=expand emits every matching "
+        "pair in right-source order, including many-to-many matches. Left rows and order are preserved; "
         "unmatched fields are blank. Optional join_mode selects all left rows, matched rows only, "
         "unmatched left rows only, right_unmatched rows missing from the left, or reconciliation "
         "with both sides and a 关联状态 column (matched, left_only, right_only). "
@@ -48,6 +49,8 @@ class JoinSpreadsheetTool(Tool):
     parameters = {"type": "object", "properties": {
         "left": _source, "right": _source, "filename": {"type": "string"},
         "request_key": {"type": "string"}, "sheet_name": {"type": "string"},
+        "right_duplicates": {"type": "string", "enum": ["reject", "expand"],
+                             "description": "Default reject; expand emits one row per matching pair"},
         "join_mode": {"type": "string", "enum": ["left", "matched", "unmatched", "right_unmatched", "reconciliation"],
                       "description": "Rows to deliver; default left"},
     }, "required": ["left", "right", "filename", "request_key", "sheet_name"],
@@ -102,11 +105,13 @@ class JoinSpreadsheetTool(Tool):
         return spec, source
 
     async def run(self, left: dict, right: dict, filename: str, request_key: str,
-                  sheet_name: str, join_mode: str = "left") -> ToolResult:
+                  sheet_name: str, join_mode: str = "left", right_duplicates: str = "reject") -> ToolResult:
         try:
             require_write_access()
             if not isinstance(join_mode, str) or join_mode not in {"left", "matched", "unmatched", "right_unmatched", "reconciliation"}:
                 raise ValueError("Invalid join_mode")
+            if not isinstance(right_duplicates, str) or right_duplicates not in {"reject", "expand"}:
+                raise ValueError("Invalid right_duplicates")
             if not self.project_id:
                 raise ValueError("Current session has no project")
             if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_key):
@@ -140,24 +145,27 @@ class JoinSpreadsheetTool(Tool):
                 key = tuple(row[i] for i in ri)
                 if any(value is None for value in key):
                     blank_keys += 1
-                elif key in lookup:
+                elif key in lookup and right_duplicates == "reject":
                     raise ValueError("Right source contains duplicate complete key combinations")
                 else:
-                    lookup[key] = row
+                    lookup.setdefault(key, []).append(row)
             rows, matched = [], 0
             left_complete_keys = set()
             for row in left_spec["rows"]:
                 key = tuple(row[i] for i in li)
                 if all(value is not None for value in key):
                     left_complete_keys.add(key)
-                hit = lookup.get(key) if all(value is not None for value in key) else None
-                matched += hit is not None
-                if (join_mode in {"left", "reconciliation"} or join_mode == "matched" and hit is not None
-                        or join_mode == "unmatched" and hit is None):
-                    joined = [*row, *([hit[i] for i in fields] if hit is not None else [None] * len(fields))]
-                    if join_mode == "reconciliation":
-                        joined.append("matched" if hit is not None else "left_only")
-                    rows.append(joined)
+                hits = lookup.get(key, []) if all(value is not None for value in key) else []
+                matched += bool(hits)
+                if (join_mode in {"left", "reconciliation"} or join_mode == "matched" and hits
+                        or join_mode == "unmatched" and not hits):
+                    for hit in hits or [None]:
+                        if len(rows) >= 1000:
+                            raise ValueError("Join output exceeds 1000 rows; narrow the inputs")
+                        joined = [*row, *([hit[i] for i in fields] if hit is not None else [None] * len(fields))]
+                        if join_mode == "reconciliation":
+                            joined.append("matched" if hit is not None else "left_only")
+                        rows.append(joined)
             right_unmatched = 0
             if join_mode in {"right_unmatched", "reconciliation"}:
                 for row in right_spec["rows"]:
@@ -170,6 +178,8 @@ class JoinSpreadsheetTool(Tool):
                     joined = [*left_values, *[row[i] for i in fields]]
                     if join_mode == "reconciliation":
                         joined.append("right_only")
+                    if len(rows) >= 1000:
+                        raise ValueError("Join output exceeds 1000 rows; narrow the inputs")
                     rows.append(joined)
                     right_unmatched += 1
             output = XlsxSpec.model_validate({"sheet_name": sheet_name,
@@ -191,11 +201,20 @@ class JoinSpreadsheetTool(Tool):
                               "counts": counts, "join_mode": join_mode}
                 if join_mode in {"right_unmatched", "reconciliation"}:
                     counts["right_unmatched_rows"] = right_unmatched
+            if right_duplicates == "expand":
+                counts["output_rows"] = len(rows)
+                counts["right_unmatched_rows"] = right_unmatched
+                processing = {"version": 7, "operation": "left_join",
+                              "sources": [left_source, right_source],
+                              "keys": {"left": left_keys, "right": right_keys},
+                              "counts": counts, "join_mode": join_mode,
+                              "right_duplicates": right_duplicates}
             bound_key = "join_" + hashlib.sha256(canonical(request_key)).hexdigest()
             result = await self.generator.run(filename, bound_key, output, processing=processing)
             if result.success:
                 result.output.update({"request_key": request_key, "sources": [left_source, right_source],
                                       "join_keys": actual_keys, "join_counts": counts, "join_mode": join_mode,
+                                      "right_duplicates": right_duplicates,
                                       "output_rows": len(rows),
                                       "source_notice": ("Left rows precede right-only rows; right keys populate left key columns. Blank keys never match. " if join_mode == "reconciliation" else "Right-unmatched output retains right-side order; right keys populate left key columns and other left fields are blank. " if join_mode == "right_unmatched" else "Output retains left-side order; unmatched fields are blank. ") + "Originals were not modified; business quality is unverified."})
             return result

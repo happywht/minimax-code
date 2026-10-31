@@ -67,14 +67,18 @@ def _sheet(value: object) -> bool:
 
 
 def _validate_join_processing(value: dict) -> None:
-    _require(set(value) == ({"version", "operation", "sources", "keys", "counts", "join_mode"}
+    _require(set(value) == ({"version", "operation", "sources", "keys", "counts", "join_mode", "right_duplicates"}
+                            if value.get("version") == 7 else
+                            {"version", "operation", "sources", "keys", "counts", "join_mode"}
                             if value.get("version") in (4, 5, 6) else
                             {"version", "operation", "sources", "keys", "counts"})
-             and type(value["version"]) is int and value["version"] in {2, 3, 4, 5, 6}
+             and type(value["version"]) is int and value["version"] in {2, 3, 4, 5, 6, 7}
              and (value["version"] != 4 or (type(value["join_mode"]) is str
                   and value["join_mode"] in {"matched", "unmatched"}))
              and (value["version"] != 5 or value["join_mode"] == "right_unmatched")
              and (value["version"] != 6 or value["join_mode"] == "reconciliation")
+             and (value["version"] != 7 or (type(value["join_mode"]) is str and value["join_mode"] in {"left", "matched", "unmatched", "right_unmatched", "reconciliation"}
+                  and value["right_duplicates"] == "expand"))
              and value["operation"] == "left_join", "Invalid join processing description")
     sources = value["sources"]
     _require(type(sources) is list and len(sources) == 2, "Invalid join sources")
@@ -110,12 +114,16 @@ def _validate_join_processing(value: dict) -> None:
                      for left, right in zip(keys["left"], keys["right"], strict=True)),
                  "Invalid join key columns")
     counts = value["counts"]
-    _require(type(counts) is dict and set(counts) == ({"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys", "right_unmatched_rows"}
+    _require(type(counts) is dict and set(counts) == ({"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys", "right_unmatched_rows", "output_rows"}
+             if value["version"] == 7 else {"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys", "right_unmatched_rows"}
              if value["version"] in (5, 6) else {"left_rows", "right_rows", "matched_rows", "unmatched_rows", "right_blank_keys"})
              and all(_integer(counts[k], 0, 1000) for k in counts)
              and counts["matched_rows"] + counts["unmatched_rows"] == counts["left_rows"]
              and counts["right_blank_keys"] <= counts["right_rows"]
-             and (value["version"] not in (5, 6) or counts["right_blank_keys"] <= counts["right_unmatched_rows"] <= counts["right_rows"]), "Invalid join counts")
+             and (value["version"] not in (5, 6) or counts["right_blank_keys"] <= counts["right_unmatched_rows"] <= counts["right_rows"])
+             and (value["version"] != 7 or (counts["right_unmatched_rows"] <= counts["right_rows"]
+                  and (value["join_mode"] in {"right_unmatched", "reconciliation"}
+                       or counts["right_unmatched_rows"] == 0))), "Invalid join counts")
 
 
 def validate_report(value: object) -> dict:
@@ -132,7 +140,7 @@ def validate_report(value: object) -> dict:
                  and any(notes[key].strip() for key in notes), "Invalid operator notes")
     if "processing" in value:
         processing = value["processing"]
-        if type(processing) is dict and processing.get("version") in (2, 3, 4, 5, 6):
+        if type(processing) is dict and processing.get("version") in (2, 3, 4, 5, 6, 7):
             _validate_join_processing(processing)
         else:
             processing_keys = {
@@ -233,6 +241,9 @@ def validate_report(value: object) -> dict:
              and _integer(value["cell_count"], 1, 5000)
              and value["cell_count"] == (value["data_rows"] + 1) * value["column_count"],
              "Invalid Office report dimensions")
+    if "processing" in value and value["processing"].get("version") == 7:
+        _require(value["processing"]["counts"]["output_rows"] == value["data_rows"],
+                 "Join output count does not match report dimensions")
     writer = value["writer"]
     _require(type(writer) is dict and set(writer) == {"name", "version"}
              and type(writer["name"]) is str and writer["name"] == "openpyxl"
