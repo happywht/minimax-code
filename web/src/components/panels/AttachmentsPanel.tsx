@@ -251,7 +251,7 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
     </div>}
     {excerptNotice && <p role="status">{excerptNotice}</p>}
     <p className="text-sm text-ink-1">最大 10 MiB。每次上传保留独立原件；同名文件创建新版本。</p>
-    <p className="text-sm text-ink-1">TXT / CSV 严格 UTF-8 预览，最多 64 KiB / 2000 行；CSV 公式只作文本。可选 DOCX 解析仅包含正文段落和表格，保留位置标签；不含页眉页脚、修订、文本框、批注、脚注或图片文字。可选 PDF 解析按物理页序提取已有文字，最多 200 页，不保证版式或表格结构；扫描图片未尝试 OCR。可选 XLSX 解析只预览有界单元格、公式文本和未验证缓存，不计算公式，不执行宏或访问外链。</p>
+    <details className="text-sm text-ink-1"><summary className="cursor-pointer">支持的预览及解析限制</summary><p>TXT / CSV 严格 UTF-8 预览，最多 64 KiB / 2000 行；CSV 公式只作文本。可选 DOCX 解析仅包含正文段落和表格，保留位置标签；不含页眉页脚、修订、文本框、批注、脚注或图片文字。可选 PDF 解析按物理页序提取已有文字，最多 200 页，不保证版式或表格结构；扫描图片未尝试 OCR。可选 XLSX 解析只预览有界单元格、公式文本和未验证缓存，不计算公式，不执行宏或访问外链。</p></details>
     <p className="text-sm text-ink-1">原件保存、可解析、质量验证与交付是不同状态；当前质量均为未验证。附件不会自动加入对话上下文。</p>
     {ipc.isMock && <p role="status">演示模式：原件仅保存在本页内存，刷新后清空；Office 容器只标记候选 ZIP。PDF / DOCX / XLSX 解析需要真实后端可选依赖。</p>}
     {attachmentTransfer && onClearAttachmentTransfer && <RunAttachmentTransfer transfer={attachmentTransfer} project={projectId} session={sessionId} service={scoped ? state.serviceId : null} host={host} onClear={onClearAttachmentTransfer} />}
@@ -270,8 +270,9 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <div className="flex flex-wrap gap-2">
       <select aria-label="筛选附件类型" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} className="rounded border border-line bg-surface-0 px-2 text-xs text-ink-1"><option value="all">全部类型</option><option value="pdf">PDF</option><option value="docx">DOCX</option><option value="xlsx">XLSX</option><option value="csv">CSV</option><option value="txt">TXT</option></select></div>
       <p className="text-xs text-ink-2">名称搜索覆盖当前项目，区分大小写，不搜索文件内容；类型仅筛选已加载记录。显示 {filteredAttachments.length} 项。</p>
-    <ul className="space-y-1">{filteredAttachments.map((row) => <li key={row.id}>
-      <button disabled={state.busy} className="max-w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3" onClick={() => void state.select(row.id)}>
+    {scoped && state.selected && <a href="#selected-attachment" className="inline-block text-xs text-accent underline">查看已选附件的预览与下载</a>}
+      <ul aria-label="附件列表" tabIndex={0} className="max-h-56 space-y-1 overflow-y-auto rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{filteredAttachments.map((row) => <li key={row.id}>
+      <button type="button" aria-pressed={state.selected?.id === row.id} disabled={state.busy} className={`w-full break-all rounded border p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${state.selected?.id === row.id ? "border-accent bg-accent-subtle" : "border-line"}`} onClick={() => void state.select(row.id)}>
         {row.original_name} · v{row.version} · {row.id} · {row.size_bytes} 字节 · {labels[row.parser_status]} / 未验证
       </button>
     </li>)}</ul>
@@ -292,8 +293,9 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
         setDocumentReview(true);
         return true;
       }} />}
-    {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
-      <h3 className="font-medium">已选附件 · {state.selected.original_name}</h3>
+    {scoped && state.selected && <div id="selected-attachment" className="space-y-2 rounded border border-line p-3">
+      <h3 className="break-all font-medium">已选附件 · {state.selected.original_name}</h3>
+      <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
       <p className="break-all text-xs text-ink-1">声明类型: {state.selected.declared_type} · 识别候选: {state.selected.recognized_type} · {labels[state.selected.parser_status]} · 未验证</p>
       <p className="break-all text-xs text-ink-1">解析算法 v{state.selected.parser_version} · 范围 {state.selected.parser_scope} · 原因 {state.selected.parser_reason}</p>
       {state.selected.parser_reason === "no_extracted_body_text_no_ocr" && <p role="status">{state.selected.recognized_type === "pdf" ? "未提取到 PDF 页面文本；未尝试 OCR。原件可能仍包含其他内容。" : "未提取到正文文本；未尝试 OCR。原件可能仍包含其他内容。"}</p>}
@@ -306,7 +308,6 @@ export function AttachmentsPanel({ onClose, embedded = false, initialDraft, onRe
       <AttachmentVersions key={`versions:${state.selected.id}:${state.selected.sha256}`} attachment={state.selected} project={projectId} session={sessionId} service={state.serviceId} host={host} />
       <label className="flex items-center gap-2 text-xs text-ink-1"><input type="checkbox" checked={includeExcerpt} disabled={addingContext} onChange={(event) => setIncludeExcerpt(event.target.checked)} />同时加入最多 1200 字解析摘录</label>
       <div className="flex flex-wrap gap-2"><Button type="button" disabled={state.busy || state.loading || addingContext || !sessionId || !state.serviceId} loading={addingContext} onClick={() => void addAttachmentContext()}>加入当前会话草稿</Button>
-      <Button disabled={state.busy} onClick={() => void state.download()}>下载附件原始字节</Button>
       {contextAdded && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}</div>
       <p className="text-xs text-ink-2">默认仅追加附件身份；可选择加入解析摘录。不会发送或上传原件到对话，也不代表模型已读取完整文件。</p>
       {contextNotice && <p role="status" className="text-xs text-ink-1">{contextNotice}</p>}

@@ -57,16 +57,17 @@ export function ArtifactsPanel({ onClose, embedded = false, onPrepareReport, rep
           <Button type="submit" disabled={state.busy}>搜索</Button>
         </form>
         <p className="text-xs text-ink-2">搜索当前项目登记路径，区分大小写；不搜索文件内容。已加载 {filteredArtifacts.length} 项。</p></div>
-      <ul className="space-y-1">
+      {scoped && state.selected && <a href="#selected-text-artifact" className="inline-block text-xs text-accent underline">查看已选成果的预览与下载</a>}
+      <ul aria-label="文本成果列表" tabIndex={0} className="max-h-56 space-y-1 overflow-y-auto rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
         {filteredArtifacts.map((row) => <li key={row.id}>
-          <button className="w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => void state.select(row.id)}>
+          <button type="button" aria-pressed={state.selected?.id === row.id} className={`w-full break-all rounded border p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${state.selected?.id === row.id ? "border-accent bg-accent-subtle" : "border-line"}`} onClick={() => void state.select(row.id)}>
             {row.source_path} · v{row.version} · {row.size_bytes} 字节 · 可解析 / 未验证 · {row.run_id ? `登记关联运行 ${row.run_id}` : "未关联运行"}
           </button>
         </li>)}
       </ul>
       {scoped && state.nextCursor && <Button type="button" variant="secondary" disabled={state.paging} onClick={() => void state.loadMore()}>{state.paging ? "正在加载…" : "加载更早成果"}</Button>}
-      {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
-        <h3 className="font-medium">预览与下载</h3>
+      {scoped && state.selected && <div id="selected-text-artifact" className="space-y-2 rounded border border-line p-3">
+        <h3 className="break-all font-medium">预览与下载 · {state.selected.source_path}</h3>
         <p className="break-all text-xs text-ink-1">SHA-256: {state.selected.sha256}</p>
         <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载原始字节</Button>
         <Button variant="secondary" disabled={state.busy || state.loading || !state.serviceId} onClick={() => void state.register(state.selected!.source_path)}>从源文件登记新版本</Button>

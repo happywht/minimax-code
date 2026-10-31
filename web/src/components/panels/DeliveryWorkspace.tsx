@@ -87,13 +87,16 @@ export function DeliveryWorkspace({ tab, onSelect, onClose, onEdit, historicalTr
     if (ready) node.removeAttribute("inert"); else node.setAttribute("inert", "");
   }, [ready, scopeKey]);
   return <section className="flex h-full min-h-0 flex-col" aria-label="交付物工作区">
-    <header className="shrink-0 space-y-2 border-b border-line p-3">
+    <header className="max-h-[45%] shrink-0 space-y-2 overflow-y-auto border-b border-line p-3">
       <div className="flex items-start justify-between gap-2"><div><h2 className="font-semibold">交付物工作区</h2>
         <p className="break-all text-xs text-ink-2">项目：{projectName ?? project ?? "未选择"} · 会话：{session ?? "未选择"} · 服务地址：{host} · 服务身份：{ready ? validBinding?.service ?? "未知" : "待确认"}</p></div>
         <Button size="sm" variant="ghost" onClick={onClose}>关闭</Button></div>
       <nav aria-label="交付物类型" className="flex flex-wrap gap-1">{tabs.map((item) => <Button key={item.id} type="button" size="sm"
         variant={item.id === tab ? "primary" : "ghost"} aria-current={item.id === tab ? "page" : undefined} onClick={() => switchTab(item.id)}>{item.label}</Button>)}</nav>
-      <p className="text-xs text-ink-2">不同类型保存在各自的项目记录中；仅当前会话的明确关联显示为任务成果。内容和版式需自行核对。办公表格和报告编辑草稿在当前页面内按服务地址、服务身份、项目和会话分别保留；只有返回相同身份才会恢复。报告的研究来源需要重新选择并核对引用；待上传文件也仅在相同身份的页面内保留，需手动上传。刷新或关闭页面会丢失内存草稿和待上传文件，请先导出草稿文件并重新选择文件。</p>
+      <p className="text-xs text-ink-2">内容和版式需自行核对。刷新或关闭页面会丢失内存草稿和待上传文件，请先导出草稿文件。</p>
+      <details className="text-xs text-ink-2"><summary className="cursor-pointer text-ink-1">范围与草稿保留说明</summary>
+        <p className="pt-1">不同类型保存在各自的项目记录中；仅当前会话的明确关联显示为任务成果。办公表格和报告编辑草稿在当前页面内按服务地址、服务身份、项目和会话分别保留；只有返回相同身份才会恢复。报告的研究来源需要重新选择并核对引用；待上传文件也仅在相同身份的页面内保留，需手动上传。刷新或关闭页面后需重新选择文件。</p>
+      </details>
       {ready && historicalTransfer && !historicalMatches && <p role="alert" className="text-xs text-status-warning">待复用成果的项目、会话或服务已变化，请返回任务看板重新选择。<button type="button" onClick={onClearHistoricalTransfer}>清除</button></p>}
       {!ready && <p role="status" className="text-xs text-status-warning">{error || (!project ? "请先选择项目。" : "正在确认当前服务身份…")}</p>}
       {!!error && project && <Button type="button" size="sm" variant="secondary" onClick={() => void refreshScope(true)}>重新确认</Button>}

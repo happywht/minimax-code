@@ -216,9 +216,12 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
     <div className="flex items-center justify-between"><h2 className="text-lg font-semibold">办公成果 · 纯数据 XLSX</h2>
       {!embedded && <div className="flex gap-2"><Button variant="secondary" onClick={onText}>文本成果</Button><Button variant="ghost" onClick={onClose}>关闭</Button></div>}</div>
     <p className="break-all text-xs text-ink-1">当前项目 {project ?? "未选择"} · Agent {host} · 服务 {scoped ? state.serviceId : "刷新中"}</p>
-    <p>仅新建单表 XLSX，不读取或覆盖原文件。1–20 列、最多 1000 数据行，含表头最多 5000 格；输入 1 MiB、文件 2 MiB。空串作为空白；数字最多 15 有效位，长编号请用 text。</p>
-    <p>不生成或计算公式、宏、外链。可选静态汇总或图表；不做 PDF/OCR、版式、打印分页或业务核验，文本预览不还原 Excel 排版。</p>
-    <p>在当前 Agent 服务登记不可变新文件；关联已有 run 只作来源引用，不改变其状态。切换页面只停止本页等待，已提交结果可刷新找回。旧版生成的图表仍在项目附件中，不会自动补登记。</p>
+    <p className="text-sm text-ink-1">仅新建单表 XLSX，不覆盖原件；不计算公式，不做版式或业务核验。</p>
+    <details className="text-sm text-ink-1"><summary className="cursor-pointer">表格范围与限制</summary>
+      <p>1–20 列、最多 1000 数据行，含表头最多 5000 格；输入 1 MiB、文件 2 MiB。空串作为空白；数字最多 15 有效位，长编号请用 text。</p>
+      <p>不生成或计算公式、宏、外链。可选静态汇总或图表；不做 PDF/OCR、版式、打印分页或业务核验，文本预览不还原 Excel 排版。</p>
+      <p>在当前 Agent 服务登记不可变新文件；关联已有 run 只作来源引用，不改变其状态。切换页面只停止本页等待，已提交结果可刷新找回。旧版生成的图表仍在项目附件中，不会自动补登记。</p>
+    </details>
     {ipc.isMock && <p role="status">演示模式不生成 Office 文件；请连接真实后端及 attachments 可选依赖。</p>}
     <div className="space-y-2 rounded border border-line p-3"><h3 className="font-semibold">已有表格成果</h3>
       <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void state.activate(project, query.trim()); }}>
@@ -226,12 +229,14 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         <Button type="submit" variant="secondary" disabled={state.busy || state.paging}>搜索</Button>
       </form>
       <p className="text-xs text-ink-2">搜索整个项目，按字面区分大小写；已加载 {filteredEntries.length} 项。</p>
-    <ul className="space-y-1">{filteredEntries.map((entry) => <li key={entry.delivery.id}><button className="w-full break-all rounded border border-line p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" disabled={state.busy} onClick={() => void state.select(entry.delivery.id)}>
+    {scoped && state.selected && <a href="#selected-office-delivery" className="inline-block text-xs text-accent underline">查看已选表格的预览与下载</a>}
+      <ul aria-label="表格成果列表" tabIndex={0} className="max-h-56 space-y-1 overflow-y-auto rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{filteredEntries.map((entry) => <li key={entry.delivery.id}><button type="button" aria-pressed={state.selected?.delivery.id === entry.delivery.id} className={`w-full break-all rounded border p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${state.selected?.delivery.id === entry.delivery.id ? "border-accent bg-accent-subtle" : "border-line"}`} disabled={state.busy} onClick={() => void state.select(entry.delivery.id)}>
       {entry.attachment.original_name} · v{entry.attachment.version} · {entry.delivery.id} · 已登记 / {entry.delivery.validation_report.scope === "xlsx_chart_values_v1" ? "单元格及系列引用已核对" : "结构校验通过"} · 业务未验证
     </button></li>)}</ul>
     {scoped && state.nextCursor && <Button type="button" variant="secondary" disabled={state.busy || state.paging} onClick={() => void state.loadMore()}>{state.paging ? "正在加载…" : "加载更早成果"}</Button>}
-    {scoped && state.selected && <div className="space-y-2 rounded border border-line p-3">
-      <h3 className="font-medium">已选表格 · {state.selected.attachment.original_name}</h3>
+    {scoped && state.selected && <div id="selected-office-delivery" className="space-y-2 rounded border border-line p-3">
+      <h3 className="break-all font-medium">已选表格 · {state.selected.attachment.original_name}</h3>
+      <Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
       <p>校验范围 {state.selected.delivery.validation_report.scope} · 全部 {state.selected.delivery.validation_report.cell_count} 格（含表头） · {state.selected.delivery.validation_report.scope === "xlsx_chart_values_v1" ? "已核对单元格及图表系列引用" : "已核对纯表格结构"} · 未做版式或业务验收</p>
       <p>来源 run: {state.selected.delivery.run_id ?? "未关联 run"}</p>
       <p className="break-all text-xs">SHA-256: {state.selected.attachment.sha256}</p>
@@ -248,8 +253,7 @@ export function OfficeDeliveryPanel({ onClose, onText, embedded = false, initial
         selected={state.selected} project={project} session={session} service={state.serviceId} host={host}
         draftVersion={JSON.stringify([filename, runId, source, csv, csvTable, originalCsvTable, tableDirty, kinds, candidate, analysis, operatorNotes, inputStatus, cacheNotice, filePending, converting])} filePending={filePending || converting}
         onApply={(text, table, name) => { cancelFileRead(); applyCsv(text, table); setFilename(name); edited(); }} />}
-      <div className="flex flex-wrap gap-2"><Button disabled={state.busy} onClick={() => void state.download()}>下载 XLSX 原始字节</Button>
-        <Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>
+      <div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => saveJson(state.selected?.delivery.validation_report, "office-verification.json")}>下载校验报告</Button>
         <Button variant="secondary" disabled={state.busy || ipc.isMock || inputStatus === "needs_review" || filePending || !!candidate || converting} onClick={() => { const next = crypto.randomUUID(); setKey(next); submit(next); }}>按当前文件名和输入生成新文件</Button></div>
       {inputs[`${state.selected.delivery.service_id}:${state.selected.delivery.id}`] ? <Button variant="secondary" onClick={() => saveJson(inputs[`${state.selected!.delivery.service_id}:${state.selected!.delivery.id}`], "office-input.json")}>下载此成果的输入 JSON</Button> :
         <p role="status">此成果的输入未保存在当前页面，请使用生成时另行保存的输入 JSON 复验；当前编辑器内容不一定匹配。</p>}

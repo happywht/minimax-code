@@ -121,11 +121,12 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false, onPrep
       {loading && <p role="status">正在读取来源…</p>}
       {error && <p role="alert">{error}</p>}
       {!loading && !error && visible && !rows.length && <p>当前范围没有匹配的来源。</p>}
-      <ul className="space-y-1">{(visible ? rows : []).map((row) => <li key={row.page_source_id} className="flex items-center gap-2">
+      {visible && selected && <a href="#selected-research-source" className="inline-block text-xs text-accent underline">查看已选来源的摘录与操作</a>}
+      <ul aria-label="研究来源列表" tabIndex={0} className="max-h-56 space-y-1 overflow-y-auto rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{(visible ? rows : []).map((row) => <li key={row.page_source_id} className="flex items-center gap-2">
         <input type="checkbox" aria-label={`选择来源 ${row.title || row.url}`} checked={batchIds.includes(row.page_source_id)}
           disabled={adding || loading || (batchIds.length >= 10 && !batchIds.includes(row.page_source_id))}
           onChange={(event) => { const checked = event.target.checked; setBatchIds((ids) => checked ? [...ids, row.page_source_id] : ids.filter((id) => id !== row.page_source_id)); }} />
-        <button type="button" className="w-full rounded border border-line p-2 text-left" disabled={adding} onClick={() => void select(row.page_source_id)}>
+        <button type="button" aria-pressed={selected?.page_source_id === row.page_source_id} className={`min-w-0 w-full break-words rounded border p-2 text-left hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${selected?.page_source_id === row.page_source_id ? "border-accent bg-accent-subtle" : "border-line"}`} disabled={adding} onClick={() => void select(row.page_source_id)}>
           {row.title || "（页面未提供标题）"} · {row.accessed_at}
           {row.excerpt_match && <span className="mt-1 block whitespace-pre-wrap break-words text-xs text-ink-2">
             保存摘录中命中（字符 {row.excerpt_match.match_start}–{row.excerpt_match.match_end}，从 0 起）：{row.excerpt_match.text}
@@ -142,7 +143,7 @@ export function ResearchSourcesPanel({ onText, onClose, embedded = false, onPrep
       {added && !selected && <Button type="button" variant="secondary" onClick={() => window.dispatchEvent(new Event("minimax:open-chat"))}>打开聊天</Button>}
       <div className="flex gap-2"><Button variant="secondary" disabled={loading || adding || offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</Button>
         <Button variant="secondary" disabled={loading || adding || !visible || rows.length < 20 || offset >= 10000} onClick={() => setOffset(offset + 20)}>下一页</Button></div>
-      {visible && selected && <div className="space-y-2 rounded border border-line p-3">
+      {visible && selected && <div id="selected-research-source" className="space-y-2 rounded border border-line p-3">
         <h3 className="font-medium">{selected.title || "（页面未提供标题）"}</h3>
         {selected.title_truncated && <p>页面标题已截断。</p>}
         <p className="break-all">网址：{safeUrl(selected.url) ? <a href={safeUrl(selected.url)!} target="_blank" rel="noopener noreferrer" className="underline">{selected.url}</a> : selected.url}</p>

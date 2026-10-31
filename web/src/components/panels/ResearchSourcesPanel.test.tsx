@@ -64,3 +64,15 @@ it("discards a response from before a service restart", async () => {
   expect(screen.queryByText(/Actual title/)).toBeNull();
   expect(await screen.findByText("当前范围没有匹配的来源。")).toBeVisible();
 });
+
+it("keeps the selected source identifiable and links to its details", async () => {
+  vi.spyOn(typedIPC, "listResearchSources").mockResolvedValue({ ...scope, sources: [source] });
+  vi.spyOn(typedIPC, "getResearchSource").mockResolvedValue({ ...scope, source });
+  render(<ResearchSourcesPanel onText={() => {}} onClose={() => {}} />);
+  const item = await screen.findByRole("button", { name: /Actual title/ });
+  fireEvent.click(item);
+  const link = await screen.findByRole("link", { name: "查看已选来源的摘录与操作" });
+  expect(item).toHaveAttribute("aria-pressed", "true");
+  expect(link).toHaveAttribute("href", "#selected-research-source");
+  expect(document.getElementById("selected-research-source")).toContainElement(screen.getByLabelText(/保存的正文摘录/));
+});
