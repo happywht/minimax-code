@@ -10,6 +10,7 @@ against that run's directory, so a hostile rel_path cannot escape.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -77,7 +78,9 @@ def write_brief(
             f"_Written {stamp} by spawn_subagent._\n"
         )
         target = base / BRIEF_NAME
-        target.write_text(content, encoding="utf-8")
+        from ...file_mutations import atomic_create_bytes
+
+        atomic_create_bytes(target, content.encode("utf-8"))
         return target
     except Exception:  # pragma: no cover — fail-open by contract
         logger.debug("artifact brief write failed for %s", run_id, exc_info=True)
@@ -273,15 +276,27 @@ class ReportCompletionTool(Tool):
             # No workspace root — nothing to anchor. Soft protocol: the
             # sub-agent did its part; report success with skipped=True.
             return ToolResult.ok({**report, "skipped": True, "reason": "no workspace root"})
+        report_published = False
         try:
             base.mkdir(parents=True, exist_ok=True)
-            (base / REPORT_NAME).write_text(
-                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            from ...file_mutations import atomic_create_bytes
+
+            # Run IDs own new handoffs, not pre-existing workspace files.
+            # Publishing exclusively also rejects a final-component symlink.
+            atomic_create_bytes(
+                base / REPORT_NAME,
+                json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
             )
-            (base / COMPLETION_NAME).write_text(
-                _completion_markdown(report), encoding="utf-8"
+            report_published = True
+            atomic_create_bytes(
+                base / COMPLETION_NAME, _completion_markdown(report).encode("utf-8")
             )
         except OSError as exc:
+            if report_published:
+                return ToolResult.fail(
+                    f"report saved, but completion marker write failed: {exc}; "
+                    "inspect the run directory before retrying"
+                )
             return ToolResult.fail(f"report write failed: {exc}")
         return ToolResult.ok({**report, "skipped": False, "artifact_dir": str(base)})
 
@@ -331,6 +346,8 @@ class ReportProgressTool(Tool):
         self._run_id = run_id
         self._agent_name = agent_name
         self._agent_id = agent_id
+        self._progress_digest = hashlib.sha256()
+        self._progress_created = False
 
     async def _push_event(self, entry: dict[str, Any]) -> None:
         """Live UI push through the routed emit; fail-open.
@@ -390,8 +407,20 @@ class ReportProgressTool(Tool):
             return ToolResult.ok({**entry, "skipped": True, "reason": "no workspace root"})
         try:
             base.mkdir(parents=True, exist_ok=True)
-            with (base / PROGRESS_NAME).open("a", encoding="utf-8", newline="") as fh:
-                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            from ...file_mutations import atomic_append_text, atomic_create_bytes
+
+            target = base / PROGRESS_NAME
+            line = json.dumps(entry, ensure_ascii=False) + "\n"
+            if self._progress_created:
+                atomic_append_text(
+                    target, line, baseline_path=target,
+                    baseline_sha256=self._progress_digest.hexdigest(),
+                )
+            else:
+                # Never adopt or append to a file that predates this tool.
+                atomic_create_bytes(target, line.encode("utf-8"))
+            self._progress_digest.update(line.encode("utf-8"))
+            self._progress_created = True
         except OSError as exc:
             return ToolResult.fail(f"progress write failed: {exc}")
         await self._push_event(entry)
