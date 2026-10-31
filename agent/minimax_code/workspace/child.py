@@ -267,9 +267,9 @@ def load_child(parent: Path, run_id: str) -> ChildWorkspace | None:
 async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> ChildWorkspace:
     require_write_access()
     parent = require_directory(parent)
+    source_identity = parent.stat().st_dev, parent.stat().st_ino
     if restricted:
         source_snapshot = _scan(parent, restricted=True)
-        source_identity = parent.stat().st_dev, parent.stat().st_ino
     base = _base(parent, run_id)
     base.mkdir(parents=True, exist_ok=False)
     child = ChildWorkspace(parent, run_id, base, {
@@ -291,7 +291,9 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
             child.record.update(kind="git_worktree", revision=revision)
         else:
             child.root.mkdir()
-            relative_files = sorted(source_snapshot if restricted else _scan(parent))
+            if not restricted:
+                source_snapshot = _scan(parent)
+            relative_files = sorted(source_snapshot)
         if restricted:
             _validate_restricted_mounts(parent)
             _validate_restricted_mounts(child.root)
@@ -321,11 +323,31 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
             baseline[relative] = digest
             # Yield between copies so cancellation can stop a large snapshot.
             await asyncio.sleep(0)
-        if restricted:
-            if (source_identity != (parent.stat().st_dev, parent.stat().st_ino)
-                    or _scan(parent, restricted=True) != source_snapshot
-                    or _scan(child.root, restricted=True) != source_snapshot):
-                raise ValueError("Restricted source changed during preparation")
+        # Do not start a child from a mix of files observed at different
+        # times. Recheck the source after copying, including new and removed
+        # paths. This detects observed changes; it is not an atomic snapshot
+        # against external writers.
+        if source_identity != (parent.stat().st_dev, parent.stat().st_ino):
+            raise ValueError("Source workspace changed during preparation")
+        if child.record["kind"] == "git_worktree":
+            current_revision = (await _git(parent, "rev-parse", "--verify", "HEAD^{commit}")).strip()
+            current_names = (await _git(parent, "ls-files", "-z", "--cached", "--others",
+                                        "--exclude-standard")).split("\0")
+            current_files = sorted(set(p for p in current_names if p))
+            if current_revision != revision or current_files != relative_files:
+                raise ValueError("Source workspace changed during preparation")
+            current_snapshot = {}
+            for relative in current_files:
+                if _included(relative):
+                    digest = _digest(_path(parent, relative))
+                    if digest is not None:
+                        current_snapshot[relative] = digest
+        else:
+            current_snapshot = _scan(parent, restricted=restricted)
+            if current_snapshot != source_snapshot:
+                raise ValueError("Source workspace changed during preparation")
+        if current_snapshot != baseline or _scan(child.root, restricted=restricted) != baseline:
+            raise ValueError("Source workspace changed during preparation")
         child.record["state"] = "running"
         child.save()
         return child
