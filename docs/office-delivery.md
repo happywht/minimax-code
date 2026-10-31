@@ -258,4 +258,4 @@ Agent 使用现有 XLSX 读取和生成工具，调用 `generate_xlsx_from_xlsx`
 
 ### 指定 CSV 分隔符
 
-聊天调用 `generate_xlsx_from_csv` 时可明确指定 `delimiter` 为 `comma`（默认）、`semicolon` 或 `tab`，用于读取逗号、分号或制表符分隔的 UTF-8 CSV 附件；不会自动猜测格式。带引号字段仍按 CSV 规则解析，列名、类型和数据应由用户核对。非默认分隔符记录在成果处理说明中，使用同一请求键更改设置会冲突；源附件不变。此选项用于单表 CSV 导入，表格关联与 XLSX 来源不支持该选项。旧版程序可能无法读取包含新字段的成果处理说明。
+聊天调用 `generate_xlsx_from_csv` 时可明确指定 `delimiter` 为 `comma`（默认）、`semicolon` 或 `tab`，用于读取逗号、分号或制表符分隔的 UTF-8 CSV 附件；不会自动猜测格式。带引号字段仍按 CSV 规则解析，列名、类型和数据应由用户核对。非默认分隔符记录在成果处理说明中，使用同一请求键更改设置会冲突；源附件不变。表格关联 `join_spreadsheets_xlsx` 也可分别在 `left.delimiter` 和 `right.delimiter` 设置相同选项，默认各为 `comma`；仅 CSV 可指定，XLSX 来源须省略。旧版程序可能无法读取包含新字段的成果处理说明。

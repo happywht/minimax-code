@@ -83,8 +83,10 @@ def _validate_join_processing(value: dict) -> None:
     sources = value["sources"]
     _require(type(sources) is list and len(sources) == 2, "Invalid join sources")
     for source in sources:
-        _require(type(source) is dict and set(source) == {"type", "attachment_id", "sha256", "sheet", "columns"}
+        _require(type(source) is dict and set(source) - {"csv_delimiter"} == {"type", "attachment_id", "sha256", "sheet", "columns"}
                  and type(source["type"]) is str and source["type"] in {"csv", "xlsx"}
+                 and ("csv_delimiter" not in source or (source["type"] == "csv"
+                      and type(source["csv_delimiter"]) is str and source["csv_delimiter"] in {"semicolon", "tab"}))
                  and type(source["attachment_id"]) is str and _ATTACHMENT.fullmatch(source["attachment_id"])
                  and _hex(source["sha256"])
                  and (source["sheet"] is None if source["type"] == "csv" else _text(source["sheet"], 31))
