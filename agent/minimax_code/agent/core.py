@@ -1525,6 +1525,11 @@ class AgentCore:
             actions = {action, _check_rule(self._permission_store, "write_file")}
             action = ("deny" if "deny" in actions else "ask" if "ask" in actions
                       else "allow" if "allow" in actions else None)
+        if name == "read_project_csv":
+            # A specialized parser must respect existing attachment-read rules.
+            actions = {action, _check_rule(self._permission_store, "read_project_attachment")}
+            action = ("deny" if "deny" in actions else "ask" if "ask" in actions
+                      else "allow" if "allow" in actions else None)
         if name == "verify_subagent":
             # Verification accepts arbitrary shell commands, so its own
             # permission cannot grant a capability denied to exec_command.

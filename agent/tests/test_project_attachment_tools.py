@@ -99,11 +99,20 @@ async def test_pagination_and_binding_change_during_read(env, monkeypatch):
 
 
 async def test_normal_chat_installs_bound_tools(native, monkeypatch):
+    from unittest.mock import AsyncMock
+
     from test_run_service import Context
 
     from minimax_code.agent.tools import project_attachments
     from minimax_code.ipc import builtins
+    from minimax_code.permissions import PermissionStore
     from minimax_code.runs import get_run_service
+    from minimax_code.storage.dao.permissions import PermissionRuleDAO
+
+    permissions = PermissionStore(PermissionRuleDAO(native.db))
+    await permissions.warm()
+    monkeypatch.setattr("minimax_code.ipc.handlers_permissions._ensure_permission_store",
+                        AsyncMock(return_value=permissions))
 
     installed = []
     register = project_attachments.register_project_attachment_tools
@@ -116,12 +125,18 @@ async def test_normal_chat_installs_bound_tools(native, monkeypatch):
     ctx = Context(native.server)
     task = asyncio.create_task(builtins.handle_agent_send_message(
         {"session_id": "one", "content": "list attachments"}, ctx))
-    await asyncio.wait_for(native.started.get(), 5)
+    started = asyncio.create_task(native.started.get())
+    done, _ = await asyncio.wait({task, started}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+    if task in done:
+        started.cancel()
+        pytest.fail(f"Chat ended before core start: {ctx.reply_error.call_args}; exception={task.exception()}")
+    assert started in done, "Chat did not start within 5 seconds"
     assert len(installed) == 1
     registry, session_id, project_id = installed[0]
     assert (session_id, project_id) == ("one", "inbox")
     assert registry.has("list_project_attachments") and registry.has("read_project_attachment")
     assert registry.has("read_project_document")
+    assert registry.has("read_project_csv")
     assert registry.has("generate_report_docx") and registry.has("generate_table_xlsx")
     assert registry.has("generate_report_pair")
     assert registry.has("generate_xlsx_from_csv") and registry.has("generate_xlsx_from_xlsx")
@@ -140,6 +155,73 @@ async def test_read_tools_allowed_in_read_only_planning(env):
         listed = await registry.dispatch("list_project_attachments", {})
         read = await registry.dispatch("read_project_attachment", {"attachment_id": row["id"]})
     assert listed.success and read.success and read.output["preview_text"] == "plan source"
+
+
+@pytest.mark.parametrize("delimiter,sep", [("comma", ","), ("semicolon", ";"), ("tab", "\t")])
+async def test_csv_rows_page_beyond_preview_in_planning(env, delimiter, sep):
+    from minimax_code.execution import ExecutionPolicy, execution_scope
+
+    registry, _, upload = env
+    raw = (f"id{sep}value\n" + "".join(f'{i}{sep}"cell{sep}{i}"\n' for i in range(130))).encode()
+    row = await upload("p", "source.csv", raw)
+    args = {"attachment_id": row["id"], "expected_sha256": row["sha256"], "delimiter": delimiter}
+    with execution_scope(ExecutionPolicy(read_only=True)):
+        first = await registry.dispatch("read_project_csv", args)
+        third = await registry.dispatch("read_project_csv", {**args, "row_offset": 100})
+    assert first.success and first.output["headers"] == ["id", "value"]
+    assert len(first.output["rows"]) == 50 and first.output["next_row_offset"] == 50
+    assert third.success and third.output["rows"][-1] == ["129", f"cell{sep}129"]
+    assert third.output["total_rows"] == 130 and third.output["next_row_offset"] is None
+    assert third.output["attachment"]["sha256"] == row["sha256"]
+    assert "untrusted" in third.output["untrusted_content_notice"]
+    tool = registry.get("read_project_csv")
+    assert (await tool._service.content("p", row["id"]))[1] == raw
+
+
+async def test_csv_rejects_identity_invalid_data_and_session_rebind(env, monkeypatch):
+    registry, sessions, upload = env
+    row = await upload("p", "source.csv", b"id,value\na,1\n")
+    foreign = await upload("other", "foreign.csv", b"id,value\na,secret\n")
+    args = {"attachment_id": row["id"], "expected_sha256": row["sha256"]}
+    assert not (await registry.dispatch("read_project_csv", {**args, "expected_sha256": "0" * 64})).success
+    assert not (await registry.dispatch("read_project_csv", {**args, "attachment_id": foreign["id"]})).success
+    assert not (await registry.dispatch("read_project_csv", {**args, "row_offset": 2})).success
+    bad = await upload("p", "bad.csv", b'id;value\n"unterminated;1')
+    assert not (await registry.dispatch("read_project_csv", {"attachment_id": bad["id"],
+        "expected_sha256": bad["sha256"], "delimiter": "semicolon"})).success
+    tool = registry.get("read_project_csv")
+    original = tool._service.content
+    async def rebind(project, attachment):
+        result = await original(project, attachment)
+        await sessions.update("s", project_id="other")
+        return result
+    monkeypatch.setattr(tool._service, "content", rebind)
+    result = await registry.dispatch("read_project_csv", args)
+    assert not result.success and result.output is None
+
+
+async def test_csv_page_rejects_single_row_over_output_limit(env):
+    registry, _, upload = env
+    row = await upload("p", "long.csv", ("a,b,c,d,e\n" + ",".join(["界" * 1000] * 5)).encode())
+    result = await registry.dispatch("read_project_csv", {"attachment_id": row["id"], "expected_sha256": row["sha256"]})
+    assert not result.success and "16 KiB" in result.error
+
+
+def test_csv_reader_respects_existing_attachment_permission():
+    from types import SimpleNamespace
+
+    from minimax_code.agent.core import AgentCore
+
+    class Rules:
+        def lookup(self, name):
+            return {"action": {"read_project_attachment": "deny", "read_project_csv": "allow"}[name]} if name in {"read_project_attachment", "read_project_csv"} else None
+
+    class Registry:
+        def get(self, name):
+            raise KeyError(name)
+
+    core = SimpleNamespace(_permission_store=Rules(), registry=Registry())
+    assert AgentCore._tool_permission_action(core, "read_project_csv", {}) == "deny"
 
 
 async def test_listing_empty_project_does_not_initialize_service_in_planning(env):

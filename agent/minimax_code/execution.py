@@ -133,7 +133,7 @@ def require_tool_access(name: str) -> None:
         "read_file", "list_directory", "list_dir", "search_files", "grep", "glob",
         "search_codebase", "summarize_codebase", "find_symbol", "navigate_codebase",
         "list_project_attachments", "read_project_attachment", "read_project_document", "search_project_document",
-        "list_project_xlsx_sheets", "read_project_xlsx_sheet", "ocr_project_attachment",
+        "list_project_xlsx_sheets", "read_project_xlsx_sheet", "read_project_csv", "ocr_project_attachment",
         "search_public_web", "read_public_page", "list_research_sources", "get_research_source",
         "ask_user", "check_subagent", "list_agents",
     }:
@@ -152,7 +152,7 @@ def require_planning_tool(tool: Any) -> None:
     from .agent.tools.file_ops import ListDirectoryTool, ReadFileTool
     from .agent.tools.project_attachments import (
         ListProjectAttachmentsTool, ListProjectXlsxSheetsTool, OcrProjectAttachmentTool,
-        ReadProjectAttachmentTool, ReadProjectDocumentTool, ReadProjectXlsxSheetTool,
+        ReadProjectAttachmentTool, ReadProjectCsvTool, ReadProjectDocumentTool, ReadProjectXlsxSheetTool,
         SearchProjectDocumentTool,
     )
     from .agent.tools.public_research import (
@@ -165,7 +165,7 @@ def require_planning_tool(tool: Any) -> None:
         AskUserTool, FindSymbolCodebaseTool, NavigateCodebaseTool, SearchCodebaseTool,
         SummarizeCodebaseTool, ListDirectoryTool, ReadFileTool, ListProjectAttachmentsTool,
         ListProjectXlsxSheetsTool, OcrProjectAttachmentTool, ReadProjectAttachmentTool,
-        ReadProjectDocumentTool, ReadProjectXlsxSheetTool, SearchProjectDocumentTool,
+        ReadProjectCsvTool, ReadProjectDocumentTool, ReadProjectXlsxSheetTool, SearchProjectDocumentTool,
         GetResearchSourceTool, ListResearchSourcesTool, ReadPublicPageTool, SearchPublicWebTool,
         SearchFilesTool, CheckSubagentTool,
     )
