@@ -91,6 +91,51 @@ async def test_csv_chart_and_project_isolation(env):
     assert not (await registry.dispatch("generate_xlsx_from_csv", data)).success
 
 
+@pytest.mark.parametrize("delimiter,character", [("semicolon", ";"), ("tab", "\t")])
+async def test_explicit_delimiter_creates_recorded_delivery_without_changing_original(env, delimiter, character):
+    db, _, service, upload, registry = env
+    original = f'名称{character}数量\n"甲{character}乙"{character}3\n'.encode()
+    row = await upload("p", original)
+    data = {**request(row["id"]), "delimiter": delimiter}
+    with execution_scope(ExecutionPolicy(read_only=True)):
+        assert not (await registry.dispatch("generate_xlsx_from_csv", data)).success
+    result = await registry.dispatch("generate_xlsx_from_csv", data)
+    assert result.success, result.error
+    office = OfficeService(db, db.path.parent)
+    _, blob = await service.content("p", result.output["attachment_id"])
+    sheet = openpyxl.load_workbook(BytesIO(blob)).active
+    assert [sheet["A2"].value, sheet["B2"].value] == [3, f"甲{character}乙"]
+    receipt = await office.get("p", result.output["delivery_id"])
+    assert receipt["delivery"]["validation_report"]["processing"]["csv_delimiter"] == delimiter
+    assert (await service.content("p", row["id"]))[1] == original
+    retry = await registry.dispatch("generate_xlsx_from_csv", data)
+    assert retry.success and retry.output["delivery_id"] == result.output["delivery_id"]
+
+
+async def test_delimiter_participates_in_request_conflicts(env):
+    _, _, _, upload, registry = env
+    row = await upload("p", b"name\nitem\n")
+    data = {"attachment_id": row["id"], "filename": "result.xlsx", "request_key": "same",
+            "sheet_name": "Data", "columns": [{"source": "name", "name": "Name", "kind": "text"}]}
+    first = await registry.dispatch("generate_xlsx_from_csv", data)
+    assert first.success, first.error
+    conflict = await registry.dispatch("generate_xlsx_from_csv", {**data, "delimiter": "semicolon"})
+    assert not conflict.success
+
+
+async def test_invalid_explicit_delimiter_data_does_not_create_delivery(env):
+    db, _, service, upload, registry = env
+    original = b'name;amount\n"unterminated;3'
+    row = await upload("p", original)
+    args = {"attachment_id": row["id"], "filename": "bad.xlsx", "request_key": "bad-dialect",
+            "sheet_name": "Data", "delimiter": "semicolon",
+            "columns": [{"source": "name", "name": "Name", "kind": "text"}]}
+    result = await registry.dispatch("generate_xlsx_from_csv", args)
+    assert not result.success and "malformed" in result.error
+    assert (await db.fetchone("SELECT COUNT(*) AS n FROM office_deliveries"))["n"] == 0
+    assert (await service.content("p", row["id"]))[1] == original
+
+
 async def test_conversion_error_does_not_create_result(env):
     db, _, service, upload, registry = env
     original = b"name,amount\nitem,not-a-number\n"
@@ -106,6 +151,8 @@ async def test_conversion_error_does_not_create_result(env):
 
 def test_csv_errors_and_type_semantics():
     columns = [{"source": "v", "name": "Value", "kind": "number"}]
+    with pytest.raises(ValueError, match="delimiter"):
+        csv_to_spec(b"v\n1", "Data", columns, delimiter="pipe")
     for raw in (b"\xff", b'v\n"unclosed', b"v,v\n1,2", b"v\n12,3", b"v\nNaN", b"v\n1e100"):
         with pytest.raises(ValueError):
             spec = csv_to_spec(raw, "Data", columns)

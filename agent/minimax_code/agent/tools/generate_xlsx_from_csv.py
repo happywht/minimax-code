@@ -32,7 +32,10 @@ class ColumnSelection(BaseModel):
 
 
 def csv_to_spec(data: bytes, sheet_name: str, columns: list[dict[str, Any]],
-                cleaning_counts: dict[str, int] | None = None) -> dict:
+                cleaning_counts: dict[str, int] | None = None, delimiter: str = "comma") -> dict:
+    delimiters = {"comma": ",", "semicolon": ";", "tab": "\t"}
+    if not isinstance(delimiter, str) or delimiter not in delimiters:
+        raise ValueError("CSV delimiter must be comma, semicolon or tab")
     if len(data) > MAX_CSV_BYTES:
         raise ValueError("CSV original exceeds 1 MiB")
     if not isinstance(columns, list) or not 1 <= len(columns) <= 20:
@@ -53,7 +56,7 @@ def csv_to_spec(data: bytes, sheet_name: str, columns: list[dict[str, Any]],
     if "\x00" in text:
         raise ValueError("CSV contains NUL")
     try:
-        reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+        reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiters[delimiter], strict=True)
         header = next(reader, None)
         if not header or len(header) > MAX_SOURCE_COLUMNS or any(not name.strip() for name in header):
             raise ValueError("CSV needs a header with 1–100 nonempty columns")
@@ -511,7 +514,8 @@ class GenerateXlsxFromCsvTool(Tool):
     description = (
         "Create an XLSX from the original bytes of a CSV attachment in the current chat project. "
         "Select and reorder columns by exact header; each output column is text, number or boolean. "
-        "CSV must be UTF-8, with a unique header and at most 1 MiB/1000 rows. Empty cells become blank; "
+        "CSV must be UTF-8, with a unique header and at most 1 MiB/1000 rows. "
+        "Specify delimiter as comma (default), semicolon or tab; it is never guessed. Empty cells become blank; "
         "numbers are strict decimal and booleans are true/false. Text beginning '=' remains literal. "
         "For each column, optional trim removes surrounding Unicode whitespace and null_values maps explicit "
         "exact markers to blank before type conversion; markers are matched after trimming. "
@@ -536,6 +540,8 @@ class GenerateXlsxFromCsvTool(Tool):
         "type": "object", "properties": {
             "attachment_id": {"type": "string"}, "filename": {"type": "string"},
             "request_key": {"type": "string"}, "sheet_name": {"type": "string"},
+            "delimiter": {"type": "string", "enum": ["comma", "semicolon", "tab"],
+                          "description": "Explicit CSV delimiter; defaults to comma"},
             "columns": {"type": "array", "items": {"type": "object", "properties": {
                 "source": {"type": "string"}, "name": {"type": "string"},
                 "kind": {"type": "string", "enum": ["text", "number", "boolean"]},
@@ -613,9 +619,11 @@ class GenerateXlsxFromCsvTool(Tool):
         self.generator = GenerateTableXlsxTool(db, session_id, project_id)
 
     async def run(self, attachment_id: str, filename: str, request_key: str, sheet_name: str,
-                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None, pivot_by=None, filter_mode="all") -> ToolResult:
+                  columns: list[dict[str, Any]], summaries=None, chart=None, filters=None, group_by=None, sort_by=None, deduplicate_by=None, calculated_column=None, calculated_columns=None, fill_missing=None, pivot_by=None, filter_mode="all", delimiter="comma") -> ToolResult:
         try:
             require_write_access()
+            if not isinstance(delimiter, str) or delimiter not in {"comma", "semicolon", "tab"}:
+                raise ValueError("CSV delimiter must be comma, semicolon or tab")
             if not self.project_id:
                 raise ValueError("Current session has no project")
             if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_key):
@@ -627,10 +635,17 @@ class GenerateXlsxFromCsvTool(Tool):
             if (metadata["declared_type"] != "csv" or metadata["size_bytes"] > MAX_CSV_BYTES):
                 raise ValueError("Select a CSV attachment of at most 1 MiB")
             original, data = await self.originals.content(self.project_id, attachment_id)
-            if original["recognized_type"] != "utf8_text" or original["parser_status"] not in {"parsed", "truncated"}:
+            # Attachment preview assumes comma CSV and may reject quoted
+            # fields in another explicit dialect. This importer independently
+            # validates the complete original with the selected delimiter.
+            preview_usable = original["parser_status"] in {"parsed", "truncated"}
+            alternate_preview = (delimiter in {"semicolon", "tab"}
+                                 and original["parser_status"] == "parse_failed"
+                                 and original["parser_reason"] == "invalid_text")
+            if original["recognized_type"] != "utf8_text" or not (preview_usable or alternate_preview):
                 raise ValueError("CSV attachment is not a valid UTF-8 CSV")
             cleaning_counts: dict[str, int] = {}
-            spec = csv_to_spec(data, sheet_name, columns, cleaning_counts)
+            spec = csv_to_spec(data, sheet_name, columns, cleaning_counts, delimiter)
             fill_results = None
             if fill_missing is not None:
                 spec, fill_results = fill_missing_spec(spec, fill_missing)
@@ -668,6 +683,8 @@ class GenerateXlsxFromCsvTool(Tool):
             }
             if filter_mode == "any":
                 processing["filter_mode"] = "any"
+            if delimiter != "comma":
+                processing["csv_delimiter"] = delimiter
             if pivot_by is not None:
                 processing["pivot_by"] = PivotConfig.model_validate(pivot_by).model_dump()
             if fill_results is not None:
@@ -681,6 +698,7 @@ class GenerateXlsxFromCsvTool(Tool):
                 result.output["request_key"] = request_key
                 result.output["source_attachment_id"] = attachment_id
                 result.output["source_sha256"] = original["sha256"]
+                result.output["csv_delimiter"] = delimiter
                 result.output["cleaning"] = [{"column": column["name"],
                     "trim": column.get("trim", False), "null_values": column.get("null_values", []),
                     "changed_cells": cleaning_counts[column["name"]]} for column in columns]

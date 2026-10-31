@@ -61,7 +61,8 @@ class GenerateXlsxFromXlsxTool(GenerateXlsxFromCsvTool):
     )
     parameters = {
         **GenerateXlsxFromCsvTool.parameters,
-        "properties": {**GenerateXlsxFromCsvTool.parameters["properties"],
+        "properties": {**{key: value for key, value in GenerateXlsxFromCsvTool.parameters["properties"].items()
+                          if key != "delimiter"},
                        "source_sheet": {"type": "string", "description": "Exact visible source worksheet name"},
                        "expected_sha256": {"type": "string", "description": "Expected source attachment SHA-256"},
                        "expected_service_id": {"type": "string", "description": "Expected local service identity"},

@@ -148,13 +148,17 @@ def validate_report(value: object) -> dict:
                 "deduplicate_by", "group_by", "sort_by", "summaries", "counts"
             }
             _require(type(processing) is dict
-                     and set(processing) - {"calculated_columns", "fill_missing", "pivot_by", "filter_mode"} == processing_keys
+                     and set(processing) - {"calculated_columns", "fill_missing", "pivot_by", "filter_mode", "csv_delimiter"} == processing_keys
                      and type(processing["version"]) is int and processing["version"] == 1,
                      "Invalid Office processing description")
             _require("filter_mode" not in processing or (processing["filter_mode"] == "any"
                      and type(processing["filters"]) is list and len(processing["filters"]) > 0),
                      "Invalid Office filter mode")
             source = processing["source"]
+            _require("csv_delimiter" not in processing or (type(source) is dict
+                     and source.get("type") == "csv" and type(processing["csv_delimiter"]) is str
+                     and processing["csv_delimiter"] in {"semicolon", "tab"}),
+                     "Invalid Office CSV delimiter")
             _require(type(source) is dict and type(source.get("type")) is str
                      and type(source["type"]) is str and source["type"] in {"csv", "xlsx"}
                      and set(source) - ({"delivery_id"} if source.get("type") == "xlsx" else set()) == ({"type", "attachment_id", "sha256"} if source.get("type") == "csv"
