@@ -2489,6 +2489,8 @@ publication, so the saved ID and remote path must be used to query
 
 工作台可从当前项目的运行生成仅含 `version`、`service_id`、`project_id`、`session_id` 和 `run_id` 的可复制定位记录；登录到原服务后显式粘贴，通过现有 `run.project_summary` 的服务和项目归属校验、`run.steps` 的会话/步骤核对读取快照及关联附件。只支持该摘要入口可见的非归档主运行及其权限边界；不自动恢复、迁移或重放任务。摘要服务身份可能随数据库克隆，记录不是主机身份凭证或签名；用户须核对实际远端主机。
 
+通过定位记录进入的原运行时间线，在同一连接恢复及目标运行事件到来后会防抖重读，并在展示前重新核对服务、项目、会话和运行；事件仅作为唤醒信号，不直接作为状态。断线、归属变化或复核失败时不把旧快照当作当前状态。正在编辑恢复交接时暂停自动刷新并保留草稿，需要重新核对后才能进行后续操作；不自动发起恢复或重试写入。已重建的 SSH 隧道可能使用新地址，仍须在该连接登录并重新定位；服务身份本身不能证明物理主机。
+
 定位记录核对后，用户可选择进入原项目与会话并打开指定运行的独立时间线：再次检查服务身份、非归档项目/会话、运行与步骤归属；切换项目和会话以单次状态更新完成，并遵守现有切换守卫。跨会话/项目切换前明确提示保存草稿及未发送附件，须用户确认。目标视图只读取记录及显式选择的成果，不自动执行、恢复或迁移；连接变化后须重新读取。服务身份仍不能证明物理主机身份。
 
 `host.service_stop` requires the current service and exact enabled-host binding plus a validated unit and explicit boolean `acknowledge_interrupt:true`. It executes only `systemctl --user --no-ask-password stop` over SSH with an already trusted host key, bounded to 90 seconds. The workbench first requests a service status snapshot and explicit acknowledgement and confirmation; the snapshot does not prove the service is idle. The command can interrupt tasks and cleanup, does not disable future startup or guarantee task completion, and never retries automatically. A timeout or lost connection leaves the result unknown; check service and original task records before acting again. SSH diagnostics are not returned. Host changes through this service are serialized; external changes are not locked.

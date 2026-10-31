@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   Circle,
@@ -284,12 +284,30 @@ export function RunTimelinePanel({
   );
 }
 
-function ReferenceTargetTimeline({ target, onClear }: { target: Reference & { host: string }; onClear: () => void }): JSX.Element {
+export function ReferenceTargetTimeline({ target, onClear }: { target: Reference & { host: string }; onClear: () => void }): JSX.Element {
   const editing = useRef(false);
   const [snapshot, setSnapshot] = useState<RunStepsResult | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [online, setOnline] = useState(true), [editingActive, setEditingActive] = useState(false);
   const epoch = useRef(0);
+  const inFlight = useRef(false), pending = useRef(false), connected = useRef(true);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRef = useRef<() => void>(() => {});
+  const schedule = () => {
+    if (!connected.current || editing.current) return;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => { timer.current = null; if (connected.current && !editing.current) void load(); }, 200);
+  };
+  scheduleRef.current = schedule;
+  const editingChanged = useCallback((value: boolean) => {
+    editing.current = value;
+    setEditingActive(value);
+    if (!value && pending.current) scheduleRef.current();
+  }, []);
   const load = async () => {
+    if (!connected.current || editing.current) { pending.current = true; return; }
+    if (inFlight.current) { pending.current = true; return; }
+    inFlight.current = true; pending.current = false;
     const ticket = ++epoch.current;
     const current = () => ticket === epoch.current && ipc.agentBaseUrl === target.host &&
       useSessionStore.getState().currentProjectId === target.project_id && useSessionStore.getState().currentSessionId === target.session_id;
@@ -309,12 +327,52 @@ function ReferenceTargetTimeline({ target, onClear }: { target: Reference & { ho
           !Number.isSafeInteger(result.cursor) || result.cursor < 0 || result.steps.some((step) => step.run_id !== target.run_id || step.session_id !== target.session_id)) throw new Error("服务、会话或运行归属已变化");
       setSnapshot(result);
     } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "无法读取目标运行"); }
-    finally { if (current()) setBusy(false); }
+    finally {
+      inFlight.current = false;
+      if (current()) setBusy(false);
+      if (pending.current && connected.current && !editing.current) schedule();
+    }
   };
-  useEffect(() => { void load(); const off = ipc.onSideCar(() => { epoch.current++; if (!editing.current) setSnapshot(null); setBusy(false); setError("连接已变化，请重新读取目标运行；恢复交接会保留，状态变化时需重新核对。"); }); return () => { epoch.current++; off(); }; }, [target]);
+  useEffect(() => {
+    connected.current = true;
+    void load();
+    const invalidate = (message: string) => {
+      ++epoch.current; pending.current = true;
+      if (!editing.current) setSnapshot(null);
+      setBusy(false); setError(message);
+    };
+    const off = ipc.onSideCar((event) => {
+      connected.current = event.status === "started";
+      setOnline(connected.current);
+      invalidate(connected.current ? (editing.current ? "连接已恢复；交接草稿已保留，请先重新核对运行。" : "连接已恢复，正在重新核对运行。") : "连接已中断，运行状态未知；恢复交接会保留。");
+      if (connected.current) schedule();
+    });
+    const wake = (env: { data?: { run_id?: string; run?: { id?: string; session_id?: string } } }) => {
+      const data = env.data;
+      if (!connected.current || !data || (data.run_id !== target.run_id && data.run?.id !== target.run_id) ||
+          (data.run?.session_id && data.run.session_id !== target.session_id)) return;
+      invalidate(editing.current ? "运行状态已变化；交接草稿已保留，请重新核对。" : "运行状态已变化，正在重新核对。");
+      schedule();
+    };
+    const unsubEvents = [StreamEvent.RunUpdated, StreamEvent.RunStepStarted, StreamEvent.RunStepCompleted, StreamEvent.RunCompleted]
+      .map((event) => ipc.on(event, wake));
+    const unsubscribe = useSessionStore.subscribe((state) => {
+      if (state.currentProjectId !== target.project_id || state.currentSessionId !== target.session_id) {
+        connected.current = false;
+        setOnline(false);
+        invalidate("当前项目或会话已变化，请返回原任务重新查看。");
+      }
+    });
+    return () => { ++epoch.current; connected.current = false; pending.current = false;
+      if (timer.current) clearTimeout(timer.current); timer.current = null;
+      off(); unsubscribe(); unsubEvents.forEach((unsub) => unsub()); };
+  }, [target]);
   return <div className="space-y-2 p-3 text-xs" data-testid="reference-run-timeline">
     <h3 className="font-semibold">已定位的运行时间线</h3><p className="break-all">运行：{target.run_id} · 会话：{target.session_id}</p>
-    <div className="flex gap-2"><Button size="sm" variant="secondary" disabled={busy} onClick={() => void load()}>刷新此运行</Button><Button size="sm" variant="ghost" onClick={onClear}>返回近期时间线</Button></div>
+    <div className="flex gap-2"><Button size="sm" variant="secondary" disabled={busy || !online || editingActive} onClick={() => void load()}>刷新此运行</Button><Button size="sm" variant="ghost" onClick={onClear}>返回近期时间线</Button></div>
+    {editingActive && <Button size="sm" variant="secondary" disabled={busy || !online} onClick={() => {
+      editing.current = false; setEditingActive(false); setSnapshot(null); void load();
+    }}>保留草稿并重新核对</Button>}
     {busy && <p role="status">正在核对并读取运行…</p>}{error && <p role="alert" className="break-words text-status-warning">{error}</p>}
     {(!!error || (snapshot && !supportsTargetRecovery(snapshot))) && <RetainedTargetRecovery host={target.host} service={target.service_id} project={target.project_id} session={target.session_id} run={target.run_id} />}
     {snapshot && <fieldset disabled={busy || !!error} hidden={busy || !!error} className="space-y-2"><article className="space-y-2"><p>{snapshot.run.title || "未命名运行"} · 读取时状态 {snapshot.run.status}</p>
@@ -323,7 +381,7 @@ function ReferenceTargetTimeline({ target, onClear }: { target: Reference & { ho
       {!snapshot.steps.length && <p>暂无已记录步骤。</p>}
       <RunAttachments run={snapshot.run} steps={snapshot.steps} reviewScope={{ sessionId: target.session_id, projectId: target.project_id, serviceId: target.service_id }} verifyRun />
       <RunTimelineTextArtifacts run={snapshot.run} />
-      <TargetRecoveryEvidence snapshot={snapshot} host={target.host} service={target.service_id} project={target.project_id} session={target.session_id} refresh={load} onEditingChange={(value) => { editing.current = value; }} />
+      <TargetRecoveryEvidence snapshot={snapshot} host={target.host} service={target.service_id} project={target.project_id} session={target.session_id} refresh={load} onEditingChange={editingChanged} />
     </article></fieldset>}
   </div>;
 }
