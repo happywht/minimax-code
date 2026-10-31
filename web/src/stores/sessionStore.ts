@@ -102,6 +102,8 @@ export interface SessionState {
   sessions: SessionMeta[];
   projects: Project[];
   currentSessionId: string | null;
+  newSessionEngine: "native" | "codex";
+  setNewSessionEngine: (engine: "native" | "codex") => void;
   currentProjectId: string | null;
   expandedProjectIds: string[];
   loading: boolean;
@@ -142,6 +144,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   projects: [],
   currentSessionId: readStoredSessionId(),
+  newSessionEngine: "native",
+  setNewSessionEngine: (engine) => set({ newSessionEngine: engine }),
   currentProjectId: readStoredProjectId(),
   expandedProjectIds: readExpandedProjectIds(),
   loading: false,

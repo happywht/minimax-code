@@ -843,11 +843,12 @@ export function bindTypedIPC(client: IPCClient): TypedIPC {
     setDailyBudgetSettings: (service, limit, expectedSavedLimit) => client.request("budget.settings_set", { expected_service_id: service, limit_tokens: limit, ...(expectedSavedLimit !== undefined ? { expected_saved_limit: expectedSavedLimit } : {}) }),
     getBudget: (runId, day, blockersAfter) => client.request<BudgetStateResult>("budget.get", { ...(runId ? {run_id: runId} : {}), ...(day ? {day} : {}), ...(blockersAfter !== undefined ? {blockers_after: blockersAfter} : {}) }),
     reconcileBudget: (params) => client.request<{ok: boolean}>("budget.reconcile", params),
-    resumeRun: (runId, idempotencyKey, reviewed = false, budgetTokens?: number, scope, handoff) =>
+    resumeRun: (runId, idempotencyKey, reviewed = false, budgetTokens, scope, handoff) =>
       client.request<RunAdmissionResult>("run.resume", {
         run_id: runId,
         idempotency_key: idempotencyKey,
         reviewed,
+        ...(handoff !== undefined ? { handoff } : {}),
         ...(budgetTokens !== undefined ? { budget_tokens: budgetTokens } : {}),
         ...(scope ? { expected_service_id: scope.service, expected_session_id: scope.session,
           expected_project_id: scope.project, expected_cursor: scope.cursor } : {}),

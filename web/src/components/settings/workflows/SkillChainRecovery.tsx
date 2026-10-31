@@ -10,7 +10,7 @@ type Selection = { chain: Chain; host: string; service: string; session: string;
 
 export function SkillChainRecovery(): JSX.Element {
   const sessionId = useSessionStore((s) => s.currentSessionId);
-  const session = useSessionStore((s) => s.sessions.find((s) => s.id === s.currentSessionId));
+  const session = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId));
   const project = useSessionStore((s) => s.currentProjectId);
   const projectId = session?.project_id ?? null;
   const matches = !!sessionId && !!session && session.engine === "native" && (project === projectId || (!projectId && project === "inbox"));

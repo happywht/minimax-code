@@ -23,7 +23,7 @@ import { emptyScheduleContext, validScheduleContext, ScheduleContextFields, Sche
 import { ScheduleCronBuilder } from "./ScheduleCronBuilder";
 import { ScheduleTimePreview } from "./ScheduleTimePreview";
 import { ScheduleManualTrigger } from "./ScheduleManualTrigger";
-import { ipc } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import { StreamEvent } from "../../types/ipc";
 
 export { ScheduledTab };

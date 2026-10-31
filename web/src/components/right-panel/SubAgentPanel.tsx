@@ -30,7 +30,7 @@ import type { ChildWorkspaceReceipt, ChildWorkspaceReview as ReviewResult, SubAg
 import { StructuredErrorCallout } from "../StructuredErrorCallout";
 import { strings } from "../../ui/strings";
 import { useSessionStore } from "../../stores/sessionStore";
-import { ipc } from "../../ipc";
+import { ipc, typedIPC } from "../../ipc";
 import { requestConfirmation } from "../modals/ConfirmationDialog";
 import { ChildConflictHandoff } from "./ChildConflictHandoff";
 import { ChildResultsHandoff } from "./ChildResultsHandoff";

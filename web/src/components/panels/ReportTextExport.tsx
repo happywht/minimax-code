@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
-import type { DocumentExcerptRef, PageExcerptRange, ReportSource, ResearchSource } from "../../types/ipc";
+import type { AttachmentGetResult, AttachmentDocumentResult, DocumentExcerptRef, PageExcerptRange, ReportSource, ResearchSource } from "../../types/ipc";
 import { Button } from "../../ui";
 import { readEditableSections } from "./ReportSectionsEditor";
 
@@ -56,8 +56,9 @@ export function ReportTextExport({ project, session, service, host, draft, disab
       if (value.documentCitations.length) lines.push("项目附件摘录（仅所选范围，未经核验）", "");
       for (const [index, item] of value.documentCitations.entries()) {
         const ref = item.ref;
-        const [metadata, result] = await Promise.all([typedIPC.getAttachment(project, ref.attachment_id), typedIPC.readAttachmentDocument({ project_id: project,
-          session_id: session, expected_service_id: service, attachment_id: ref.attachment_id, expected_sha256: ref.expected_sha256, unit: ref.unit, offset: ref.start })]);
+        const metadata: AttachmentGetResult = await typedIPC.getAttachment(project, ref.attachment_id);
+        const result: AttachmentDocumentResult = await typedIPC.readAttachmentDocument({ project_id: project,
+          session_id: session, expected_service_id: service, attachment_id: ref.attachment_id, expected_sha256: ref.expected_sha256, unit: ref.unit, offset: ref.start });
         if (!current()) throw new Error("报告或归属已变化，未导出");
         const row = metadata.attachment;
         if (row.project_id !== project || row.service_id !== service || row.id !== ref.attachment_id || row.sha256 !== ref.expected_sha256 ||

@@ -65,7 +65,8 @@ export function ChatPanel({
   const status = useChat((s) => s.status);
   const error = useChat((s) => s.error);
   const questionKey = useChat((s) => s.askUser?.request_id ?? "none");
-  const [newEngine, setNewEngine] = useState<"native" | "codex">("native");
+  const newEngine = useSessionStore((s) => s.newSessionEngine);
+  const setNewEngine = useSessionStore((s) => s.setNewSessionEngine);
   const [handoff, setHandoff] = useState<{ source: string; target: "native" | "codex" } | null>(null);
   const [engines, setEngines] = useState<EngineInfo[]>([]);
   const runs = useRunTimelineStore((s) => s.runs);

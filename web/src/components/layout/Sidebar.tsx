@@ -76,6 +76,7 @@ export function Sidebar({
   const setCurrent = useSessionStore((s) => s.setCurrent);
   const setCurrentProject = useSessionStore((s) => s.setCurrentProject);
   const createSession = useSessionStore((s) => s.create);
+  const newSessionEngine = useSessionStore((s) => s.newSessionEngine);
   const creatingSession = useSessionStore((s) => s.creating);
   const createWorktree = useSessionStore((s) => s.createWorktree);
   const refresh = useSessionStore((s) => s.refresh);
@@ -546,11 +547,11 @@ export function Sidebar({
           className="flex-1"
           loading={creatingSession}
           disabled={creatingSession}
-          onClick={() => { if (allowScopeChange()) void createSession(DEFAULT_SESSION_TITLE, currentProject.id); }}
-          title={`在「${currentProject.name}」创建新任务`}
+          onClick={() => { if (allowScopeChange()) void createSession(DEFAULT_SESSION_TITLE, currentProject.id, newSessionEngine); }}
+          title={`在「${currentProject.name}」使用 ${newSessionEngine === "codex" ? "Codex" : "Native"} 创建新任务`}
           data-testid="sidebar-new-task"
         >
-          新任务
+          新任务 · {newSessionEngine === "codex" ? "Codex" : "Native"}
         </Button>
         <DropdownMenu
           align="left"

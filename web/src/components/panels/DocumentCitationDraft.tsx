@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useAttachmentStore, useSessionStore } from "../../stores";
-import type { DocumentExcerptRef } from "../../types/ipc";
+import type { AttachmentGetResult, AttachmentDocumentResult, DocumentExcerptRef } from "../../types/ipc";
 import { Button } from "../../ui";
 
 export type CitationDraftItem = { number: number; name: string; version: number; id: string; sha256: string;
@@ -36,8 +36,9 @@ export function DocumentCitationDraft({ citations, project, session, service, ho
         const ref = citations[index]?.ref;
         if (!ref || !Number.isInteger(ref.unit) || !Number.isInteger(ref.start) || !Number.isInteger(ref.end) ||
             ref.unit < 1 || ref.start < 0 || ref.end <= ref.start || ref.end - ref.start > 1000) throw new Error("资料引用无效，请重新选择");
-        const [metadata, result] = await Promise.all([typedIPC.getAttachment(project, ref.attachment_id), typedIPC.readAttachmentDocument({ project_id: project,
-          session_id: session, expected_service_id: service, attachment_id: ref.attachment_id, expected_sha256: ref.expected_sha256, unit: ref.unit, offset: ref.start })]);
+        const metadata: AttachmentGetResult = await typedIPC.getAttachment(project, ref.attachment_id);
+        const result: AttachmentDocumentResult = await typedIPC.readAttachmentDocument({ project_id: project,
+          session_id: session, expected_service_id: service, attachment_id: ref.attachment_id, expected_sha256: ref.expected_sha256, unit: ref.unit, offset: ref.start });
         if (!current()) throw new Error("报告或归属已变化，请重新准备");
         const row = metadata.attachment;
         if (row.id !== ref.attachment_id || row.project_id !== project || row.service_id !== service || row.sha256 !== ref.expected_sha256 ||

@@ -14,7 +14,7 @@ type Pending = { host: string; workflow: string; intent: Intent };
 export function SkillWorkflowRun({ workflow, onClose, recovery }: { workflow: WorkflowEntry; onClose: () => void; recovery?: { key: string; index: number; session: string; project: string | null; service: string; host: string } }): JSX.Element {
   const draftKey = recovery ? `minimax:workflow-draft:${encodeURIComponent(JSON.stringify([recovery.host, recovery.service, recovery.session, recovery.project, workflow.id, recovery.key]))}` : null;
   const sessionId = useSessionStore((s) => s.currentSessionId);
-  const session = useSessionStore((s) => s.sessions.find((s) => s.id === s.currentSessionId));
+  const session = useSessionStore((s) => s.sessions.find((session) => session.id === s.currentSessionId));
   const project = useSessionStore((s) => s.currentProjectId);
   const mode = useChat((s) => s.executionMode);
   const [service, setService] = useState<string | null>(null);
@@ -22,7 +22,7 @@ export function SkillWorkflowRun({ workflow, onClose, recovery }: { workflow: Wo
     try { return draftKey ? sessionStorage.getItem(draftKey) ?? "" : ""; } catch { return ""; }
   });
   const [budget, setBudget] = useState("");
-  const [key, setKey] = useState(() => crypto.randomUUID());
+  const [key, setKey] = useState<string>(() => crypto.randomUUID());
   const [index, setIndex] = useState(0);
   const [chain, setChain] = useState<{ index: number; skill_id: string; run: AgentRun | null; continuation_blocked_reason: string | null }[]>([]);
   const [pending, setPending] = useState<Pending | null>(null);

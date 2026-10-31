@@ -259,6 +259,8 @@ export function MessageInput({
             <span className="text-xs font-medium text-accent">{strings.chat.input.dropFilesHere}</span>
           </div>
         )}
+        <details className="border-b border-line px-2.5 py-1 text-xs text-ink-2">
+          <summary className="cursor-pointer py-1 text-ink-1">任务模板与资料{restrictNetworkTools ? " · 已限制联网工具" : ""}</summary>
         <TaskTemplates
           disabled={disabled}
           codex={codex}
@@ -289,6 +291,7 @@ export function MessageInput({
           }} />}
         {!codex && <label className="block px-2.5 py-1 text-xs text-ink-2"><input type="checkbox" checked={restrictNetworkTools} disabled={disabled} onChange={(event) => changeRestriction(event.target.checked)} /> 限制此任务的联网工具（允许读取已保存来源、提问及按写入权限新建 Markdown/TXT 文件；禁用 shell、MCP 和其他工具）。模型服务可能联网；不提供系统网络隔离。</label>}
         <ProjectAttachmentImport sessionId={sessionId} projectId={projectId} host={budgetHost} />
+        </details>
         <AttachmentRows
           attachedFiles={attachments.attachedFiles}
           attachedImages={attachments.attachedImages}
@@ -419,6 +422,8 @@ export function MessageInput({
             <option value="plan">只读规划</option>
           </select>
         </label>
+        <details className="w-full" open={!budgetValid ? true : undefined}>
+          <summary className="cursor-pointer py-1 text-ink-1">高级选项{captureFileChanges ? " · 采集文件变化" : ""}{budgetText ? ` · 上限 ${budgetText} tokens` : ""}</summary>
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={captureFileChanges} disabled={disabled}
             onChange={(event) => setCaptureFileChanges(event.target.checked)} />
@@ -433,6 +438,8 @@ export function MessageInput({
         </label>
         {!budgetValid && <p role="alert" className="px-2 text-xs text-status-error">请输入安全范围内的正整数，或留空使用服务默认。</p>}
         <p className="px-2 pb-1 text-[11px] text-ink-2">这是 token 数量，不是金额或 Coding Plan 费用上限。日限额另行生效；Native 在请求前估算，Codex 按已观察用量事后控制，均不能保证严格费用上限。切换会话或连接变化会清空此输入。</p>
+        </details>
+        </div>
         <ComposerToolbar
           valueLength={draft.value.length}
           overLimit={draft.overLimit}

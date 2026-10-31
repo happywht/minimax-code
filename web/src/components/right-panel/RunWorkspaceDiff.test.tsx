@@ -8,7 +8,7 @@ import { RunWorkspaceDiff } from "./RunWorkspaceDiff";
 const run: AgentRun = { id: "run1", session_id: "s1", mode: "execute", status: "completed", title: "Task",
   created_at: "now", metadata: { workspace_snapshot: "/work/tree", project_id: "p1" } };
 const result: RunWorkspaceDiffResult = { run_id: "run1", session_id: "s1", project_id: "p1", workspace: "/work/tree",
-  scope: "current_workspace", diff: "unstaged content", staged_diff: "staged content", untracked: ["new.txt"] };
+  workspace_identity: "workspace1", service_id: "service1", scope: "current_workspace", diff: "unstaged content", staged_diff: "staged content", untracked: ["new.txt"] };
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
 
 beforeEach(() => {
