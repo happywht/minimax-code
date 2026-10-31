@@ -1,5 +1,5 @@
 /**
- * InspectorTabBar — horizontally scrollable icon tab strip. The
+ * InspectorTabBar — wrapping icon tab strip. The
  * active tab is highlighted with the accent-subtle treatment; every
  * tab keeps an accessible name even though only the icon is shown.
  */
@@ -22,7 +22,7 @@ export function InspectorTabBar({
     <div
       role="tablist"
       aria-label={strings.rightPanel.shell.panelsAria}
-      className="flex gap-1 overflow-x-auto border-b border-line px-2 py-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="flex flex-wrap gap-1 border-b border-line px-2 py-1.5"
     >
       {INSPECTOR_TABS.map((tab) => {
         const selected = activeTab === tab.id;
