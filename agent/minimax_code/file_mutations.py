@@ -25,6 +25,14 @@ def _file_identity(info: os.stat_result) -> tuple[int, ...]:
             info.st_mtime_ns, info.st_ctime_ns)
 
 
+def _same_open_file(path_info: os.stat_result, handle_info: os.stat_result) -> bool:
+    # Windows can report creation time for a path and change time for an open
+    # handle as st_ctime. Compare ctime within each source, not across them.
+    path_id = _file_identity(path_info)
+    handle_id = _file_identity(handle_info)
+    return path_id[:-1] == handle_id[:-1] if os.name == "nt" else path_id == handle_id
+
+
 def _baseline_state(path: Path) -> tuple[str | None, tuple[int, ...] | None]:
     """Hash one regular file without following its final symlink.
 
@@ -41,13 +49,16 @@ def _baseline_state(path: Path) -> tuple[str | None, tuple[int, ...] | None]:
     fd = os.open(path, flags)
     with os.fdopen(fd, "rb") as source:
         opened = os.fstat(source.fileno())
-        if not stat.S_ISREG(opened.st_mode) or _file_identity(before) != _file_identity(opened):
+        if not stat.S_ISREG(opened.st_mode) or not _same_open_file(before, opened):
             raise OSError("Baseline file was replaced; re-read before writing")
         digest = hashlib.file_digest(source, "sha256").hexdigest()
         after = os.fstat(source.fileno())
-        if _file_identity(opened) != _file_identity(after) or _file_identity(after) != _file_identity(path.lstat()):
+        path_after = path.lstat()
+        if (_file_identity(opened) != _file_identity(after)
+                or _file_identity(before) != _file_identity(path_after)
+                or not _same_open_file(path_after, after)):
             raise OSError("Baseline file changed while reading; re-read before writing")
-    return digest, _file_identity(after)
+    return digest, _file_identity(path_after)
 
 
 def _atomic_replace(target: Path, write: Callable[[BinaryIO], object], *, baseline_path: Path,
@@ -129,11 +140,15 @@ def atomic_append_text(target: Path, content: str, *, baseline_path: Path,
             flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
             fd = os.open(baseline_path, flags)
             with os.fdopen(fd, "rb") as source:
-                if _file_identity(before) != _file_identity(os.fstat(source.fileno())):
+                opened = os.fstat(source.fileno())
+                if not _same_open_file(before, opened):
                     raise OSError("Baseline file was replaced; re-read before writing")
                 shutil.copyfileobj(source, stream, 65536)
-                if (_file_identity(before) != _file_identity(os.fstat(source.fileno()))
-                        or _file_identity(before) != _file_identity(baseline_path.lstat())):
+                after = os.fstat(source.fileno())
+                path_after = baseline_path.lstat()
+                if (_file_identity(opened) != _file_identity(after)
+                        or _file_identity(before) != _file_identity(path_after)
+                        or not _same_open_file(path_after, after)):
                     raise OSError("Baseline file changed while copying; re-read before writing")
         stream.write(content.encode("utf-8"))
 
@@ -149,8 +164,11 @@ def atomic_copy_file(source: Path, target: Path, *, baseline_sha256: str | None,
         nonlocal source_mode
         with source.open("rb") as incoming:
             before = os.fstat(incoming.fileno())
+            path_before = source.lstat() if expected_owner_execute is not None else None
             if not stat.S_ISREG(before.st_mode):
                 raise OSError("Source is not a regular file")
+            if path_before is not None and not _same_open_file(path_before, before):
+                raise OSError("Source identity or permissions changed during collection")
             digest = hashlib.sha256()
             while chunk := incoming.read(65536):
                 stream.write(chunk)
@@ -159,8 +177,10 @@ def atomic_copy_file(source: Path, target: Path, *, baseline_sha256: str | None,
                 raise OSError("Source changed during collection; preserve it for manual review")
             if expected_owner_execute is not None:
                 after = os.fstat(incoming.fileno())
+                path_after = source.lstat()
                 if (_file_identity(before) != _file_identity(after)
-                        or _file_identity(after) != _file_identity(source.lstat())):
+                        or _file_identity(path_before) != _file_identity(path_after)
+                        or not _same_open_file(path_after, after)):
                     raise OSError("Source identity or permissions changed during collection")
                 if bool(before.st_mode & stat.S_IXUSR) != expected_owner_execute:
                     raise OSError("Source executable permission changed after completion")

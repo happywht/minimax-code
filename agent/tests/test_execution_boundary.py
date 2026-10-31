@@ -146,6 +146,26 @@ async def test_nested_workspace_cannot_widen_and_omission_inherits(tmp_path):
         assert proc.returncode == 0
 
 
+@pytest.mark.parametrize("implicit_parent", [False, True])
+async def test_nested_scope_rejects_replaced_parent_with_original_child(tmp_path, implicit_parent):
+    root = tmp_path / "parent"
+    child = root / "child"
+    child.mkdir(parents=True)
+    token = set_current_root(root) if implicit_parent else None
+    try:
+        with execution_scope(ExecutionPolicy(None if implicit_parent else root)):
+            with execution_scope(ExecutionPolicy(child)):
+                original = tmp_path / "original"
+                root.rename(original)
+                root.mkdir()
+                (original / "child").rename(child)
+                with pytest.raises(ExecutionDeniedError, match="workspace has changed"):
+                    await spawn_exec(sys.executable, "-c", "pass", cwd=child)
+    finally:
+        if token is not None:
+            reset_current_root(token)
+
+
 def test_implicit_parent_uses_current_session_root(tmp_path):
     root = tmp_path / "session"
     root.mkdir()
@@ -288,6 +308,70 @@ def test_atomic_write_failure_keeps_original_and_removes_temp(tmp_path, monkeypa
                                           baseline_sha256=hashlib.sha256(b"original").hexdigest())
     assert target.read_bytes() == b"original"
     assert not list(tmp_path.glob(".minimax-write-*"))
+
+
+@pytest.mark.parametrize("append", [False, True])
+def test_atomic_write_existing_file_after_metadata_change(tmp_path, append):
+    import hashlib
+
+    from minimax_code.file_mutations import atomic_append_text, atomic_write_text
+
+    target = tmp_path / "file.txt"
+    target.write_bytes(b"first")
+    target.write_bytes(b"original")
+    digest = hashlib.sha256(b"original").hexdigest()
+    operation = atomic_append_text if append else atomic_write_text
+    operation(target, "changed", baseline_path=target, baseline_sha256=digest)
+    assert target.read_bytes() == (b"originalchanged" if append else b"changed")
+
+
+@pytest.mark.parametrize("append", [False, True])
+def test_atomic_write_rejects_same_content_file_replaced_before_open(tmp_path, monkeypatch, append):
+    import hashlib
+    import os
+
+    from minimax_code.file_mutations import atomic_append_text, atomic_write_text
+
+    target = tmp_path / "file.txt"
+    replacement = tmp_path / "replacement.txt"
+    target.write_bytes(b"original")
+    replacement.write_bytes(b"original")
+    original_open = os.open
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        if path == target and replacement.exists():
+            os.replace(replacement, target)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+    operation = atomic_append_text if append else atomic_write_text
+    with pytest.raises(OSError, match="replaced"):
+        operation(target, "changed", baseline_path=target,
+                  baseline_sha256=hashlib.sha256(b"original").hexdigest())
+    assert target.read_bytes() == b"original"
+
+
+def test_atomic_write_rejects_metadata_change_while_hashing(tmp_path, monkeypatch):
+    import hashlib
+    import os
+
+    from minimax_code.file_mutations import atomic_write_text
+
+    target = tmp_path / "file.txt"
+    target.write_bytes(b"original")
+    original_digest = hashlib.file_digest
+
+    def mutate_during_hash(*args, **kwargs):
+        result = original_digest(*args, **kwargs)
+        info = target.stat()
+        os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns - 2_000_000_000))
+        return result
+
+    monkeypatch.setattr(hashlib, "file_digest", mutate_during_hash)
+    with pytest.raises(OSError, match="changed while reading"):
+        atomic_write_text(target, "changed", baseline_path=target,
+                          baseline_sha256=hashlib.sha256(b"original").hexdigest())
+    assert target.read_bytes() == b"original"
 
 
 def test_atomic_write_rejects_changed_baseline(tmp_path):

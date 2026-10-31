@@ -34,6 +34,7 @@ class ExecutionPolicy:
     read_only: bool = False
     restrict_network_tools: bool = False
     _workspace_identity: tuple[int, int] | None = None
+    _ancestor_workspaces: tuple[tuple[Path, tuple[int, int]], ...] = ()
 
 
 _policy: ContextVar[ExecutionPolicy | None] = ContextVar("execution_policy", default=None)
@@ -54,8 +55,15 @@ def execution_scope(policy: ExecutionPolicy) -> Iterator[None]:
         target = require_directory(policy.workspace) if policy.workspace is not None else root
         if not target.is_relative_to(root):
             raise ExecutionDeniedError("Nested execution workspace is outside the parent workspace.")
+        ancestors = parent._ancestor_workspaces
+        if parent.workspace is not None and parent._workspace_identity is not None:
+            ancestors += ((parent.workspace, parent._workspace_identity),)
+        else:
+            info = root.stat()
+            ancestors += ((root, (info.st_dev, info.st_ino)),)
         policy = ExecutionPolicy(workspace=target, read_only=parent.read_only or policy.read_only,
-                                 restrict_network_tools=parent.restrict_network_tools or policy.restrict_network_tools)
+                                 restrict_network_tools=parent.restrict_network_tools or policy.restrict_network_tools,
+                                 _ancestor_workspaces=ancestors)
     elif policy.workspace is not None:
         root = require_directory(policy.workspace)
         if policy._workspace_identity is not None and root != policy.workspace:
@@ -107,6 +115,11 @@ def policy_workspace() -> Path | None:
     policy = _policy.get()
     if policy is None or policy.workspace is None:
         return None
+    for ancestor, identity in policy._ancestor_workspaces:
+        resolved = require_directory(ancestor)
+        info = resolved.stat()
+        if resolved != ancestor or (info.st_dev, info.st_ino) != identity:
+            raise ExecutionDeniedError("Execution workspace has changed; rebind before continuing.")
     root = require_directory(policy.workspace)
     info = root.stat()
     if root != policy.workspace or (info.st_dev, info.st_ino) != policy._workspace_identity:
