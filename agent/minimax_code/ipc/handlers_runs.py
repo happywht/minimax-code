@@ -956,7 +956,8 @@ def register_run_handlers(server: Any) -> None:
                     prompt += "\n\nUser recovery handoff (reviewed by the user):\n" + request.handoff
                 recovery = RunStartParams(session_id=run["session_id"], engine="codex", mode=run["mode"],
                     content=prompt, idempotency_key=request.idempotency_key,
-                    budget_tokens=request.budget_tokens if request.budget_tokens is not None else saved)
+                    budget_tokens=request.budget_tokens if request.budget_tokens is not None else saved,
+                    capture_file_changes=previous.get("capture_file_changes") is True)
                 await _start_codex_run(recovery, ctx, resumed_from_id=run["id"],
                                        reviewed=request.reviewed, expected_snapshot=metadata)
                 return
@@ -1022,6 +1023,8 @@ def register_run_handlers(server: Any) -> None:
                 continuation=continuation,
                 required_model=metadata["model_snapshot"], required_workspace=metadata["workspace_snapshot"],
                 required_permission_rules=metadata.get("permission_rules_snapshot"),
+                required_validate_command=metadata.get("validate_command"),
+                required_project_snapshot=metadata,
                 internal_schedule=saved_schedule, internal_skill=saved_skill, internal_agent=saved_agent)
         except (ValidationError, ValueError) as exc:
             await ctx.reply_error(INVALID_PARAMS, str(exc))

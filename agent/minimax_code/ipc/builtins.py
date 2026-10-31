@@ -588,6 +588,8 @@ async def handle_agent_send_message(
     params: Any, ctx: Context, *, wait: bool = True, resumed_from_id: str | None = None,
     required_model: dict[str, Any] | None = None, required_workspace: str | None = None,
     required_permission_rules: list[dict[str, Any]] | None = None,
+    required_validate_command: str | None = None,
+    required_project_snapshot: dict[str, Any] | None = None,
     continuation: bool = False, internal_schedule: dict[str, Any] | None = None,
     internal_skill: Any = None, skill_model: ModelSnapshot | None = None, skill_runtime: Any = None,
     internal_agent: Any = None,
@@ -715,6 +717,9 @@ async def handle_agent_send_message(
         if required_workspace is not None and root != required_workspace:
             raise RuntimeError("Session workspace changed; restore its binding or start a new task")
         project_id = session.get("project_id")
+        if (required_project_snapshot is not None and "project_id" in required_project_snapshot
+                and project_id != required_project_snapshot["project_id"]):
+            raise ValueError("Session project changed; restore its binding or start a new task")
         if internal_skill is not None:
             if project_id != internal_skill.data["project_id"] or root != internal_skill.data["workspace"]:
                 raise ValueError("Skill session binding changed; start a new task")
@@ -740,6 +745,9 @@ async def handle_agent_send_message(
 
     if internal_schedule is not None:
         validate_command = internal_schedule["context"]["validate_command"]
+    elif required_validate_command is not None and validate_command != required_validate_command:
+        await ctx.reply_error(-32602, "Project validation command changed; restore it or start a new task")
+        return
 
     # Durable reservations enforce family/day ceilings at each actual send.
     from ..budget import daily_budget_limit, resolve_run_budget
@@ -1417,7 +1425,7 @@ async def _handle_agent_send_message(
         else await _build_system_prompt_extra(
             session_id=session_id,
             project_id=project_id,
-            **({"validate_command_override": job.validate_command} if internal_schedule is not None else {}),
+            validate_command_override=job.validate_command,
         )
     )
     if not codebase_available:
@@ -2202,6 +2210,9 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
     skill_spec = None
     skill_intent = {}
     previous = await dao.request_payload(run["id"])
+    if previous is None or not metadata.get("model_snapshot") or not metadata.get("workspace_snapshot"):
+        await ctx.reply_error(-32602, "This legacy run has no saved request/context; start a new task with a handoff")
+        return
     if "skill_execution" in metadata or (previous and "skill_intent" in previous):
         from ..skill_execution import SkillExecutionSpec
         try:
@@ -2228,10 +2239,13 @@ async def handle_agent_continue_run(params: Any, ctx: Context) -> None:
         {"session_id": session_id, "content": _CONTINUE_PROMPT + f"\n[Continuation of run {run['id']}]",
          "mode": run.get("mode", "chat"), "idempotency_key": key,
          "budget_tokens": (metadata.get("budget") or {}).get("limit_tokens"),
-         "restrict_network_tools": metadata.get("restrict_network_tools", False), **skill_intent}, ctx,
+         "restrict_network_tools": metadata.get("restrict_network_tools", False),
+         "capture_file_changes": bool((previous or {}).get("capture_file_changes", False)), **skill_intent}, ctx,
         resumed_from_id=run["id"], continuation=True,
         required_model=metadata.get("model_snapshot"), required_workspace=metadata.get("workspace_snapshot"),
         required_permission_rules=metadata.get("permission_rules_snapshot"),
+        required_validate_command=metadata.get("validate_command"),
+        required_project_snapshot=metadata,
         internal_skill=skill_spec, internal_agent=agent_spec,
     )
 

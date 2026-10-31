@@ -60,6 +60,12 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         if project is None:
             raise HandlerError(-32602, "Project is unavailable; rebind the session before running")
         validate_command = normalize_validate_command(project.get("validate_command"))
+    if (expected_snapshot is not None and "project_id" in expected_snapshot
+            and project_id != expected_snapshot["project_id"]):
+        raise HandlerError(-32602, "Codex recovery project binding differs from the original run")
+    if (expected_snapshot is not None and "validate_command" in expected_snapshot
+            and validate_command != expected_snapshot["validate_command"]):
+        raise HandlerError(-32602, "Project validation command changed; restore it or start a new task")
     state = session.get("engine_state") or {}
     if state.get("handoff_required"):
         raise HandlerError(-32602, "Ambiguous legacy Codex session; create a new session with a handoff")
