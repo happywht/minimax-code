@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..budget import BudgetExhausted
 from ..compaction import IntraCompactionConfig, IntraCompactionMode, should_compact
+from ..execution import policy_workspace
 from ..hooks import HookManager
 from ..lifecycle import (
     ExtensionRegistry,
@@ -899,6 +900,7 @@ class AgentCore:
         ):
             # R25 — turn-start lifecycle hook (one fire per turn, before
             # the first LLM call). Mirrors grok's on_turn_start.
+            policy_workspace()
             await self._fire_turn_start()
             for iteration in range(self.config.max_iterations):
                 iterations = iteration + 1
@@ -907,6 +909,10 @@ class AgentCore:
                     break
                 if self.on_safe_interjections is not None:
                     await self.on_safe_interjections(messages, self._maybe_persist)
+
+                # A long-running turn can outlive the directory accepted at
+                # admission. Do not run hooks or continue against a replacement.
+                policy_workspace()
 
                 # v1.1.0 — per-iteration lifecycle hook (notification,
                 # fail-open). Observers can watch long-running turns at
@@ -1147,6 +1153,7 @@ class AgentCore:
 
                 # Persist the assistant message that came out of this
                 # LLM call (may contain tool_calls).
+                policy_workspace()
                 assistant_msg = response.message
                 messages.append(assistant_msg)
                 # v1.1.3 — persist a copy carrying the per-call usage
@@ -1710,6 +1717,9 @@ class AgentCore:
                     call_log, name, args, reason, None, denied,
                 )
 
+        # Consent may have taken arbitrarily long; recheck before hooks run.
+        policy_workspace()
+
         # 1b. pre_tool_use hooks — policy gate (fail-open). Runs only
         # after permission allows, so a denied tool never wastes a hook.
         if self.hooks is not None and name:
@@ -1811,10 +1821,15 @@ class AgentCore:
             if self.cancelled:
                 result = ToolResult.fail(f"tool '{name}' cancelled")
             else:
+                # Check after approval, hooks and any per-file lock wait. A
+                # failed identity check aborts the run rather than reporting
+                # an ordinary tool failure the model could overlook.
+                policy_workspace()
                 result, duration_ms = await self._dispatch_prepared_tool(
                     name, args, tool_call_id, tool_breaker, action
                 )
 
+        policy_workspace()
         # Keep pathological output out of the context window: spill the
         # full payload to the workspace when possible, fall back to a
         # plain truncation notice when there is nowhere to write it.
@@ -1843,6 +1858,7 @@ class AgentCore:
         # must never corrupt the real tool result already in hand.
         policy_denied = (result.metadata or {}).get("permission") == "policy_changed"
         if self.hooks is not None and name and not policy_denied and not self.cancelled:
+            policy_workspace()
             try:
                 await self.hooks.fire_post_tool_use(
                     self._current_session_id, name, args, result.to_dict()

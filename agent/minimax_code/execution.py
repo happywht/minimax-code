@@ -57,10 +57,17 @@ def execution_scope(policy: ExecutionPolicy) -> Iterator[None]:
         policy = ExecutionPolicy(workspace=target, read_only=parent.read_only or policy.read_only,
                                  restrict_network_tools=parent.restrict_network_tools or policy.restrict_network_tools)
     elif policy.workspace is not None:
-        policy = ExecutionPolicy(workspace=require_directory(policy.workspace), read_only=policy.read_only,
-                                 restrict_network_tools=policy.restrict_network_tools)
+        root = require_directory(policy.workspace)
+        if policy._workspace_identity is not None and root != policy.workspace:
+            raise ExecutionDeniedError("Execution workspace has changed; rebind before continuing.")
+        policy = ExecutionPolicy(workspace=root, read_only=policy.read_only,
+                                 restrict_network_tools=policy.restrict_network_tools,
+                                 _workspace_identity=policy._workspace_identity)
     if policy.workspace is not None:
         info = policy.workspace.stat()
+        if (policy._workspace_identity is not None
+                and (info.st_dev, info.st_ino) != policy._workspace_identity):
+            raise ExecutionDeniedError("Execution workspace has changed; rebind before continuing.")
         policy = replace(policy, _workspace_identity=(info.st_dev, info.st_ino))
     token = _policy.set(policy)
     try:

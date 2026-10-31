@@ -860,7 +860,10 @@ async def handle_agent_send_message(
             if not job.workspace:
                 raise RuntimeError("Accepted workspace is missing; rebind before starting a new task")
             job.verify_workspace()
-            with execution_scope(ExecutionPolicy(workspace=Path(job.workspace), read_only=mode == "plan", restrict_network_tools=restrict_network_tools)), subagent_runtime_scope(runtime), budget_scope(job.budget_handle), run_children_scope(children):
+            identity = job.workspace_identity
+            if identity is None:
+                raise RuntimeError("Accepted workspace identity is missing")
+            with execution_scope(ExecutionPolicy(workspace=Path(job.workspace), read_only=mode == "plan", restrict_network_tools=restrict_network_tools, _workspace_identity=(identity["device"], identity["inode"]))), subagent_runtime_scope(runtime), budget_scope(job.budget_handle), run_children_scope(children):
                 await _handle_agent_send_message(request, _RunContext(ctx, job), job=job,
                                                  model_snapshot=model_snapshot, internal_schedule=internal_schedule,
                                                  internal_skill=internal_skill, admitted_permissions=admitted_permissions)
