@@ -295,9 +295,64 @@ class ExportResearchSourcesTool(GenerateReportDocxTool):
             return ToolResult.fail(str(error))
 
 
+class GenerateReportFromTextTool(GenerateReportPairTool):
+    name = "generate_report_from_text"
+    description = (
+        "Convert a current-project UTF-8 TXT attachment into a new DOCX and/or PDF report "
+        "without retyping its contents. Supply the attachment ID and SHA-256 from "
+        "list_project_attachments, a report title and an output filename stem. The complete "
+        "original text is used; long text is split into report paragraphs, not summarized. "
+        "The original attachment is unchanged. Formatting is plain text, not Markdown rendering. "
+        "Each format is saved separately; inspect attachments before retrying an uncertain result."
+    )
+    parameters = {"type": "object", "properties": {
+        "attachment_id": {"type": "string"},
+        "expected_sha256": {"type": "string"},
+        "filename": {"type": "string", "description": "Output filename stem without extension"},
+        "title": {"type": "string"},
+        "formats": {"type": "array", "items": {"type": "string", "enum": ["docx", "pdf"]},
+                    "minItems": 1, "maxItems": 2, "uniqueItems": True},
+    }, "required": ["attachment_id", "expected_sha256", "filename", "title"],
+        "additionalProperties": False}
+
+    async def run(self, attachment_id: str, expected_sha256: str, filename: str, title: str,
+                  formats: list[str] | None = None) -> ToolResult:
+        try:
+            require_write_access()
+            if not isinstance(self.project_id, str) or not self.project_id:
+                raise ValueError("Current session has no project")
+            session = await self.db.fetchone("SELECT project_id FROM sessions WHERE id=?", (self.session_id,))
+            if session is None or session["project_id"] != self.project_id:
+                raise ValueError("Current session project binding changed")
+            attachment, data = await self.service.content(self.project_id, attachment_id)
+            if (attachment["declared_type"] != "txt" or attachment["recognized_type"] != "utf8_text"
+                    or attachment["sha256"] != expected_sha256):
+                raise ValueError("Select the same current-project UTF-8 TXT attachment")
+            text = data.decode("utf-8-sig", errors="strict")
+            # Preserve every character; report generators add paragraph boundaries at
+            # chunk edges. Reject over-limit input rather than silently truncating it.
+            paragraphs = [text[offset:offset + 4096] for offset in range(0, len(text), 4096)]
+            if not paragraphs or len(paragraphs) > 100:
+                raise ValueError("Text must be nonempty and fit within 100 report paragraphs")
+            result = await super().run(filename=filename, title=title, paragraphs=paragraphs, formats=formats)
+            if isinstance(result.output, dict):
+                result.output["source_attachment"] = {
+                    "attachment_id": attachment["id"], "filename": attachment["original_name"],
+                    "sha256": attachment["sha256"],
+                }
+                result.output["conversion_notice"] = (
+                    "Plain text conversion; an optional UTF-8 BOM is removed and paragraph "
+                    "boundaries are inserted at 4096 characters. Layout is not verified."
+                )
+            return result
+        except (ValueError, OSError, UnicodeError) as error:
+            return ToolResult.fail(str(error))
+
+
 def register_report_docx_tool(registry: Any, db: Any, session_id: str,
                               project_id: str | None, research_sources=None) -> None:
     registry.register(GenerateReportDocxTool(db, session_id, project_id, research_sources))
     registry.register(GenerateReportPdfTool(db, session_id, project_id, research_sources))
     registry.register(GenerateReportPairTool(db, session_id, project_id, research_sources))
+    registry.register(GenerateReportFromTextTool(db, session_id, project_id, research_sources))
     registry.register(ExportResearchSourcesTool(db, session_id, project_id, research_sources))
