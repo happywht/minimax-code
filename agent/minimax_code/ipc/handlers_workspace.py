@@ -258,7 +258,8 @@ def register_workspace_handlers(
                 logger.exception("workspace.review_commits failed")
                 await ctx.reply_error(INTERNAL_ERROR, "Could not review committed worktree changes")
 
-    async def handle_merge_worktree(params: Any, ctx: Context) -> None:
+    async def _merge_worktree(params: Any, ctx: Context, source_reserved: Path,
+                              target_reserved: Path, verify_source: Any, verify_target: Any) -> None:
         """``workspace.merge_worktree`` — commit, validate, then merge (M3).
 
         Flow: commit the worktree's pending changes → run the project's
@@ -297,6 +298,10 @@ def register_workspace_handlers(
             if target != target.resolve() or target.parent != root or target.name != session_id:
                 raise HandlerError(INVALID_PARAMS, "worktree does not match the managed session path")
             main_repo = await _repository_for_project(session.get("project_id"), configured_repo)
+            if worktree.resolve() != source_reserved or main_repo != target_reserved:
+                raise HandlerError(INVALID_PARAMS, "Workspace binding changed; review again")
+            verify_source()
+            verify_target()
             worktree_common = (await _run_git(
                 worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"
             )).strip()
@@ -411,6 +416,9 @@ def register_workspace_handlers(
                         or await ArtifactDAO(db).service_id() != review["service_id"]):
                     raise HandlerError(INVALID_PARAMS, "Worktree binding changed; review again before merging")
 
+            # Reservations coordinate in-process task admission, not external writers.
+            verify_source()
+            verify_target()
             # Git accepts the detached commit directly; no user branch is created or deleted.
             try:
                 await _run_git(main_repo, "merge", "--no-ff", head, "-m", commit_message)
@@ -474,8 +482,55 @@ def register_workspace_handlers(
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("workspace.merge_worktree failed")
-            await ctx.reply_error(INTERNAL_ERROR, f"workspace.merge_worktree failed: {exc}")
+            logger.exception("workspace.merge_worktree failed; inspect repository state")
+            await ctx.reply_error(INTERNAL_ERROR, f"Merge outcome may be uncertain; inspect repository state: {exc}")
+
+    async def handle_merge_worktree(params: Any, ctx: Context) -> None:
+        """Reserve both checkouts until merge and post-merge validation finish."""
+        from ..runs import _workspace_identity, _workspace_overlaps, get_run_service
+
+        try:
+            check_params(params, expected_keys={"session_id"})
+            session_id = _string_param(params, "session_id")
+            if not session_id:
+                raise HandlerError(INVALID_PARAMS, "session_id is required")
+            sess_dao = await dao_factory()
+            session = await sess_dao.get(session_id)
+            if not session or session.get("workspace_mode") != "worktree" or not session.get("workspace_path"):
+                raise HandlerError(INVALID_PARAMS, "Worktree session is unavailable")
+            source = require_directory(Path(session["workspace_path"])).resolve()
+            target = await _repository_for_project(session.get("project_id"), configured_repo)
+            if source == target:
+                raise HandlerError(INVALID_PARAMS, "Source and target workspaces must differ")
+            service = get_run_service(ctx.server)
+            if _workspace_overlaps(str(source), str(target)):
+                # One reservation covers nested roots; independently pin both identities.
+                source_identity = _workspace_identity(str(source))
+                target_identity = _workspace_identity(str(target))
+                covering = target if source.is_relative_to(target) else source
+                async with service.workspace_maintenance(str(covering)) as verify_covering:
+                    def verify_source() -> None:
+                        verify_covering()
+                        if _workspace_identity(str(source)) != source_identity:
+                            raise ValueError("Source workspace changed during merge")
+
+                    def verify_target() -> None:
+                        verify_covering()
+                        if _workspace_identity(str(target)) != target_identity:
+                            raise ValueError("Target workspace changed during merge")
+
+                    await _merge_worktree(params, ctx, source, target, verify_source, verify_target)
+            else:
+                async with service.workspace_maintenance(str(source)) as verify_source:
+                    async with service.workspace_maintenance(str(target)) as verify_target:
+                        await _merge_worktree(params, ctx, source, target, verify_source, verify_target)
+        except HandlerError as exc:
+            await ctx.reply_error(exc.code, exc.message, exc.data)
+        except (ValueError, WorkspaceUnavailableError) as exc:
+            await ctx.reply_error(INVALID_PARAMS, str(exc))
+        except Exception:
+            logger.exception("workspace.merge_worktree reservation failed")
+            await ctx.reply_error(INTERNAL_ERROR, "Unable to reserve workspaces for merge")
 
     server.register("workspace.create_worktree_session", handle_create_worktree_session)
     server.register("workspace.list_worktrees", handle_list_worktrees)

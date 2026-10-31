@@ -270,7 +270,7 @@ function WorktreeChanges({ session, onClose }: { session: Session; onClose: () =
       <p>这是共同祖先到工作树 HEAD 的提交差异，目标分支可能也有自己的提交；不包含未提交文件，不预测冲突，也不是验证通过。</p>
       <details><summary>提交摘要（{committed.commits.length}{committed.commits_truncated ? "，已截断" : ""}）</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{committed.commits.join("\n") || "无独有提交"}</pre></details>
       <details open><summary>已提交差异</summary><div className="max-h-80 overflow-auto"><DiffLines text={committed.diff} emptyText="无已提交差异" /></div></details>
-      <Button size="sm" disabled={busy} onClick={() => void mergeReviewed()}>合并已审阅提交</Button><p>工作树有未提交内容时不会合并；如发生冲突，Git 合并状态会保留供处理。</p></div>}
+      <Button size="sm" disabled={busy} onClick={() => void mergeReviewed()}>合并已审阅提交</Button><p>工作树有未提交内容时不会合并；合并及验证期间源和目标目录不能接收新的本服务任务，已有相关任务须先结束。外部进程仍可能修改文件；如发生冲突，Git 合并状态会保留供处理。</p></div>}
     {mergeResult && <div role="status" className="space-y-1 rounded border border-line p-2">
       <p>{mergeResult.merged ? "合并完成。" : mergeReasons[mergeResult.reason ?? ""] ?? `未合并：${mergeResult.reason ?? "原因未知"}`}</p>
       {mergeResult.merge_commit && <p className="break-all">合并提交：{mergeResult.merge_commit}</p>}
