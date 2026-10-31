@@ -150,6 +150,35 @@ async def test_git_worktree_includes_dirty_inputs_without_touching_parent_index(
     assert after.replace("?? .minimax/\n", "") == before
 
 
+@pytest.mark.parametrize("change", ["new", "edit", "other_metadata"])
+async def test_git_worktree_rejects_concurrent_source_changes(parent, monkeypatch, change):
+    from minimax_code.workspace import child as child_module
+
+    await _git(parent, "init")
+    (parent / "source.txt").write_text("original")
+    await _git(parent, "add", "source.txt")
+    await _git(parent, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+               "commit", "-m", "base")
+    original_git = child_module._git
+
+    async def change_after_worktree(root, *args):
+        result = await original_git(root, *args)
+        if args and args[0] == "read-tree":
+            if change == "new":
+                (parent / "new.txt").write_text("new")
+            elif change == "edit":
+                (parent / "source.txt").write_text("changed")
+            else:
+                other = parent / ".minimax" / "other.txt"
+                other.write_text("other")
+        return result
+
+    monkeypatch.setattr(child_module, "_git", change_after_worktree)
+    with pytest.raises(ValueError, match="Source workspace changed"):
+        await prepare_child(parent, "git_child")
+    assert load_child(parent, "git_child").record["state"] == "needs_review"
+
+
 async def test_alias_and_unsafe_run_ids_fail_closed(parent, tmp_path):
     for run_id in ("../escape", "CON", "a/b"):
         with pytest.raises(ValueError):

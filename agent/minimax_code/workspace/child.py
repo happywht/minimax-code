@@ -360,7 +360,13 @@ async def prepare_child(parent: Path, run_id: str, *, restricted=False) -> Child
             current_names = (await _git(parent, "ls-files", "-z", "--cached", "--others",
                                         "--exclude-standard")).split("\0")
             current_files = sorted(set(p for p in current_names if p))
-            if current_revision != revision or current_files != relative_files:
+            # The worktree and manifest created above appear as untracked Git
+            # entries. Ignore only this run's owned directory when comparing
+            # names; other excluded paths still participate in the check.
+            owned_prefix = base.relative_to(parent).as_posix() + "/"
+            external_before = [p for p in relative_files if not p.startswith(owned_prefix)]
+            external_after = [p for p in current_files if not p.startswith(owned_prefix)]
+            if current_revision != revision or external_after != external_before:
                 raise ValueError("Source workspace changed during preparation")
             current_snapshot = _scan_git_files(parent, current_files)
         else:
