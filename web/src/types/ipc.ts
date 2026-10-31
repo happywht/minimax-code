@@ -1212,6 +1212,7 @@ export interface SendMessageParams {
 }
 
 export interface RunStartParams extends SendMessageParams {
+  expected_project_id?: string | null;
   session_id: string;
   idempotency_key: string;
   expected_service_id?: string;

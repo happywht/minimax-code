@@ -592,7 +592,7 @@ async def handle_agent_send_message(
     required_project_snapshot: dict[str, Any] | None = None,
     continuation: bool = False, internal_schedule: dict[str, Any] | None = None,
     internal_skill: Any = None, skill_model: ModelSnapshot | None = None, skill_runtime: Any = None,
-    internal_agent: Any = None,
+    internal_agent: Any = None, admission_binding: dict[str, Any] | None = None,
 ) -> None:
     from ..execution import ExecutionPolicy, execution_scope
     from ..storage.dao.runs import AgentRunsDAO, RequestConflictError
@@ -675,6 +675,11 @@ async def handle_agent_send_message(
         await ctx.reply_error(-32602, str(exc))
         return
     if existing is not None:
+        try:
+            await dao.check_admission_binding(session_id, admission_binding, existing.get("metadata"))
+        except ValueError as exc:
+            await ctx.reply_error(-32602, str(exc))
+            return
         job = await service.job_for_run(existing["id"])
         await _reply_for_run(ctx, dao, service, existing, job, created=False, wait=wait)
         return
@@ -995,7 +1000,7 @@ async def handle_agent_send_message(
             operation=execute, finalize=finalize, resumed_from_id=resumed_from_id,
             budget_tokens=run_budget, daily_baseline=daily_baseline,
             daily_budget_limit=daily_limit, validate_command=validate_command,
-            continuation=continuation))
+            continuation=continuation, admission_binding=admission_binding))
     except (RequestConflictError, ValueError) as exc:
         await close_owned_model()
         await ctx.reply_error(-32602, str(exc))
@@ -1809,18 +1814,23 @@ async def _handle_agent_send_message(
                     descendants = await children.drain(cancel=True)
         child_drain_complete = True
     except Exception as exc:
-        logger.exception("agent.send_message: AgentCore.run failed")
-        from ..agent.types import LLMStreamTimeout
+        from ..agent.types import LLMAuthenticationError, LLMStreamTimeout
         from ..run_errors import RunPersistenceError
 
-        if isinstance(exc, RunPersistenceError):
+        if isinstance(exc, LLMAuthenticationError):
+            logger.warning("agent.send_message: provider authentication failed")
+            await ctx.reply_error(LLM_ERROR, str(exc))
+        elif isinstance(exc, RunPersistenceError):
+            logger.exception("agent.send_message: AgentCore.run failed")
             await ctx.reply_error(-32004, str(exc), {"run_id": job.run_id, "requires_review": True})
         elif isinstance(exc, LLMStreamTimeout):
+            logger.exception("agent.send_message: AgentCore.run failed")
             await ctx.reply_error(
                 LLM_ERROR,
                 str(exc),
             )
         else:
+            logger.exception("agent.send_message: AgentCore.run failed")
             await ctx.reply_error(-32603, "agent.send_message failed")
         return
     finally:

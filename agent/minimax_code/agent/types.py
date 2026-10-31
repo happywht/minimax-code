@@ -71,6 +71,16 @@ class LLMError(RuntimeError):
         super().__init__(message)
 
 
+class LLMAuthenticationError(LLMError):
+    """Provider authentication failed; message excludes upstream response data."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "模型服务认证失败。请检查供应商凭据、服务地址及模型授权。",
+            status_code=401,
+        )
+
+
 class LLMStreamTimeout(LLMError):
     """Raised when an open LLM stream stops producing events."""
 

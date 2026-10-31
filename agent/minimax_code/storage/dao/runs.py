@@ -59,11 +59,27 @@ class AgentRunsDAO:
             raise RequestConflictError("idempotency_key already belongs to different agent input")
         return _hydrate_run(row)
 
+    async def _check_admission_binding(self, conn, session_id, binding, metadata=None):
+        if binding is None:
+            return
+        identity = await _fetchone(conn, "SELECT service_id FROM artifact_service WHERE singleton=1", ())
+        session = await _fetchone(conn, "SELECT project_id,engine FROM sessions WHERE id=?", (session_id,))
+        if (not identity or identity["service_id"] != binding["service_id"] or not session
+                or ("project_id" in binding and session["project_id"] != binding["project_id"])
+                or ("engine" in binding and session["engine"] != binding["engine"])
+                or (metadata is not None and "project_id" in binding
+                    and metadata.get("project_id") != binding["project_id"])):
+            raise ValueError("Service or session project changed; review the task before submitting")
+
+    async def check_admission_binding(self, session_id, binding, metadata=None):
+        async with self._db.transaction() as conn:
+            await self._check_admission_binding(conn, session_id, binding, metadata)
+
     async def admit_run(
         self, *, session_id: str, request: dict[str, Any], title: str,
         metadata: dict[str, Any], request_key: str | None = None,
         resumed_from_id: str | None = None,
-        continuation: bool = False,
+        continuation: bool = False, admission_binding: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Commit a queued request and its first event before any execution.
 
@@ -80,6 +96,7 @@ class AgentRunsDAO:
         canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         fingerprint = _request_hash(request)
         async with self._db.transaction() as conn:
+            await self._check_admission_binding(conn, session_id, admission_binding, metadata)
             agent_profile = metadata.get("agent_execution")
             root_admission = agent_profile is not None and not resumed_from_id
             if root_admission:

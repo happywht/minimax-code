@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, typedIPC } from "../../ipc";
 import { useChat, usePermissionStore, useRunTimelineStore, useSessionStore } from "../../stores";
 import type { BudgetStateResult } from "../../types/ipc";
-import { Button } from "../../ui";
+import { Button, Modal } from "../../ui";
 import { QueuedRuns } from "./QueuedRuns";
 import { InterruptedPlanDraft } from "./InterruptedPlanDraft";
 
@@ -12,7 +12,7 @@ const labels: Record<string, string> = { queued: "已接收，排队中", planni
 const active = new Set(["planning", "running", "awaiting_approval", "waiting_input"]);
 
 type Connection = "connecting" | "connected" | "disconnected" | "error";
-export function CurrentRunOverview({ connection, onOpenTimeline }: { connection: Connection; onOpenTimeline: () => void }): JSX.Element | null {
+export function CurrentRunOverview({ connection, onOpenTimeline, chatError }: { connection: Connection; onOpenTimeline: () => void; chatError?: string | null }): JSX.Element | null {
   const session = useSessionStore((state) => state.currentSessionId);
   const project = useSessionStore((state) => state.currentProjectId);
   const sessionProject = useSessionStore((state) => state.sessions.find((item) => item.id === session)?.project_id);
@@ -26,6 +26,7 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
   const run = ordered.find((item) => active.has(item.status)) ?? ordered.find((item) => item.status === "queued") ?? ordered[0];
   const [budget, setBudget] = useState<{ scope: string; value: BudgetStateResult | null; error?: string } | null>(null);
   const [planDraftMessage, setPlanDraftMessage] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [deliveryBusy, setDeliveryBusy] = useState(false), [deliveryError, setDeliveryError] = useState("");
   const deliveryEpoch = useRef(0), connectionRef = useRef(connection);
   connectionRef.current = connection;
@@ -124,23 +125,28 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       setPlanDraftMessage("计划已加入草稿并切换到执行模式；请核对、设置预算后发送。");
     } else setPlanDraftMessage(detail.result ?? "聊天输入区未就绪，请稍后重试。");
   };
-  if (!run && !stale && !error) return null;
-  return <div className="shrink-0 px-4 pb-2 text-xs sm:px-7">
-    {requestId && <div className="mb-2 flex flex-wrap items-center justify-between gap-2" role="status">
-      <span className="font-medium text-status-warning">{run?.status === "awaiting_approval" ? "当前任务等待授权" : "当前任务等待回答"}</span>
-      <Button type="button" size="sm" variant="secondary" onClick={openRequest}>{run?.status === "awaiting_approval" ? "查看授权请求" : "回答问题"}</Button>
-    </div>}
-    {!stale && run && ["budget_paused", "failed", "interrupted", "cancelled"].includes(run.status) && <div className="mb-2 flex flex-wrap items-center justify-between gap-2" role="status">
-      <span className="text-status-warning">{labels[run.status]} · 请核对记录和可用操作</span>
-      <Button type="button" size="sm" variant="secondary" onClick={onOpenTimeline}>查看任务记录与下一步</Button>
-    </div>}
-    <details data-testid="current-run-overview">
-    <summary className="cursor-pointer font-medium text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">任务概览 · {stale ? "状态待刷新" : run ? labels[run.status] ?? run.status : loading ? "正在读取" : "暂无运行记录"}</summary>
+  if (!run && !stale && !error && !chatError) return null;
+  const errors = Array.from(new Set([error, run?.error, chatError].filter((value): value is string => !!value)));
+  return <div className="shrink-0 px-4 pb-2 text-xs sm:px-7" data-testid="current-run-overview">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-surface-1 px-3 py-2">
+      <span className={stale || error || (run && ["failed", "budget_paused", "interrupted", "awaiting_approval", "waiting_input"].includes(run.status)) ? "font-medium text-status-warning" : "font-medium text-ink-1"} role="status">
+        {stale ? "任务状态待刷新" : run ? labels[run.status] ?? run.status : "暂无运行记录"}
+      </span>
+      {errors.length > 0 && <span role="alert" title={errors.join(" · ")} className="min-w-0 flex-1 truncate text-status-warning">{errors.join(" · ")}</span>}
+      {data && (data.unknown_attempts > 0 || data.usage_complete !== true) && <span className="text-status-warning">{stale ? "最近快照：" : ""}{data.unknown_attempts > 0 ? `${data.unknown_attempts} 项预算责任未知` : "预算用量不完整"}</span>}
+      {!stale && run && budget?.scope === scope && budget.error && <span className="text-status-warning">预算读取失败</span>}
+      {requestId && <Button type="button" size="sm" variant="secondary" onClick={openRequest}>{run?.status === "awaiting_approval" ? "查看授权请求" : "回答问题"}</Button>}
+      <button type="button" onClick={() => setDetailsOpen(true)} className="ml-auto rounded px-1 py-0.5 text-ink-1 underline underline-offset-2 hover:text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">查看详情</button>
+      <button type="button" onClick={onOpenTimeline} className="rounded px-1 py-0.5 text-ink-1 underline underline-offset-2 hover:text-ink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">时间线</button>
+    </div>
+    {detailsOpen && <Modal title="任务概览" onClose={() => setDetailsOpen(false)} widthClass="max-w-2xl">
     {stale && <p role="status" className="mt-1 text-status-warning">连接或运行记录未确认；以下为最近快照，操作前请刷新。</p>}
     {error && <p role="alert" className="mt-1 break-words text-status-warning">运行记录同步失败：{error}</p>}
+    {chatError && chatError !== run?.error && chatError !== error && <p className="mt-1 break-words text-status-warning">会话错误：{chatError}</p>}
     <Button type="button" size="sm" variant="ghost" disabled={connection !== "connected" || loading} onClick={() => void loadRuns(session)}>刷新运行记录</Button>
     {!run ? <p className="mt-1 text-ink-2">{error ? "无法读取当前会话的运行记录。" : loading ? "正在读取运行记录。" : "此会话尚无可显示的任务运行。"}</p> : <div className="mt-2 space-y-1 text-ink-1">
       <p className="break-all">{active.has(run.status) ? "当前活动运行" : run.status === "queued" ? "已接收的排队任务" : "最近运行"}：{run.title || "未命名"} · {run.id}</p>
+      {run.error && <p className="whitespace-pre-wrap break-words text-status-warning">运行错误：{run.error}</p>}
       <p>状态：{labels[run.status] ?? run.status}{run.status === "awaiting_approval" ? !stale && permission ? ` · 请求 ${permission.tool}` : " · 请求详情待同步或已结束" : ""}{run.status === "waiting_input" ? !stale && awaitingQuestion ? " · 问题卡片在聊天下方" : " · 问题详情待同步或已结束" : ""}</p>
       <p className="break-all">服务地址：{host} · 执行主机/容器：未记录</p>
       <p className="break-all">执行目录（服务侧记录）：{workspace}</p>
@@ -175,5 +181,5 @@ export function CurrentRunOverview({ connection, onOpenTimeline }: { connection:
       <p className="text-ink-2">预算为读取时快照；时间线保留审批、结果、取消及恢复的原有条件。</p>
     </div>}
     <QueuedRuns session={session} host={host} runs={ordered.filter((item) => item.status === "queued")} stale={stale} />
-  </details></div>;
+  </Modal>}</div>;
 }

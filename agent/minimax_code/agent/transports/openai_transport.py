@@ -16,7 +16,7 @@ import openai
 
 from ...budget_ledger import governed_client, governed_request
 from ..reasoning import ReasoningEffort, coerce_effort
-from ..types import LLMError, StreamChunk
+from ..types import LLMAuthenticationError, LLMError, StreamChunk
 from . import LLMTransport
 from ._breaker import check_or_raise, record_outcome, resolve_breaker
 
@@ -160,6 +160,8 @@ class OpenAITransport(LLMTransport):
                 success=False,
                 status_code=getattr(exc, "status_code", None),
             )
+            if isinstance(exc, openai.AuthenticationError):
+                raise LLMAuthenticationError() from None
             raise LLMError(
                 f"OpenAI API error: {exc}",
                 status_code=getattr(exc, "status_code", None),

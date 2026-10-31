@@ -12,7 +12,8 @@ from .codex_multimodal import codex_input
 
 
 async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None = None,
-                         reviewed: bool = False, expected_snapshot: dict[str, Any] | None = None) -> None:
+                         reviewed: bool = False, expected_snapshot: dict[str, Any] | None = None,
+                         admission_binding: dict[str, Any] | None = None) -> None:
     from ..app import get_db, get_sessions_dao, init_runtime
     from ..budget import daily_budget_limit, resolve_run_budget
     from ..ipc.builtins import _notify_run
@@ -32,6 +33,8 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
         raise HandlerError(-32004, "Database unavailable")
     sessions = get_sessions_dao()
     session = await sessions.get(request.session_id)
+    if session is None and admission_binding is not None:
+        raise HandlerError(-32602, "Bound session is unavailable")
     if session is None:
         session = await sessions.create(id=request.session_id, title=display_content[:32], engine="codex")
     if session.get("engine") != "codex":
@@ -44,6 +47,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
     dao, service = AgentRunsDAO(db), get_run_service(ctx.server)
     existing = await dao.find_request(request.session_id, request.idempotency_key, payload)
     if existing is not None:
+        await dao.check_admission_binding(request.session_id, admission_binding, existing.get("metadata"))
         await ctx.reply({"run": existing, "created": False})
         return
     info = await get_engine("codex").info()
@@ -220,7 +224,7 @@ async def start_codex_run(request: Any, ctx: Any, *, resumed_from_id: str | None
                   "budget": {"limit_tokens": budget, "daily_limit": daily, "daily_baseline": baseline}},
         workspace=workspace, project_id=project_id, operation=operation, finalize=finalize,
         resumed_from_id=resumed_from_id, budget_tokens=budget, daily_baseline=baseline, daily_budget_limit=daily,
-        validate_command=validate_command)
+        validate_command=validate_command, admission_binding=admission_binding)
     if created:
         await _notify_run(ctx, "run.created", {"run": run})
     await ctx.reply({"run": run, "created": created})

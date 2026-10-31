@@ -799,7 +799,10 @@ function mockHandle(
 
     case "run.start": {
       const p = params as import("../types/ipc").RunStartParams;
-      const pinned = mockSessions.get(p.session_id)?.engine ?? "native";
+      const bound = mockSessions.get(p.session_id);
+      if (p.expected_service_id && p.expected_service_id !== "mock") throw new Error("Service identity changed");
+      if ("expected_project_id" in p && (!p.expected_service_id || !bound || (bound.project_id ?? null) !== p.expected_project_id)) throw new Error("Service or session project changed");
+      const pinned = bound?.engine ?? "native";
       if (p.engine && p.engine !== pinned) throw new Error("Requested engine differs from pinned session engine");
       if (pinned === "codex") throw new Error("Codex CLI unavailable in mock mode; external inference is never simulated");
       if (!p.session_id || !p.idempotency_key || (p.engine && p.engine !== "native")) {
@@ -916,7 +919,7 @@ function mockHandle(
         id: runId,
         session_id: sid,
         mode: p.mode ?? "chat",
-        metadata: { restrict_network_tools: p.restrict_network_tools === true, model_snapshot: { engine: "native", model: mockModels[0].id,
+        metadata: { project_id: mockSessions.get(sid)?.project_id ?? null, restrict_network_tools: p.restrict_network_tools === true, model_snapshot: { engine: "native", model: mockModels[0].id,
           provider_id: mockModels[0].provider_id ?? null, protocol: mockModels[0].protocol ?? null,
           reasoning_effort: mockReasoningEffort, context_window: mockModels[0].context_window } },
         status: "running",

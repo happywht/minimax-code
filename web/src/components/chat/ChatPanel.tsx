@@ -259,15 +259,7 @@ export function ChatPanel({
             )}
             {headerStatus.label}
           </span>
-          {error && (
-            <span
-              data-testid="chat-header-error"
-              className="ml-2 truncate text-[11px] text-status-error"
-              title={error}
-            >
-              {error}
-            </span>
-          )}
+          {error && !currentId && <span data-testid="chat-header-error" role="alert" title={error} className="min-w-0 truncate text-xs text-status-error">{error}</span>}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <details className="relative">
@@ -334,7 +326,7 @@ export function ChatPanel({
         </div>
       </header>
 
-      <CurrentRunOverview connection={connectionState} onOpenTimeline={onOpenTimeline} />
+      <CurrentRunOverview connection={connectionState} onOpenTimeline={onOpenTimeline} chatError={error} />
 
       {/* Search bar */}
       {searchOpen && (
@@ -371,9 +363,11 @@ export function ChatPanel({
 
       {/* Message list */}
       <MessageList searchQuery={searchOpen ? searchQuery : undefined} />
-      {recovery && <div className="px-4 py-2"><RunRecoveryActions key={recovery.id} run={recovery}
-        refresh={() => useRunTimelineStore.getState().loadForSession(currentId)} /></div>}
-      {current?.engine === "codex" && <p className="px-4 text-xs text-ink-2">Codex 会话使用独立模型配置，支持文字和最多 5 张图片（合计 4 MiB）；模型是否支持图片由 Codex 决定。历史与外部线程绑定；如需修改历史，请新建会话并交接上下文。</p>}
+      {recovery && <details className="mx-4 mb-2 rounded-lg border border-line px-3 py-2 text-xs sm:mx-7">
+        <summary className="cursor-pointer text-ink-1">核对恢复选项 · {recovery.status === "budget_paused" ? "预算暂停" : recovery.status === "failed" ? "执行失败" : recovery.status === "interrupted" ? "已中断" : "已取消"}</summary>
+        <div className="max-h-48 overflow-y-auto"><RunRecoveryActions key={recovery.id} run={recovery}
+          refresh={() => useRunTimelineStore.getState().loadForSession(currentId)} /></div>
+      </details>}
       {handoff && <EngineHandoff sessionId={handoff.source} target={handoff.target} onClose={() => setHandoff(null)} />}
       {/* Inline questionnaire while the agent is suspended in ask_user */}
       <AskUserCard key={`${currentId}:${questionKey}`} />

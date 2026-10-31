@@ -786,16 +786,23 @@ def register_run_handlers(server: Any) -> None:
                 from ..storage.dao.text_artifacts import ArtifactDAO
                 if db is None or await ArtifactDAO(db).service_id() != request.expected_service_id:
                     raise HandlerError(INVALID_PARAMS, "Service identity changed; review the pending request")
+            if "expected_project_id" in request.model_fields_set and not request.expected_service_id:
+                raise HandlerError(INVALID_PARAMS, "Project binding requires a service identity")
+            binding = ({"service_id": request.expected_service_id,
+                        **({"project_id": request.expected_project_id} if "expected_project_id" in request.model_fields_set else {})}
+                       if "expected_project_id" in request.model_fields_set else None)
             session = await db.fetchone("SELECT engine FROM sessions WHERE id=?", (request.session_id,)) if db else None
             pinned = session["engine"] if session else (request.engine or "native")
             if request.engine is not None and request.engine != pinned:
                 raise HandlerError(INVALID_PARAMS, "Requested engine differs from the session's pinned engine")
+            if binding is not None:
+                binding["engine"] = pinned
             if pinned == "codex":
                 if request.restrict_network_tools:
                     raise HandlerError(INVALID_PARAMS, "Network tool restriction is supported only for Native runs")
-                await _start_codex_run(request, ctx)
+                await _start_codex_run(request, ctx, admission_binding=binding)
             else:
-                await handle_agent_send_message(request.model_dump(exclude={"engine", "expected_service_id"}), ctx, wait=False)
+                await handle_agent_send_message(request.model_dump(exclude={"engine", "expected_service_id", "expected_project_id"}), ctx, wait=False, admission_binding=binding)
         except HandlerError as exc:
             await ctx.reply_error(exc.code, exc.message, exc.data)
         except (ValueError, RuntimeError) as exc:

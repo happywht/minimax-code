@@ -16,48 +16,48 @@ vi.mock("./useMentionContext", () => ({ useMentionContext: () => ({ loading: fal
 vi.mock("./ComposerToolbar", () => ({ ComposerToolbar: () => null, ComposerSafetyControls: () => null }));
 vi.mock("./MentionPickerDropdown", () => ({ MentionPickerDropdown: () => null }));
 import { MessageInput } from "./MessageInput";
+import { TaskTemplates } from "./TaskTemplates";
 
 describe("task templates in the composer", () => {
   beforeEach(() => { window.localStorage.clear(); state.send.mockClear(); state.status = "idle"; state.engine = "native"; });
 
-  it("adds an editable template without sending or replacing the existing draft", () => {
-    render(<MessageInput />);
-    fireEvent.click(screen.getByText("上下文与选项"));
-    fireEvent.click(screen.getByText("任务模板与资料"));
-    const input = screen.getByTestId("message-input-textarea") as HTMLTextAreaElement;
-    fireEvent.change(input, { target: { value: "已有目标：研究水务" } });
+  it("preserves the reusable templates without presenting a template workflow in the composer", () => {
+    const select = vi.fn();
+    const view = render(<TaskTemplates disabled={false} codex={false} onSelect={select} />);
     fireEvent.click(screen.getByRole("button", { name: "专题研究" }));
-    expect(input.value).toContain("已有目标：研究水务\n\n");
-    expect(input.value).toContain("读取相关网页原文");
-    expect(input.value).toContain("来源标题、链接和访问时间");
-    expect(state.send).not.toHaveBeenCalled();
-    fireEvent.change(input, { target: { value: input.value.replace("（请补充）", "水务政策") } });
-    expect(input.value).toContain("水务政策");
-  });
-
-  it("disables template insertion while a run is active", () => {
-    state.status = "streaming";
+    expect(select).toHaveBeenCalledWith(expect.stringContaining("读取相关网页原文"));
+    view.unmount();
     render(<MessageInput />);
     fireEvent.click(screen.getByText("上下文与选项"));
-    fireEvent.click(screen.getByText("任务模板与资料"));
-    expect(screen.getByRole("button", { name: "专题研究" })).toBeDisabled();
-    expect(state.send).not.toHaveBeenCalled();
+    expect(screen.queryByText("任务模板与资料")).not.toBeInTheDocument();
+    expect(screen.getByTestId("message-attach-btn")).toBeEnabled();
   });
 
-  it("offers office templates and preserves the current engine", () => {
+  it("does not insert a reusable template when disabled", () => {
+    const select = vi.fn();
+    render(<TaskTemplates disabled codex={false} onSelect={select} />);
+    expect(screen.getByRole("button", { name: "专题研究" })).toBeDisabled();
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("keeps Codex history and attachment limits available in context options", () => {
     state.engine = "codex";
     render(<MessageInput />);
+    const note = screen.getByText(/Codex 使用独立模型配置/);
+    expect(note).not.toBeVisible();
     fireEvent.click(screen.getByText("上下文与选项"));
-    fireEvent.click(screen.getByText("任务模板与资料"));
-    expect(screen.getByText("当前引擎的附件和办公工具能力可能不同")).toBeInTheDocument();
+    expect(note).toBeVisible();
+    expect(note).toHaveTextContent("历史与外部线程绑定");
+    expect(note).toHaveTextContent("图片最多 5 张");
+  });
+
+  it("keeps reusable office templates available independently", () => {
+    const select = vi.fn();
+    render(<TaskTemplates disabled={false} codex onSelect={select} />);
     fireEvent.click(screen.getByRole("button", { name: "资料成稿" }));
     fireEvent.click(screen.getByRole("button", { name: "表格处理" }));
-    const value = (screen.getByTestId("message-input-textarea") as HTMLTextAreaElement).value;
-    expect(value).toContain("DOCX 和 PDF");
-    expect(value).toContain("CSV 或 XLSX");
-    expect(value).toContain("柱状图或折线图");
-    expect(state.send).not.toHaveBeenCalled();
-    expect(state.engine).toBe("codex");
+    expect(select.mock.calls[0][0]).toContain("DOCX 和 PDF");
+    expect(select.mock.calls[1][0]).toContain("CSV 或 XLSX");
   });
 });
 

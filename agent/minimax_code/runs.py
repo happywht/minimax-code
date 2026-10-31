@@ -287,7 +287,7 @@ class RunService:
         continuation: bool = False,
         budget_tokens: int | None = None, daily_baseline: int = 0,
         daily_budget_limit: int | None = None,
-        validate_command: str = "",
+        validate_command: str = "", admission_binding: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], RunJob | None, bool]:
         async def accept():
             async with self._admission_lock:
@@ -310,6 +310,8 @@ class RunService:
                         else:
                             existing = await dao.find_request(session_id, request_key, request)
                         if existing is not None:
+                            if admission_binding is not None:
+                                await dao.check_admission_binding(session_id, admission_binding, existing.get("metadata"))
                             validate_recovery_retry(existing, resumed_from_id, budget_tokens)
                             return existing, self._by_run.get(existing["id"]), False
 
@@ -334,6 +336,7 @@ class RunService:
                     run, created = await dao.admit_run(
                         session_id=session_id, request=request, title=title, metadata=bound_metadata,
                         request_key=request_key, resumed_from_id=resumed_from_id,
+                        **({"admission_binding": admission_binding} if admission_binding is not None else {}),
                         **({"continuation": True} if continuation else {}))
                     if not created:
                         validate_recovery_retry(run, resumed_from_id, budget_tokens)

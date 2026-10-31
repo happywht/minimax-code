@@ -522,6 +522,7 @@ class PermissionRequestData(_Base):
 
 
 class RunStartParams(SendMessageParams):
+    expected_project_id: str | None = None
     model_config = ConfigDict(extra="forbid", strict=True)
     session_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
