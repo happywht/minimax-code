@@ -276,7 +276,7 @@ def _stable_file_read(path: Path, max_bytes: int, start_line: Any, end_line: Any
     Metadata checks detect ordinary concurrent changes but are not an OS snapshot.
     Hashing reads the complete file even when the returned text is bounded.
     """
-    from ...file_mutations import _file_identity
+    from ...file_mutations import _file_identity, _same_open_file
 
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode):
@@ -285,7 +285,7 @@ def _stable_file_read(path: Path, max_bytes: int, start_line: Any, end_line: Any
     fd = os.open(path, flags)
     with os.fdopen(fd, "rb") as source:
         opened = os.fstat(source.fileno())
-        if _file_identity(before) != _file_identity(opened):
+        if not _same_open_file(before, opened):
             raise ValueError("file changed before reading; retry")
         data = source.read(max_bytes + 1)
         truncated = len(data) > max_bytes
@@ -326,8 +326,11 @@ def _stable_file_read(path: Path, max_bytes: int, start_line: Any, end_line: Any
         if source.read(1):
             raise ValueError("file grew while hashing; retry")
         digest = hasher.hexdigest()
-        if (_file_identity(opened) != _file_identity(os.fstat(source.fileno()))
-                or _file_identity(opened) != _file_identity(path.lstat())):
+        after = os.fstat(source.fileno())
+        path_after = path.lstat()
+        if (_file_identity(opened) != _file_identity(after)
+                or _file_identity(before) != _file_identity(path_after)
+                or not _same_open_file(path_after, after)):
             raise ValueError("file changed while reading; retry")
         return text, truncated, total_lines, digest
 

@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..file_mutations import _file_identity
+from ..file_mutations import _file_identity, _same_open_file
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,7 @@ class BackupManager:
             source_fd = os.open(file_path, flags)
             with os.fdopen(source_fd, "rb") as source:
                 opened = os.fstat(source.fileno())
-                if _file_identity(before) != _file_identity(opened):
+                if not _same_open_file(before, opened):
                     raise OSError("Backup source changed before copying")
                 digest = hashlib.sha256()
                 backup_fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -174,8 +174,10 @@ class BackupManager:
                     target.flush()
                     os.fsync(target.fileno())
                 after = os.fstat(source.fileno())
+                path_after = file_path.lstat()
                 if (_file_identity(opened) != _file_identity(after)
-                        or _file_identity(after) != _file_identity(file_path.lstat())
+                        or _file_identity(before) != _file_identity(path_after)
+                        or not _same_open_file(path_after, after)
                         or digest.hexdigest() != expected_sha256):
                     raise OSError("Backup source changed or does not match the reviewed baseline")
             with dest.open("rb") as check:

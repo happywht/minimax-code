@@ -159,8 +159,10 @@ async def test_write_file_happy(workspace: Path) -> None:
 async def test_write_file_overwrite(workspace: Path) -> None:
     f = workspace / "existing.txt"
     f.write_text("old")
+    read = await ReadFileTool().run(path="existing.txt")
+    assert read.success
     tool = WriteFileTool()
-    result = await tool.run(path="existing.txt", content="new")
+    result = await tool.run(path="existing.txt", content="new", expected_sha256=read.output["sha256"])
     assert result.success
     assert result.output["overwritten"] is True
     assert f.read_text(encoding="utf-8") == "new"
@@ -227,9 +229,12 @@ async def test_list_directory_missing(workspace: Path) -> None:
 async def test_edit_file_unique_replace(workspace: Path) -> None:
     f = workspace / "code.py"
     f.write_text("def foo():\n    return 1\n\ndef bar():\n    return 2\n", encoding="utf-8")
+    read = await ReadFileTool().run(path="code.py")
+    assert read.success
     tool = EditFileTool()
     result = await tool.run(
         path="code.py",
+        expected_sha256=read.output["sha256"],
         old_string="    return 1",
         new_string="    return 42",
     )
@@ -242,9 +247,12 @@ async def test_edit_file_unique_replace(workspace: Path) -> None:
 async def test_edit_file_ambiguous_rejected(workspace: Path) -> None:
     f = workspace / "code.py"
     f.write_text("x = 1\nx = 1\n", encoding="utf-8")
+    read = await ReadFileTool().run(path="code.py")
+    assert read.success
     tool = EditFileTool()
     result = await tool.run(
         path="code.py",
+        expected_sha256=read.output["sha256"],
         old_string="x = 1",
         new_string="x = 2",
     )
@@ -256,9 +264,12 @@ async def test_edit_file_ambiguous_rejected(workspace: Path) -> None:
 async def test_edit_file_replace_all(workspace: Path) -> None:
     f = workspace / "code.py"
     f.write_text("x = 1\nx = 1\nx = 1\n", encoding="utf-8")
+    read = await ReadFileTool().run(path="code.py")
+    assert read.success
     tool = EditFileTool()
     result = await tool.run(
         path="code.py",
+        expected_sha256=read.output["sha256"],
         old_string="x = 1",
         new_string="x = 2",
         replace_all=True,
@@ -272,9 +283,12 @@ async def test_edit_file_replace_all(workspace: Path) -> None:
 async def test_edit_file_not_found_returns_hint(workspace: Path) -> None:
     f = workspace / "code.py"
     f.write_text("def foo():\n    return 1\n", encoding="utf-8")
+    read = await ReadFileTool().run(path="code.py")
+    assert read.success
     tool = EditFileTool()
     result = await tool.run(
         path="code.py",
+        expected_sha256=read.output["sha256"],
         old_string="def bar():",
         new_string="def baz():",
     )
